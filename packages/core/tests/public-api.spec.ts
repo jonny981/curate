@@ -16,7 +16,7 @@ import {
   type PickThresholds,
 } from '../src/index.js';
 
-describe('@obversa/rdc', () => {
+describe('@curatejs/core', () => {
   it('exports the sources, the picker, and their option types', () => {
     const historyOptions: GitHistoryOptions = {
       id: 'history',

@@ -1,18 +1,22 @@
-# @obversa/rdc
+# @curatejs/core
 
-`@obversa/rdc` is rank, decide, curate for agent memory. A memory source
-turns a task into typed candidates. `pick` ranks those candidates, asks a
-decision model which ones the step actually needs, and returns the
-survivors with a record of every answer, rejection and unasked item.
+Curate selects the memory an agent needs for a task from typed sources. Its RDC process ranks candidates, asks your decision function which ones matter, and returns the selected memory with a record of the decisions.
 
-The package depends on nothing else in this repository. A host brings its
-own sources and its own `decide` call.
+## RDC process
+
+- **Rank:** Order memory candidates by their signals.
+- **Decide:** Ask your decision function which candidates the task needs.
+- **Curate:** Return the selected candidates and a record of answers, rejections, and unasked items.
+
+[Obversa](https://github.com/jonny981/obversa) uses Curate as its memory.
 
 ## Install
 
 ```bash
-pnpm add @obversa/rdc
+pnpm add @curatejs/core
 ```
+
+The host supplies its own sources and decision function.
 
 ## Requirements
 

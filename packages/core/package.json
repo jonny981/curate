@@ -1,5 +1,5 @@
 {
-  "name": "@obversa/rdc",
+  "name": "@curatejs/core",
   "version": "0.1.0",
   "description": "Rank, decide, curate: typed memory sources and the selection that picks what a step reads.",
   "author": "Jonny Neill <jonnyneill@hotmail.com>",
@@ -28,23 +28,21 @@
   "scripts": {
     "build": "tsup && tsc -p tsconfig.build.json",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit -p tsconfig.json",
-    "typecheck:ts6": "tsc6 --noEmit -p tsconfig.json",
-    "prepack": "node ../../scripts/check-publish-allowlist.mjs --build-proof",
-    "prepublishOnly": "node ../../scripts/check-publish-allowlist.mjs"
+    "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "keywords": [
     "agent",
     "memory",
     "workflow",
-    "obversa"
+    "curate"
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/jonny981/obversa.git"
+    "url": "git+https://github.com/jonny981/curate.git",
+    "directory": "packages/core"
   },
-  "homepage": "https://obversa.ai/docs",
+  "homepage": "https://github.com/jonny981/curate#readme",
   "bugs": {
-    "url": "https://github.com/jonny981/obversa/issues"
+    "url": "https://github.com/jonny981/curate/issues"
   }
 }

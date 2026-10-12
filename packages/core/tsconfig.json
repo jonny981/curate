@@ -2,7 +2,7 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "paths": {
-      "@obversa/rdc": ["./src/index.ts"]
+      "@curatejs/core": ["./src/index.ts"]
     },
     "types": ["node"]
   },
