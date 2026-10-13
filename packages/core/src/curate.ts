@@ -83,9 +83,10 @@ function checkLog(raw: unknown, working: boolean, ids: readonly string[], prefer
     throw new Error('curate: malformed log; unexpected or empty working section.');
   }
   const sources = ids.map((id) => id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
-  const date = '(\\d{4}-\\d{2}-\\d{2})';
+  const date = '\\d{4}-\\d{2}-\\d{2}';
   const separator = '(?:,\\s*(?:and\\s+)?|;\\s*|\\s+(?:and|&)\\s+)';
-  const observation = new RegExp(`^\\[${date}\\] (.+?) \\(said ${date}; (?:${sources})(?:${separator}(?:${sources}))*\\)(?: \\(when not stated\\))?(?: \\(replaces \\[${date}\\]\\))?$`);
+  const sourceGroup = `(?:${sources})(?:${separator}(?:${sources}))*`;
+  const observation = new RegExp(`^\\[(?<event>${date})\\] (?<text>.+?) \\((?<citations>said ${date}; ${sourceGroup}(?:;\\s*said ${date}; ${sourceGroup})*)\\)(?: \\(when not stated\\))?(?: \\(replaces \\[(?<replacement>${date})\\]\\))?$`);
   const preference = new RegExp(`(?:\\((?:${sources})(?:${separator}(?:${sources}))*\\)|\\[(?:${sources})(?:${separator}(?:${sources}))*\\])`);
   let observations = 0;
   for (const [index, line] of lines.entries()) {
@@ -102,9 +103,11 @@ function checkLog(raw: unknown, working: boolean, ids: readonly string[], prefer
     }
     if (heading !== -1 && index >= heading) continue;
     observations += 1;
-    const match = observation.exec(line);
-    if (!match || !isDate(match[1]!) || !match[2]!.trim() || !isDate(match[3]!)
-      || (match[4] !== undefined && !isDate(match[4]))) {
+    const match = observation.exec(line)?.groups;
+    const saidDates = match?.citations?.matchAll(/(?:^|;\s*)said (\d{4}-\d{2}-\d{2});/g) ?? [];
+    if (!match || !isDate(match.event!) || !match.text!.trim()
+      || [...saidDates].some((entry) => !isDate(entry[1]!))
+      || (match.replacement !== undefined && !isDate(match.replacement))) {
       throw new Error('curate: malformed log; each observation needs an event date, a said date, and a full item id.');
     }
   }

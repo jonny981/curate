@@ -348,7 +348,9 @@ An empty log or a malformed observation throws a clear error.
 Each observation must have
 valid calendar dates in its event and `said` fields and full ids of items
 given to the writer. Merged sources can separate ids with commas,
-semicolons, `and`, or `&`. Optional
+semicolons, `and`, or `&`. If sources recorded the same fact on different
+days, repeat the dated group: `(said 2023-05-20; notes#1; said 2023-05-21; notes#2)`.
+Every source date and id is checked. Optional
 suffixes are `(when not stated)` and `(replaces [YYYY-MM-DD])`; replacement
 dates must also be valid. These checks verify the format and source ids;
 they do not prove the writer's

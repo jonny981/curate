@@ -326,6 +326,32 @@ describe('curate', () => {
     expect(result.log).toBe(text);
   });
 
+  it.each([
+    '[2023-05-13] Planted an orchard (said 2023-05-20; notes#2; said 2023-05-21; notes#3)',
+    '[2023-05-13] Planted an orchard (said 2023-05-20; notes#2, notes#3; said 2023-05-21; notes#4; said 2023-05-22; notes#5) (when not stated)',
+    '[2023-05-13] Planted an orchard (said 2023-05-20; notes#2; said 2023-05-21; notes#3) (replaces [2023-04-01])',
+  ])('keeps each source date when several sources describe one event: %j', async (text) => {
+    const input = picked(['notes#2', 'notes#3', 'notes#4', 'notes#5'].map((id) => candidate(id)), [0.9, 0.8, 0.7, 0.6]);
+    expect((await curate('Recall', input, { write: writer(text).write })).log).toBe(text);
+  });
+
+  it.each([
+    'said 2023-02-30; notes#3',
+    'said 2023-13-01; notes#3',
+    'said not-a-date; notes#3',
+    'said 2023-05-21; notes#3; said 2023-02-30; notes#4',
+  ])('rejects an invalid date in a later citation group: %j', async (citation) => {
+    const input = picked(['notes#2', 'notes#3', 'notes#4'].map((id) => candidate(id)), [0.9, 0.8, 0.7]);
+    const text = `[2023-05-13] Planted an orchard (said 2023-05-20; notes#2; ${citation})`;
+    await expect(curate('Recall', input, { write: writer(text).write })).rejects.toThrow('curate: malformed log');
+  });
+
+  it.each(['unknown', 'notes#3, unknown'])('rejects unknown sources under a later date: %j', async (sources) => {
+    const input = picked([candidate('notes#2'), candidate('notes#3')], [0.9, 0.8]);
+    const text = `[2023-05-13] Planted an orchard (said 2023-05-20; notes#2; said 2023-05-21; ${sources})`;
+    await expect(curate('Recall', input, { write: writer(text).write })).rejects.toThrow('curate: malformed log');
+  });
+
   it('accepts a date that was not stated and full ids containing punctuation', async () => {
     const id = 'notes (copy)[1].md#2';
     const text = `[2023-05-20] Visited York (said 2023-05-20; ${id}) (when not stated)`;

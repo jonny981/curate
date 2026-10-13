@@ -67,6 +67,16 @@ const result = await curate(task, picked, { write });
 The host supplies `task`, `decide` and `write`. See each package’s README
 for reader options and core’s README for the decision and writer contracts.
 
+## Agent skill
+
+The [curate skill](skills/curate/SKILL.md) runs the four packages over local
+history with source-specific searches, Jev decisions and subscription
+curation. Source settings and run records stay outside the repository.
+
+```sh
+node skills/curate/run.mjs "Which decisions and tried ideas bear on this task?"
+```
+
 ## Development
 
 ```bash
