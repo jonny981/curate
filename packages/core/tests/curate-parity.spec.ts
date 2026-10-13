@@ -16,7 +16,7 @@ const fixtures = readdirSync(directory).filter((file) => file.endsWith('.json'))
 describe('prototype curator prompt parity', () => {
   for (const { file, input } of fixtures) {
     for (const { working, prompt } of input.prompts) {
-      it(`matches ${file} byte for byte with working=${working}`, async () => {
+      it(`matches ${file} except fixed character caps with working=${working}`, async () => {
         const calls: CuratePrompt[] = [];
         await curate(input.task, input.picked, {
           working,
@@ -26,7 +26,9 @@ describe('prototype curator prompt parity', () => {
           },
         });
         expect(calls).toHaveLength(1);
-        expect(calls[0]!.instructions).toBe(prompt.instructions);
+        expect(calls[0]!.instructions).toBe(prompt.instructions
+          .replace('At most 3500 characters.\n', '')
+          .replace(' Keep the log and the working together within 3500 characters.', ''));
         expect(calls[0]!.body).toBe(prompt.body);
       });
     }

@@ -1,6 +1,6 @@
 # @curatejs/core
 
-Curate selects the memory an agent needs for a task from typed sources. Its RDC process ranks candidates, asks your decision function which ones matter, and asks your writer to turn the selected evidence into a short dated log. Selection and curation each return a record.
+Curate selects the memory an agent needs for a task from typed sources. Its RDC process ranks candidates, asks your decision function which ones matter, and asks your writer to turn the selected evidence into the dated log the task needs. Selection and curation each return a record.
 
 ## RDC process
 
@@ -166,7 +166,8 @@ overrides it.
 ## Curating
 
 `curate(task, picked, { write })` accepts the result of `pick` or
-`pickFromSources`. It calls your `write(prompt, signal)` function once.
+`pickFromSources`. It calls your `write(prompt, signal)` function to
+write the log the task needs, with no fixed character cap.
 `prompt.instructions` contains the v4 dated-log wording and three weight
 bands: 0.6 or more, 0.1 to 0.6, and below 0.1. `prompt.body` contains the
 task and selected reference items in their selected order. Each header
@@ -199,24 +200,49 @@ both full ids, and mark later observations that replace earlier ones.
 Selected rules stay in `picked.selected` for the host to pass as exact
 instructions; the curator reads only reference items.
 
-`record` holds `promptVersion: 'v4'`, `weights: 'tiers'`, `working`, and
-`items`. Each item includes its prompt `id`, the full `candidate`, and
+`record` holds `promptVersion: 'v4'`, `weights: 'tiers'`, `working`,
+`items`, `logLength`, `condensed`, and `overContextLimit`.
+Each item includes its prompt `id`, the full `candidate`, and
 the exact decision `weight` before rounding.
+
+Set `contextLimit` to the positive integer number of characters the
+caller's working model can accept:
+
+```ts
+const curated = await curate(task, picked, { write, contextLimit: 12000 });
+```
+
+If the first validated log exceeds that limit, Curate calls `write`
+exactly once more with the task, the full log, and exact item weights.
+The condense prompt asks the writer to merge or drop observations from
+items below 0.1 first, then those from 0.1 to below 0.6. It asks for
+observations from items weighted 0.6 or more to stay whole, and for
+retained observations to keep their event dates, said dates, full source
+ids, and replacement dates. The result must pass the same format checks.
+These checks do not prove that the writer followed the tier instructions.
+
+The record includes `contextLimit` when supplied. `logLength` is the
+first validated log's length after trimming. `condensed` says whether
+the second call ran; `condensedLength` is present only when it ran.
+`overContextLimit: true` says that the returned log still exceeds the
+budget. Such a log is returned whole without another call or a length
+error. Without `contextLimit`, Curate makes one call and returns the
+validated log without condensing.
 
 `working: true` asks the writer to add numbered instances inside the
 task's period, computed time gaps or order, and latest values under
 `Working (the curator's; check it against the log):`. It is off by
 default. The reader should check these notes against the log.
 
-An empty log, a log longer than 3500 characters after trimming, or a
-malformed observation throws a clear error. Each observation must have
+An empty log or a malformed observation throws a clear error.
+Each observation must have
 valid calendar dates in its event and `said` fields and full ids of items
 given to the writer. Merged sources can separate ids with commas,
 semicolons, `and`, or `&`. Optional
 suffixes are `(when not stated)` and `(replaces [YYYY-MM-DD])`; replacement
 dates must also be valid. These checks verify the format and source ids;
 they do not prove the writer's
-facts or date calculations. Worked notes share the same length limit.
+facts or date calculations. Worked notes count toward `contextLimit`.
 There is no retry, truncation, or fallback to raw items. Missing selected
 weights and a selection with no reference items fail before `write`.
 Writer failures propagate to the caller. `signal` reaches the writer;

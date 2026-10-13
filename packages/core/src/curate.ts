@@ -11,6 +11,8 @@ export interface CurateOptions {
   readonly write: CurateWrite;
   /** Add numbered instances, computed gaps, or latest values under the log. */
   readonly working?: boolean;
+  /** Condense once if the log exceeds this positive character budget. */
+  readonly contextLimit?: number;
   readonly signal?: AbortSignal;
 }
 
@@ -18,6 +20,13 @@ export interface CurateRecord {
   readonly promptVersion: 'v4';
   readonly weights: 'tiers';
   readonly working: boolean;
+  /** First validated log's length, after trimming. */
+  readonly logLength: number;
+  readonly condensed: boolean;
+  readonly condensedLength?: number;
+  readonly contextLimit?: number;
+  /** The returned log still exceeds the caller's budget. */
+  readonly overContextLimit: boolean;
   /** The reference items given to the writer, in prompt order, with exact weights. */
   readonly items: readonly {
     /** Full item id in the prompt; includes the source when ids would clash. */
@@ -32,11 +41,10 @@ export interface CurateResult {
   readonly record: CurateRecord;
 }
 
-const LOG_LIMIT = 3500;
 const WORKING_HEADING = "Working (the curator's; check it against the log):";
 const NO_WORKING = '- Do not answer the task, do not count, and do not decide whether an observation falls inside a period the task names: give its dates and leave that to the reader.';
 
-// Keep these instructions byte for byte with recall/curate.ts's v4 + tiers prompt.
+// Keep the prototype's v4 + tiers wording, except its fixed character cap.
 const INSTRUCTIONS = [
   'You curate memory for a person or an agent about to do a task. You get the task and evidence items, each with an id and a date.',
   'Rewrite the evidence that could bear on the task as a log of observations, oldest first, one line each:',
@@ -47,7 +55,6 @@ const INSTRUCTIONS = [
   '- Include preferences, habits, opinions, interests and limits the person states, dated.',
   '- Include what the assistant said only when the task asks about it.',
   NO_WORKING,
-  'At most 3500 characters.',
   'Each item header shows, in brackets after its date, a weight from 0 to 1: how strongly a decision model judged the item relevant to this task. The weight is graded, not a yes or no, and every item already passed a search for this task. Make sure every observation from items weighted 0.6 or more is in the log. Items weighted from 0.1 to 0.6 are less direct but often hold part of what the task needs, such as one instance of several or an earlier value: include their facts when they bear on the task. Items weighted below 0.1 rarely matter: use one only when it clearly states a fact the task needs.',
 ].join('\n');
 
@@ -60,7 +67,6 @@ function checkLog(raw: unknown, working: boolean, ids: readonly string[]): strin
   if (typeof raw !== 'string') throw new TypeError('curate: malformed log; write must return text.');
   const log = raw.trim();
   if (!log) throw new Error('curate: empty log.');
-  if (log.length > LOG_LIMIT) throw new Error(`curate: oversized log; at most ${LOG_LIMIT} characters allowed.`);
 
   const lines = log.split('\n').map((line) => line.trim()).filter(Boolean);
   const heading = lines.indexOf(WORKING_HEADING);
@@ -89,6 +95,10 @@ export async function curate(
 ): Promise<CurateResult> {
   const signal = options.signal ?? new AbortController().signal;
   signal.throwIfAborted();
+  const contextLimit = options.contextLimit;
+  if (contextLimit !== undefined && (!Number.isInteger(contextLimit) || contextLimit <= 0)) {
+    throw new TypeError('curate: contextLimit must be a positive integer of characters.');
+  }
   const working = options.working ?? false;
   const references = picked.selected.filter((candidate) => candidate.role === 'reference');
   const items = references.map((candidate) => {
@@ -108,14 +118,40 @@ export async function curate(
     `### ${id} (${candidate.date ? `${candidate.date.value}, ` : ''}${weight.toFixed(2)}): ${candidate.title}\n\n${candidate.text}`.trim());
   const instructions = !working ? INSTRUCTIONS : INSTRUCTIONS.replace(NO_WORKING,
     '- In the log itself, do not judge: give every observation its dates, including ones near the edge of a period the task names.')
-    + '\nAfter the log, add a short section headed "Working (the curator\'s; check it against the log):". For a count or a list: number each distinct instance that falls inside the period the task names, with its date and id, then name any instance you left out and why (outside the period, or the same as another). For a question about time or order: the dates involved and the computed difference or order. For something that changed: the latest value and its date. Leave out any part the task does not need. Keep the log and the working together within 3500 characters.';
+    + '\nAfter the log, add a short section headed "Working (the curator\'s; check it against the log):". For a count or a list: number each distinct instance that falls inside the period the task names, with its date and id, then name any instance you left out and why (outside the period, or the same as another). For a question about time or order: the dates involved and the computed difference or order. For something that changed: the latest value and its date. Leave out any part the task does not need.';
   const raw = await options.write({
     instructions,
     body: `TASK:\n${task}\n\nEVIDENCE:\n\n${blocks.join('\n\n')}`,
   }, signal);
   signal.throwIfAborted();
+  const ids = items.map((item) => item.id);
+  let log = checkLog(raw, working, ids);
+  const logLength = log.length;
+  const condensed = contextLimit !== undefined && logLength > contextLimit;
+  if (condensed) {
+    const rawCondensed = await options.write({
+      instructions: [
+        instructions,
+        `Condense the log for the task to at most ${contextLimit} characters, including any working section, if possible.`,
+        'Reduce the tiers in this order:',
+        'First: merge or drop observations from items weighted below 0.1.',
+        'Next: merge or drop observations from items weighted from 0.1 to below 0.6.',
+        'Keep observations from items weighted 0.6 or more whole; do not shorten or drop them, even if the log must exceed the budget.',
+        'Keep each retained observation\'s event date, said date, full source item ids, and replacement dates. Merge only observations with matching dates and keep all their source ids.',
+        'Never truncate text. Return only the dated log and, when requested, working notes checked against the retained observations.',
+      ].join('\n'),
+      body: `TASK:\n${task}\n\nITEM WEIGHTS:\n${items.map((item) => `${item.id}: ${item.weight}`).join('\n')}\n\nLOG:\n${log}`,
+    }, signal);
+    signal.throwIfAborted();
+    log = checkLog(rawCondensed, working, ids);
+  }
   return {
-    log: checkLog(raw, working, items.map((item) => item.id)),
-    record: { promptVersion: 'v4', weights: 'tiers', working, items },
+    log,
+    record: {
+      promptVersion: 'v4', weights: 'tiers', working, items, logLength, condensed,
+      ...(condensed ? { condensedLength: log.length } : {}),
+      ...(contextLimit === undefined ? {} : { contextLimit }),
+      overContextLimit: contextLimit !== undefined && log.length > contextLimit,
+    },
   };
 }

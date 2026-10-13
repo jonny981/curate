@@ -1,12 +1,12 @@
 # Curate
 
-Curate selects the memory an agent needs for a task from typed sources. Its RDC process ranks candidates, asks your decision function which ones matter, and asks your writer to turn the selected evidence into a short dated log. Selection and curation each return a record.
+Curate selects the memory an agent needs for a task from typed sources. Its RDC process ranks candidates, asks your decision function which ones matter, and asks your writer to turn the selected evidence into the dated log the task needs. Selection and curation each return a record.
 
 ## RDC process
 
 - **Rank:** Order memory candidates by their signals.
 - **Decide:** Ask your decision function which candidates the task needs.
-- **Curate:** Call `curate(task, picked, { write })` to write the dated log the working model reads.
+- **Curate:** Call `curate(task, picked, { write })` to write the dated log the working model reads. There is no fixed length cap. An optional `contextLimit` in characters asks the writer to condense an oversized log once, reducing the weakest signals first and keeping the strongest whole. The record reports both lengths and whether the result still exceeds the limit.
 
 [Obversa](https://github.com/jonny981/obversa) uses Curate as its memory.
 

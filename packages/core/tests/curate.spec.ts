@@ -10,6 +10,7 @@ import {
 } from '../src/index.js';
 
 const LOG = '[2023-05-13] Visited York (said 2023-05-20; notes#2)';
+const LONG_LOG = `[2023-05-13] ${'Travel notes. '.repeat(400)} (said 2023-05-20; notes#2)`;
 
 function candidate(id: string, date?: string): MemoryCandidate {
   return {
@@ -33,12 +34,16 @@ function picked(items = [candidate('notes#2', '2023-05-20')], weights = [0.9]): 
   };
 }
 
-function writer(text = LOG): { write: CurateWrite; calls: CuratePrompt[]; signals: AbortSignal[] } {
+function writer(text: string | readonly string[] = LOG): { write: CurateWrite; calls: CuratePrompt[]; signals: AbortSignal[] } {
   const calls: CuratePrompt[] = [];
   const signals: AbortSignal[] = [];
   return {
     calls, signals,
-    write: async (prompt, signal) => { calls.push(prompt); signals.push(signal); return text; },
+    write: async (prompt, signal) => {
+      calls.push(prompt);
+      signals.push(signal);
+      return typeof text === 'string' ? text : text[calls.length - 1]!;
+    },
   };
 }
 
@@ -55,7 +60,7 @@ describe('curate', () => {
     expect(instructions).toContain('Make sure every observation from items weighted 0.6 or more is in the log.');
     expect(instructions).toContain('Items weighted from 0.1 to 0.6 are less direct');
     expect(instructions).toContain('Items weighted below 0.1 rarely matter');
-    expect(instructions).toContain('At most 3500 characters.');
+    expect(instructions).not.toContain('3500');
     expect(instructions).not.toContain('Working (the curator');
     expect(result.log).toBe(LOG);
     expect(result.record).toMatchObject({ promptVersion: 'v4', weights: 'tiers', working: false });
@@ -93,6 +98,7 @@ describe('curate', () => {
     expect(calls[0]!.instructions).toContain('number each distinct instance that falls inside the period');
     expect(calls[0]!.instructions).toContain('the computed difference or order');
     expect(calls[0]!.instructions).toContain('the latest value and its date');
+    expect(calls[0]!.instructions).not.toContain('3500');
     expect(result.log).toBe(LOG + working);
     expect(result.record.working).toBe(true);
   });
@@ -128,10 +134,80 @@ describe('curate', () => {
     expect(calls).toHaveLength(1);
   });
 
-  it('rejects oversized output instead of cutting it or returning raw items', async () => {
-    const { write, calls } = writer(`[2023-05-13] ${'x'.repeat(3500)} (said 2023-05-20; notes#2)`);
-    await expect(curate('Recall', picked(), { write })).rejects.toThrow('curate: oversized log');
+  it('returns a long log unchanged with one write call when no context limit is given', async () => {
+    const { write, calls } = writer(LONG_LOG);
+    const result = await curate('Recall', picked(), { write });
+    expect(LONG_LOG.length).toBeGreaterThan(3500);
+    expect(result.log).toBe(LONG_LOG);
     expect(calls).toHaveLength(1);
+    expect(result.record).toMatchObject({ logLength: LONG_LOG.length, condensed: false, overContextLimit: false });
+    expect(result.record).not.toHaveProperty('condensedLength');
+    expect(result.record).not.toHaveProperty('contextLimit');
+  });
+
+  it.each([LOG.length, LOG.length + 1])('does not condense a log within a context limit of %i', async (contextLimit) => {
+    const { write, calls } = writer(` \n${LOG}\n `);
+    const result = await curate('Recall', picked(), { write, contextLimit });
+    expect(result.log).toBe(LOG);
+    expect(calls).toHaveLength(1);
+    expect(result.record).toMatchObject({ logLength: LOG.length, condensed: false, contextLimit, overContextLimit: false });
+    expect(result.record).not.toHaveProperty('condensedLength');
+  });
+
+  it('condenses once through write, dropping the weakest tiers first and keeping the top tier whole', async () => {
+    const medium = '[2023-05-14] Checked trains (said 2023-05-20; notes#3)';
+    const weak = LONG_LOG.replace('notes#2', 'notes#4');
+    const original = `${LOG}\n${medium}\n${weak}`;
+    const input = picked([candidate('notes#2'), candidate('notes#3'), candidate('notes#4')], [0.6, 0.1, 0.05]);
+    const controller = new AbortController();
+    const { write, calls, signals } = writer([original, LOG]);
+    const result = await curate('Where did I go?', input, { write, contextLimit: LOG.length, signal: controller.signal });
+    expect(calls).toHaveLength(2);
+    expect(calls[0]!.instructions).not.toContain('3500');
+    const prompt = calls[1]!;
+    expect(prompt.instructions).toContain(`Condense the log for the task to at most ${LOG.length} characters`);
+    expect(prompt.instructions).toMatch(/First: merge or drop observations from items weighted below 0\.1\.[\s\S]*Next: merge or drop observations from items weighted from 0\.1 to below 0\.6\.[\s\S]*Keep observations from items weighted 0\.6 or more whole/);
+    expect(prompt.instructions).toContain('event date, said date, full source item ids, and replacement dates');
+    expect(prompt.instructions).toContain('Never truncate text.');
+    expect(prompt.body).toContain('TASK:\nWhere did I go?');
+    expect(prompt.body).toContain('ITEM WEIGHTS:\nnotes#2: 0.6\nnotes#3: 0.1\nnotes#4: 0.05');
+    expect(prompt.body).toContain(`LOG:\n${original}`);
+    expect(signals).toEqual([controller.signal, controller.signal]);
+    expect(result.log).toBe(LOG);
+    expect(result.record).toMatchObject({
+      logLength: original.length, condensed: true, condensedLength: LOG.length,
+      contextLimit: LOG.length, overContextLimit: false,
+    });
+  });
+
+  it.each([LOG, LONG_LOG].map((text) => ({ text, length: text.length })))('returns a condensed log of $length characters still over the context limit with a record entry and no further call', async ({ text: condensed }) => {
+    const { write, calls } = writer([LONG_LOG, condensed]);
+    const result = await curate('Recall', picked(), { write, contextLimit: 10 });
+    expect(result.log).toBe(condensed);
+    expect(calls).toHaveLength(2);
+    expect(result.record).toMatchObject({
+      logLength: LONG_LOG.length, condensed: true, condensedLength: condensed.length,
+      contextLimit: 10, overContextLimit: true,
+    });
+  });
+
+  it.each(['', 'undated summary', '[2023-05-13] Visited York (said 2023-05-20; unknown)'])('rejects invalid condensed output %j', async (text) => {
+    const { write, calls } = writer([LONG_LOG, text]);
+    await expect(curate('Recall', picked(), { write, contextLimit: 100 }))
+      .rejects.toThrow(text === '' ? 'curate: empty log' : 'curate: malformed log');
+    expect(calls).toHaveLength(2);
+  });
+
+  it('rejects a malformed first log before attempting to condense', async () => {
+    const { write, calls } = writer('undated summary');
+    await expect(curate('Recall', picked(), { write, contextLimit: 1 })).rejects.toThrow('curate: malformed log');
+    expect(calls).toHaveLength(1);
+  });
+
+  it.each([0, -1, 1.5, NaN, Infinity])('rejects an invalid context limit of %s before writing', async (contextLimit) => {
+    const { write, calls } = writer();
+    await expect(curate('Recall', picked(), { write, contextLimit })).rejects.toThrow('contextLimit must be a positive integer');
+    expect(calls).toHaveLength(0);
   });
 
   it.each([
@@ -211,6 +287,45 @@ describe('curate', () => {
     await expect(curate('Recall', picked(), { write: async () => { calls += 1; throw error; } }))
       .rejects.toBe(error);
     expect(calls).toBe(1);
+  });
+
+  it('propagates condense failures without retries or another model route', async () => {
+    let calls = 0;
+    const error = new Error('plan route failed');
+    await expect(curate('Recall', picked(), {
+      contextLimit: 100,
+      write: async () => { calls += 1; if (calls === 1) return LONG_LOG; throw error; },
+    })).rejects.toBe(error);
+    expect(calls).toBe(2);
+  });
+
+  it('rejects a condensed result returned after cancellation', async () => {
+    const controller = new AbortController();
+    let calls = 0;
+    await expect(curate('Recall', picked(), {
+      contextLimit: 100,
+      signal: controller.signal,
+      write: async () => {
+        calls += 1;
+        if (calls === 1) return LONG_LOG;
+        controller.abort();
+        return LOG;
+      },
+    })).rejects.toMatchObject({ name: 'AbortError' });
+    expect(calls).toBe(2);
+  });
+
+  it('keeps optional working notes when condensing a long log', async () => {
+    const notes = "\n\nWorking (the curator's; check it against the log):\n1. 2023-05-13 notes#2.";
+    const { write, calls } = writer([LONG_LOG + notes, LOG + notes]);
+    const result = await curate('How many visits?', picked(), { write, working: true, contextLimit: 200 });
+    expect(result.log).toBe(LOG + notes);
+    expect(calls).toHaveLength(2);
+    expect(calls[1]!.instructions).toContain('including any working section');
+    expect(result.record).toMatchObject({
+      working: true, logLength: (LONG_LOG + notes).length,
+      condensed: true, condensedLength: (LOG + notes).length, overContextLimit: false,
+    });
   });
 
   it('passes cancellation to write and rejects a result returned after cancellation', async () => {
