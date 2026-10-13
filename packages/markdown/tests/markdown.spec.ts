@@ -396,6 +396,15 @@ describe('knowledgeBase', () => {
     expect(old.role).toBe('reference');
   });
 
+  it('finds replaced markers beyond the first four hundred characters', async () => {
+    const directory = await tree({
+      'retired.md': `## Policy\n${'Policy context. '.repeat(40)}\n\n> superseded by the replacement policy\n`,
+    });
+    const result = await read(knowledgeBase(directory), { task: 'policy' });
+    if (result.status !== 'read') throw new Error('read failed');
+    expect(result.candidates.some((candidate) => candidate.signals['replaced'] === -2)).toBe(true);
+  });
+
   it('marks replaced notes found in the first lines too', async () => {
     const directory = await tree({
       'retired.md': '## Retired\n\n> superseded by the 2025 policy\n\nOld text.\n',

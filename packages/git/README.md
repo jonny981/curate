@@ -49,7 +49,8 @@ Core keeps every scored reference by default, ordered and weighted by
 decision probability. Set `thresholds.reference` for an optional single
 cut, for example 0.05. The curator receives exact scores. Its `tiers`
 instructions ask for less space for low-scored items.
-Rules retain their separate applicability bar. See
+Rules also keep every scored item; set `thresholds.rule` for an optional
+applicability cut. See
 [core's measured reason](../core/README.md#defaults-and-evidence) for the
 saved-decision sweep's answer-turn losses.
 

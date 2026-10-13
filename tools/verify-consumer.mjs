@@ -33,11 +33,14 @@ assert.equal(asSourceReadError(cancelled), cancelled);
 const decide = async ({ questions }) => Object.fromEntries(questions.map(q => [q.key, { status: 'answered', probability: q.questionKey === 'offtopic' ? 0 : 1 }]));
 const candidates = [1, 0.049, 0].map((probability, index) => ({
   sourceId: 'host', role: 'reference', id: 'host-item-' + index, title: 'Backup',
-  text: 'Backups are encrypted.', signals: { probability }, date: { value: '2025-01-01', meaning: 'recorded' },
+  text: 'Backups are encrypted. ' + 'Details. '.repeat(100) + 'Recovery uses offline keys.', signals: { probability }, date: { value: '2025-01-01', meaning: 'recorded' },
 }));
-const weighted = async ({ questions }) => Object.fromEntries(questions.map(q => [q.key, {
-  status: 'answered', probability: candidates.find(candidate => candidate.id === q.id).signals.probability,
-}]));
+const weighted = async ({ questions }) => {
+  assert.ok(questions.every(q => q.text.endsWith('Recovery uses offline keys.')));
+  return Object.fromEntries(questions.map(q => [q.key, {
+    status: 'answered', probability: candidates.find(candidate => candidate.id === q.id).signals.probability,
+  }]));
+};
 const picked = await pick(candidates, { task: 'Recall backups', decide: weighted });
 assert.deepEqual(picked.selected.map(candidate => candidate.id), ['host-item-0', 'host-item-1', 'host-item-2']);
 assert.equal(picked.record.thresholds.reference, 0);
@@ -46,7 +49,7 @@ assert.deepEqual(cut.selected.map(candidate => candidate.id), ['host-item-0']);
 let prompt;
 const curated = await curate('Recall backups', picked, { write: async p => { prompt = p; return '[2025-01-01] Backups are encrypted (said 2025-01-01; host-item-0)'; } });
 assert.equal(curated.log, '[2025-01-01] Backups are encrypted (said 2025-01-01; host-item-0)');
-assert.ok(prompt.body.includes('Backups are encrypted.'));
+assert.ok(prompt.body.includes('Recovery uses offline keys.'));
 assert.ok(prompt.body.includes('### host-item-1 (2025-01-01, 0.049):'));
 assert.ok(prompt.body.includes('### host-item-2 (2025-01-01, 0):'));
 mkdirSync('transcripts');

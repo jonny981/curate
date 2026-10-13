@@ -32,10 +32,9 @@ export interface CandidateReadRequest {
    *  keep their best matches; git history enumerates latest commits
    *  before ranking. Truncated enumeration makes `complete` false. */
   readonly limit?: number;
-  /** Characters of candidate text the decision model is shown: pick's
-   *  `limits.maxQuestionText`. A source that offers a long item in parts
-   *  cuts the parts to fit, so every part reaches the model whole.
-   *  `pickFromSources` fills it from the pick limits. */
+  /** Reader part size. Readers preserve every character across parts.
+   *  `pickFromSources` uses a caller's text cut or the default reader size;
+   *  pick shows each part whole when its text cut is omitted. */
   readonly maxQuestionText?: number;
   /** Cancellation reaches file reads and child processes. */
   readonly signal?: AbortSignal;

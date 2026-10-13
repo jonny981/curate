@@ -132,15 +132,6 @@ function touches(changedPaths: readonly string[], named: readonly string[]): boo
 }
 
 const NO_COMMIT = /Needed a single revision|does not have any commits|unknown revision|ambiguous argument/i;
-/** How many files blame may open per read; the signal stays cheap even
- *  when the task names a large tree. */
-const BLAME_FILE_CAP = 60;
-/** Co-change looks back this many commits touching the named paths. */
-const CO_CHANGE_WINDOW = 200;
-/** A file becomes a co-change neighbour once it changed beside a named
- *  path this often inside the window. */
-const CO_CHANGE_MIN_TOUCHES = 3;
-const CO_CHANGE_NEIGHBOUR_CAP = 10;
 
 /**
  * A repository's commit history: one candidate per non-merge commit,
@@ -289,22 +280,13 @@ export function gitHistory(
         if (options.blame === true && named.length > 0) {
           // `paths` hints are not exempt from exclusion: a hint naming
           // an excluded file still never has its contents opened. The
-          // filter runs before the cap so excluded files cannot eat it.
+          // filter excludes files before their contents are opened.
           const files = (
             await runGit(toplevel, ['ls-tree', '-r', '-z', '--name-only', sha, '--', ...pathspec], { signal })
           ).split('\0').filter((name) => name !== '')
-            .filter((file) => !touches([file], [...excluded]))
-            .slice(0, BLAME_FILE_CAP);
+            .filter((file) => !touches([file], [...excluded]));
           for (const file of files) {
-            let output = '';
-            try {
-              output = await runGit(toplevel, ['blame', '--line-porcelain', sha, '--', file], { signal });
-            } catch (error) {
-              // A file that cannot be blamed contributes nothing; an
-              // abort is never swallowed.
-              if (error instanceof GitFailure && error.kind === 'cancelled') throw error;
-              continue;
-            }
+            const output = await runGit(toplevel, ['blame', '--line-porcelain', sha, '--', file], { signal });
             const counts = new Map<string, number>();
             for (const match of output.matchAll(/^([0-9a-f]{40}) /gm)) {
               counts.set(match[1]!, (counts.get(match[1]!) ?? 0) + 1);
@@ -317,36 +299,32 @@ export function gitHistory(
           }
         }
         if (options.coChange === true && named.length > 0) {
-          // The window pass names only the commits that touched a named
+          // The first pass names all commits that touched a named
           // path; a `--name-only` log under the pathspec would list just
           // the named files, so the full path lists come from one
-          // batched `git show` over those commits instead.
-          const windowShas = (await runGit(toplevel, [
+          // batched `git log --stdin` over those commits instead.
+          const touchingShas = (await runGit(toplevel, [
             'log', '--no-merges', '--format=%H',
-            '-n', String(CO_CHANGE_WINDOW), sha, '--', ...pathspec,
+            sha, '--', ...pathspec,
           ], { signal }))
             .split('\n').map((line) => line.trim()).filter((line) => line !== '');
-          const together = new Map<string, number>();
-          if (windowShas.length > 0) {
+          const together = new Set<string>();
+          if (touchingShas.length > 0) {
             const detail = await runGit(toplevel, [
-              'show', '-z', '--format=%x1e%H', '--no-renames', '--name-only', ...windowShas,
-            ], { signal });
+              'log', '--no-walk=unsorted', '--stdin', '-z', '--format=%x1e%H', '--no-renames', '--name-only',
+            ], { input: `${touchingShas.join('\n')}\n`, signal });
             for (const record of detail.split('\x1e')) {
               if (record.trim() === '') continue;
               const boundary = record.indexOf('\0');
               for (const file of pathNames(boundary < 0 ? '' : record.slice(boundary))) {
-                if (!touches([file], named)) together.set(file, (together.get(file) ?? 0) + 1);
+                if (!touches([file], named)) together.add(file);
               }
             }
           }
-          const neighbours = [...together.entries()]
-            .filter(([, count]) => count >= CO_CHANGE_MIN_TOUCHES)
-            .sort((left, right) => right[1] - left[1])
-            .slice(0, CO_CHANGE_NEIGHBOUR_CAP)
-            .map(([file]) => file);
+          const neighbours = [...together];
           if (neighbours.length > 0) {
             const touched = await runGit(toplevel, [
-              'log', '--no-merges', '--format=%H', '-n', '300', sha, '--', ...neighbours,
+              'log', '--no-merges', '--format=%H', sha, '--', ...neighbours,
             ], { signal });
             for (const line of touched.split('\n')) {
               const commitSha = line.trim();

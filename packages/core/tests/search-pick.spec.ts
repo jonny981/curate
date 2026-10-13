@@ -225,8 +225,8 @@ describe('best document part first', () => {
       item('tail', { ...left, text: 'Background' }),
       item('representative', { ...right, text: 'battery charge' }),
     ], { task: 'battery charge', decide: stub.decide, bestPartFirst: true, thresholds: { reference: 0.6 } });
-    expect(stub.ids()).toEqual(['representative']);
-    expect(result.record.candidates[0]).toMatchObject({ status: 'unassessed', reason: 'document' });
+    expect(stub.ids()).toEqual(['representative', 'tail']);
+    expect(result.record.candidates[0]).toMatchObject({ status: 'selected' });
   });
 
   it.each([
@@ -254,7 +254,7 @@ describe('best document part first', () => {
       item('tail', { documentId: 'shared', contentRef: 'a.md#L1-L2' }),
       item('representative', { documentId: 'shared', contentRef: 'b.md#L3-L4', text: 'battery charge' }),
     ], { task: 'battery charge', decide: stub.decide, bestPartFirst: true, thresholds: { reference: 0.6 } });
-    expect(stub.ids()).toEqual(['representative']);
+    expect(stub.ids()).toEqual(['representative', 'tail']);
   });
 
   it.each([0, 0.2, 0.3, 0.5, 0.8])('expands a selected representative at probability %s by default', async (probability) => {
@@ -266,13 +266,13 @@ describe('best document part first', () => {
     expect(result.selected).toHaveLength(2);
   });
 
-  it('skips remaining parts when an explicitly rejected representative scores below 0.3', async () => {
+  it('judges remaining parts even when an explicitly rejected representative scores below 0.3', async () => {
     const stub = decisions((question) => answer(question.id === 'representative' ? 0.299 : 0.9));
     const result = await pick(parts(), {
       task: 'battery charge schedule', decide: stub.decide, bestPartFirst: true, thresholds: { reference: 0.6 },
     });
-    expect(stub.ids()).toEqual(['representative']);
-    expect(result.record.candidates[0]).toMatchObject({ status: 'unassessed', reason: 'document' });
+    expect(stub.ids()).toEqual(['representative', 'tail']);
+    expect(result.record.candidates[0]).toMatchObject({ status: 'selected' });
     expect(result.record.candidates[1]).toMatchObject({ status: 'rejected', probability: 0.299 });
   });
 
@@ -361,8 +361,8 @@ describe('best document part first', () => {
       task: 'battery charge schedule', decide: stub.decide, bestPartFirst: true, cascade, thresholds: { reference: 0.6 },
     });
     expect(stub.calls.map((batch) => batch.map((question) => `${question.id}:${question.questionKey}`)))
-      .toEqual([['representative:relevant']]);
-    expect(result.record.candidates[0]).toMatchObject({ status: 'unassessed', reason: 'document' });
+      .toEqual([['representative:relevant'], ['tail:relevant']]);
+    expect(result.record.candidates[0]).toMatchObject({ status: 'selected' });
   });
 
   it('uses each source kind’s cascade for representatives and expanded parts', async () => {
@@ -470,7 +470,7 @@ describe('stopping document assessment', () => {
     const result = await pick([
       item('rule-a', { role: 'rule', documentId: 'rules', signals: { score: 9 } }),
       item('rule-b', { role: 'rule', documentId: 'rules' }),
-    ], { task: 'battery charge', decide: stub.decide, bestPartFirst: true, thresholds: { reference: 0.6 } });
+    ], { task: 'battery charge', decide: stub.decide, bestPartFirst: true, thresholds: { reference: 0.6, rule: 0.6 } });
     expect(stub.ids()).toEqual(['rule-a', 'rule-b']);
     expect(result.record.rulesCoverage).toBe('complete');
     expect(result.selected.map((candidate) => candidate.id)).toEqual(['rule-b']);

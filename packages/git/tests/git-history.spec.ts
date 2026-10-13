@@ -583,6 +583,58 @@ describe('gitHistory', () => {
     expect(gitCalls.some((args) => args[6] === 'blame')).toBe(true);
   });
 
+  it('fails the read if a blame process cannot finish', async () => {
+    const directory = await repository([{ subject: 'one', files: { 'a.md': 'line' } }]);
+    onGitChild = (child, args) => {
+      if (args[6] === 'blame') child.kill('SIGKILL');
+    };
+    await expect(read(gitHistory(directory, { blame: true }), { task: 'work', paths: ['a.md'] }))
+      .rejects.toMatchObject({ code: 'failed' });
+  });
+
+  it('blames every named file, including files beyond the first sixty', async () => {
+    const directory = await repository([
+      { subject: 'write first sixty', files: Object.fromEntries(Array.from({ length: 60 }, (_, index) => [`docs/a${index}.md`, 'line'])) },
+      { subject: 'write last file', files: { 'docs/z.md': 'last line' } },
+    ]);
+    const result = await read(gitHistory(directory, { blame: true }), { task: 'work', paths: ['docs'] });
+    if (result.status !== 'read') throw new Error('read failed');
+    expect(result.candidates.find((candidate) => candidate.title === 'write last file')!.signals['live_lines']).toBe(2);
+    expect(gitCalls.filter((args) => args[6] === 'blame')).toHaveLength(61);
+  });
+
+  it('keeps every co-change neighbour after a single shared change', async () => {
+    const files = Object.fromEntries(Array.from({ length: 11 }, (_, index) => [`n${index}.md`, 'first']));
+    const directory = await repository([
+      { subject: 'pair once', files: { 'x.md': 'x', ...files } },
+      { subject: 'last neighbour alone', files: { 'n9.md': 'second' } },
+    ]);
+    const result = await read(gitHistory(directory, { coChange: true }), { task: 'work', paths: ['x.md'] });
+    if (result.status !== 'read') throw new Error('read failed');
+    expect(result.candidates.find((candidate) => candidate.title === 'last neighbour alone')!.signals['co_change']).toBe(1);
+  });
+
+  it('uses the full named-path and neighbour histories for co-change', async () => {
+    const directory = await repository([
+      { subject: 'old shared change', files: { 'x.md': 'x', 'y.md': 'y' } },
+    ]);
+    const base = (await git(directory, ['rev-parse', 'HEAD'])).trim();
+    let input = '';
+    for (const [file, count, label] of [['x.md', 201, 'named'], ['y.md', 301, 'neighbour']] as const) {
+      for (let index = 0; index < count; index++) {
+        const text = `${label} ${index}`;
+        input += `commit refs/heads/main\ncommitter Test <test@example.com> 1700000000 +0000\ndata ${Buffer.byteLength(text)}\n${text}\n`;
+        if (!input.includes('from ')) input += `from ${base}\n`;
+        input += `M 100644 inline ${file}\ndata ${Buffer.byteLength(text)}\n${text}\n\n`;
+      }
+    }
+    execFileSync('git', ['-C', directory, 'fast-import', '--quiet'], { input });
+    const result = await read(gitHistory(directory, { coChange: true }), { task: 'work', paths: ['x.md'] });
+    if (result.status !== 'read') throw new Error('read failed');
+    expect(result.candidates.find((candidate) => candidate.title === 'old shared change')!.signals['co_change']).toBe(1);
+    expect(result.candidates.find((candidate) => candidate.title === 'neighbour 0')!.signals['co_change']).toBe(1);
+  });
+
   it('never opens an excluded file for blame, even when a paths hint names its folder', async () => {
     const directory = await repository([
       { subject: 'add open', files: { 'docs/a.md': 'line one\nline two' } },
