@@ -79,6 +79,9 @@ const source = chat({ paths: ['transcripts'], keyword: { k1: 1.2 } });
 ```
 
 `rankChat(parts, task, keyword)` accepts the same keyword overrides.
+`rrf: false` keeps the full-query keyword score without merging content
+and name rankings. The default is `true`. To use ordinary keyword settings,
+pass `{ k1: 1.2, b: 0.75, stem: false, short: false, stop: 'baseline', nouns: false, rrf: false }`.
 `scrubChat(text)` exports the transcript secret scrubber.
 
 See [core](../core/README.md) for selection, search lines, optional cuts and curation.

@@ -1,4 +1,5 @@
 import type { MemoryCandidate, PickResult } from './pick.js';
+import { classifyTask, type TaskKind } from './task.js';
 
 export interface CuratePrompt {
   readonly instructions: string;
@@ -11,6 +12,10 @@ export interface CurateOptions {
   readonly write: CurateWrite;
   /** Add numbered instances, computed gaps, or latest values under the log. */
   readonly working?: boolean;
+  /** Keep who, where and which item on the same observation. Off by default. */
+  readonly context?: boolean;
+  /** Choose working and advice guidance from task words. Explicit options win. */
+  readonly routeByTask?: boolean;
   /** Gather stated tastes, experiences and constraints for advice tasks. */
   readonly preferenceAdvice?: boolean;
   /** Gather stated changes of taste and exclusions. */
@@ -26,6 +31,8 @@ export interface CurateRecord {
   readonly promptVersion: 'v4';
   readonly weights: 'tiers';
   readonly working: boolean;
+  readonly context?: boolean;
+  readonly taskKinds?: readonly TaskKind[];
   readonly preferenceAdvice?: boolean;
   readonly preferenceChange?: boolean;
   readonly taskDate?: string;
@@ -52,6 +59,8 @@ export interface CurateResult {
 
 const WORKING_HEADING = "Working (the curator's; check it against the log):";
 const NO_WORKING = '- Do not answer the task, do not count, and do not decide whether an observation falls inside a period the task names: give its dates and leave that to the reader.';
+const CONTEXT = '\nKeep every fact with the context that gives it meaning: each observation names who, where and which item, activity or event it concerns. Carry these links from the same session, including its other evidence items, into that line instead of leaving them on another line. Resolve pronouns only when that session states the link. Do not invent a person, place, item or connection. Preserve these links when merging or condensing logs.';
+const COUNT = '\nThis task needs a count or a list. Write every instance across the supplied sessions as its own line, including small ones and ones mentioned in passing. When two items tell the same instance, write it once with both ids; when you are not sure, write both and end the later observation text with "(may be the same as [the earlier date])".';
 
 // Keep the prototype's v4 + tiers wording, except its fixed character cap.
 const INSTRUCTIONS = [
@@ -78,7 +87,7 @@ function checkLog(raw: unknown, working: boolean, ids: readonly string[], prefer
   if (!log) throw new Error('curate: empty log.');
 
   const lines = log.split('\n').map((line) => line.trim()).filter(Boolean);
-  const heading = lines.indexOf(WORKING_HEADING);
+  const heading = lines.findIndex((line) => line.replace(/^#{1,6}\s+/, '') === WORKING_HEADING);
   if (heading !== -1 && (!working || heading === 0 || heading === lines.length - 1)) {
     throw new Error('curate: malformed log; unexpected or empty working section.');
   }
@@ -127,8 +136,10 @@ export async function curate(
   if (contextLimit !== undefined && (!Number.isInteger(contextLimit) || contextLimit <= 0)) {
     throw new TypeError('curate: contextLimit must be a positive integer of characters.');
   }
-  const working = options.working ?? false;
-  const preferenceAdvice = options.preferenceAdvice ?? false;
+  const taskKinds = options.routeByTask ? classifyTask(task) : undefined;
+  const working = options.working ?? (taskKinds?.some((kind) => kind === 'count' || kind === 'date') ?? false);
+  const context = options.context ?? false;
+  const preferenceAdvice = options.preferenceAdvice ?? (taskKinds?.includes('advice') ?? false);
   const preferenceChange = options.preferenceChange ?? false;
   const taskDate = options.taskDate;
   if (taskDate !== undefined && !taskDate.trim()) {
@@ -158,11 +169,13 @@ export async function curate(
 
   const blocks = items.map(({ id, candidate, weight }) =>
     `### ${id} (${candidate.date ? `${candidate.date.value}, ` : ''}${weight}): ${candidate.title}\n\n${candidate.text}`.trim());
-  const instructions = !working ? INSTRUCTIONS : INSTRUCTIONS.replace(NO_WORKING,
+  const instructionsWorking = !working ? INSTRUCTIONS : INSTRUCTIONS.replace(NO_WORKING,
     '- In the log itself, do not judge: give every observation its dates, including ones near the edge of a period the task names.')
     + '\nAfter the log, add a short section headed "Working (the curator\'s; check it against the log):". For a count or a list: number each distinct instance that falls inside the period the task names, with its date and id, then name any instance you left out and why (outside the period, or the same as another). For a question about time or order: the dates involved and the computed difference or order. For something that changed: the latest value and its date. Leave out any part the task does not need.';
+  const instructions = instructionsWorking + (taskKinds?.includes('count') ? COUNT : '');
+  const additions = preferences + (context ? CONTEXT : '');
   const raw = await options.write({
-    instructions: instructions + preferences,
+    instructions: instructions + additions,
     body: `TASK:\n${datedTask}\n\nEVIDENCE:\n\n${blocks.join('\n\n')}`,
   }, signal);
   signal.throwIfAborted();
@@ -181,7 +194,7 @@ export async function curate(
         'Keep observations from items weighted 0.6 or more whole; do not shorten or drop them, even if the log must exceed the budget.',
         'Keep each retained observation\'s event date, said date, full source item ids, and replacement dates. Merge only observations with matching dates and keep all their source ids.',
         'Never truncate text. Return only the dated log and, when requested, working notes checked against the retained observations.',
-      ].join('\n') + preferences,
+      ].join('\n') + additions,
       body: `TASK:\n${datedTask}\n\nITEM WEIGHTS:\n${items.map((item) => `${item.id}: ${item.weight}`).join('\n')}\n\nLOG:\n${log}`,
     }, signal);
     signal.throwIfAborted();
@@ -191,6 +204,8 @@ export async function curate(
     log,
     record: {
       promptVersion: 'v4', weights: 'tiers', working, preferenceAdvice, preferenceChange,
+      ...(options.context === undefined ? {} : { context }),
+      ...(taskKinds === undefined ? {} : { taskKinds }),
       ...(taskDate === undefined ? {} : { taskDate }), items, logLength, condensed,
       ...(condensed ? { condensedLength: log.length } : {}),
       ...(contextLimit === undefined ? {} : { contextLimit }),

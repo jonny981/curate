@@ -291,6 +291,16 @@ describe('chat keyword ranking', () => {
     expect(candidates[0]?.score).toBe(0);
   });
 
+  it('can use the full-query score without merged ranks', () => {
+    const candidates = ['Alice runs beside the river.', 'Alice prefers walking.', 'Bob handles backups.']
+      .map((text, index) => ({ id: String(index), title: '', text, heading: '', name: '', front: '', score: 0 }));
+    rankChat(candidates, 'Where does Alice enjoy running?', { rrf: false });
+    expect(candidates[0]!.score).toBe(3);
+    expect(candidates[1]!.score).toBeGreaterThan(0);
+    expect(candidates[1]!.score).toBeLessThan(3);
+    expect(candidates[2]!.score).toBe(0);
+  });
+
   it('stems word forms and retains short and long tokens', () => {
     const examples = { caresses: 'caress', ponies: 'poni', relational: 'relat', hopping: 'hop', running: 'run', agreed: 'agre', filing: 'file', happy: 'happi', sky: 'sky', triplicate: 'triplic', goodness: 'good', adoption: 'adopt', probate: 'probat', controll: 'control', roll: 'roll', possibly: 'possibl', analogies: 'analog', '401': '401', '4x4s': '4x4', as: 'as' };
     for (const [word, stem] of Object.entries(examples)) expect(porterStem(word)).toBe(stem);
