@@ -5,10 +5,10 @@ Curate selects the memory an agent needs for a task from typed sources. Its RDC 
 ## RDC process
 
 - **Rank:** Order memory candidates by their signals.
-- **Decide:** Ask your decision function which candidates the task needs.
-- **Curate:** Call `curate(task, picked, { write })` to write the dated log the working model reads. There is no fixed length cap. An optional `contextLimit` in characters asks the writer to condense an oversized log once, reducing the weakest signals first and keeping the strongest whole. The record reports both lengths and whether the result still exceeds the limit.
+- **Decide:** Ask your decision function which candidates the task needs. Optional `cascade` combines a fitted set of narrow questions. Selected items are ordered by decision probability, with no fixed size cap. `keepTop` moves selected keyword hits to the front.
+- **Curate:** Call `curate(task, picked, { write })` to write the dated log the working model reads. There is no fixed length cap. An optional `contextLimit` in characters asks the writer to condense an oversized log once, reducing the weakest signals first and keeping the strongest whole. The record reports both lengths and whether the result still exceeds the limit. Optional `working` adds working notes; `preferenceAdvice` and `preferenceChange` gather stated preferences with source ids. `taskDate` supplies the date the task was asked.
 
-[Obversa](https://github.com/jonny981/obversa) uses Curate as its memory.
+Curate started as the memory package inside [Obversa](https://github.com/jonny981/obversa).
 
 ## Install
 

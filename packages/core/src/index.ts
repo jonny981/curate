@@ -7,3 +7,5 @@ export { gitHistory } from './git-history.js';
 export type { GitHistoryOptions } from './git-history.js';
 export { chat } from './chat.js';
 export type { ChatOptions, ChatProvider } from './chat.js';
+export { rankChat } from './chat-rank.js';
+export type { ChatPart } from './chat-rank.js';

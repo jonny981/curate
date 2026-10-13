@@ -35,6 +35,9 @@ export interface MemoryCandidate {
 
 export interface PickQuestion {
   readonly key: string;
+  /** The fitted question's name, when a cascade is supplied. */
+  readonly questionKey?: string;
+  readonly date?: MemoryCandidate['date'];
   readonly role: MemoryCandidateRole;
   readonly question: string;
   readonly trueCriterion: string;
@@ -111,7 +114,24 @@ export type PickRecordEntry = {
   readonly path?: string;
   readonly repository?: string;
   readonly truncated?: boolean;
+  /** Individual fitted answers, before combining them. */
+  readonly questions?: readonly ({ readonly key: string } & PickAnswer)[];
 } & PickEntryStatus;
+
+/** Fitted narrow questions in the prototype's JSON format. */
+export interface PickCascade {
+  readonly bias: number;
+  readonly questions: readonly {
+    readonly key: string;
+    readonly instructions: string;
+    readonly true: string;
+    readonly false: string;
+    readonly weight: number;
+  }[];
+  readonly first?: string;
+  readonly band?: readonly [number, number];
+  readonly firstOnly?: { readonly bias: number; readonly weight: number };
+}
 
 export interface PickRecord {
   readonly questionVersion: string;
@@ -119,6 +139,8 @@ export interface PickRecord {
   readonly thresholds: Required<PickThresholds>;
   readonly candidates: readonly PickRecordEntry[];
   readonly rulesCoverage: 'complete' | 'incomplete';
+  readonly cascade?: PickCascade;
+  readonly keepTop?: number;
 }
 
 export interface PickResult {
@@ -129,6 +151,9 @@ export interface PickResult {
 export interface PickOptions {
   readonly task: string;
   readonly decide: PickDecide;
+  readonly cascade?: PickCascade;
+  /** Put these top ranked hits first if they pass the threshold. */
+  readonly keepTop?: number;
   /** False when a source that can supply rule candidates did not finish
    *  enumerating them; its read returned `complete: false`. The combined
    *  coverage can then never report a complete applicable-rule set, even
@@ -235,7 +260,7 @@ function rankAndInterleave(
   const ordered: MemoryCandidate[] = [];
   for (const group of groups.values()) {
     group.sort((left, right) =>
-      signalScore(right) - signalScore(left) || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
+      signalScore(right) - signalScore(left) || left.id.localeCompare(right.id));
     group.forEach((candidate, rank) => priority.set(candidate, rank));
   }
   let added = true;
@@ -268,10 +293,38 @@ function checkAnswer(raw: unknown): CheckedAnswer {
   return { status: 'error', detail: 'The answer status is not recognised.' };
 }
 
+function checkCascade(cascade: PickCascade | undefined): void {
+  if (cascade === undefined) return;
+  const keys = cascade.questions.map((q) => q.key);
+  if (!Number.isFinite(cascade.bias) || !keys.length || new Set(keys).size !== keys.length
+    || cascade.questions.some((q) => !q.key || !q.instructions || !q.true || !q.false || !Number.isFinite(q.weight))) {
+    throw new TypeError('cascade needs unique questions and finite fitted weights.');
+  }
+  if (cascade.first !== undefined || cascade.band !== undefined || cascade.firstOnly !== undefined) {
+    if (!keys.includes(cascade.first!) || !cascade.band || cascade.band.length !== 2
+      || cascade.band.some((p) => !Number.isFinite(p) || p < 0 || p > 1)
+      || cascade.band[0] > cascade.band[1] || !cascade.firstOnly
+      || !Number.isFinite(cascade.firstOnly.bias) || !Number.isFinite(cascade.firstOnly.weight)) {
+      throw new TypeError('cascade first, band and firstOnly must be supplied together with valid weights.');
+    }
+  }
+}
+
+// Match the prototype: clamp each side separately, and missing answers add nothing.
+function logit(p: number): number {
+  return Math.log(Math.max(p, 1e-4) / Math.max(1 - p, 1e-4));
+}
+
 export async function pick(
   candidates: readonly MemoryCandidate[],
   options: PickOptions,
 ): Promise<PickResult> {
+  checkCascade(options.cascade);
+  const cascade = options.cascade;
+  const keepTop = options.keepTop ?? 0;
+  if (!Number.isSafeInteger(keepTop) || keepTop < 0) {
+    throw new TypeError('keepTop must be a nonnegative safe integer.');
+  }
   const input = options.limits ?? {};
   const limits: ResolvedLimits = {
     maxPerBatch: positiveLimit(input.maxPerBatch, 'maxPerBatch', DEFAULT_MAX_PER_BATCH),
@@ -313,101 +366,115 @@ export async function pick(
   }
   queue.push(...references);
 
-  let asked = 0;
+  const feed = queue.slice(0, limits.maxCandidates);
+  const answered = new Map<MemoryCandidate, Map<string, CheckedAnswer>>();
+  const specsFor = (candidate: MemoryCandidate) => candidate.role === 'reference' && cascade
+    ? cascade.questions.map((q) => ({ key: q.key, question: q.instructions, trueCriterion: q.true, falseCriterion: q.false }))
+    : [{ key: candidate.role, ...PICK_QUESTIONS[candidate.role] }];
+  type Pending = { candidate: MemoryCandidate; spec: ReturnType<typeof specsFor>[number]; question: PickQuestion };
+  const pending = (candidate: MemoryCandidate, spec: ReturnType<typeof specsFor>[number]): Pending => {
+    const shown = takeCharacters(candidate.text, limits.maxQuestionText);
+    const fitted = candidate.role === 'reference' && cascade !== undefined;
+    return { candidate, spec, question: {
+      key: fitted ? JSON.stringify([candidate.sourceId, candidate.id, spec.key]) : questionKey(candidate),
+      ...(fitted ? { questionKey: spec.key } : {}),
+      ...(candidate.date === undefined ? {} : { date: candidate.date }),
+      role: candidate.role, question: spec.question, trueCriterion: spec.trueCriterion,
+      falseCriterion: spec.falseCriterion, sourceId: candidate.sourceId, id: candidate.id,
+      title: candidate.title, text: shown.text,
+    } };
+  };
   let batches = 0;
-  let index = 0;
   let stop: 'limits' | 'time' | 'cancelled' | undefined;
-  while (index < queue.length) {
-    if (signal.aborted) {
-      stop = 'cancelled';
-      break;
-    }
-    if (batches >= limits.maxBatches || asked >= limits.maxCandidates) {
-      stop = 'limits';
-      break;
-    }
-    if (Date.now() - started >= limits.maxElapsedMs) {
-      stop = 'time';
-      break;
-    }
-    const slice = queue.slice(index, index + Math.min(
-      limits.maxPerBatch,
-      limits.maxCandidates - asked,
-    ));
-    const questions: PickQuestion[] = slice.map((candidate) => {
-      const spec = PICK_QUESTIONS[candidate.role];
-      const shown = takeCharacters(candidate.text, limits.maxQuestionText);
-      truncated.set(candidate, shown.truncated);
-      return {
-        key: questionKey(candidate),
-        role: candidate.role,
-        question: spec.question,
-        trueCriterion: spec.trueCriterion,
-        falseCriterion: spec.falseCriterion,
-        sourceId: candidate.sourceId,
-        id: candidate.id,
-        title: candidate.title,
-        text: shown.text,
-      };
-    });
-
-    const deadline = Number.isFinite(limits.maxElapsedMs)
-      ? AbortSignal.timeout(Math.ceil(limits.maxElapsedMs - (Date.now() - started)))
-      : undefined;
-    let answers: Record<string, PickAnswer> | undefined;
-    let decideError: unknown;
-    let timedOut = false;
-    try {
-      const returned: unknown = await Promise.race([
-        options.decide(
-          { task: options.task, questions },
-          deadline === undefined ? signal : AbortSignal.any([signal, deadline]),
-        ),
-        new Promise<typeof TIMED_OUT>((resolve) => {
-          deadline?.addEventListener('abort', () => resolve(TIMED_OUT), { once: true });
-        }),
-      ]);
-      if (returned === TIMED_OUT) timedOut = true;
-      else answers = isRecord(returned) ? returned as Record<string, PickAnswer> : undefined;
-    } catch (error) {
-      timedOut = deadline?.aborted === true;
-      decideError = error;
-    }
-
-    for (const candidate of slice) {
-      const answer = timedOut
-        ? {
-            status: 'error' as const,
-            detail: 'The decide call did not finish before the elapsed limit.',
-          }
-        : decideError !== undefined || answers === undefined
-          ? {
-              status: 'error' as const,
-              detail: decideError instanceof Error ? decideError.message : 'The decide call failed.',
-            }
-          : checkAnswer(answers[questionKey(candidate)]);
-      if (answer.status === 'answered') {
-        const threshold = candidate.role === 'rule' ? thresholds.rule : thresholds.reference;
-        if (answer.probability >= threshold) {
-          selected.push(candidate);
-          statuses.set(candidate, { status: 'selected', asked: true, probability: answer.probability });
-        } else {
-          statuses.set(candidate, { status: 'rejected', probability: answer.probability });
-        }
-      } else {
-        statuses.set(candidate, { status: 'unanswered', answer: answer.status, detail: answer.detail });
+  const ask = async (asks: Pending[]) => {
+    for (let index = 0; index < asks.length; index += limits.maxPerBatch) {
+      if (signal.aborted) { stop = 'cancelled'; break; }
+      if (batches >= limits.maxBatches) { stop = 'limits'; break; }
+      const remaining = limits.maxElapsedMs - (Date.now() - started);
+      if (remaining <= 0) { stop = 'time'; break; }
+      const slice = asks.slice(index, index + limits.maxPerBatch);
+      const questions = slice.map((item) => item.question);
+      const deadline = Number.isFinite(remaining) ? AbortSignal.timeout(Math.ceil(remaining)) : undefined;
+      let answers: Record<string, PickAnswer> | undefined;
+      let decideError: unknown;
+      let timedOut = false;
+      try {
+        const returned: unknown = await Promise.race([
+          options.decide({ task: options.task, questions },
+            deadline === undefined ? signal : AbortSignal.any([signal, deadline])),
+          new Promise<typeof TIMED_OUT>((resolve) => {
+            deadline?.addEventListener('abort', () => resolve(TIMED_OUT), { once: true });
+          }),
+        ]);
+        if (returned === TIMED_OUT) timedOut = true;
+        else answers = isRecord(returned) ? returned as Record<string, PickAnswer> : undefined;
+      } catch (error) {
+        timedOut = deadline?.aborted === true;
+        decideError = error;
       }
+      for (const { candidate, spec, question } of slice) {
+        const answer: CheckedAnswer = timedOut
+          ? { status: 'error', detail: 'The decide call did not finish before the elapsed limit.' }
+          : decideError !== undefined || answers === undefined
+            ? { status: 'error', detail: decideError instanceof Error ? decideError.message : 'The decide call failed.' }
+            : checkAnswer(answers[question.key]);
+        let got = answered.get(candidate);
+        if (!got) { got = new Map(); answered.set(candidate, got); }
+        got.set(spec.key, answer);
+        truncated.set(candidate, takeCharacters(candidate.text, limits.maxQuestionText).truncated);
+      }
+      batches += 1;
+      if (timedOut) { stop = 'time'; break; }
     }
-    asked += slice.length;
-    batches += 1;
-    index += slice.length;
-    if (timedOut) {
-      stop = 'time';
-      break;
-    }
+  };
+  await ask(feed.flatMap((candidate) => specsFor(candidate)
+    .filter((spec) => candidate.role === 'rule' || !cascade?.first || spec.key === cascade.first)
+    .map((spec) => pending(candidate, spec))));
+  if (cascade?.first && !stop) {
+    await ask(feed.flatMap((candidate) => {
+      const first = answered.get(candidate)?.get(cascade.first!);
+      if (candidate.role === 'rule' || first?.status !== 'answered'
+        || first.probability < cascade.band![0] || first.probability > cascade.band![1]) return [];
+      return specsFor(candidate).filter((spec) => spec.key !== cascade.first).map((spec) => pending(candidate, spec));
+    }));
   }
-  for (; index < queue.length; index += 1) {
-    statuses.set(queue[index]!, { status: 'unassessed', reason: stop! });
+  for (const candidate of queue) {
+    const got = answered.get(candidate);
+    if (!got) {
+      statuses.set(candidate, { status: 'unassessed', reason: stop ?? 'limits' });
+      continue;
+    }
+    let answer: CheckedAnswer;
+    if (candidate.role === 'reference' && cascade) {
+      const first = cascade.first === undefined ? undefined : got.get(cascade.first);
+      if (first?.status === 'answered'
+        && (first.probability < cascade.band![0] || first.probability > cascade.band![1])) {
+        answer = { status: 'answered', probability: 1 / (1 + Math.exp(-(cascade.firstOnly!.bias + cascade.firstOnly!.weight * logit(first.probability)))) };
+      } else {
+        // A returned missing answer contributes nothing, as in the prototype.
+        // A question never attempted because a limit stopped us is unassessed.
+        if (stop && cascade.questions.some((q) => !got.has(q.key))
+          && (!cascade.first || first?.status === 'answered')) {
+          statuses.set(candidate, { status: 'unassessed', reason: stop });
+          continue;
+        }
+        const probabilities = cascade.questions.map((q) => got.get(q.key));
+        if (probabilities.some((a) => a?.status === 'answered')) {
+          const z = cascade.bias + cascade.questions.reduce((sum, q, i) => {
+            const a = probabilities[i];
+            return sum + (a?.status === 'answered' ? q.weight * logit(a.probability) : 0);
+          }, 0);
+          answer = { status: 'answered', probability: 1 / (1 + Math.exp(-z)) };
+        } else answer = first ?? got.values().next().value ?? { status: 'missing' };
+      }
+    } else answer = got.values().next().value!;
+    if (answer.status === 'answered') {
+      const threshold = candidate.role === 'rule' ? thresholds.rule : thresholds.reference;
+      if (answer.probability >= threshold) {
+        selected.push(candidate);
+        statuses.set(candidate, { status: 'selected', asked: true, probability: answer.probability });
+      } else statuses.set(candidate, { status: 'rejected', probability: answer.probability });
+    } else statuses.set(candidate, { status: 'unanswered', answer: answer.status, detail: answer.detail });
   }
 
   // The changed-path link, one pass after the threshold pass: a
@@ -441,6 +508,16 @@ export async function pick(
     });
   }
 
+  const top = new Set(feed.filter((candidate) => candidate.role === 'reference').slice(0, keepTop));
+  const feedOrder = new Map(queue.map((candidate, index) => [candidate, index]));
+  const weight = (candidate: MemoryCandidate) => {
+    const status = statuses.get(candidate)!;
+    return status.status === 'selected' ? status.probability ?? 1 : 0;
+  };
+  selected.sort((a, b) => Number(b.role === 'rule') - Number(a.role === 'rule')
+    || Number(top.has(b)) - Number(top.has(a)) || weight(b) - weight(a)
+    || (feedOrder.get(a) ?? -1) - (feedOrder.get(b) ?? -1));
+
   const entries: PickRecordEntry[] = candidates.map((candidate) => {
     const status = statuses.get(candidate)!;
     const wasTruncated = truncated.get(candidate);
@@ -456,6 +533,9 @@ export async function pick(
       ...(candidate.path === undefined ? {} : { path: candidate.path }),
       ...(candidate.repository === undefined ? {} : { repository: candidate.repository }),
       ...(wasTruncated === undefined ? {} : { truncated: wasTruncated }),
+      ...(cascade && candidate.role === 'reference' && answered.has(candidate) ? {
+        questions: cascade.questions.map((q) => ({ key: q.key, ...(answered.get(candidate)!.get(q.key) ?? { status: 'missing' as const }) })),
+      } : {}),
     };
     return status.status === 'unanswered'
       ? { ...base, status: 'unanswered', answer: status.answer, detail: status.detail }
@@ -475,6 +555,8 @@ export async function pick(
       thresholds,
       candidates: entries,
       rulesCoverage,
+      ...(cascade === undefined ? {} : { cascade }),
+      ...(options.keepTop === undefined ? {} : { keepTop }),
     },
   };
 }

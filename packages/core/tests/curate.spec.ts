@@ -48,6 +48,83 @@ function writer(text: string | readonly string[] = LOG): { write: CurateWrite; c
 }
 
 describe('curate', () => {
+
+  it('adds the task date to both writer calls and records it', async () => {
+    const { write, calls } = writer([LONG_LOG, LOG]);
+    const result = await curate('Recall', picked(), { write, taskDate: '2023-05-22', contextLimit: 100 });
+    expect(calls).toHaveLength(2);
+    for (const call of calls) expect(call.body).toMatch(/^TASK:\nRecall \(asked 2023-05-22\)\n/);
+    expect(result.record.taskDate).toBe('2023-05-22');
+  });
+
+  it('keeps the dataset date label exactly as supplied', async () => {
+    const { write, calls } = writer(LOG);
+    const taskDate = '2023/05/30 (Tue) 23:40';
+    await curate('Recall', picked(), { write, taskDate });
+    expect(calls[0]!.body).toMatch(/^TASK:\nRecall \(asked 2023\/05\/30 \(Tue\) 23:40\)\n/);
+  });
+
+  it('accepts source ids before the preference guidance', async () => {
+    const text = LOG + '\nAdvice preferences: Walks (notes#2). Apply these to related requests.';
+    expect((await curate('Recall', picked(), { write: writer(text).write, preferenceAdvice: true })).log).toBe(text);
+  });
+
+  it('checks preference source ids even below the working section', async () => {
+    const text = LOG + "\nWorking (the curator's; check it against the log):\n1. York.\nAdvice preferences: Walks (unknown)";
+    await expect(curate('Recall', picked(), { write: writer(text).write, working: true, preferenceAdvice: true }))
+      .rejects.toThrow('preference lines need text and full source');
+  });
+
+  it.each(['', '  '])('rejects empty task date %j before writing', async (taskDate) => {
+    const { write, calls } = writer();
+    await expect(curate('Recall', picked(), { write, taskDate })).rejects.toThrow('taskDate must be a nonempty');
+    expect(calls).toHaveLength(0);
+  });
+
+  it('adds exact prototype preference instructions after worked notes in both calls', async () => {
+    const base = writer();
+    await curate('Advice', picked(), { write: base.write, working: true });
+    const advice = '\nIf the task asks for advice, suggestions or recommendations (including whether something is a good idea): end the log with one or two short lines starting "Advice preferences:" naming the user\'s stated tastes, relevant experiences and constraints, with source ids. Tell the reader these apply to related requests even when this exact activity was never discussed. Do not invent preferences or confirmed event dates; absent schedules do not prevent suggesting suitable event types and ways to find them. Otherwise add no advice line.';
+    const change = '\nAdd one or two short lines starting "Changed preference:" only when the user states a change of taste or an exclusion relevant to the task. Name what they moved away from, what the user wants instead and any stated exclusions, with source ids. Tell the reader: Do not suggest the old taste for this request to move beyond it. Do not infer a permanent dislike or a change from an assistant suggestion. If no such change or exclusion is stated, add no change line.';
+    const shared = '\nKeep each added kind to one or two short lines. When merging or shortening, combine repeated preference lines and put them at the end.';
+    const preferences = '\nAdvice preferences: Likes history (notes#2)\nChanged preference: Wants quieter trips [notes#2]';
+    const { write, calls } = writer([LONG_LOG + preferences, LOG + preferences]);
+    const result = await curate('Advice', picked(), {
+      write, working: true, preferenceAdvice: true, preferenceChange: true, contextLimit: 200,
+    });
+    expect(calls[0]!.instructions).toBe(base.calls[0]!.instructions + advice + change + shared);
+    expect(calls[1]!.instructions.endsWith(advice + change + shared)).toBe(true);
+    expect(result.log).toBe(LOG + preferences);
+    expect(result.record).toMatchObject({ preferenceAdvice: true, preferenceChange: true });
+  });
+
+  it.each([
+    'Advice preferences: Likes history (unknown)',
+    'Advice preferences: Likes history (notes#2, unknown)',
+    'Advice preferences: Likes history',
+    'Changed preference: Wants quiet trips [unknown]',
+    'Changed preference: (notes#2)',
+  ])('rejects missing or invalid preference sources %j', async (line) => {
+    await expect(curate('Advice', picked(), {
+      write: writer(LOG + '\n' + line).write, preferenceAdvice: true, preferenceChange: true,
+    })).rejects.toThrow('curate: malformed log');
+  });
+
+  it('requires a dated log even when optional preference lines are valid', async () => {
+    await expect(curate('Advice', picked(), {
+      write: writer('Advice preferences: Likes history (notes#2)').write, preferenceAdvice: true,
+    })).rejects.toThrow('at least one dated observation');
+  });
+
+  it('keeps date checks strict with preferences enabled and rejects disabled preference kinds', async () => {
+    await expect(curate('Advice', picked(), {
+      write: writer(LOG.replace('2023-05-13', '2023-02-30')).write, preferenceAdvice: true,
+    })).rejects.toThrow('curate: malformed log');
+    await expect(curate('Advice', picked(), {
+      write: writer(LOG + '\nChanged preference: Wants quiet trips (notes#2)').write, preferenceAdvice: true,
+    })).rejects.toThrow('curate: malformed log');
+  });
+
   it('sends v4 instructions and all three weight tiers in one write call', async () => {
     const { write, calls } = writer();
     const result = await curate('Where did I go?', picked(), { write });

@@ -8,7 +8,7 @@ Curate selects the memory an agent needs for a task from typed sources. Its RDC 
 - **Decide:** Ask your decision function which candidates the task needs.
 - **Curate:** Call `curate(task, picked, { write })` to write the dated log the working model reads.
 
-[Obversa](https://github.com/jonny981/obversa) uses Curate as its memory.
+Curate started as the memory package inside [Obversa](https://github.com/jonny981/obversa).
 
 ## Install
 
@@ -163,6 +163,23 @@ in `link`, and a linked candidate never carries another. The bar is a
 chosen default, not a measured best; `PickThresholds.linkedPathBar`
 overrides it.
 
+`cascade` accepts a fitted question set: `bias` and `questions`, each
+with `key`, `instructions`, `true`, `false`, and `weight`. Curate combines
+the answers with those weights into the decision probability. Optional
+`first`, `band: [low, high]`, and `firstOnly: { bias, weight }` ask one
+question first and use its fitted probability outside the band; inside
+the band, all questions contribute. The record keeps the configuration
+and each question's answer. A missing returned answer contributes nothing
+to the fitted sum; when every answer is missing, the item stays unanswered.
+If a limit stops required questions before they are asked, the item stays
+unassessed.
+
+Selected items are ordered by decision probability, strongest first,
+with ranked order breaking ties. There is no fixed character cap.
+`keepTop: N` marks the first N ranked keyword hits. Those that pass
+the threshold move to the front; rejected items stay rejected. N must be a
+nonnegative safe integer. Both options are off by default.
+
 ## Curating
 
 `curate(task, picked, { write })` accepts the result of `pick` or
@@ -200,8 +217,28 @@ both full ids, and mark later observations that replace earlier ones.
 Selected rules stay in `picked.selected` for the host to pass as exact
 instructions; the curator reads only reference items.
 
+`taskDate: '2023-05-22'` adds ` (asked 2023-05-22)` to the task in
+every writer call. The date label is kept exactly, including any time or weekday.
+
+`preferenceAdvice: true` asks for optional `Advice preferences:` lines
+with the user's stated tastes, relevant experiences and constraints for
+advice tasks. `preferenceChange: true` asks for optional
+`Changed preference:` lines with stated changes of taste or exclusions.
+Both are off by default. Each added line must have text and cite
+full source item ids in parentheses or square brackets, for example:
+
+```text
+Advice preferences: Likes history and quiet walks (trips.md#2)
+Changed preference: Wants quieter trips [trips.md#2]
+```
+
+These lines also count toward `contextLimit`. The same preference
+instructions apply when condensing. Dates and source ids on observation
+lines keep their strict checks when preferences are enabled.
+
 `record` holds `promptVersion: 'v4'`, `weights: 'tiers'`, `working`,
-`items`, `logLength`, `condensed`, and `overContextLimit`.
+`preferenceAdvice`, `preferenceChange`, `items`, `logLength`, `condensed`,
+and `overContextLimit`. It includes `taskDate` when supplied.
 Each item includes its prompt `id`, the full `candidate`, and
 the exact decision `weight` before rounding.
 
