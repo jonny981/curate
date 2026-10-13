@@ -29,9 +29,8 @@ export interface RulesOptions {
 }
 
 export interface KnowledgeBaseOptions extends RulesOptions {
-  /** Characters of candidate text the decision model is shown; the same
-   *  budget pick's `maxQuestionText` carries. A section longer than this
-   *  is offered in parts cut at line ends, so every part is judged. The
+  /** Characters per part. A section longer than this is offered in
+   *  parts cut at line ends, preserving every character for judging. The
    *  read request's own `maxQuestionText`, filled by `pickFromSources`
    *  from the pick limits, tightens the cut further. */
   readonly maxQuestionText?: number;
@@ -44,14 +43,12 @@ const SECTION_BREAK = /\n(?=## )/g;
 const HEADING = /^#{1,6} +(.+)$/m;
 const FIELD = /^([A-Za-z_][\w-]*):\s*(.+?)\s*$/;
 // A note declares it has been replaced through a frontmatter match or a
-// marker in the first characters of its body; a negative signal, not
+// marker in its body; a negative signal, not
 // removal.
 const REPLACED_WORDS = '(superseded|retired|deprecated|obsolete|withdrawn)';
 const REPLACED_FRONTMATTER = new RegExp(`\\b${REPLACED_WORDS}\\b`, 'i');
 const REPLACED_LINE = new RegExp(`^>?\\s*\\**${REPLACED_WORDS}\\b`, 'im');
 const LINK = /\[\[([^\]|#]+)|\]\(([^)#]+\.md)\b[^)]*\)/g;
-/** Characters of a note's body scanned for a replaced marker. */
-const FIRST_CHARACTERS = 400;
 const DATE_FIELDS: ReadonlyArray<readonly [string, 'recorded' | 'effective']> = [
   ['date', 'recorded'],
   ['written', 'recorded'],
@@ -717,7 +714,7 @@ export function knowledgeBase(
         const repoPath = repo === undefined ? undefined
           : repo.prefix === '' ? name : `${repo.prefix}/${name}`;
         const replaced = REPLACED_FRONTMATTER.test(note.frontmatter)
-          || REPLACED_LINE.test(note.body.slice(0, FIRST_CHARACTERS));
+          || REPLACED_LINE.test(note.body);
         const changed = repoPath === undefined ? undefined : lastChanged?.get(repoPath);
         const date = declaredDate(note.fields)
           ?? (changed === undefined ? undefined : { value: changed, meaning: 'changed' as const });

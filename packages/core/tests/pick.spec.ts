@@ -57,8 +57,8 @@ describe('pick', () => {
     const { decide } = stubDecide((batch) => Object.fromEntries(batch.questions.map((q) =>
       [q.key, answered(probabilities[q.id]!)])));
     const picked = await pick(candidates, { task: 'Recall evidence', decide });
-    expect(picked.selected.map((item) => item.id)).toEqual(['applies', 'strong', 'weak', 'zero']);
-    expect(picked.record.thresholds).toEqual({ reference: 0, rule: 0.6, linkedPathBar: 0.4 });
+    expect(picked.selected.map((item) => item.id)).toEqual(['applies', 'does-not-apply', 'strong', 'weak', 'zero']);
+    expect(picked.record.thresholds).toEqual({ reference: 0, rule: 0, linkedPathBar: 0.4 });
     const result = await curate('Recall evidence', picked, { write: async (prompt) => {
       expect(prompt.body).toContain('### weak (0.01): weak');
       expect(prompt.body).toContain('### zero (0): zero');
@@ -88,8 +88,8 @@ describe('pick', () => {
     expect(calls).toHaveLength(1);
     expect(calls[0]!.questions.map((question) => question.id)).toEqual(['high', 'mid', 'low']);
     expect(result.record.questionVersion).toBe(PICK_QUESTION_VERSION);
-    expect(result.record.thresholds).toEqual({ reference: 0.6, rule: 0.6, linkedPathBar: 0.4 });
-    expect(result.record.limits).toEqual({ maxPerBatch: 150, maxQuestionText: 700 });
+    expect(result.record.thresholds).toEqual({ reference: 0.6, rule: 0, linkedPathBar: 0.4 });
+    expect(result.record.limits).toEqual({ maxPerBatch: 150 });
     expect(result.record.candidates.map((entry) => [entry.id, entry.priority])).toEqual([
       ['low', 2],
       ['high', 0],
@@ -307,6 +307,23 @@ describe('pick', () => {
     expect(result.record.rulesCoverage).toBe('complete');
   });
 
+  it('judges full candidate text and every batch by default', async () => {
+    const candidates = Array.from({ length: 751 }, (_, index) => candidate({
+      sourceId: 'notes', id: `item-${index}`, text: 'x'.repeat(701) + `evidence-${index}`,
+    }));
+    const seen = new Map<string, string>();
+    const result = await pick(candidates, { task: 'find evidence', decide: async (batch) => {
+      for (const question of batch.questions) seen.set(question.id, question.text);
+      return Object.fromEntries(batch.questions.map((question) => [question.key,
+        answered(question.text.endsWith(`evidence-${question.id.slice(5)}`) ? 1 : 0)]));
+    } });
+    expect(seen.size).toBe(751);
+    expect(candidates.every((candidate) => seen.get(candidate.id) === candidate.text)).toBe(true);
+    expect(result.selected).toHaveLength(751);
+    expect(result.record.candidates.every((entry) => entry.truncated === false)).toBe(true);
+    expect(result.record.limits).toEqual({ maxPerBatch: 150 });
+  });
+
   it('cuts question text to maxQuestionText and flags the candidate as truncated', async () => {
     const long = candidate({ sourceId: 'notes', id: 'long', text: 'x'.repeat(1000) });
     const short = candidate({ sourceId: 'notes', id: 'short', text: 'tiny' });
@@ -421,7 +438,7 @@ describe('the changed-path link', () => {
     });
     expect(byEntry.get('commit a1b2c3d')).not.toHaveProperty('link');
     expect(byEntry.get('other')).toMatchObject({ status: 'rejected' });
-    expect(result.record.thresholds).toEqual({ reference: 0.6, rule: 0.6, linkedPathBar: 0.4 });
+    expect(result.record.thresholds).toEqual({ reference: 0.6, rule: 0, linkedPathBar: 0.4 });
   });
 
   it('holds the bar exactly: 0.39 does not link, 0.4 does', async () => {
@@ -509,7 +526,7 @@ describe('the changed-path link', () => {
     const { decide } = stubDecide((batch) =>
       byId({ 'commit a1b2c3d': answered(0.9), rule: answered(0.45) })(batch));
 
-    const result = await pick([commit(), rule()], { task: 'fix the ops doc', decide, thresholds: { reference: 0.6 } });
+    const result = await pick([commit(), rule()], { task: 'fix the ops doc', decide, thresholds: { reference: 0.6, rule: 0.6 } });
 
     expect(result.record.candidates.find((entry) => entry.id === 'rule'))
       .toMatchObject({ status: 'rejected', probability: 0.45 });

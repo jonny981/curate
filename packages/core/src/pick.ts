@@ -68,7 +68,9 @@ export type PickDecide = (
 ) => Promise<Record<string, PickAnswer>>;
 
 export interface PickLimits {
+  /** Request size only; every batch is processed unless an explicit stop is set. */
   readonly maxPerBatch?: number;
+  /** Optional stopping dials. Omitted means no limit; skipped items are recorded. */
   readonly maxBatches?: number;
   readonly maxCandidates?: number;
   readonly maxElapsedMs?: number;
@@ -78,6 +80,7 @@ export interface PickLimits {
 export interface PickThresholds {
   /** Keep every scored reference by default; set a bar to filter. */
   readonly reference?: number;
+  /** Keep every scored rule by default; set a bar to filter applicability. */
   readonly rule?: number;
   /** The bar a 'reference' candidate at or above it still clears when a
    *  threshold-selected commit from the same `repository` names its
@@ -195,11 +198,9 @@ export interface PickOptions {
 export const PICK_QUESTION_VERSION = 'memory-pick-questions-1';
 
 const DEFAULT_MAX_PER_BATCH = 150;
-/** Characters of candidate text the decision model is shown by default.
- *  The Markdown readers cut long items to fit the same budget, so every
- *  part reaches the model whole. */
+/** Default reader part size, in characters. Readers preserve every part;
+ *  pick itself shows full candidate text unless a caller supplies a cut. */
 export const DEFAULT_MAX_QUESTION_TEXT = 700;
-const DEFAULT_THRESHOLD = 0.6;
 const DEFAULT_LINKED_PATH_BAR = 0.4;
 const TIMED_OUT = Symbol('timed out');
 
@@ -239,7 +240,7 @@ function positiveLimit(value: number | undefined, name: string, fallback: number
   return value;
 }
 
-function probabilityLimit(value: number | undefined, name: string, fallback = DEFAULT_THRESHOLD): number {
+function probabilityLimit(value: number | undefined, name: string, fallback: number): number {
   if (value === undefined) return fallback;
   if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 1) {
     throw new TypeError(`${name} must be a number between 0 and 1.`);
@@ -382,18 +383,18 @@ export async function pick(
     maxBatches: positiveLimit(input.maxBatches, 'maxBatches', Number.POSITIVE_INFINITY),
     maxCandidates: positiveLimit(input.maxCandidates, 'maxCandidates', Number.POSITIVE_INFINITY),
     maxElapsedMs: positiveLimit(input.maxElapsedMs, 'maxElapsedMs', Number.POSITIVE_INFINITY),
-    maxQuestionText: positiveLimit(input.maxQuestionText, 'maxQuestionText', DEFAULT_MAX_QUESTION_TEXT),
+    maxQuestionText: positiveLimit(input.maxQuestionText, 'maxQuestionText', Number.POSITIVE_INFINITY),
   };
   const recordedLimits: PickLimits = {
     maxPerBatch: limits.maxPerBatch,
-    maxQuestionText: limits.maxQuestionText,
+    ...(input.maxQuestionText !== undefined ? { maxQuestionText: input.maxQuestionText } : {}),
     ...(input.maxBatches !== undefined ? { maxBatches: input.maxBatches } : {}),
     ...(input.maxCandidates !== undefined ? { maxCandidates: input.maxCandidates } : {}),
     ...(input.maxElapsedMs !== undefined ? { maxElapsedMs: input.maxElapsedMs } : {}),
   };
   const thresholds: Required<PickThresholds> = {
     reference: probabilityLimit(options.thresholds?.reference, 'thresholds.reference', 0),
-    rule: probabilityLimit(options.thresholds?.rule, 'thresholds.rule'),
+    rule: probabilityLimit(options.thresholds?.rule, 'thresholds.rule', 0),
     linkedPathBar: probabilityLimit(options.thresholds?.linkedPathBar, 'thresholds.linkedPathBar', DEFAULT_LINKED_PATH_BAR),
   };
   const signal = options.signal ?? new AbortController().signal;
@@ -438,7 +439,9 @@ export async function pick(
   };
   type Pending = { candidate: MemoryCandidate; spec: ReturnType<typeof specsFor>[number]; question: PickQuestion };
   const pending = (candidate: MemoryCandidate, spec: ReturnType<typeof specsFor>[number]): Pending => {
-    const shown = takeCharacters(candidate.text, limits.maxQuestionText);
+    const shown = Number.isFinite(limits.maxQuestionText)
+      ? takeCharacters(candidate.text, limits.maxQuestionText)
+      : { text: candidate.text, truncated: false };
     const fitted = candidate.role === 'reference' && (cascadeFor(candidate) !== undefined || spec.key !== 'reference');
     return { candidate, spec, question: {
       key: fitted ? JSON.stringify([candidate.sourceId, candidate.id, spec.key]) : questionKey(candidate),
@@ -486,7 +489,8 @@ export async function pick(
         let got = answered.get(candidate);
         if (!got) { got = new Map(); answered.set(candidate, got); }
         got.set(spec.key, answer);
-        truncated.set(candidate, takeCharacters(candidate.text, limits.maxQuestionText).truncated);
+        truncated.set(candidate, Number.isFinite(limits.maxQuestionText)
+          && takeCharacters(candidate.text, limits.maxQuestionText).truncated);
       }
       batches += 1;
       if (timedOut) { stop = 'time'; break; }
@@ -582,18 +586,14 @@ export async function pick(
     if (!stop) {
       await evaluate(feed.filter((candidate) => {
         const representative = representatives.get(candidate);
-        if (!representative || representative === candidate) return false;
-        const answer = combined.get(representative);
-        return statuses.get(representative)?.status === 'selected'
-          || [...(answered.get(representative)?.values() ?? [])].some((answer) => answer.status !== 'answered')
-          || answer?.status !== 'answered' || answer.probability >= 0.3;
+        return representative !== undefined && representative !== candidate;
       }));
     }
   } else await evaluate(feed);
   for (const candidate of queue) {
     if (!statuses.has(candidate)) {
       statuses.set(candidate, { status: 'unassessed',
-        reason: stop ?? (eligible.has(candidate) && options.bestPartFirst ? 'document' : 'limits') });
+        reason: stop ?? 'limits' });
     }
   }
 

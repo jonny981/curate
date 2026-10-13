@@ -16,7 +16,8 @@ were absent from that feed; this check measures retention before curation,
 not final answer accuracy.
 
 Set `thresholds.reference` for an optional single cut, for example 0.05.
-Rules keep their separate 0.6 applicability bar. References with no valid
+Rules also keep every scored item; `thresholds.rule` enables an optional
+applicability cut. References with no valid
 decision answer remain unanswered; limits can leave items unassessed. Selection and curation have no fixed total
 character cap.
 

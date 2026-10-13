@@ -111,7 +111,7 @@ answer accuracy. The union comparisons use a budget per search.
 The extra-line gains use keyword search of the hypothetical passage.
 They do not measure vector search. The rank sample uses saved “needed”
 answers, rather than a complete decision feed. The document check uses
-a 0.4 continuation gate; it does not validate the optional 0.3 gate below.
+a 0.4 continuation gate. No continuation gate is used by the package.
 
 ## Picking
 
@@ -131,8 +131,8 @@ const picked = await pick(candidates, {
 });
 ```
 
-Rule applicability keeps its separate default bar of 0.6, adjustable
-through `thresholds.rule`. `applies: always` rules bypass that check.
+Rules also keep every scored item by default. Set `thresholds.rule`
+for an optional applicability cut. `applies: always` rules bypass that check.
 
 `pickFromSources(sources, request, options)` reads the
 sources first, then picks over the combined candidates; a rule source
@@ -236,13 +236,9 @@ their file, and commits remain separate items. Source and revision are
 part of every group identity. Hosts can supply `candidate.documentId`
 for their own parts; candidates without document metadata stay separate.
 
-Curate applies the representative's question set before asking about its
-other fed parts. It continues when that part is selected, scores at least
-0.3, or has a missing, refused or failed answer. With the default reference
-bar of zero, every scored representative continues. When an optional cut
-is enabled, a rejected representative below 0.3 skips the other parts;
-their records say `unassessed` with reason `document`. They are never
-recorded as rejected without a decision.
+Curate applies the representative's question set before asking about all
+its other fed parts. A low score on the first part never skips the rest
+of the document. Optional cuts apply to each part's own decision score.
 
 Each fed reference records its `representative` item id. Batch, candidate,
 time and cancellation limits remain in force. A stopped run reports the
@@ -357,3 +353,25 @@ There is no retry, truncation, or fallback to raw items. Missing selected
 weights and a selection with no reference items fail before `write`.
 Writer failures propagate to the caller. `signal` reaches the writer;
 the host must make its model call honour cancellation.
+
+## Optional evidence limits
+
+The defaults judge every supplied candidate and show its full text.
+Reader parts are 700 characters by default; every part is preserved.
+`DEFAULT_MAX_QUESTION_TEXT` names that reader size, not a decision cut.
+
+| Dial | Default | Cost and loss |
+| --- | --- | --- |
+| **`maxPerBatch`** | 150 questions | Changes request size only; all batches run. |
+| **`maxCandidates`** | Off | Stops at N candidates per search lane. A saved tuning comparison at 100 parts lost 43 of 445 labelled answer-turn starts; 600 retained all 445 in that comparison. This does not prove a safe cut for other data. |
+| **`maxBatches`** | Off | Stops after N requests; every unasked candidate is recorded. With 151 one-question candidates and one 150-question batch, one candidate remains unassessed. Cascades can use multiple requests per candidate. |
+| **`maxElapsedMs`** | Off | Stops questions when the elapsed time is reached. Loss depends on response time; stopped and failed questions remain in the record. |
+| **`maxQuestionText`** | Off | Cuts each decision item to N Unicode characters and records `truncated`. For a 1,000-character item at 700, 300 characters are hidden. Readers can split instead; direct `pick` callers must choose their own cut. |
+| **Source read `limit`** | Off | Chat and Markdown keep ranked candidates; git keeps newest commits before ranking. Readers report partial coverage. A limit of 1 on 2 candidates drops 1. |
+| **`thresholds.reference`** | 0 | A saved 0.6 cut removed every fed fragment of 183 labelled answer turns. A user cut reduces curation input; the default adds no cut loss. |
+| **`thresholds.rule`** | 0 | A user applicability cut omits rules below its probability. Quality loss on labelled rule tasks is unmeasured; the default adds no cut loss. |
+| **`contextLimit`** | Off | Requests a second writer call to condense the complete log. Format checks do not prove fact retention. No quality loss curve has been established; leave off for full retention. |
+
+Unlimited inputs can require more decision requests and model context.
+Reader failures, cancellation, missing answers and model failures still
+need host handling; removing a numerical cut does not prove full recall.

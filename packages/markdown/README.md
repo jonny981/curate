@@ -17,11 +17,10 @@ Node.js 22.12 or later. Git on `PATH` enables revision pins and committed change
 
 `knowledgeBase(dir)` reads a directory of notes: one candidate per
 `## ` section of each `.md` file, all role `reference`. A section longer
-than `maxQuestionText` (700 characters by default, the budget `pick`
-shows the decision model) is offered in parts cut at line ends so every
-part is judged. A note that says it was replaced (`superseded`,
+than `maxQuestionText` (700 characters by default) is offered in parts
+cut at line ends so every part is judged. A note that says it was replaced (`superseded`,
 `retired`, `deprecated`, `obsolete`, `withdrawn` in frontmatter or the
-first 400 characters of its body) keeps its candidates at a negative
+body) keeps its candidates at a negative
 signal: ranked lower, never hidden. A note's declared date (frontmatter `date`, `written`,
 `effective` or `applies-from`) is carried with its meaning. When the
 corpus sits inside a work tree and the note declares none, its last
@@ -56,7 +55,8 @@ Core keeps every scored reference by default, ordered and weighted by
 decision probability. Set `thresholds.reference` for an optional single
 cut, for example 0.05. The curator receives exact scores. Its `tiers`
 instructions ask for less space for low-scored items.
-Rules retain their separate applicability bar. See
+Rules also keep every scored item; set `thresholds.rule` for an optional
+applicability cut. See
 [core's measured reason](../core/README.md#defaults-and-evidence) for the
 saved-decision sweep's answer-turn losses.
 
