@@ -354,3 +354,34 @@ describe('extra searches with built-in readers', () => {
     expect(limited.reads[0]).toMatchObject({ complete: false });
   });
 });
+
+
+describe('phrase searches with built-in readers', () => {
+  it.each(['chat', 'markdown', 'git'] as const)('recovers signed vinyl through the real %s reader', async (kind) => {
+    const directory = await folder();
+    await writeFile(join(directory, 'a.md'), 'Albums albums albums albums on a shelf.');
+    await writeFile(join(directory, 'b.md'), 'I even got my vinyl signed.');
+    const git = (...args: string[]) => execFileSync('git', ['-C', directory, '-c', 'core.hooksPath=/dev/null', ...args], {
+      env: { ...process.env, GIT_AUTHOR_NAME: 'Test', GIT_AUTHOR_EMAIL: 'test@example.invalid',
+        GIT_COMMITTER_NAME: 'Test', GIT_COMMITTER_EMAIL: 'test@example.invalid' }, stdio: 'pipe',
+    });
+    git('init', '-b', 'main');
+    git('add', 'b.md');
+    git('-c', 'commit.gpgsign=false', 'commit', '-m', 'I even got my vinyl signed');
+    git('add', 'a.md');
+    git('-c', 'commit.gpgsign=false', 'commit', '-m', 'Albums albums albums albums on a shelf');
+    await writeFile(join(directory, 'session.jsonl'), ['Albums albums albums albums on a shelf.', 'I even got my vinyl signed.'].map((text) => JSON.stringify({
+      type: 'response_item', timestamp: '2026-01-01T00:00:00Z', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text }] },
+    })).join('\n'));
+    const reader = kind === 'chat' ? chat({ paths: [directory], providers: ['codex'] })
+      : kind === 'markdown' ? knowledgeBase(directory) : gitHistory(directory);
+    const task = 'How many albums did I buy?';
+    const baseline = await pickFromSources([reader], { task }, { task, decide: yes, limits: { maxCandidates: 1 } });
+    const expanded = await pickFromSources([reader], { task, searchPhrases: ['got my'], limit: 1 }, { task, decide: yes, limits: { maxCandidates: 1 } });
+    expect(baseline.selected.some((item) => `${item.title} ${item.text}`.includes('got my vinyl signed'))).toBe(false);
+    expect(expanded.selected.some((item) => `${item.title} ${item.text}`.includes('got my vinyl signed'))).toBe(true);
+    expect(expanded.selected).toHaveLength(2);
+    const excluded = await pickFromSources([reader], { task, searchPhrases: ['got my'], exclude: ['b.md', 'session.jsonl'] }, { task, decide: yes });
+    if (kind !== 'git') expect(excluded.selected.some((item) => `${item.title} ${item.text}`.includes('got my vinyl signed'))).toBe(false);
+  });
+});

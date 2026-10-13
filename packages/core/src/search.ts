@@ -15,3 +15,17 @@ export function stripSearchInstructions(task: string): string {
   }
   return removed ? parts.join('').replace(/[ \t]+/g, ' ').trim() : task;
 }
+
+/** Count whole-word, contiguous phrase occurrences. Punctuation and case
+ *  do not matter; short words and word order do. No stemming is applied. */
+export function phraseCount(text: string, phrase: string): number {
+  const words = (value: string) => value.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
+  const wanted = words(phrase);
+  if (!wanted.length) return 0;
+  const tokens = words(text);
+  let count = 0;
+  for (let index = 0; index <= tokens.length - wanted.length; index++) {
+    if (wanted.every((word, offset) => word === tokens[index + offset])) count++;
+  }
+  return count;
+}
