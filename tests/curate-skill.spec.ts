@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { readSync } from 'node:fs';
 import { copyFile, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
@@ -6,8 +7,10 @@ import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { curate, pickFromSources, type CandidateReadRequest, type CandidateSource, type MemoryCandidate } from '@curatejs/core';
+import { chat } from '@curatejs/chat';
+import { gitHistory } from '@curatejs/git';
 // @ts-expect-error The standalone JavaScript command has no type declarations.
-import { allowedSession, curationEvidence, decisionAnswers, parseArgs, parseSearches, parseSources, searchSource, sessionHeader, snapshotCodex } from '../skills/curate/run.mjs';
+import { allowedSession, curationEvidence, decisionAnswers, pickFullSources, rankMatches, parseArgs, parseSearches, parseSources, searchSource, sessionHeader, snapshotCodex } from '../skills/curate/run.mjs';
 
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
@@ -54,14 +57,14 @@ describe('curate command input', () => {
         { type: 'claude-code', path: 'transcripts' },
         { type: 'git', path: 'repository' },
         { type: 'markdown', path: 'documents' },
-      ], threshold: 0, maxCandidates: 1,
+      ], threshold: 0,
     })).toEqual({
       sources: [
         { type: 'codex', path: resolve('sessions'), allowedCwd: resolve('projects') },
         { type: 'claude-code', path: resolve('transcripts') },
         { type: 'git', path: resolve('repository') },
         { type: 'markdown', path: resolve('documents') },
-      ], threshold: 0, maxCandidates: 1,
+      ], threshold: 0,
     });
   });
 
@@ -80,8 +83,13 @@ describe('curate command input', () => {
     expect(() => parseSources({ sources: [{ type: 'markdown', path: 'documents' }], threshold })).toThrow();
   });
 
-  it.each([0, -1, 1.5, Infinity, Number.MAX_SAFE_INTEGER + 1])('rejects candidate limit %s', (maxCandidates) => {
-    expect(() => parseSources({ sources: [{ type: 'markdown', path: 'documents' }], maxCandidates })).toThrow();
+  it.each(['maxCandidates', 'userMaxCandidates'])('rejects an old feed limit in %s', (key) => {
+    expect(() => parseSources({ sources: [{ type: 'markdown', path: 'documents' }], [key]: 150 })).toThrow('no count limit');
+  });
+
+  it.each(['userFirst', 'recentFirst'])('requires a boolean for %s', (key) => {
+    expect(() => parseSources({ sources: [{ type: 'markdown', path: 'documents' }], [key]: 'true' })).toThrow();
+    expect(parseSources({ sources: [{ type: 'markdown', path: 'documents' }], [key]: false })[key]).toBe(false);
   });
 });
 
@@ -260,6 +268,118 @@ it('keeps the original task and each source register while core interleaves all 
     expect(entry.parts).toBe(2);
     expect(saved.candidates.map((candidate: { signals: { keyword: number } }) => candidate.signals.keyword)).toEqual([1, 0]);
   }
+});
+
+it('sends every matching part to decisions, including short-word corrections below rank 150', async () => {
+  const directory = await folder();
+  const rows = Array.from({ length: 301 }, (_, index) => JSON.stringify({
+    type: index === 300 ? 'user' : 'assistant', sessionId: 'matched', timestamp: '2026-01-01T12:00:00Z',
+    message: { content: index === 300 ? 'We need to keep everything.' : `We described orchard evidence ${index}.` },
+  }));
+  rows.push(JSON.stringify({ type: 'user', sessionId: 'unmatched', timestamp: '2026-01-01T12:00:00Z',
+    message: { content: 'Breakfast pancakes.' } }));
+  await writeFile(join(directory, 'session.jsonl'), rows.join('\n'));
+  const source = chat({ providers: ['claude-code'], paths: [directory] });
+  const searches = { chat: { keywords: ['orchard', 'We asked for orchard'], answers: ['fruit trees', 'planted trees'] } };
+  const asked: string[] = [];
+  const picked = await pickFullSources([searchSource(source, searches, [], directory)], {
+    task: 'We need orchard evidence', searchLines: ['curate-search:0', 'curate-search:1'],
+  }, { task: 'We need orchard evidence', decide: async (batch: { questions: { key: string; text: string }[] }) => {
+    asked.push(...batch.questions.map((question) => question.text));
+    return Object.fromEntries(batch.questions.map((question) => [question.key, { status: 'answered', probability: 0.8 }]));
+  } });
+  expect(asked).toHaveLength(301);
+  expect(asked).toContain('We need to keep everything.');
+  expect((await searchSource(source, searches, [], directory).read({ task: 'We need orchard evidence' })).candidates[0].text)
+    .toBe('We need to keep everything.');
+  expect(asked).not.toContain('Breakfast pancakes.');
+  expect(new Set(asked).size).toBe(301);
+  expect(picked.selected).toHaveLength(301);
+  expect(picked.record.candidates.every((entry: { status: string }) => entry.status === 'selected')).toBe(true);
+  expect(picked.record.limits.maxCandidates).toBeUndefined();
+});
+
+it('sends the full long commit text rather than cutting it at the default part size', async () => {
+  const directory = await folder();
+  const text = 'Orchard evidence. '.repeat(100) + 'Keep the final constraint.';
+  const source: CandidateSource = { id: 'commits', kind: 'git-history', role: 'reference',
+    read: async () => ({ status: 'read', complete: true, candidates: [{
+      sourceId: 'commits', id: 'commit abc', role: 'reference', title: 'Orchard', text, signals: { shared_words: 1 },
+    }] }),
+  };
+  const searches = { 'git-history': { keywords: ['orchard'], answers: ['orchard trees'] } };
+  await pickFullSources([searchSource(source, searches, [], directory)], { task: 'orchard' }, {
+    task: 'orchard', decide: async (batch: { questions: { key: string; text: string }[] }) => {
+      expect(batch.questions[0]?.text).toBe(text);
+      return { [batch.questions[0]!.key]: { status: 'answered', probability: 0.8 } };
+    },
+  });
+});
+
+it('pins later git searches to the first read even when a new commit lands during reading', async () => {
+  const directory = await folder();
+  const git = (...args: string[]) => execFileSync('git', ['-C', directory,
+    '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', '-c', 'core.hooksPath=/dev/null', ...args]);
+  git('init', '--initial-branch=main');
+  await writeFile(join(directory, 'orchard.txt'), 'Trees.');
+  git('add', 'orchard.txt');
+  git('commit', '-m', 'Plant orchard');
+  const original = git('rev-parse', 'HEAD').toString().trim();
+  const source = gitHistory(directory);
+  let first = true;
+  const changingSource: CandidateSource = { ...source, read: async (request) => {
+    const result = await source.read(request);
+    if (first) {
+      first = false;
+      git('commit', '--allow-empty', '-m', 'Add orchard constraint');
+    }
+    return result;
+  } };
+  const searches = { 'git-history': { keywords: ['orchard'], answers: ['orchard constraint'] } };
+  const picked = await pickFullSources([searchSource(changingSource, searches, [], directory)], {
+    task: 'orchard', searchLines: ['curate-search:0', 'curate-search:1'],
+  }, { task: 'orchard', decide: async (batch: { questions: { key: string }[] }) =>
+    Object.fromEntries(batch.questions.map((question) => [question.key, { status: 'answered', probability: 0.8 }])) });
+  expect(git('rev-parse', 'HEAD').toString().trim()).not.toBe(original);
+  expect(picked.selected).toHaveLength(1);
+  expect(picked.selected[0]?.sourceRevision).toBe(original);
+  expect(picked.selected[0]?.title).toBe('Plant orchard');
+  expect(picked.selected[0]?.searchRanks).toEqual([0, 0, 0]);
+});
+
+it('does not admit unrelated items just because recency or inbound links are positive', async () => {
+  const directory = await folder();
+  const source: CandidateSource = { id: 'notes', kind: 'markdown', role: 'reference',
+    read: async () => ({ status: 'read', complete: true, candidates: [{
+      sourceId: 'notes', id: 'unrelated', role: 'reference', title: 'Breakfast', text: 'Pancakes.',
+      signals: { recency: 1, 'inbound-links': 2, bm25: 0 },
+    }] }),
+  };
+  const searches = { markdown: { keywords: ['orchard'], answers: ['trees'] } };
+  expect((await searchSource(source, searches, [], directory).read({ task: 'orchard' })).candidates).toEqual([]);
+});
+
+it('orders user messages first, then keyword score, then newer matching sessions at equal scores', () => {
+  const candidate = (id: string, role: 'user' | 'assistant', sessionId: string, date: string, score: number): MemoryCandidate => ({
+    sourceId: 'chat', id, role: 'reference', title: '', text: '',
+    chat: { provider: 'claude-code', role, sessionId }, date: { value: date, meaning: 'recorded' }, signals: { keyword: score },
+  });
+  const items = [
+    candidate('assistant', 'assistant', 'old', '2026-01-01', 10),
+    candidate('a-old-user', 'user', 'old', '2026-01-01', 0),
+    candidate('z-new-user', 'user', 'new', '2026-01-02', 0),
+    candidate('strong-user', 'user', 'old', '2026-01-01', 1),
+  ];
+  expect(rankMatches(items).map((item: MemoryCandidate) => item.id)).toEqual([
+    'strong-user', 'z-new-user', 'a-old-user', 'assistant',
+  ]);
+  expect(rankMatches(items, { recentFirst: false }).map((item: MemoryCandidate) => item.id)).toEqual([
+    'strong-user', 'a-old-user', 'z-new-user', 'assistant',
+  ]);
+  expect(rankMatches(items, { userFirst: false }).map((item: MemoryCandidate) => item.id)).toEqual([
+    'assistant', 'strong-user', 'z-new-user', 'a-old-user',
+  ]);
+  expect(items.every((item) => !('rankOrder' in item.signals))).toBe(true);
 });
 
 describe('decision answers', () => {

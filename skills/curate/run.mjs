@@ -41,8 +41,11 @@ export function parseSources(value) {
   if (value.threshold !== undefined && (!Number.isFinite(value.threshold) || value.threshold < 0 || value.threshold > 1)) {
     throw new Error('threshold must be between 0 and 1.');
   }
-  if (value.maxCandidates !== undefined && (!Number.isSafeInteger(value.maxCandidates) || value.maxCandidates < 1)) {
-    throw new Error('maxCandidates must be a positive integer per search.');
+  if (value.maxCandidates !== undefined || value.userMaxCandidates !== undefined) {
+    throw new Error('Remove maxCandidates and userMaxCandidates; the decision feed has no count limit.');
+  }
+  for (const key of ['userFirst', 'recentFirst']) {
+    if (value[key] !== undefined && typeof value[key] !== 'boolean') throw new Error(`${key} must be a boolean.`);
   }
   return { ...value, sources };
 }
@@ -159,24 +162,64 @@ async function subscription(prompt, folder, label, record, save) {
   }
 }
 
-// Let core merge and interleave separate searches, while each source receives its own register.
-export function searchSource(source, searches, audit, folder) {
+const words = (text) => text.normalize('NFKC').toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
+
+export function rankMatches(candidates, settings = {}) {
+  const score = (candidate) => Object.values(candidate.signals).reduce((sum, value) => sum + value, 0);
+  const sessions = new Map();
+  for (const candidate of candidates) if (candidate.chat) {
+    const date = Date.parse(candidate.date?.value ?? '') || 0;
+    sessions.set(candidate.chat.sessionId, Math.max(sessions.get(candidate.chat.sessionId) ?? 0, date));
+  }
+  const sorted = [...candidates].sort((a, b) =>
+    (settings.userFirst === false ? 0 : Number(b.chat?.role === 'user') - Number(a.chat?.role === 'user'))
+    || score(b) - score(a)
+    || (settings.recentFirst === false || !a.chat || !b.chat ? 0
+      : sessions.get(b.chat.sessionId) - sessions.get(a.chat.sessionId)
+        || (Date.parse(b.date?.value ?? '') || 0) - (Date.parse(a.date?.value ?? '') || 0))
+    || a.id.localeCompare(b.id));
+  const step = candidates.reduce((maximum, candidate) => Math.max(maximum, Math.abs(score(candidate))), 0) + 1;
+  return sorted.map((candidate, index) => ({ ...candidate,
+    signals: { ...candidate.signals, rankOrder: (sorted.length - index) * step },
+  }));
+}
+
+// Each word can admit evidence; the package's score only orders it.
+export function searchSource(source, searches, audit, folder, settings = {}) {
   const lines = [...searches[source.kind].keywords, ...searches[source.kind].answers];
-  return {
-    ...source,
-    async read(request) {
-      const match = /^curate-search:(\d+)$/.exec(request.task);
-      const task = match ? lines[Number(match[1])] : request.task;
-      if (task === undefined) return { status: 'read', candidates: [], complete: true };
-      const started = Date.now();
-      const result = await source.read({ ...request, task });
-      const file = `read-${audit.length + 1}.json`;
-      audit.push({ source: source.id, task, ms: Date.now() - started, status: result.status,
-        parts: result.candidates?.length ?? 0, complete: result.complete, partial: result.partial, file });
-      await writeFile(join(folder, file), JSON.stringify(result), { mode: 0o600 });
-      return result;
-    },
-  };
+  return { ...source, async read(request) {
+    const match = /^curate-search:(\d+)$/.exec(request.task);
+    const task = match ? lines[Number(match[1])] : request.task;
+    if (task === undefined) return { status: 'read', candidates: [], complete: true };
+    const started = Date.now();
+    const read = await source.read({ ...request, task });
+    const terms = new Set(words(task));
+    const result = read.status !== 'read' ? read : { ...read, candidates: rankMatches(read.candidates.filter((candidate) =>
+      ['keyword', 'shared_words', 'bm25', 'heading-words', 'file-words'].some((key) => candidate.signals[key] > 0)
+      || words(`${candidate.title} ${candidate.text}`).some((word) => terms.has(word))), settings) };
+    const file = `read-${audit.length + 1}.json`;
+    audit.push({ source: source.id, task, ms: Date.now() - started, status: result.status,
+      parts: result.candidates?.length ?? 0, complete: result.complete, partial: result.partial, file });
+    await writeFile(join(folder, file), JSON.stringify(result), { mode: 0o600 });
+    return result;
+  } };
+}
+
+// Read once, then set the text budget from the evidence rather than cutting it.
+export async function pickFullSources(sources, request, options) {
+  let maxQuestionText = 1;
+  const cached = await Promise.all(sources.map(async (source) => {
+    const reads = new Map();
+    let revision = request.revision;
+    for (const task of new Set([request.task, ...(request.searchLines ?? [])])) {
+      const read = await source.read({ ...request, task, ...(revision === undefined ? {} : { revision }) });
+      if (read.status === 'read' && read.revision !== undefined) revision ??= read.revision;
+      reads.set(task, read);
+      for (const candidate of read.candidates ?? []) maxQuestionText = Math.max(maxQuestionText, candidate.text.length);
+    }
+    return { ...source, read: async ({ task }) => reads.get(task) };
+  }));
+  return pickFromSources(cached, request, { ...options, limits: { maxQuestionText } });
 }
 
 export function curationEvidence(picked, collectedDate) {
@@ -274,11 +317,12 @@ export async function run(args = process.argv.slice(2)) {
     };
     const count = Math.max(...kinds.map((kind) => record.searches[kind].keywords.length + record.searches[kind].answers.length));
     const pickStart = Date.now();
-    const picked = await pickFromSources(sources.map((source) => searchSource(source, record.searches, record.reads, folder)),
-      { task: options.task, searchLines: Array.from({ length: count }, (_, i) => `curate-search:${i}`) },
-      { task: options.task, decide, cascadesByKind: { chat: CHAT_CASCADE, 'git-history': GIT_HISTORY_CASCADE, markdown: MARKDOWN_CASCADE },
-        ...(settings.maxCandidates === undefined ? {} : { limits: { maxCandidates: settings.maxCandidates } }),
-        ...(settings.threshold === undefined ? {} : { thresholds: { reference: settings.threshold } }) });
+    const request = { task: options.task, searchLines: Array.from({ length: count }, (_, i) => `curate-search:${i}`) };
+    const pickOptions = { task: options.task, decide,
+      cascadesByKind: { chat: CHAT_CASCADE, 'git-history': GIT_HISTORY_CASCADE, markdown: MARKDOWN_CASCADE },
+      ...(settings.threshold === undefined ? {} : { thresholds: { reference: settings.threshold } }) };
+    const picked = await pickFullSources(sources.map((source) =>
+      searchSource(source, record.searches, record.reads, folder, settings)), request, pickOptions);
     record.pick = picked.record;
     record.sourcesRead = picked.reads.map((read, i) => ({ source: sources[i].id, status: read.status,
       parts: read.candidates?.length ?? 0, complete: read.complete, partial: read.partial, reason: read.reason }));
