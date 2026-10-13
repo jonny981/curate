@@ -1,7 +1,8 @@
 import { MARKDOWN_KEYWORD_SETTINGS, type MarkdownKeywordSettings } from './defaults.js';
 import { hits, taskTerms, tokenize } from '@curatejs/core/internal';
-import { lstat, readdir, readFile, realpath } from 'node:fs/promises';
-import { basename, dirname, join, relative, resolve, sep } from 'node:path';
+import { lstat, readdir, readFile, realpath, stat } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { basename, dirname, join, matchesGlob, relative, resolve, sep } from 'node:path';
 
 import {
   asSourceReadError,
@@ -15,9 +16,10 @@ import {
   runGitBytes,
   type WorkTreeProbe,
 } from '@curatejs/core/internal';
-import { DEFAULT_MAX_QUESTION_TEXT, type MemoryCandidate } from '@curatejs/core';
+import { DEFAULT_MAX_QUESTION_TEXT, type MemoryCandidate, type MemoryKind } from '@curatejs/core';
 import {
   SourceReadError,
+  type CandidateReadContext,
   type CandidateReadRequest,
   type CandidateReadResult,
   type CandidateSource,
@@ -38,10 +40,18 @@ export interface KnowledgeBaseOptions extends RulesOptions {
    *  the corpus sits inside a work tree; defaults to the toplevel. */
   readonly repository?: string;
 }
+export interface MarkdownOptions extends RulesOptions {
+  /** Folders, files, or glob patterns; ~/ resolves against the user's home. */
+  readonly paths: readonly string[];
+  readonly kind: MemoryKind;
+  /** Optional part size; omitted keeps text whole. */
+  readonly maxQuestionText?: number;
+  /** Repository key shared with gitHistory for changed-path links. */
+  readonly repository?: string;
+}
 const FRONTMATTER = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*\r?\n?/;
 const SECTION_BREAK = /\n(?=## )/g;
 const HEADING = /^#{1,6} +(.+)$/m;
-const FIELD = /^([A-Za-z_][\w-]*):\s*(.+?)\s*$/;
 // A note declares it has been replaced through a frontmatter match or a
 // marker in its body; a negative signal, not
 // removal.
@@ -49,8 +59,9 @@ const REPLACED_WORDS = '(superseded|retired|deprecated|obsolete|withdrawn)';
 const REPLACED_FRONTMATTER = new RegExp(`\\b${REPLACED_WORDS}\\b`, 'i');
 const REPLACED_LINE = new RegExp(`^>?\\s*\\**${REPLACED_WORDS}\\b`, 'im');
 const LINK = /\[\[([^\]|#]+)|\]\(([^)#]+\.md)\b[^)]*\)/g;
-const DATE_FIELDS: ReadonlyArray<readonly [string, 'recorded' | 'effective']> = [
+const DATE_FIELDS: ReadonlyArray<readonly [string, 'recorded' | 'effective' | 'changed']> = [
   ['date', 'recorded'],
+  ['updated', 'changed'],
   ['written', 'recorded'],
   ['effective', 'effective'],
   ['applies-from', 'effective'],
@@ -68,6 +79,8 @@ async function walkMarkdown(
   signal: AbortSignal | undefined,
   exclude: ReadonlySet<string>,
   toplevel?: string,
+  select: (file: string) => boolean = () => true,
+  legacy = false,
 ): Promise<Walked> {
   const files: string[] = [];
   let skipped = 0;
@@ -80,21 +93,45 @@ async function walkMarkdown(
       throw new SourceReadError('failed', `Could not list ${directory}: ${message(error)}`);
     }
     entries.sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
+    const ignored = legacy ? new Set<string>()
+      : await ignoredPaths(directory, entries.map((entry) => join(directory, entry.name)), toplevel, signal);
     for (const entry of entries) {
-      if (entry.name.startsWith('.')) continue;
+      if (legacy ? entry.name.startsWith('.') : entry.name === '.git' || entry.name === 'node_modules') continue;
       const path = join(directory, entry.name);
-      if (isExcluded(path, root, exclude, toplevel)) continue;
+      if (ignored.has(path) || isExcluded(path, root, exclude, toplevel)) continue;
       if (entry.isSymbolicLink()) {
         skipped += 1;
       } else if (entry.isDirectory()) {
         await walk(path);
-      } else if (entry.isFile() && entry.name.endsWith('.md')) {
+      } else if (entry.isFile() && (legacy ? entry.name.endsWith('.md') : markdownFile(path)) && select(path)) {
         files.push(path);
       }
     }
   }
   await walk(root);
   return { files, skipped };
+}
+
+function markdownFile(file: string): boolean {
+  return /\.(?:md|mdc|markdown)$/i.test(file) || basename(file) === '.cursorrules';
+}
+
+async function ignoredPaths(
+  directory: string,
+  paths: readonly string[],
+  toplevel: string | undefined,
+  signal: AbortSignal | undefined,
+): Promise<ReadonlySet<string>> {
+  if (toplevel === undefined || paths.length === 0) return new Set();
+  try {
+    const output = await runGit(directory, ['check-ignore', '--no-index', '-z', '--stdin'], {
+      input: `${paths.join('\0')}\0`, signal,
+    });
+    return new Set(output.split('\0').filter(Boolean));
+  } catch (error) {
+    if (error instanceof GitFailure && error.kind === 'exit' && error.code === 1) return new Set();
+    throw asSourceReadError(error);
+  }
 }
 
 function message(error: unknown): string {
@@ -146,9 +183,18 @@ function parseNote(raw: string): Note {
   if (!match) return { fields: new Map(), frontmatter: '', body: raw, bodyOffset: 0 };
   const frontmatter = match[1] ?? '';
   const fields = new Map<string, string>();
+  let listField: string | undefined;
   for (const line of frontmatter.split(/\r?\n/)) {
-    const field = FIELD.exec(line);
-    if (field) fields.set(field[1]!.toLowerCase(), field[2]!.replace(/^(['"])(.*)\1$/, '$2'));
+    const field = /^([A-Za-z_][\w-]*):[ \t]*(.*)$/.exec(line);
+    if (field) {
+      listField = field[1]!.toLowerCase();
+      fields.set(listField, field[2]!.trim().replace(/^(['"])(.*)\1$/, '$2'));
+    } else {
+      const item = /^\s+-\s+(.+)$/.exec(line);
+      if (item && listField !== undefined) {
+        fields.set(listField, `${fields.get(listField) ?? ''}\n${item[1]}`);
+      } else if (line.trim() !== '') listField = undefined;
+    }
   }
   return {
     fields,
@@ -158,8 +204,9 @@ function parseNote(raw: string): Note {
   };
 }
 
-function declaredDate(fields: ReadonlyMap<string, string>): MemoryCandidate['date'] {
+function declaredDate(fields: ReadonlyMap<string, string>, updated = true): MemoryCandidate['date'] {
   for (const [name, meaning] of DATE_FIELDS) {
+    if (name === 'updated' && !updated) continue;
     const value = fields.get(name);
     if (value !== undefined && value !== '') return { value, meaning };
   }
@@ -188,6 +235,117 @@ function sections(body: string, bodyOffset: number): readonly Section[] {
     result.push({ text, startLine, endLine, ...(heading === undefined ? {} : { heading }) });
   }
   return result;
+}
+
+function scopePatterns(value: string): readonly string[] {
+  const scalar = value.trim().replace(/^\[([\s\S]*)\]$/, '$1');
+  // Split commas outside quotes and brace groups (e.g. **/*.{ts,tsx}).
+  const patterns: string[] = [];
+  let start = 0;
+  let quote = '';
+  let braces = 0;
+  for (let index = 0; index <= scalar.length; index += 1) {
+    const char = scalar[index];
+    if (quote !== '') {
+      if (char === quote) quote = '';
+    } else if (char === '"' || char === "'") quote = char;
+    else if (char === '{') braces += 1;
+    else if (char === '}') braces -= 1;
+    else if (index === scalar.length || ((char === ',' || char === '\n') && braces === 0)) {
+      const part = scalar.slice(start, index).trim().replace(/^(['"])(.*)\1$/, '$2');
+      if (part !== '') patterns.push(part);
+      start = index + 1;
+    }
+  }
+  return patterns;
+}
+
+function ruleScope(file: string, note: Note): readonly string[] | undefined {
+  const field = file.endsWith('.mdc') ? note.fields.get('globs')
+    : file.endsWith('.instructions.md') ? note.fields.get('applyto') : undefined;
+  return field === undefined || field.trim() === '' ? undefined : scopePatterns(field);
+}
+
+interface RuleSection extends Section {
+  readonly key: string;
+}
+
+/** Headings and unindented list items start rules; nested lists and code stay whole.
+ * Parent text is repeated so a child keeps the constraints above its heading. */
+function ruleSections(body: string, bodyOffset: number): readonly RuleSection[] {
+  const lines = body.match(/[^\n]*\n|[^\n]+$/g) ?? [];
+  const result: RuleSection[] = [];
+  const parents: { level: number; name: string; text: string }[] = [];
+  let heading: { level: number; name: string } | undefined;
+  let own: string[] = [];
+  let item: string | undefined;
+  let startLine = bodyOffset + 1;
+  let fence: { char: string; length: number } | undefined;
+  const seen = new Map<string, number>();
+  const emit = () => {
+    const text = own.join('');
+    const prose = heading === undefined ? text : text.slice((own[0] ?? '').length);
+    if (prose.trim() === '' && item === undefined) return;
+    const names = [...parents.map((parent) => parent.name),
+      ...(heading === undefined ? [] : [heading.name]), ...(item === undefined ? [] : [item])];
+    const path = names.map(encodeURIComponent).join('/');
+    const count = (seen.get(path) ?? 0) + 1;
+    seen.set(path, count);
+    result.push({
+      text: parents.map((parent) => parent.text).join('') + text,
+      startLine, endLine: startLine + own.length - 1,
+      ...(heading === undefined ? {} : { heading: heading.name }),
+      key: `${path}${count === 1 ? '' : `~${count}`}`,
+    });
+  };
+  for (const [index, line] of lines.entries()) {
+    const marker = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1];
+    if (marker !== undefined) {
+      if (fence === undefined) fence = { char: marker[0]!, length: marker.length };
+      else if (marker[0] === fence.char && marker.length >= fence.length
+        && /^ {0,3}(?:`+|~+)\s*$/.test(line)) fence = undefined;
+      own.push(line);
+      continue;
+    }
+    const nextHeading = fence === undefined ? /^(#{1,6}) +(.+?)(?: +#+)?\s*$/.exec(line) : null;
+    const nextItem = fence === undefined ? /^(?:[-+*]|\d+[.)]) +(.+)/.exec(line) : null;
+    if (nextHeading !== null) {
+      emit();
+      const level = nextHeading[1]!.length;
+      if (heading !== undefined && heading.level < level) {
+        parents.push({ ...heading, text: own.join('') });
+      }
+      while (parents.length > 0 && parents[parents.length - 1]!.level >= level) parents.pop();
+      heading = { level, name: nextHeading[2]!.trim() };
+      item = undefined;
+      own = [line];
+      startLine = bodyOffset + index + 1;
+    } else if (nextItem !== null) {
+      emit();
+      // A heading's introductory text also applies to every list rule below it.
+      if (item === undefined && heading !== undefined) {
+        parents.push({ ...heading, text: own.join('') });
+        heading = undefined;
+      }
+      item = nextItem[1]!.trim();
+      own = [line];
+      startLine = bodyOffset + index + 1;
+    } else own.push(line);
+  }
+  emit();
+  return result;
+}
+
+function instructionLocation(directory: string, paths: readonly string[], root: string): number {
+  let best = 0;
+  for (const path of paths) {
+    const target = resolve(root, path);
+    const within = relative(directory, target);
+    if (within === '..' || within.startsWith(`..${sep}`)) continue;
+    const distance = relative(directory, dirname(target)).split(sep).filter(Boolean).length;
+    best = Math.max(best, 1 / (1 + distance));
+  }
+  return best;
 }
 
 /** Cut text into parts of at most `limit` characters at line ends, so the
@@ -389,7 +547,8 @@ async function existingAnchor(
 /** Resolve the directory, enumerate its Markdown files without opening
  *  content, and refuse a pinned revision a read cannot honour. An
  *  excluded entry is refused here, before its file is ever read.
- *  `snapshots` turns on the git tier: a corpus inside a work tree learns
+ *  The git tier records the repository for every source except the older
+ *  directory rules reader. A corpus inside a work tree learns
  *  its repository, and a pinned `revision` resolves once so every path
  *  and byte comes from the tree that revision names — including a corpus
  *  the working tree no longer holds, found through an existing ancestor.
@@ -400,11 +559,11 @@ async function existingAnchor(
 async function openDirectory(
   directory: string,
   request: CandidateReadRequest,
-  snapshots: boolean,
+  select: (file: string) => boolean,
+  context: CandidateReadContext,
+  legacy?: 'knowledge' | 'rules',
 ): Promise<ReadState | CandidateReadResult> {
-  if (!snapshots && request.revision !== undefined) {
-    return { status: 'absent', reason: PIN_REASON };
-  }
+  if (legacy === 'rules' && request.revision !== undefined) return { status: 'absent', reason: PIN_REASON };
   if (request.signal?.aborted) throw new SourceReadError('cancelled', 'The read was cancelled.');
   let absentReason: string | undefined;
   let root: string | undefined;
@@ -458,7 +617,7 @@ async function openDirectory(
     // names may hold a directory the working tree lost (deleted, moved,
     // replaced by a file). The deepest existing ancestor locates the
     // work tree it belonged to.
-    if (!snapshots || request.revision === undefined) {
+    if (request.revision === undefined) {
       return { status: 'absent', reason: absentReason! };
     }
     const anchor = await existingAnchor(directory);
@@ -474,8 +633,8 @@ async function openDirectory(
     root = anchor.root;
     repo = { toplevel, prefix: relative(toplevel, root).split(sep).join('/') };
   } else {
-    if (!snapshots) {
-      const { files, skipped } = await walkMarkdown(root, request.signal, exclude);
+    if (legacy === 'rules') {
+      const { files, skipped } = await walkMarkdown(root, request.signal, exclude, undefined, select, true);
       return { root, files, skipped };
     }
     let probe: WorkTreeProbe;
@@ -494,14 +653,14 @@ async function openDirectory(
     }
     if (probe.status === 'absent') {
       if (request.revision !== undefined) return { status: 'absent', reason: PIN_REASON };
-      const { files, skipped } = await walkMarkdown(root, request.signal, exclude);
+      const { files, skipped } = await walkMarkdown(root, request.signal, exclude, undefined, select, legacy !== undefined);
       return { root, files, skipped };
     }
     const toplevel = await realpath(probe.toplevel);
     repo = { toplevel, prefix: relative(toplevel, root).split(sep).join('/') };
   }
   if (request.revision === undefined) {
-    const { files, skipped } = await walkMarkdown(root, request.signal, exclude, repo.toplevel);
+    const { files, skipped } = await walkMarkdown(root, request.signal, exclude, repo.toplevel, select, legacy !== undefined);
     return { root, files, skipped, repo };
   }
   try {
@@ -513,18 +672,23 @@ async function openDirectory(
     const wanted: { abs: string; name: string; oid: string }[] = [];
     let skipped = 0;
     for (const entry of tree) {
-      if (!entry.name.endsWith('.md')) continue;
+      if (legacy ? !entry.name.endsWith('.md') : !markdownFile(entry.name)) continue;
       const within = repo.prefix === '' ? entry.name : entry.name.slice(repo.prefix.length + 1);
-      if (within.split('/').some((part) => part.startsWith('.'))) continue;
+      if (legacy ? within.split('/').some((part) => part.startsWith('.'))
+        : entry.name.split('/').some((part) => part === '.git' || part === 'node_modules')) continue;
       const abs = join(root, within);
-      if (isExcluded(abs, root, exclude, repo.toplevel)) continue;
+      if (!select(abs) || isExcluded(abs, root, exclude, repo.toplevel)) continue;
       if (entry.symlink) {
         skipped += 1;
       } else {
         wanted.push({ abs, name: entry.name, oid: entry.oid });
       }
     }
-    const texts = await readBlobs(repo.toplevel, wanted, request.signal);
+    const keys = wanted.map((entry) => `${revision}:${entry.abs}`);
+    const missing = wanted.filter((_, index) => !context.files.has(keys[index]!));
+    const pending = readBlobs(repo.toplevel, missing, request.signal);
+    missing.forEach((entry, index) => context.files.set(`${revision}:${entry.abs}`, pending.then((texts) => texts[index]!)));
+    const texts = await Promise.all(keys.map((key) => context.files.get(key)!));
     return {
       root,
       files: wanted.map((entry) => entry.abs).sort(),
@@ -550,6 +714,7 @@ async function openDirectory(
 async function readTexts(
   state: ReadState,
   signal: AbortSignal | undefined,
+  context: CandidateReadContext,
 ): Promise<ReadonlyMap<string, Note>> {
   const notes = new Map<string, Note>();
   for (const file of state.files) {
@@ -559,7 +724,12 @@ async function readTexts(
       raw = state.pinned.contents.get(file)!;
     } else {
       try {
-        raw = await readFile(file, 'utf8');
+        let pending = context.files.get(`working:${file}`);
+        if (pending === undefined) {
+          pending = readFile(file, 'utf8');
+          context.files.set(`working:${file}`, pending);
+        }
+        raw = await pending;
       } catch (error) {
         throw new SourceReadError('failed', `Could not read ${file}: ${message(error)}`);
       }
@@ -600,204 +770,201 @@ function finish(
   };
 }
 
-/**
- * A knowledge base of Markdown notes: one candidate per `## ` section of
- * each `.md` file, every candidate role 'reference'. A note cannot declare
- * itself a rule; frontmatter `applies` is never honoured here.
- *
- * Signals: BM25 over the task's words against this source's own
- * candidates, words shared with the heading and with the file name and
- * frontmatter, a path the task names appearing in the text, inbound
- * `[[wiki]]` and relative `.md` links from other notes, and a negative
- * signal when the note says it was replaced.
- */
-export function knowledgeBase(
-  directory: string,
-  options: KnowledgeBaseOptions = {},
-): CandidateSource {
-  if (typeof directory !== 'string' || directory.trim() === '') {
-    throw new TypeError('directory must be a non-empty string.');
+/** Markdown from folders, files or glob patterns, classified by the caller. */
+export function markdown(options: MarkdownOptions): CandidateSource {
+  return markdownSource(options);
+}
+
+function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 'rules'): CandidateSource {
+  if (!Array.isArray(options.paths) || options.paths.length === 0
+    || options.paths.some((path) => typeof path !== 'string' || path.trim() === '')) {
+    throw new TypeError('paths must contain non-empty strings.');
   }
-  const maxQuestionText = options.maxQuestionText ?? DEFAULT_MAX_QUESTION_TEXT;
-  if (!Number.isSafeInteger(maxQuestionText) || maxQuestionText < 1) {
+  if (!['knowledge', 'docs', 'rules', 'instructions'].includes(options.kind)) {
+    throw new TypeError('kind must be knowledge, docs, rules or instructions.');
+  }
+  const maxQuestionText = options.maxQuestionText ?? Number.POSITIVE_INFINITY;
+  if (options.maxQuestionText !== undefined && (!Number.isSafeInteger(maxQuestionText) || maxQuestionText < 1)) {
     throw new TypeError('maxQuestionText must be a positive safe integer.');
   }
+  const paths = options.paths.map((path) => resolve(path === '~' ? homedir()
+    : path.startsWith('~/') ? join(homedir(), path.slice(2)) : path));
+  const id = legacy === 'knowledge' ? `knowledge-base:${paths[0]}`
+    : legacy === 'rules' ? `rules:${paths[0]}` : `markdown:${options.kind}:${JSON.stringify(paths)}`;
   const keyword = { ...MARKDOWN_KEYWORD_SETTINGS, ...options.keyword };
-  const resolved = resolve(directory);
+  const role = options.kind === 'rules' || options.kind === 'instructions' ? 'rule' : 'reference';
   return {
-    id: `knowledge-base:${resolved}`,
-    kind: 'markdown',
-    role: 'reference',
-    async read(request) {
-      const state = await openDirectory(resolved, request, true);
-      if ('status' in state) return state;
-      const notes = await readTexts(state, request.signal);
-      const terms = taskTerms(request.task, request.paths ?? [], keyword.stopWords);
-      const paths = request.paths ?? [];
+    id, role, kind: 'markdown',
+    ...(legacy === undefined ? { maxQuestionText: options.maxQuestionText ?? Number.POSITIVE_INFINITY } : {}),
+    async read(request, context = { files: new Map() }) {
       if (request.maxQuestionText !== undefined
         && (!Number.isSafeInteger(request.maxQuestionText) || request.maxQuestionText < 1)) {
         throw new TypeError('maxQuestionText must be a positive safe integer.');
       }
       const partBudget = Math.min(maxQuestionText, request.maxQuestionText ?? maxQuestionText);
-
-      // Inbound links count by the target's full path inside the source,
-      // so two notes that share a file name in different folders stay
-      // distinct and a link between them is not mistaken for a
-      // self-link. A relative `.md` link resolves against the linking
-      // note's folder. A `[[wiki]]` link names a note, not a neighbour:
-      // it resolves by its path from the source root, or by a unique
-      // file of that name anywhere in the source when the root path
-      // matches nothing.
-      const inbound = new Map<string, number>();
-      const notePaths = new Set<string>();
-      const notesByName = new Map<string, string[]>();
-      for (const file of notes.keys()) {
-        const name = relative(state.root, file).split(sep).join('/');
-        notePaths.add(name);
-        const leaf = name.slice(name.lastIndexOf('/') + 1);
-        const same = notesByName.get(leaf);
-        if (same === undefined) notesByName.set(leaf, [name]);
-        else same.push(name);
-      }
-      for (const [file, note] of notes) {
-        const from = relative(state.root, file).split(sep).join('/');
-        for (const match of note.body.matchAll(LINK)) {
-          const raw = (match[1] ?? match[2] ?? '').trim();
-          if (raw === '') continue;
-          let target: string | undefined;
-          if (match[1] === undefined) {
-            target = relative(state.root, resolve(dirname(file), raw)).split(sep).join('/');
-            if (target.startsWith('..')) continue;
-          } else {
-            const linked = raw.endsWith('.md') ? raw : `${raw}.md`;
-            const rooted = relative(state.root, resolve(state.root, linked)).split(sep).join('/');
-            if (notePaths.has(rooted)) {
-              target = rooted;
+      const candidates: MemoryCandidate[] = [];
+      const seen = new Set<string>();
+      const reasons: string[] = [];
+      let skipped = 0;
+      let present = false;
+      let revision: string | undefined;
+      const terms = taskTerms(request.task, request.paths ?? [], keyword.stopWords);
+      for (const path of paths) {
+        const pattern = legacy === undefined && /[*?{}[\]]/.test(path);
+        const prefix = pattern ? path.slice(0, path.search(/[*?{}[\]]/)) : path;
+        let root = pattern ? (prefix.endsWith(sep) ? prefix.slice(0, -1) : dirname(prefix)) : path;
+        let select: (file: string) => boolean = () => true;
+        if (pattern) {
+          const realRoot = await canonicalPath(root);
+          const realPattern = join(realRoot, relative(root, path));
+          select = (file) => matchesGlob(file, realPattern);
+        } else if (legacy === undefined && markdownFile(path)) {
+          try {
+            if (!(await lstat(path)).isDirectory()) root = dirname(path);
+          } catch {
+            root = dirname(path);
+          }
+          if (root !== path) {
+            const realFile = await canonicalPath(path);
+            select = (file) => file === realFile;
+          }
+        }
+        const state = await openDirectory(root, request, select, context, legacy);
+        if ('status' in state) {
+          if (state.status === 'absent') reasons.push(state.reason);
+          continue;
+        }
+        present = true;
+        skipped += state.skipped;
+        revision = state.pinned?.revision;
+        const files = state.files.filter((file) => {
+          if (legacy === 'rules' && basename(file).toLowerCase() === 'readme.md') return false;
+          if (seen.has(file)) return false;
+          seen.add(file);
+          return true;
+        });
+        const notes = await readTexts({ ...state, files }, request.signal, context);
+        // Resolve inbound links by their source-relative path; a wiki link
+        // without a path matches only a unique note name across folders.
+        const inbound = new Map<string, number>();
+        const notePaths = new Set<string>();
+        const notesByName = new Map<string, string[]>();
+        for (const file of notes.keys()) {
+          const name = relative(state.root, file).split(sep).join('/');
+          notePaths.add(name);
+          const leaf = name.slice(name.lastIndexOf('/') + 1);
+          const same = notesByName.get(leaf);
+          if (same === undefined) notesByName.set(leaf, [name]);
+          else same.push(name);
+        }
+        for (const [file, note] of notes) {
+          const from = relative(state.root, file).split(sep).join('/');
+          for (const match of note.body.matchAll(LINK)) {
+            const raw = (match[1] ?? match[2] ?? '').trim();
+            if (raw === '') continue;
+            let target: string | undefined;
+            if (match[1] === undefined) {
+              target = relative(state.root, resolve(dirname(file), raw)).split(sep).join('/');
+              if (target.startsWith('..')) continue;
             } else {
-              const same = notesByName.get(linked.slice(linked.lastIndexOf('/') + 1));
-              target = same?.length === 1 ? same[0] : undefined;
+              const linked = raw.endsWith('.md') ? raw : `${raw}.md`;
+              const rooted = relative(state.root, resolve(state.root, linked)).split(sep).join('/');
+              if (notePaths.has(rooted)) {
+                target = rooted;
+              } else {
+                const same = notesByName.get(linked.slice(linked.lastIndexOf('/') + 1));
+                target = same?.length === 1 ? same[0] : undefined;
+              }
+            }
+            if (target === undefined || target === from) continue;
+            inbound.set(target, (inbound.get(target) ?? 0) + 1);
+          }
+        }
+
+
+        let lastChanged: ReadonlyMap<string, string> = new Map();
+        let repo = state.repo;
+        if (repo !== undefined && (legacy === undefined
+          || [...notes.values()].some((note) => declaredDate(note.fields, legacy === undefined) === undefined))) {
+          try {
+            lastChanged = await logDates(repo.toplevel, repo.prefix, state.pinned?.revision, request.signal);
+          } catch (error) {
+            if (state.pinned !== undefined || isCancel(error)) throw asSourceReadError(error);
+            repo = undefined;
+          }
+        }
+        for (const [file, note] of notes) {
+          if (request.signal?.aborted) throw new SourceReadError('cancelled', 'The read was cancelled.');
+          const name = relative(state.root, file).split(sep).join('/');
+          const repoPath = repo === undefined ? undefined : relative(repo.toplevel, file).split(sep).join('/');
+          const always = role === 'rule' && ((legacy === undefined && note.fields.get('alwaysapply') === 'true')
+            || note.fields.get('applies') === 'always');
+          const scope = legacy === undefined && role === 'rule' ? ruleScope(file, note) : undefined;
+          const taskPaths = (request.paths ?? []).map((path) =>
+            relative(repo?.toplevel ?? state.root, resolve(repo?.toplevel ?? state.root, path)).split(sep).join('/'));
+          if (!always && scope !== undefined && taskPaths.length > 0
+            && !taskPaths.some((path) => scope.some((pattern) => matchesGlob(path, pattern)))) continue;
+          const changed = repoPath === undefined ? undefined : lastChanged.get(repoPath);
+          const date: MemoryCandidate['date'] = legacy !== undefined
+            ? declaredDate(note.fields, legacy === undefined) ?? (changed === undefined ? undefined : { value: changed, meaning: 'changed' })
+            : repo === undefined
+            ? declaredDate(note.fields, legacy === undefined) ?? { value: (await stat(file)).mtime.toISOString(), meaning: 'modified' }
+            : changed === undefined ? undefined : { value: changed, meaning: 'changed' };
+          const replaced = REPLACED_FRONTMATTER.test(note.frontmatter) || REPLACED_LINE.test(note.body);
+          const directory = dirname(file);
+          const location = options.kind === 'instructions'
+            ? instructionLocation(directory, request.paths ?? [], repo?.toplevel ?? state.root) : 0;
+          const items: readonly (Section | RuleSection)[] = legacy === 'rules'
+            ? [{ text: note.body, startLine: note.bodyOffset + 1, endLine: note.bodyOffset + note.body.split('\n').length, key: '' }]
+            : role === 'rule' ? ruleSections(note.body, note.bodyOffset) : sections(note.body, note.bodyOffset);
+          for (const [sectionIndex, section] of items.entries()) {
+            const parts = legacy === 'rules' ? [section.text] : splitParts(section.text, partBudget);
+            const key = 'key' in section ? (section as RuleSection).key : String(sectionIndex + 1);
+            const fileId = legacy === undefined ? file : name;
+            const sectionId = key === '' ? fileId : `${fileId}#${key}`;
+            for (const [partIndex, text] of parts.entries()) {
+              const heading = section.heading ?? basename(file);
+              const signals: Record<string, number> = {};
+              const headingHits = hits(heading, terms);
+              if (legacy !== 'rules' && headingHits > 0) signals['heading-words'] = Math.min(keyword.headingCap, headingHits * keyword.headingWeight);
+              const fileHits = hits(`${name} ${note.frontmatter}`, terms);
+              if (legacy !== 'rules' && fileHits > 0) signals['file-words'] = Math.min(keyword.fileCap, fileHits);
+              if ((request.paths ?? []).some((path) => text.includes(path))) signals['names-path'] = keyword.namedPathWeight;
+              const linked = inbound.get(name) ?? 0;
+              if (legacy !== 'rules' && linked > 0) signals['inbound-links'] = Math.min(keyword.inboundLinkCap, Math.log10(1 + linked));
+              if (legacy !== 'rules' && replaced) signals['replaced'] = keyword.replacedWeight;
+              if (location > 0) signals['instruction-location'] = location;
+              candidates.push({
+                sourceId: id, role, ...(legacy === undefined ? { kind: options.kind } : {}),
+                id: parts.length === 1 ? sectionId : `${sectionId}.${partIndex + 1}`,
+                title: legacy === 'rules' ? name : parts.length === 1 ? `${name}: ${heading}` : `${name}: ${heading} (part ${partIndex + 1})`,
+                text, contentRef: legacy === 'rules' ? name : `${legacy === undefined ? file : name}#L${section.startLine}-L${section.endLine}`,
+                ...(date === undefined ? {} : { date }),
+                ...(repoPath === undefined ? {} : { path: repoPath, repository: options.repository ?? repo!.toplevel }),
+                ...(options.kind === 'instructions' ? { directory } : {}),
+                ...(always ? { applies: 'always' as const } : {}), signals,
+              });
             }
           }
-          if (target === undefined || target === from) continue;
-          inbound.set(target, (inbound.get(target) ?? 0) + 1);
         }
       }
-
-      // The second date tier: a corpus inside a work tree reads each
-      // undated note's last-change commit date in one log pass, labelled
-      // 'changed'. A declared frontmatter date still wins, and outside a
-      // repository the tier is skipped so notes carry what the walk gave.
-      // The tier is extra on an unpinned read: a log pass that fails
-      // (other than a cancel) drops the tier rather than the read —
-      // dates, path and repository go with it. A pinned read still
-      // throws: its dates cannot be honoured without the pass.
-      let repo = state.repo;
-      let lastChanged: ReadonlyMap<string, string> | undefined;
-      if (repo !== undefined
-        && [...notes.values()].some((note) => declaredDate(note.fields) === undefined)) {
-        try {
-          lastChanged = await logDates(
-            repo.toplevel, repo.prefix, state.pinned?.revision, request.signal,
-          );
-        } catch (error) {
-          if (state.pinned !== undefined || isCancel(error)) {
-            throw asSourceReadError(error);
-          }
-          repo = undefined;
-        }
-      }
-
-      const candidates: MemoryCandidate[] = [];
-      for (const [file, note] of notes) {
-        if (request.signal?.aborted) throw new SourceReadError('cancelled', 'The read was cancelled.');
-        const name = relative(state.root, file).split(sep).join('/');
-        const repoPath = repo === undefined ? undefined
-          : repo.prefix === '' ? name : `${repo.prefix}/${name}`;
-        const replaced = REPLACED_FRONTMATTER.test(note.frontmatter)
-          || REPLACED_LINE.test(note.body);
-        const changed = repoPath === undefined ? undefined : lastChanged?.get(repoPath);
-        const date = declaredDate(note.fields)
-          ?? (changed === undefined ? undefined : { value: changed, meaning: 'changed' as const });
-        for (const [sectionIndex, section] of sections(note.body, note.bodyOffset).entries()) {
-          const parts = splitParts(section.text, partBudget);
-          for (const [partIndex, text] of parts.entries()) {
-            const heading = section.heading ?? basename(file);
-            const signals: Record<string, number> = {};
-            const headingHits = hits(heading, terms);
-            if (headingHits > 0) signals['heading-words'] = Math.min(keyword.headingCap, headingHits * keyword.headingWeight);
-            const fileHits = hits(`${name} ${note.frontmatter}`, terms);
-            if (fileHits > 0) signals['file-words'] = Math.min(keyword.fileCap, fileHits);
-            if (paths.some((path) => text.includes(path))) signals['names-path'] = keyword.namedPathWeight;
-            const linked = inbound.get(name) ?? 0;
-            if (linked > 0) signals['inbound-links'] = Math.min(keyword.inboundLinkCap, Math.log10(1 + linked));
-            if (replaced) signals['replaced'] = keyword.replacedWeight;
-            candidates.push({
-              sourceId: `knowledge-base:${resolved}`,
-              role: 'reference',
-              id: parts.length === 1 ? `${name}#${sectionIndex + 1}` : `${name}#${sectionIndex + 1}.${partIndex + 1}`,
-              title: parts.length === 1 ? `${name}: ${heading}` : `${name}: ${heading} (part ${partIndex + 1})`,
-              text,
-              contentRef: `${name}#L${section.startLine}-L${section.endLine}`,
-              ...(date === undefined ? {} : { date }),
-              ...(repoPath === undefined ? {} : {
-                path: repoPath,
-                repository: options.repository ?? repo!.toplevel,
-              }),
-              signals,
-            });
-          }
-        }
-      }
-
-      return finish(request, withBm25(candidates, terms, keyword), state.skipped, state.pinned?.revision);
+      if (!present) return { status: 'absent', reason: reasons.join('; ') };
+      const result = finish(request, withBm25(candidates, terms, keyword), skipped, revision);
+      if (result.status !== 'read' || reasons.length === 0) return result;
+      return { ...result, complete: false, partial: [...reasons, ...(result.partial === undefined ? [] : [result.partial])].join('; ') };
     },
   };
 }
 
-/**
- * A folder of workflow rules: one candidate per `.md` file, every
- * candidate role 'rule', the folder's `README.md` excluded. Frontmatter
- * `applies: always` is carried onto the candidate so pick selects the
- * rule without asking. This is the only source that emits role 'rule'.
- */
+/** Directory notes with the original section ids, date precedence, and part size. */
+export function knowledgeBase(directory: string, options: KnowledgeBaseOptions = {}): CandidateSource {
+  if (typeof directory !== 'string' || directory.trim() === '') throw new TypeError('directory must be a non-empty string.');
+  return markdownSource({ ...options, paths: [directory], kind: 'knowledge',
+    maxQuestionText: options.maxQuestionText ?? DEFAULT_MAX_QUESTION_TEXT }, 'knowledge');
+}
+
+/** Directory rules with the original file ids and README exclusion. */
 export function rules(directory: string, options: RulesOptions = {}): CandidateSource {
-  if (typeof directory !== 'string' || directory.trim() === '') {
-    throw new TypeError('directory must be a non-empty string.');
-  }
-  const keyword = { ...MARKDOWN_KEYWORD_SETTINGS, ...options.keyword };
-  const resolved = resolve(directory);
-  return {
-    id: `rules:${resolved}`,
-    kind: 'markdown',
-    role: 'rule',
-    async read(request) {
-      const state = await openDirectory(resolved, request, false);
-      if ('status' in state) return state;
-      const files = state.files.filter((file) => basename(file).toLowerCase() !== 'readme.md');
-      const notes = await readTexts({ ...state, files }, request.signal);
-      const terms = taskTerms(request.task, request.paths ?? [], keyword.stopWords);
-      const paths = request.paths ?? [];
-
-      const candidates: MemoryCandidate[] = [];
-      for (const [file, note] of notes) {
-        const name = relative(state.root, file).split(sep).join('/');
-        const signals: Record<string, number> = {};
-        if (paths.some((path) => note.body.includes(path))) signals['names-path'] = keyword.namedPathWeight;
-        const date = declaredDate(note.fields);
-        candidates.push({
-          sourceId: `rules:${resolved}`,
-          role: 'rule',
-          id: name,
-          title: name,
-          text: note.body,
-          contentRef: name,
-          ...(note.fields.get('applies') === 'always' ? { applies: 'always' as const } : {}),
-          ...(date === undefined ? {} : { date }),
-          signals,
-        });
-      }
-
-      return finish(request, withBm25(candidates, terms, keyword), state.skipped);
-    },
-  };
+  if (typeof directory !== 'string' || directory.trim() === '') throw new TypeError('directory must be a non-empty string.');
+  return markdownSource({ ...options, paths: [directory], kind: 'rules' }, 'rules');
 }

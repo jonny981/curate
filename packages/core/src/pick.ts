@@ -1,10 +1,12 @@
 export type MemoryCandidateRole = 'reference' | 'rule';
+export type MemoryKind = 'knowledge' | 'docs' | 'rules' | 'instructions';
 export type CandidateSourceKind = 'chat' | 'git-history' | 'markdown';
 
 export interface MemoryCandidate {
   readonly sourceId: string;
   readonly sourceRevision?: string;
   readonly role: MemoryCandidateRole;
+  readonly kind?: MemoryKind;
   readonly id: string;
   readonly title: string;
   readonly text: string;
@@ -30,9 +32,11 @@ export interface MemoryCandidate {
    *  toplevel, or a caller-supplied key). Candidates with different
    *  values, or where either side declares none, never link. */
   readonly repository?: string;
+  /** Absolute directory of an instruction file. */
+  readonly directory?: string;
   readonly date?: {
     readonly value: string;
-    readonly meaning: 'changed' | 'effective' | 'recorded';
+    readonly meaning: 'changed' | 'effective' | 'recorded' | 'modified';
   };
   readonly signals: Readonly<Record<string, number>>;
   readonly applies?: 'always';
@@ -44,6 +48,7 @@ export interface PickQuestion {
   readonly questionKey?: string;
   readonly date?: MemoryCandidate['date'];
   readonly role: MemoryCandidateRole;
+  readonly kind?: MemoryKind;
   readonly question: string;
   readonly trueCriterion: string;
   readonly falseCriterion: string;
@@ -114,6 +119,7 @@ export type PickRecordEntry = {
   readonly sourceRevision?: string;
   readonly id: string;
   readonly role: MemoryCandidateRole;
+  readonly kind?: MemoryKind;
   readonly priority: number;
   readonly searchRanks?: readonly (number | null)[];
   /** Final ordering score; the decision probability remains separate. */
@@ -151,6 +157,7 @@ export interface PickCascade {
 }
 
 export interface PickRecord {
+  readonly ranking?: PickOptions['ranking'];
   readonly questionVersion: string;
   readonly limits: PickLimits;
   readonly thresholds: Required<PickThresholds>;
@@ -172,6 +179,8 @@ export interface PickResult {
 }
 
 export interface PickOptions {
+  /** Signal weights by Markdown kind; omitted weights remain 1. */
+  readonly ranking?: Partial<Record<MemoryKind, Readonly<Record<string, number>>>>;
   readonly task: string;
   readonly decide: PickDecide;
   readonly cascade?: PickCascade;
@@ -217,6 +226,25 @@ const PICK_QUESTIONS: Record<
     question: 'Does this rule apply to this task?',
     trueCriterion: 'The rule governs this task, so the work must follow it.',
     falseCriterion: 'The rule does not govern this task.',
+  },
+};
+
+const KIND_QUESTIONS: Record<MemoryKind, typeof PICK_QUESTIONS.reference> = {
+  knowledge: {
+    question: 'Does this knowledge supply useful facts or decisions for this task?',
+    trueCriterion: 'The knowledge gives facts or decisions that help with this task.',
+    falseCriterion: 'The knowledge does not help with this task.',
+  },
+  docs: {
+    question: 'Does this documentation explain how to complete this task?',
+    trueCriterion: 'The documentation gives steps or details needed for this task.',
+    falseCriterion: 'The documentation does not help complete this task.',
+  },
+  rules: PICK_QUESTIONS.rule,
+  instructions: {
+    question: 'Do these instructions govern work on the files named by this task?',
+    trueCriterion: 'The instructions govern this work and must be followed.',
+    falseCriterion: 'The instructions do not govern this work.',
   },
 };
 
@@ -270,9 +298,10 @@ function questionKey(candidate: MemoryCandidate): string {
   return JSON.stringify([candidate.sourceId, candidate.id]);
 }
 
-function signalScore(candidate: MemoryCandidate): number {
+function signalScore(candidate: MemoryCandidate, ranking: PickOptions['ranking']): number {
   let sum = 0;
-  for (const value of Object.values(candidate.signals)) sum += value;
+  const weights = candidate.kind === undefined ? undefined : ranking?.[candidate.kind];
+  for (const [name, value] of Object.entries(candidate.signals)) sum += value * (weights?.[name] ?? 1);
   return sum;
 }
 
@@ -280,6 +309,7 @@ function rankAndInterleave(
   pool: readonly MemoryCandidate[],
   priority: Map<MemoryCandidate, number>,
   lane?: number,
+  ranking?: PickOptions['ranking'],
 ): MemoryCandidate[] {
   const groups = new Map<string, MemoryCandidate[]>();
   for (const candidate of pool) {
@@ -296,7 +326,7 @@ function rankAndInterleave(
         : candidate.searchRanks[lane] ?? Number.POSITIVE_INFINITY;
     group.sort((left, right) => {
       const a = rankOf(left), b = rankOf(right);
-      return (a === undefined && b === undefined ? signalScore(right) - signalScore(left)
+      return (a === undefined && b === undefined ? signalScore(right, ranking) - signalScore(left, ranking)
         : (a ?? Number.POSITIVE_INFINITY) - (b ?? Number.POSITIVE_INFINITY))
         || left.id.localeCompare(right.id);
     });
@@ -358,6 +388,11 @@ export async function pick(
   candidates: readonly MemoryCandidate[],
   options: PickOptions,
 ): Promise<PickResult> {
+  for (const weights of Object.values(options.ranking ?? {})) {
+    if (Object.values(weights).some((weight) => !Number.isFinite(weight))) {
+      throw new TypeError('ranking weights must be finite numbers.');
+    }
+  }
   for (const candidate of candidates) {
     const ranks = candidate.searchRanks;
     if (ranks !== undefined && (!ranks.some((rank) => rank !== null)
@@ -401,8 +436,8 @@ export async function pick(
   const started = Date.now();
 
   const priority = new Map<MemoryCandidate, number>();
-  const rules = rankAndInterleave(candidates.filter((c) => c.role === 'rule'), priority);
-  const references = rankAndInterleave(candidates.filter((c) => c.role === 'reference'), priority);
+  const rules = rankAndInterleave(candidates.filter((c) => c.role === 'rule'), priority, undefined, options.ranking);
+  const references = rankAndInterleave(candidates.filter((c) => c.role === 'reference'), priority, undefined, options.ranking);
 
   const selected: MemoryCandidate[] = [];
   const statuses = new Map<MemoryCandidate, PickEntryStatus>();
@@ -424,8 +459,8 @@ export async function pick(
     const present = (candidate: MemoryCandidate) => candidate.searchRanks === undefined
       || candidate.searchRanks[lane] != null;
     const laneQueue = lanes === 1 ? queue : [
-      ...rankAndInterleave(rules.filter((c) => c.applies !== 'always' && present(c)), new Map(), lane),
-      ...rankAndInterleave(references.filter(present), new Map(), lane),
+      ...rankAndInterleave(rules.filter((c) => c.applies !== 'always' && present(c)), new Map(), lane, options.ranking),
+      ...rankAndInterleave(references.filter(present), new Map(), lane, options.ranking),
     ];
     for (const candidate of laneQueue.slice(0, limits.maxCandidates)) eligible.add(candidate);
   }
@@ -435,7 +470,8 @@ export async function pick(
     const cascade = cascadeFor(candidate);
     return candidate.role === 'reference' && cascade
       ? cascade.questions.map((q) => ({ key: q.key, question: q.instructions, trueCriterion: q.true, falseCriterion: q.false }))
-      : [{ key: candidate.role, ...PICK_QUESTIONS[candidate.role] }];
+      : [{ key: candidate.role, ...(candidate.kind === undefined || (candidate.role === 'rule' && candidate.kind !== 'instructions')
+        ? PICK_QUESTIONS[candidate.role] : KIND_QUESTIONS[candidate.kind]) }];
   };
   type Pending = { candidate: MemoryCandidate; spec: ReturnType<typeof specsFor>[number]; question: PickQuestion };
   const pending = (candidate: MemoryCandidate, spec: ReturnType<typeof specsFor>[number]): Pending => {
@@ -447,6 +483,7 @@ export async function pick(
       key: fitted ? JSON.stringify([candidate.sourceId, candidate.id, spec.key]) : questionKey(candidate),
       ...(fitted ? { questionKey: spec.key } : {}),
       ...(candidate.date === undefined ? {} : { date: candidate.date }),
+      ...(candidate.kind === undefined ? {} : { kind: candidate.kind }),
       role: candidate.role, question: spec.question, trueCriterion: spec.trueCriterion,
       falseCriterion: spec.falseCriterion, sourceId: candidate.sourceId, id: candidate.id,
       title: candidate.title, text: shown.text,
@@ -651,6 +688,7 @@ export async function pick(
       sourceRevision: candidate.sourceRevision,
       id: candidate.id,
       role: candidate.role,
+      ...(candidate.kind === undefined ? {} : { kind: candidate.kind }),
       priority: priority.get(candidate)!,
       signals: candidate.signals,
       ...(candidate.searchRanks === undefined ? {} : { searchRanks: candidate.searchRanks }),
@@ -680,9 +718,11 @@ export async function pick(
   return {
     selected,
     record: {
-      questionVersion: PICK_QUESTION_VERSION,
+      questionVersion: candidates.some((candidate) => candidate.kind !== undefined)
+        ? 'memory-pick-questions-2' : PICK_QUESTION_VERSION,
       limits: recordedLimits,
       thresholds,
+      ...(options.ranking === undefined ? {} : { ranking: options.ranking }),
       candidates: entries,
       rulesCoverage,
       ...(options.cascade === undefined ? {} : { cascade: options.cascade }),

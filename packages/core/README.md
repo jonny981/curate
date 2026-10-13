@@ -285,6 +285,27 @@ time and cancellation limits remain in force. A stopped run reports the
 stop reason for unasked parts. Rules are asked independently. Omit the
 option or pass `false` to judge the whole feed as usual.
 
+### Markdown candidate kinds
+
+The Markdown package's `markdown({ paths, kind })` source adds a candidate
+`kind`: `knowledge`, `docs`, `rules`, or `instructions`. This is separate from
+source kind `markdown`, which selects a fitted cascade through `cascadesByKind`.
+Without a cascade, core asks the candidate-kind question. Host candidates with
+role `rule` retain rule questions; instruction candidates use the instruction
+question. Decision questions and records keep the candidate kind.
+
+`ranking: { docs: { bm25: 2 } }` weights signals by Markdown kind before the
+candidate feed is chosen when candidates have no search ranks. Search ranks
+retain their lane order. Omitted signal weights are 1. Weights must be finite;
+negative weights are allowed. The record includes `ranking` when supplied.
+Selection retains the score-order and keep-all defaults.
+
+Sources can declare `maxQuestionText` as their preferred reader part size.
+Infinity requests whole items by default. Explicit pick and read text budgets
+take precedence. The Markdown source uses this to keep whole text; existing
+readers retain their part sizes. A shared `CandidateReadContext` passes file
+bytes between overlapping reads within one `pickFromSources` call.
+
 ## Curating
 
 `curate(task, picked, { write })` accepts the result of `pick` or

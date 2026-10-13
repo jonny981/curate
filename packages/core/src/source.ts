@@ -63,6 +63,11 @@ export type CandidateReadResult =
       readonly reason: string;
     };
 
+export interface CandidateReadContext {
+  /** File bytes shared within one pick, never across tasks. */
+  readonly files: Map<string, Promise<string>>;
+}
+
 export interface CandidateSource {
   /** Stable identity, recorded on every candidate and in PickRecord. */
   readonly id: string;
@@ -71,7 +76,9 @@ export interface CandidateSource {
   /** 'reference' | 'rule' | 'mixed'; declared so the caller knows
    *  whether this source can feed the applicable-rule set. */
   readonly role: 'reference' | 'rule' | 'mixed';
-  read(request: CandidateReadRequest): Promise<CandidateReadResult>;
+  /** Reader part size; Infinity requests whole items by default. */
+  readonly maxQuestionText?: number;
+  read(request: CandidateReadRequest, context?: CandidateReadContext): Promise<CandidateReadResult>;
 }
 
 /** A real read failure: permission denied, corrupt store, killed
@@ -117,9 +124,10 @@ function searchTasks(request: CandidateReadRequest): { task: string; phrase: boo
 async function readSearches(
   source: CandidateSource,
   request: CandidateReadRequest,
+  context: CandidateReadContext,
 ): Promise<CandidateReadResult> {
   const tasks = searchTasks(request);
-  if (tasks.length === 1) return source.read({ ...request, task: tasks[0]!.task });
+  if (tasks.length === 1) return source.read({ ...request, task: tasks[0]!.task }, context);
 
   const union = new Map<string, { candidate: MemoryCandidate; ranks: (number | null)[]; best: number }>();
   const reasons = new Set<string>();
@@ -132,7 +140,7 @@ async function readSearches(
     // Phrase filtering must precede the per-read limit.
     let read = await source.read({ ...request, task,
       ...(phrase ? { limit: undefined } : {}),
-      ...(revision === undefined ? {} : { revision }) });
+      ...(revision === undefined ? {} : { revision }) }, context);
     if (phrase && read.status === 'read') {
       const matches = read.candidates.map((candidate) => ({ candidate, count: phraseCount(candidate.text, task) + phraseCount(candidate.title, task) }))
         .filter(({ count }) => count > 0)
@@ -214,10 +222,12 @@ export async function pickFromSources(
   request: CandidateReadRequest,
   options: PickOptions,
 ): Promise<PickSourcesResult> {
+  const context: CandidateReadContext = { files: new Map() };
   const reads = await Promise.all(sources.map((source) => readSearches(source, {
     ...request,
-    maxQuestionText: options.limits?.maxQuestionText ?? DEFAULT_MAX_QUESTION_TEXT,
-  })));
+    maxQuestionText: options.limits?.maxQuestionText ?? request.maxQuestionText
+      ?? (source.maxQuestionText === Number.POSITIVE_INFINITY ? undefined : source.maxQuestionText ?? DEFAULT_MAX_QUESTION_TEXT),
+  }, context)));
   const candidates: MemoryCandidate[] = [];
   const sourceKinds: Record<string, CandidateSourceKind> = Object.assign(Object.create(null), options.sourceKinds);
   let rulesEnumerationComplete = options.rulesEnumerationComplete !== false;

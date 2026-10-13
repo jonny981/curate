@@ -27,7 +27,7 @@ import { pick, pickFromSources, curate, SourceReadError } from '@curatejs/core';
 import { asSourceReadError } from '@curatejs/core/internal';
 import { chat, CHAT_CASCADE, CHAT_KEYWORD_SETTINGS, CHAT_SEARCH_LINE_REGISTER } from '@curatejs/chat';
 import { gitHistory, GIT_HISTORY_CASCADE, GIT_KEYWORD_SETTINGS, GIT_SEARCH_LINE_REGISTER } from '@curatejs/git';
-import { knowledgeBase, rules, MARKDOWN_CASCADE, MARKDOWN_KEYWORD_SETTINGS, MARKDOWN_SEARCH_LINE_REGISTER } from '@curatejs/markdown';
+import { markdown, knowledgeBase, rules, MARKDOWN_CASCADE, MARKDOWN_KEYWORD_SETTINGS, MARKDOWN_SEARCH_LINE_REGISTER } from '@curatejs/markdown';
 const cancelled = new SourceReadError('cancelled', 'Stopped');
 assert.equal(asSourceReadError(cancelled), cancelled);
 const decide = async ({ questions }) => Object.fromEntries(questions.map(q => [q.key, { status: 'answered', probability: q.questionKey === 'offtopic' ? 0 : 1 }]));
@@ -64,6 +64,8 @@ for (const [source, cascade] of [
   [gitHistory('.'), GIT_HISTORY_CASCADE],
   [knowledgeBase('notes'), MARKDOWN_CASCADE],
   [rules('policy'), MARKDOWN_CASCADE],
+  [markdown({ paths: ['notes/*.md'], kind: 'docs' }), MARKDOWN_CASCADE],
+  [markdown({ paths: ['policy'], kind: 'rules' }), MARKDOWN_CASCADE],
 ]) {
   const result = await pickFromSources([source], { task: 'Recall encrypted backups' }, { task: 'Recall encrypted backups', decide, cascade });
   assert.ok(result.selected.length > 0, source.kind);
@@ -73,7 +75,7 @@ assert.equal(CHAT_KEYWORD_SETTINGS.k1, 0.6);
 assert.equal(GIT_KEYWORD_SETTINGS.recencyDays, 60);
 assert.equal(MARKDOWN_KEYWORD_SETTINGS.b, 0.75);
 assert.ok([CHAT_SEARCH_LINE_REGISTER, GIT_SEARCH_LINE_REGISTER, MARKDOWN_SEARCH_LINE_REGISTER].every(s => s.length > 0));
-console.log('Clean consumer: core, chat, git, notes and rules passed.');
+console.log('Clean consumer: core, chat, git, notes, rules and Markdown kinds passed.');
 `);
   execFileSync(process.execPath, ['example.mjs'], { cwd: consumer, stdio: 'inherit' });
 } finally {

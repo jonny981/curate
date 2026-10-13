@@ -90,3 +90,20 @@ pnpm test
 Build first so dependent packages and workspace integration tests can use
 core’s declarations and the package exports. Each package also supports
 `pnpm --filter @curatejs/<name> build`, `test`, `typecheck` and `pack`.
+
+## Markdown paths
+
+`@curatejs/markdown` reads folders, files, and globs with explicit kinds.
+
+```ts
+import { markdown } from '@curatejs/markdown';
+
+const sources = [
+  markdown({ paths: ['docs'], kind: 'docs' }),
+  markdown({ paths: ['.agents/rules'], kind: 'rules' }),
+  markdown({ paths: ['**/AGENTS.md'], kind: 'instructions' }),
+];
+```
+
+See the [Markdown package](packages/markdown/README.md) for rule scopes,
+instruction locations, shared reads, dates, and whole-text defaults.
