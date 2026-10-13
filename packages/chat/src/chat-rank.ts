@@ -7,8 +7,10 @@ export interface ChatKeywordSettings {
   readonly short: boolean;
   readonly stop: 'baseline' | 'none' | 'content';
   readonly nouns: boolean;
+  /** Merge full-query, content and name ranks. Defaults to true. */
+  readonly rrf?: boolean;
 }
-export const CHAT_KEYWORD_SETTINGS: ChatKeywordSettings = { k1: 0.6, b: 0, stem: true, short: true, stop: 'none', nouns: true };
+export const CHAT_KEYWORD_SETTINGS: ChatKeywordSettings = { k1: 0.6, b: 0, stem: true, short: true, stop: 'none', nouns: true, rrf: true };
 export interface ChatPart { id: string; title: string; text: string; heading: string; name: string; front: string; score: number }
 const STOP = new Set('about after agent answers before change context every into only question should that their there these this what when where which with would'.split(' '));
 const COMMON = new Set('a an and are as at be been being but by can could did do does for from had has have how i if in is it its me my of on or our so than the them then they to was we were who why will you your asked am also get got tell please many much'.split(' '));
@@ -47,6 +49,10 @@ export function rankChat(candidates: ChatPart[], task: string, settings: Partial
   const keywords = keywordsOf(task, config.short, config.stop);
   const hits = (text: string) => keywords.filter(k => text.toLowerCase().includes(k)).length;
   const base = raw.map((s, i) => 3 * s / top + Math.min(2, hits(candidates[i]!.heading) * 2) + Math.min(1, hits(`${candidates[i]!.name} ${candidates[i]!.front}`)));
+  if (config.rrf === false) {
+    candidates.forEach((candidate, index) => { candidate.score = base[index]!; });
+    return;
+  }
   const sorted = (scores: number[]) => candidates.map((c, i) => ({ c, s: scores[i]! })).sort((a, b) => b.s - a.s || a.c.id.localeCompare(b.c.id));
   const content = keywordsOf(task, false, 'content').filter(w => !VERBS.has(w) && !/(?:ing|ed)$/.test(w)).join(' ');
   const names = (task.match(/\b[A-Z][\w]*\b/g) ?? []).filter(w => !COMMON.has(w.toLowerCase()) && !STOP.has(w.toLowerCase())).join(' ');

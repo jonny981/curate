@@ -49,6 +49,40 @@ function writer(text: string | readonly string[] = LOG): { write: CurateWrite; c
 
 describe('curate', () => {
 
+  it('keeps context guidance opt-in and carries it through condensation', async () => {
+    const base = writer();
+    await curate('Recall', picked(), { write: base.write });
+    const { write, calls } = writer([LONG_LOG, LOG]);
+    const result = await curate('Recall', picked(), { write, context: true, contextLimit: 100 });
+    const context = calls[0]!.instructions.slice(base.calls[0]!.instructions.length);
+    expect(context).toContain('each observation names who, where and which item');
+    expect(context).toContain('Resolve pronouns only when that session states the link');
+    expect(calls[1]!.instructions.endsWith(context)).toBe(true);
+    expect(result.record.context).toBe(true);
+    expect(base.calls[0]!.instructions).not.toContain('Carry these links');
+  });
+
+  it('routes counts and dates while retaining every supplied session', async () => {
+    const { write, calls } = writer();
+    const result = await curate('List every trip before June.', picked(), { write, routeByTask: true, context: true });
+    expect(result.record).toMatchObject({ working: true, preferenceAdvice: false, context: true, taskKinds: ['count', 'date'] });
+    expect(calls[0]!.instructions).toContain('every instance across the supplied sessions');
+    expect(calls[0]!.instructions).toContain('number each distinct instance');
+    expect(calls[0]!.body).toContain('Text notes#2');
+  });
+
+  it('routes advice without adding working notes and respects explicit switches', async () => {
+    const advice = writer();
+    const result = await curate('What should I cook?', picked(), { write: advice.write, routeByTask: true });
+    expect(result.record).toMatchObject({ working: false, preferenceAdvice: true, taskKinds: ['advice'] });
+    const explicit = writer();
+    const overridden = await curate('What should I cook?', picked(), {
+      write: explicit.write, routeByTask: true, working: true, preferenceAdvice: false,
+    });
+    expect(overridden.record).toMatchObject({ working: true, preferenceAdvice: false });
+    expect(explicit.calls[0]!.instructions).not.toContain('Advice preferences:');
+  });
+
   it('adds the task date to both writer calls and records it', async () => {
     const { write, calls } = writer([LONG_LOG, LOG]);
     const result = await curate('Recall', picked(), { write, taskDate: '2023-05-22', contextLimit: 100 });
@@ -178,6 +212,12 @@ describe('curate', () => {
     expect(calls[0]!.instructions).not.toContain('3500');
     expect(result.log).toBe(LOG + working);
     expect(result.record.working).toBe(true);
+  });
+
+  it.each([1, 2, 3, 4, 5, 6])('accepts a Markdown working heading at level %i only with working enabled', async (level) => {
+    const text = `${LOG}\n\n${'#'.repeat(level)} Working (the curator's; check it against the log):\n1. One visit.`;
+    expect((await curate('How many visits?', picked(), { write: writer(text).write, working: true })).log).toBe(text);
+    await expect(curate('Recall', picked(), { write: writer(text).write })).rejects.toThrow('unexpected or empty working section');
   });
 
   it('keeps selected rules outside the writer and retains their picker record', async () => {

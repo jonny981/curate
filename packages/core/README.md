@@ -293,6 +293,29 @@ instructions; the curator reads only reference items.
 `taskDate: '2023-05-22'` adds ` (asked 2023-05-22)` to the task in
 every writer call. The date label is kept exactly, including any time or weekday.
 
+`working: true` adds worked notes below the log for counts, dates, order
+and latest values. It is off by default. The working section's title
+can be plain text or a Markdown heading.
+
+`context: true` asks the writer to keep who, where and which item or event
+on each observation. It asks for links from that observation's own session
+and forbids invented links. It is off by default. The same guidance applies
+when condensing; output checks validate dates and source ids, not whether
+the writer preserved each factual link.
+
+`routeByTask: true` chooses guidance from the task's words alone:
+
+- **Counts and lists:** Enable worked notes and ask for each distinct instance across the supplied sessions.
+- **Dates and order:** Enable worked notes for dates, gaps and order.
+- **Advice:** Enable the advice preference lines.
+- **Changed facts, named things and other tasks:** Keep the ordinary dated-log guidance.
+
+The option is off by default. Explicit `working` and `preferenceAdvice`
+values override the route's choices. `context` stays independently configurable.
+`classifyTask(task)` exposes the same code-only classification. It can return
+several kinds for one task. It uses common English phrases, capitals and
+quoted names; it does not infer unstated changes or consult evidence.
+
 `preferenceAdvice: true` asks for optional `Advice preferences:` lines
 with the user's stated tastes, relevant experiences and constraints for
 advice tasks. `preferenceChange: true` asks for optional
@@ -312,6 +335,7 @@ lines keep their strict checks when preferences are enabled.
 `record` holds `promptVersion: 'v4'`, `weights: 'tiers'`, `working`,
 `preferenceAdvice`, `preferenceChange`, `items`, `logLength`, `condensed`,
 and `overContextLimit`. It includes `taskDate` when supplied.
+It includes `context` when supplied and `taskKinds` when routing is enabled.
 Each item includes its prompt `id`, the full `candidate`, and
 the exact decision `weight`.
 
