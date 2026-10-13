@@ -211,8 +211,12 @@ async function readKeywordSearches(
   };
 }
 
-async function readSearches(source: CandidateSource, request: CandidateReadRequest): Promise<CandidateReadResult> {
-  const read = await readKeywordSearches(source, request);
+async function readSearches(
+  source: CandidateSource,
+  request: CandidateReadRequest,
+  context: CandidateReadContext,
+): Promise<CandidateReadResult> {
+  const read = await readKeywordSearches(source, request, context);
   if (!request.meaning || read.status !== 'read') return read;
   const tasks = searchTasks(request);
   let candidates = read.candidates;
@@ -223,7 +227,7 @@ async function readSearches(source: CandidateSource, request: CandidateReadReque
     const full = await source.read({
       ...request, task: tasks[0]!.task, searchLines: undefined, searchPhrases: undefined, meaning: undefined, limit: undefined,
       ...(read.revision === undefined ? {} : { revision: read.revision }),
-    });
+    }, context);
     if (full.status !== 'read') throw new SourceReadError('failed', `Meaning search could not read all candidates: ${full.reason}`);
     const keyword = new Map<string, MemoryCandidate>();
     const ranked = [...candidates].sort((left, right) =>

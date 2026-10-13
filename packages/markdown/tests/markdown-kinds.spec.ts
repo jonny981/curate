@@ -65,6 +65,23 @@ describe('Markdown paths and shared reads', () => {
     expect(fileReads.filter((file) => file === join(directory, 'guide.md'))).toHaveLength(2);
   });
 
+  it('shares complete file text across phrase, meaning, and overlapping Markdown sources', async () => {
+    const text = 'Battery facts. '.repeat(100);
+    const directory = await tree({ 'guide.md': text });
+    const result = await pickFromSources([
+      markdown({ paths: [directory], kind: 'knowledge' }),
+      markdown({ paths: [directory], kind: 'docs' }),
+    ], { task: 'battery', searchPhrases: ['battery'], limit: 1,
+      meaning: { nearest: 1, embed: async (texts) => texts.map(() => [1, 0]) },
+    }, { task: 'battery', decide: async (batch, signal) => {
+      expect(batch.questions.every((question) => question.text === text)).toBe(true);
+      return yes(batch, signal);
+    } });
+    expect(fileReads.filter((file) => file === join(directory, 'guide.md'))).toHaveLength(1);
+    expect(result.selected.map((candidate) => candidate.kind).sort()).toEqual(['docs', 'knowledge']);
+    expect(result.selected.every((candidate) => candidate.text === text)).toBe(true);
+  });
+
   it('keeps same-named files from separate roots distinct', async () => {
     const left = await tree({ 'note.md': 'Left.' });
     const right = await tree({ 'note.md': 'Right.' });
