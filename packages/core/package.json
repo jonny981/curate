@@ -22,6 +22,10 @@
     "./internal": {
       "types": "./dist/internal.d.ts",
       "import": "./dist/internal.js"
+    },
+    "./local-embeddings": {
+      "types": "./dist/local-embeddings.d.ts",
+      "import": "./dist/local-embeddings.js"
     }
   },
   "files": [
@@ -48,5 +52,13 @@
   "homepage": "https://github.com/jonny981/curate#readme",
   "bugs": {
     "url": "https://github.com/jonny981/curate/issues"
+  },
+  "peerDependencies": {
+    "node-llama-cpp": "3.18.1"
+  },
+  "peerDependenciesMeta": {
+    "node-llama-cpp": {
+      "optional": true
+    }
   }
 }

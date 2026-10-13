@@ -20,6 +20,7 @@
     "@curatejs/core": "workspace:^",
     "@curatejs/chat": "workspace:^",
     "@curatejs/git": "workspace:^",
-    "@curatejs/markdown": "workspace:^"
+    "@curatejs/markdown": "workspace:^",
+    "node-llama-cpp": "3.18.1"
   }
 }

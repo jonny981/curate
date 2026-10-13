@@ -14,7 +14,7 @@ Curate selects the memory an agent needs for a task from typed sources. Its RDC 
 pnpm add @curatejs/core
 ```
 
-The host supplies its own sources, decision function, and writer. The package imports no model engine.
+The host supplies its own sources, decision function, and writer. The default entry imports no model engine. The optional local embedding entry uses a separately installed runtime.
 
 ## Requirements
 
@@ -53,7 +53,7 @@ candidate's `text` is the retained snapshot of the exact text scored.
 `pickFromSources` accepts host-written `searchLines` in its read request.
 Each source searches the task and every distinct, nonblank line. A line
 can be keywords or a short passage describing what the answer evidence
-would say. Curate generates no lines and calls no model to search.
+would say. Curate generates no lines. Keyword searches need no model.
 
 ```ts
 const picked = await pickFromSources(
@@ -114,6 +114,83 @@ operation. It preserves unfamiliar wording and retrieval needs such as
 counting, dates, comparisons and identifying the newer fact. The full
 task still goes to `decide`; pass that same task to `curate`.
 
+### Optional local meaning search
+
+`meaning: { embed }` adds local embedding searches for the task and its
+distinct search lines. Each part receives a separate meaning rank for
+each query. Keyword ranks and signals stay intact. The decision feed
+unions the keyword and meaning matches, keeping each `[sourceId, id]`
+once. Omit `meaning` to keep ordinary keyword search.
+
+```mermaid
+flowchart LR
+  Task[Task and search lines] --> Words[Keyword matches]
+  Task --> Meaning[Local meaning matches]
+  Parts[Candidate parts] --> Words
+  Parts --> Meaning
+  Words --> Union[Union: each part once]
+  Meaning --> Union
+  Union --> Decide[Decision model]
+```
+
+For the supplied local adapter, install its optional peer runtime:
+
+```bash
+pnpm add node-llama-cpp@3.18.1
+```
+
+```ts
+import { pickFromSources } from '@curatejs/core';
+import { createLocalEmbedder } from '@curatejs/core/local-embeddings';
+
+// A local MiniLM GGUF model file; the adapter downloads nothing.
+const local = await createLocalEmbedder({ modelPath });
+try {
+  const picked = await pickFromSources(
+    sources,
+    { task, searchLines, meaning: { embed: local.embed } },
+    { task, decide },
+  );
+} finally {
+  await local.dispose();
+}
+```
+
+- **Model:** The adapter accepts sentence embedding models that take plain
+  text. The tested model is [MiniLM-L6 Q4](https://huggingface.co/second-state/All-MiniLM-L6-v2-Embedding-GGUF),
+  a 19,699,648-byte model with 384 vector dimensions. It uses the same
+  Node runtime as QMD's larger EmbeddingGemma model. Models that require
+  query or document prompts need a host-supplied embedding function.
+- **Complete text:** Inputs longer than the model window are embedded in
+  token windows. Their normalized vectors are averaged by token count.
+  No input text is cut off to fit the model. A part whose body contains
+  only whitespace or invisible formatting characters uses its title for
+  embedding, including a commit with only a subject.
+  Its original body and title remain in the returned evidence.
+- **Storage:** Candidate vectors exist only while a batch is scored and
+  are discarded afterward. Curate writes no database, vector index or
+  candidate cache. The model file stays on disk.
+- **Candidate reads:** A supplied keyword `request.limit` still controls
+  keyword results. Meaning search makes an additional unrestricted read
+  so it can find other parts. Exclusions and revision pins apply to that
+  read too. Partial source reads remain recorded as partial.
+- **Dials:** `meaning.nearest` is an optional positive integer per query
+  and source. Omit it to retain every meaning rank. An optional
+  `limits.maxCandidates` still applies to each interleaved query feed;
+  their union can exceed it. No meaning cutoff is supplied by default.
+  The union preserves keyword eligibility; caller-supplied batch or time
+  limits can still leave keyword candidates unasked because meaning
+  ranks affect the combined decision order.
+- **Failures:** Local model failures stop the search before decisions.
+  Cancellation is checked between batches and model windows. There is
+  no API fallback.
+
+For hosts that already have candidates, `addMeaningRanks(candidates,
+task, { embed, searchLines })` returns the same union rank data for
+`pick`. An `EmbeddingFunction` returns one vector per complete input
+text, in input order. The helper uses cosine similarity, which compares
+vector direction rather than length, and breaks ties by candidate id.
+
 ### Defaults and evidence
 
 The LongMemEval tuning check covers 249 questions and 445 labelled
@@ -125,6 +202,7 @@ answer accuracy. The union comparisons use a budget per search.
 | **Reference selection** | Keep every scored item; bar 0 | In the saved-decision sweep, 0.05/0.5 removed every fed fragment of 50 answer turns; 0.2/0.6 removed 70; a single 0.6 cut removed 183. Keeping everything added no selection losses. Seven of 445 labelled turns were absent from the feed. This measures retention before curation, not final answer accuracy. |
 | **Extra search lines** | Run when supplied | Using the chat package, five subject lines plus five alternate-name lines at 100 parts reach 440/445 turns and add 207.3 decisions per question. At 200, five subject lines reach 442/445 and add 214.2. At 600, task-only search reaches all 445; extra lines add no labelled evidence. |
 | **Phrase searches** | Off unless supplied | One event phrase recovers one extra labelled turn at 100 parts for 0.9 extra decisions per question on average. Keyword lines also recover that turn. On its sports-event order question, the phrase adds two parts, compared with 58 for one subject line. At 200 and 600 it adds no labelled turns. |
+| **Local meaning search** | Off | In 249 tuning questions, 200 keyword parts plus 48 nearest task-meaning matches reaches all 445 labelled turn starts and all their surviving parts, adding 19.5 decisions per question. Keyword-only retrieval at 600 parts reaches the same evidence. The 48-part depth is measured for that tuning setup, not a cutoff for other histories. Final-answer accuracy is unmeasured. |
 | **Instruction removal** | Off | It changed zero tuning questions and ranks. Benefit on tasks with output instructions is unmeasured. |
 | **Rank protection** | Off | In a 60-question cached sample, recall in the first four items fell from 94.09% to 84.68%; in the first eight, from 100% to 99.71%. Full-feed packing is unmeasured. |
 | **Best part first** | Off | One part per session reached 259/445 answer turns. Even an optimistic continuation at 0.4 reached only 423/445. This does not establish a safe way to skip parts. |

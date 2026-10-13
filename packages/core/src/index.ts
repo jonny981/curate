@@ -3,3 +3,4 @@ export * from './curate.js';
 export * from './task.js';
 export * from './source.js';
 export { stripSearchInstructions } from './search.js';
+export * from './meaning.js';
