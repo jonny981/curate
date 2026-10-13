@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { curate, DEFAULT_MAX_QUESTION_TEXT, pick, PICK_QUESTION_VERSION, pickFromSources, SourceReadError, type CandidateSource, type CurateOptions, type CurateRecord, type CurateResult, type CurateWrite, type MemoryCandidate, type PickThresholds } from '@curatejs/core';
 import { chat, type ChatOptions, type ChatProvider } from '@curatejs/chat';
 import { gitHistory, type GitHistoryOptions } from '@curatejs/git';
-import { knowledgeBase, rules, type KnowledgeBaseOptions } from '@curatejs/markdown';
+import { markdown, knowledgeBase, rules, type MarkdownOptions, type KnowledgeBaseOptions } from '@curatejs/markdown';
 
 describe('package exports', () => {
   it('exports the curate step and its caller-supplied writer types', async () => {
@@ -41,6 +41,8 @@ describe('package exports', () => {
     };
     const base: CandidateSource = knowledgeBase('/nonexistent', baseOptions);
     const ruleSource: CandidateSource = rules('/nonexistent');
+    const markdownOptions: MarkdownOptions = { paths: ['/nonexistent'], kind: 'instructions' };
+    const instructions: CandidateSource = markdown(markdownOptions);
     const provider: ChatProvider = 'codex';
     const chatOptions: ChatOptions = {
       id: 'transcripts', providers: [provider], paths: ['/nonexistent'],
@@ -64,6 +66,8 @@ describe('package exports', () => {
     expect(history.role).toBe('reference');
     expect(base.role).toBe('reference');
     expect(ruleSource.role).toBe('rule');
+    expect(instructions.role).toBe('rule');
+    expect(instructions.kind).toBe('markdown');
     expect(transcripts.role).toBe('reference');
     expect(transcripts.id).toBe('transcripts');
     expect(thresholds.linkedPathBar).toBe(0.4);

@@ -35,8 +35,62 @@ result.
 `rules(dir)` reads a folder of rules: one candidate per `.md` file, all
 role `rule`, the folder's `README.md` excluded. Frontmatter
 `applies: always` marks a rule that every task follows: `pick` selects
-it without asking. Only a rules source emits role `rule`; a note can
+it without asking. Rules and instruction sources emit role `rule`; a note can
 never declare itself one.
+
+## Files, globs, and kinds
+
+`markdown({ paths, kind })` reads folders, individual files, or glob patterns.
+Paths beginning with `~/` resolve against the user's home directory. Git-ignored
+paths, `.git`, and `node_modules` are skipped before file contents are opened.
+Markdown files include `.md`, `.markdown`, `.mdc`, and `.cursorrules`.
+
+```ts
+import { markdown } from '@curatejs/markdown';
+
+const sources = [
+  markdown({ paths: ['notes'], kind: 'knowledge' }),
+  markdown({ paths: ['docs'], kind: 'docs' }),
+  markdown({ paths: ['.agents/rules'], kind: 'rules' }),
+  markdown({ paths: ['**/AGENTS.md'], kind: 'instructions' }),
+];
+```
+
+- **Kinds:** Knowledge and docs are references; rules and instructions are
+  rules. Candidate, question, and selection records retain the declared kind.
+  Without a fitted cascade, core asks a question suited to that kind.
+- **Shared reads:** One `pickFromSources` call reads a file's bytes once across
+  overlapping sources and search lines. Different kinds retain separate
+  candidates. A later call reads the file again.
+- **Whole text:** The source has no default part-size cap. Set
+  `maxQuestionText` on the source or read request to split text into parts that
+  preserve every character. A pick text limit takes precedence over the read
+  request. Core keeps its existing full-text default.
+- **Rules:** Headings and top-level list items form separate rules with ids
+  based on the file and heading path. Parent text stays with child rules.
+  Nested lists and fenced code remain whole.
+- **Scopes:** Cursor `.mdc` files use `globs` and `alwaysApply`; Copilot
+  `*.instructions.md` files use `applyTo`. Nonmatching scopes are removed
+  before decision calls when task paths are supplied. Unknown task paths keep
+  scoped rules. `alwaysApply: true` and `applies: always` keep rules without
+  a decision call.
+- **Locations:** Instructions record their real directory. Named task files
+  give closer parent instruction files a stronger `instruction-location`
+  signal. Other directories receive no location signal.
+- **Dates:** Inside git, the last committed change supplies meaning `changed`,
+  ahead of frontmatter. Untracked files have no commit date. Outside git,
+  `date` supplies `recorded`, `updated` supplies `changed`, and file modification
+  time supplies `modified` when no date field is declared. Existing `written`,
+  `effective`, and `applies-from` meanings remain supported.
+- **Pins:** Every kind reads the requested revision's contents and dates.
+  Explicit exclusions still apply before content is opened.
+- **Ranking:** `pick` accepts `ranking: { docs: { bm25: 2 } }` to weight signals
+  by candidate kind when candidates have no search ranks. Omitted weights are 1. The pick record stores these weights.
+  The source's `keyword` settings retain the exported Markdown defaults.
+
+`knowledgeBase()` and `rules()` retain their directory interface, ids, date
+precedence, part handling, and ranking signals. Use `markdown()` for the kinds,
+scopes, and location behaviour described here.
 
 ## Usage
 
