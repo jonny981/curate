@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  curate,
   DEFAULT_MAX_QUESTION_TEXT,
   gitHistory,
   knowledgeBase,
@@ -10,6 +11,10 @@ import {
   rules,
   SourceReadError,
   type CandidateSource,
+  type CurateOptions,
+  type CurateRecord,
+  type CurateResult,
+  type CurateWrite,
   type GitHistoryOptions,
   type KnowledgeBaseOptions,
   type MemoryCandidate,
@@ -17,6 +22,26 @@ import {
 } from '../src/index.js';
 
 describe('@curatejs/core', () => {
+  it('exports the curate step and its caller-supplied writer types', async () => {
+    const write: CurateWrite = async () => '[2023-05-13] Visited York (said 2023-05-20; trip)';
+    const options: CurateOptions = { write, working: false };
+    const picked = await pick([{
+      sourceId: 'notes', role: 'reference', id: 'trip', title: 'Trip',
+      text: 'Visited York last Saturday.', signals: {},
+      date: { value: '2023-05-20', meaning: 'recorded' },
+    }], {
+      task: 'Where did I go?', decide: async (batch) => Object.fromEntries(
+        batch.questions.map((q) => [q.key, { status: 'answered', probability: 0.9 }]),
+      ),
+    });
+    const result: CurateResult = await curate('Where did I go?', picked, options);
+    const record: CurateRecord = result.record;
+    expect(result.log).toContain('[2023-05-13]');
+    expect(record.promptVersion).toBe('v4');
+    expect(record.weights).toBe('tiers');
+    expect(record.items[0]!.weight).toBe(0.9);
+  });
+
   it('exports the sources, the picker, and their option types', () => {
     const historyOptions: GitHistoryOptions = {
       id: 'history',

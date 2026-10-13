@@ -1,12 +1,12 @@
 # @curatejs/core
 
-Curate selects the memory an agent needs for a task from typed sources. Its RDC process ranks candidates, asks your decision function which ones matter, and returns the selected memory with a record of the decisions.
+Curate selects the memory an agent needs for a task from typed sources. Its RDC process ranks candidates, asks your decision function which ones matter, and asks your writer to turn the selected evidence into a short dated log. Selection and curation each return a record.
 
 ## RDC process
 
 - **Rank:** Order memory candidates by their signals.
 - **Decide:** Ask your decision function which candidates the task needs.
-- **Curate:** Return the selected candidates and a record of answers, rejections, and unasked items.
+- **Curate:** Call `curate(task, picked, { write })` to write the dated log the working model reads.
 
 [Obversa](https://github.com/jonny981/obversa) uses Curate as its memory.
 
@@ -16,7 +16,7 @@ Curate selects the memory an agent needs for a task from typed sources. Its RDC 
 pnpm add @curatejs/core
 ```
 
-The host supplies its own sources and decision function.
+The host supplies its own sources, decision function, and writer. The package imports no model engine.
 
 ## Requirements
 
@@ -113,3 +113,62 @@ threshold-selected commit from the same `repository` names its `path` in
 in `link`, and a linked candidate never carries another. The bar is a
 chosen default, not a measured best; `PickThresholds.linkedPathBar`
 overrides it.
+
+## Curating
+
+`curate(task, picked, { write })` accepts the result of `pick` or
+`pickFromSources`. It calls your `write(prompt, signal)` function once.
+`prompt.instructions` contains the v4 dated-log wording and three weight
+bands: 0.6 or more, 0.1 to 0.6, and below 0.1. `prompt.body` contains the
+task and selected reference items in their selected order. Each header
+keeps the full item id, the candidate's date value, and its decision
+weight rounded to two decimal places. A missing date stays missing.
+When ids clash across sources, their headers use `[sourceId, id]` as a
+JSON string so the writer can tell them apart.
+
+```ts
+import { curate, pick, type CurateWrite, type MemoryCandidate, type PickDecide } from '@curatejs/core';
+
+// The host supplies both functions, using its chosen model route.
+async function recall(task: string, candidates: MemoryCandidate[], decide: PickDecide, write: CurateWrite) {
+  const picked = await pick(candidates, { task, decide });
+  const curated = await curate(task, picked, { write });
+  return { log: curated.log, pickRecord: picked.record, curateRecord: curated.record };
+}
+```
+
+The returned `log` is the text for the working model to read. Its lines
+have this form:
+
+```text
+[2023-05-13] Visited York (said 2023-05-20; trips.md#2)
+```
+
+The event date and the date it was said are separate. The prompt asks
+the writer to keep exact names and amounts, merge repeated events with
+both full ids, and mark later observations that replace earlier ones.
+Selected rules stay in `picked.selected` for the host to pass as exact
+instructions; the curator reads only reference items.
+
+`record` holds `promptVersion: 'v4'`, `weights: 'tiers'`, `working`, and
+`items`. Each item includes its prompt `id`, the full `candidate`, and
+the exact decision `weight` before rounding.
+
+`working: true` asks the writer to add numbered instances inside the
+task's period, computed time gaps or order, and latest values under
+`Working (the curator's; check it against the log):`. It is off by
+default. The reader should check these notes against the log.
+
+An empty log, a log longer than 3500 characters after trimming, or a
+malformed observation throws a clear error. Each observation must have
+valid calendar dates in its event and `said` fields and full ids of items
+given to the writer. Merged sources can separate ids with commas,
+semicolons, `and`, or `&`. Optional
+suffixes are `(when not stated)` and `(replaces [YYYY-MM-DD])`; replacement
+dates must also be valid. These checks verify the format and source ids;
+they do not prove the writer's
+facts or date calculations. Worked notes share the same length limit.
+There is no retry, truncation, or fallback to raw items. Missing selected
+weights and a selection with no reference items fail before `write`.
+Writer failures propagate to the caller. `signal` reaches the writer;
+the host must make its model call honour cancellation.
