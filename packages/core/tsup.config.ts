@@ -4,6 +4,7 @@ export default defineConfig({
   entry: {
     index: 'src/index.ts',
     internal: 'src/internal.ts',
+    'local-embeddings': 'src/local-embeddings.ts',
   },
   format: ['esm'],
   target: 'node22',

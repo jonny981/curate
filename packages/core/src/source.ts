@@ -1,6 +1,7 @@
 import type { CandidateSourceKind, MemoryCandidate, PickOptions, PickResult } from './pick.js';
 import { DEFAULT_MAX_QUESTION_TEXT, pick } from './pick.js';
 import { stripSearchInstructions } from './search.js';
+import { addMeaningRanks, type MeaningSearchOptions } from './meaning.js';
 
 /** What a source is asked for, once per search. */
 export interface CandidateReadRequest {
@@ -10,6 +11,8 @@ export interface CandidateReadRequest {
    *  line contributes its own results alongside the original task.
    *  Omit or supply [] for a single search; no model writes these lines. */
   readonly searchLines?: readonly string[];
+  /** Add local meaning searches. Off when omitted; no model is loaded by core. */
+  readonly meaning?: MeaningSearchOptions;
   /** Remove explicit answer-format and citation clauses from search
    *  text only. Off by default; subject, counting and date needs remain. */
   readonly stripSearchInstructions?: boolean;
@@ -105,7 +108,7 @@ function searchTasks(request: CandidateReadRequest): string[] {
   return tasks;
 }
 
-async function readSearches(
+async function readKeywordSearches(
   source: CandidateSource,
   request: CandidateReadRequest,
 ): Promise<CandidateReadResult> {
@@ -176,6 +179,50 @@ async function readSearches(
   };
 }
 
+async function readSearches(source: CandidateSource, request: CandidateReadRequest): Promise<CandidateReadResult> {
+  const read = await readKeywordSearches(source, request);
+  if (!request.meaning || read.status !== 'read') return read;
+  const tasks = searchTasks(request);
+  let candidates = read.candidates;
+  let complete = read.complete;
+  let partial = read.partial;
+  if (request.limit !== undefined) {
+    // A keyword read limit must not hide candidates from meaning search.
+    const full = await source.read({
+      ...request, task: tasks[0]!, searchLines: undefined, meaning: undefined, limit: undefined,
+      ...(read.revision === undefined ? {} : { revision: read.revision }),
+    });
+    if (full.status !== 'read') throw new SourceReadError('failed', `Meaning search could not read all candidates: ${full.reason}`);
+    const keyword = new Map<string, MemoryCandidate>();
+    const ranked = [...candidates].sort((left, right) =>
+      Object.values(right.signals).reduce((sum, value) => sum + value, 0)
+      - Object.values(left.signals).reduce((sum, value) => sum + value, 0) || left.id.localeCompare(right.id));
+    const counts = new Map<string, number>();
+    for (const candidate of ranked) {
+      const rank = counts.get(candidate.sourceId) ?? 0;
+      counts.set(candidate.sourceId, rank + 1);
+      keyword.set(JSON.stringify([candidate.sourceId, candidate.id]), {
+        ...candidate, searchRanks: candidate.searchRanks ?? [rank],
+      });
+    }
+    for (const candidate of full.candidates) {
+      const key = JSON.stringify([candidate.sourceId, candidate.id]);
+      if (!keyword.has(key)) keyword.set(key, { ...candidate, searchRanks: Array(tasks.length).fill(null) });
+    }
+    candidates = [...keyword.values()];
+    complete = read.complete && full.complete;
+    if (full.partial) partial = [partial, full.partial].filter(Boolean).join('; ');
+  }
+  return {
+    ...read, complete,
+    candidates: await addMeaningRanks(candidates, tasks[0]!, {
+      ...request.meaning, searchLines: tasks.slice(1),
+      ...(request.signal === undefined ? {} : { signal: request.signal }),
+    }),
+    ...(partial === undefined ? {} : { partial }),
+  };
+}
+
 /**
  * Read every source, then pick over the combined candidates. The read
  * revision is copied onto candidates that do not carry their own
@@ -214,7 +261,7 @@ export async function pickFromSources(
     }
   }
   let combined = candidates;
-  if (searchTasks(request).length > 1) {
+  if (searchTasks(request).length > 1 || request.meaning !== undefined) {
     const unique = new Map<string, MemoryCandidate>();
     const bestRank = (candidate: MemoryCandidate) => candidate.searchRanks!.reduce<number>(
       (best, rank) => rank === null ? best : Math.min(best, rank), Number.POSITIVE_INFINITY,
