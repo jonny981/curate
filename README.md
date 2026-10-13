@@ -1,30 +1,61 @@
 # Curate
 
-Curate selects the memory an agent needs for a task from typed sources. Its RDC process ranks candidates, asks your decision function which ones matter, and asks your writer to turn the selected evidence into the dated log the task needs. Selection and curation each return a record.
+Curate selects the evidence an agent needs for a task. It ranks candidates,
+asks your decision function which ones matter, and asks your writer to turn
+selected evidence into a dated log. Both steps return a record. The host
+chooses the model route; these packages import no model engine.
 
-## RDC process
+## Packages
 
-- **Rank:** Order memory candidates by their signals.
-- **Decide:** Ask your decision function which candidates the task needs. Optional `cascade` combines a fitted set of narrow questions. Selected items are ordered by decision probability, with no fixed size cap. `keepTop` moves selected keyword hits to the front.
-- **Curate:** Call `curate(task, picked, { write })` to write the dated log the working model reads. There is no fixed length cap. An optional `contextLimit` in characters asks the writer to condense an oversized log once, reducing the weakest signals first and keeping the strongest whole. The record reports both lengths and whether the result still exceeds the limit. Optional `working` adds working notes; `preferenceAdvice` and `preferenceChange` gather stated preferences with source ids. `taskDate` supplies the date the task was asked.
+| Package | What it supplies |
+| --- | --- |
+| [**@curatejs/core**](packages/core/README.md) | Selection, curation, source contracts, shared types and rank blending. No reader. |
+| [**@curatejs/chat**](packages/chat/README.md) | Claude Code and Codex transcripts, secret scrubbing, chat ranking and questions. |
+| [**@curatejs/git**](packages/git/README.md) | Git commit history, keyword settings and questions. |
+| [**@curatejs/markdown**](packages/markdown/README.md) | Markdown notes and rules, keyword settings and questions. |
 
-Curate started as the memory package inside [Obversa](https://github.com/jonny981/obversa).
+Each source package depends only on core and exports its keyword settings,
+question set and wording guidance for extra searches.
 
-## Install
+## Install only what you need
 
 ```bash
+# Supply your own sources.
 pnpm add @curatejs/core
+
+# Read transcripts.
+pnpm add @curatejs/core @curatejs/chat
+
+# Read commits and notes.
+pnpm add @curatejs/core @curatejs/git @curatejs/markdown
 ```
 
-The host supplies its own sources, decision function, and writer. The package imports no model engine.
+## Usage
 
-See the [core package README](packages/core/README.md) for requirements, sources, and usage.
+```ts
+import { pickFromSources, curate } from '@curatejs/core';
+import { chat, CHAT_CASCADE } from '@curatejs/chat';
+
+const picked = await pickFromSources(
+  [chat({ paths: ['transcripts'] })],
+  { task },
+  { task, decide, cascade: CHAT_CASCADE },
+);
+const result = await curate(task, picked, { write });
+```
+
+The host supplies `task`, `decide` and `write`. See each package’s README
+for reader options and core’s README for the decision and writer contracts.
 
 ## Development
 
 ```bash
-pnpm install
+pnpm install --frozen-lockfile
+pnpm build
 pnpm typecheck
 pnpm test
-pnpm build
 ```
+
+Build first so dependent packages and workspace integration tests can use
+core’s declarations and the package exports. Each package also supports
+`pnpm --filter @curatejs/<name> build`, `test`, `typecheck` and `pack`.

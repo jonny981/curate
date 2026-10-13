@@ -6,17 +6,9 @@ import { dirname, join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import {
-  gitHistory,
-  knowledgeBase,
-  pick,
-  pickFromSources,
-  rules,
-  SourceReadError,
-  type CandidateSource,
-  type PickAnswer,
-  type PickBatch,
-} from '../src/index.js';
+import { pick, pickFromSources, SourceReadError, type CandidateSource, type PickAnswer, type PickBatch } from '@curatejs/core';
+import { gitHistory } from '@curatejs/git';
+import { knowledgeBase, rules } from '../src/index.js';
 
 // knowledgeBase's own git invocations carry `-c core.hooksPath=…`; only
 // those calls have their child environment recorded, so the fixture's own
@@ -42,7 +34,7 @@ vi.mock('node:child_process', async (importOriginal) => {
 const temporaryDirectories: string[] = [];
 
 async function tree(files: Readonly<Record<string, string>>): Promise<string> {
-  const directory = await mkdtemp(join(tmpdir(), 'obversa-rdc-'));
+  const directory = await mkdtemp(join(tmpdir(), 'curate-'));
   temporaryDirectories.push(directory);
   for (const [path, text] of Object.entries(files)) {
     const file = join(directory, path);
@@ -869,7 +861,7 @@ describe('knowledgeBase git dates', () => {
     await rm(join(repo, 'docs', 'private.md'));
     await git(repo, ['add', '-A']);
     await git(repo, ['commit', '-m', 'drop the private note'], IDENTITY);
-    const parent = await mkdtemp(join(tmpdir(), 'obversa-rdc-link-'));
+    const parent = await mkdtemp(join(tmpdir(), 'curate-link-'));
     temporaryDirectories.push(parent);
     const link = join(parent, 'repo-link');
     await symlink(repo, link);
@@ -1067,7 +1059,7 @@ describe('knowledgeBase git dates', () => {
     // A stand-in git that fails every call with an unexpected error:
     // the probe cannot even refuse cleanly, and an unpinned read skips
     // the tier and carries what the walk found.
-    const bin = await mkdtemp(join(tmpdir(), 'obversa-rdc-bin-'));
+    const bin = await mkdtemp(join(tmpdir(), 'curate-bin-'));
     temporaryDirectories.push(bin);
     await writeFile(join(bin, 'git'), '#!/bin/sh\necho "unexpected git failure" >&2\nexit 128\n');
     await chmod(join(bin, 'git'), 0o755);
@@ -1097,7 +1089,7 @@ describe('knowledgeBase git dates', () => {
     // A stand-in git that refuses only `log`: the probe and every other
     // call go through to the real binary, and the failing date pass
     // drops the tier rather than the read.
-    const bin = await mkdtemp(join(tmpdir(), 'obversa-rdc-bin-'));
+    const bin = await mkdtemp(join(tmpdir(), 'curate-bin-'));
     temporaryDirectories.push(bin);
     const real = execFileSync('which', ['git']).toString().trim();
     await writeFile(join(bin, 'git'), [
@@ -1131,4 +1123,14 @@ describe('knowledgeBase git dates', () => {
       process.env.PATH = path;
     }
   });
+});
+
+it('allows note and rule keyword weights to be overridden', async () => {
+  const directory = await tree({ 'guide.md': '## Backups\nEncrypted backups.\n' });
+  for (const source of [knowledgeBase(directory, { keyword: { k1: 0, b: 0 } }), rules(directory, { keyword: { k1: 0, b: 0 } })]) {
+    const result = await read(source, { task: 'backups' });
+    expect(result.status).toBe('read');
+    if (result.status !== 'read') throw new Error('Expected Markdown candidates');
+    expect(result.candidates[0]!.signals.bm25).toBeCloseTo(Math.log(1 + 0.5 / 1.5), 14);
+  }
 });

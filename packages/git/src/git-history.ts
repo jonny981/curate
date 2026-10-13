@@ -1,3 +1,4 @@
+import { GIT_KEYWORD_SETTINGS, type GitKeywordSettings } from './defaults.js';
 import { realpath, stat } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,17 +12,19 @@ import {
   probeWorkTree,
   resolveCommit,
   runGit,
-} from './git.js';
-import { hits, taskTerms } from './markdown.js';
-import type { MemoryCandidate } from './pick.js';
+} from '@curatejs/core/internal';
+import { hits, taskTerms } from '@curatejs/core/internal';
+import type { MemoryCandidate } from '@curatejs/core';
 import {
   SourceReadError,
   type CandidateReadRequest,
   type CandidateReadResult,
   type CandidateSource,
-} from './source.js';
+} from '@curatejs/core';
 
 export interface GitHistoryOptions {
+  /** Override the exported GIT_KEYWORD_SETTINGS. */
+  readonly keyword?: Partial<GitKeywordSettings>;
   /** The source's stable id; defaults to `gitHistory:<resolved repo>`. */
   readonly id?: string;
   /** The repository key candidates declare. A link needs an equal value
@@ -142,7 +145,7 @@ const CO_CHANGE_NEIGHBOUR_CAP = 10;
 /**
  * A repository's commit history: one candidate per non-merge commit,
  * newest first, carrying its subject, body, commit date and the files it
- * changed. Git runs through the package's own helper: `execFile` with no
+ * changed. Git runs through core's shared helper: `execFile` with no
  * shell, a scrubbed environment, a time limit, an output limit, and the
  * request's abort signal reaching the process.
  *
@@ -155,6 +158,7 @@ export function gitHistory(
   repo: string | URL,
   options: GitHistoryOptions = {},
 ): CandidateSource {
+  const keyword = { ...GIT_KEYWORD_SETTINGS, ...options.keyword };
   const directory = repo instanceof URL ? fileURLToPath(repo) : repo;
   if (typeof directory !== 'string' || directory.trim() === '') {
     throw new TypeError('repo must be a directory path or a file: URL.');
@@ -163,6 +167,7 @@ export function gitHistory(
   const id = options.id ?? `gitHistory:${resolved}`;
   return {
     id,
+    kind: 'git-history',
     role: 'reference',
     async read(request) {
       const signal = request.signal;
@@ -265,7 +270,7 @@ export function gitHistory(
           : (await readBodies(toplevel, kept.map((commit) => commit.sha), signal))
             .map((body, index) => ({ ...kept[index]!, body }));
 
-        const terms = taskTerms(request.task, request.paths ?? []);
+        const terms = taskTerms(request.task, request.paths ?? [], keyword.stopWords);
         const named: string[] = [];
         for (const path of request.paths ?? []) {
           const name = repoPath(
@@ -353,15 +358,15 @@ export function gitHistory(
         const candidates: MemoryCandidate[] = commits.map((commit) => {
           const signals: Record<string, number> = {};
           const shared = hits(`${commit.subject}\n${commit.body}`, terms);
-          if (shared > 0) signals['shared_words'] = Math.min(3, shared);
+          if (shared > 0) signals['shared_words'] = Math.min(keyword.sharedWordCap, shared);
           const ageDays = (now - Date.parse(commit.date)) / 86_400_000;
-          signals['recency'] = Math.exp(-Math.max(0, ageDays) / 60);
+          signals['recency'] = Math.exp(-Math.max(0, ageDays) / keyword.recencyDays);
           if (named.length > 0 && touches(commit.changedPaths, named)) {
-            signals['named_path_touch'] = 3;
+            signals['named_path_touch'] = keyword.namedPathWeight;
           }
           const lines = liveLines.get(commit.sha);
-          if (lines !== undefined) signals['live_lines'] = 2 + Math.log10(lines);
-          if (coChange.has(commit.sha)) signals['co_change'] = 1;
+          if (lines !== undefined) signals['live_lines'] = keyword.liveLinesWeight + Math.log10(lines);
+          if (coChange.has(commit.sha)) signals['co_change'] = keyword.coChangeWeight;
           return {
             sourceId: id,
             sourceRevision: sha,

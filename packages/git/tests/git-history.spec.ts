@@ -6,8 +6,9 @@ import { dirname, join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { gitHistory, type CandidateSource } from '../src/index.js';
-import { commitDate } from '../src/git.js';
+import { type CandidateSource } from '@curatejs/core';
+import { gitHistory } from '../src/index.js';
+import { commitDate } from '@curatejs/core/internal';
 
 // The reader's own git invocations always carry `-c core.hooksPath=…`;
 // recording only those calls keeps the fixture's own commits out of the
@@ -94,7 +95,7 @@ async function commit(
 }
 
 async function repository(commits: readonly FixtureCommit[]): Promise<string> {
-  const directory = await mkdtemp(join(tmpdir(), 'obversa-rdc-git-'));
+  const directory = await mkdtemp(join(tmpdir(), 'curate-git-'));
   temporaryDirectories.push(directory);
   await git(directory, ['init', '-b', 'main']);
   for (const { subject, body, date, files } of commits) {
@@ -215,14 +216,14 @@ describe('gitHistory', () => {
   });
 
   it('reports absent for a directory that is not a repository', async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'obversa-rdc-git-'));
+    const directory = await mkdtemp(join(tmpdir(), 'curate-git-'));
     temporaryDirectories.push(directory);
     await expect(read(gitHistory(directory), { task: 'work' }))
       .resolves.toEqual({ status: 'absent', reason: 'no-history' });
   });
 
   it('reports absent for a bare repository, which has no work tree', async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'obversa-rdc-git-'));
+    const directory = await mkdtemp(join(tmpdir(), 'curate-git-'));
     temporaryDirectories.push(directory);
     await git(directory, ['init', '--bare', '-b', 'main']);
     await expect(read(gitHistory(directory), { task: 'work' }))
@@ -236,13 +237,13 @@ describe('gitHistory', () => {
   });
 
   it('reports absent for an empty repository and for a missing git binary', async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'obversa-rdc-git-'));
+    const directory = await mkdtemp(join(tmpdir(), 'curate-git-'));
     temporaryDirectories.push(directory);
     await git(directory, ['init', '-b', 'main']);
     await expect(read(gitHistory(directory), { task: 'work' }))
       .resolves.toEqual({ status: 'absent', reason: 'no-history' });
 
-    const withoutBinaries = await mkdtemp(join(tmpdir(), 'obversa-rdc-git-'));
+    const withoutBinaries = await mkdtemp(join(tmpdir(), 'curate-git-'));
     temporaryDirectories.push(withoutBinaries);
     const path = process.env.PATH;
     process.env.PATH = withoutBinaries;
@@ -472,7 +473,7 @@ describe('gitHistory', () => {
       { subject: 'kept', files: { 'a.md': 'a' } },
       { subject: 'secret', body: 'the secret body', files: { 'secret.md': 's' } },
     ]);
-    const parent = await mkdtemp(join(tmpdir(), 'obversa-rdc-link-'));
+    const parent = await mkdtemp(join(tmpdir(), 'curate-link-'));
     temporaryDirectories.push(parent);
     const link = join(parent, 'repo-link');
     await symlink(directory, link);
@@ -626,7 +627,7 @@ describe('gitHistory', () => {
   });
 
   it('tells a non-repository apart under a non-English locale', async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'obversa-rdc-git-'));
+    const directory = await mkdtemp(join(tmpdir(), 'curate-git-'));
     temporaryDirectories.push(directory);
     const names = ['LANG', 'LC_ALL', 'LANGUAGE'] as const;
     const previous = new Map(names.map((name) => [name, process.env[name]]));
@@ -668,7 +669,7 @@ describe('gitHistory', () => {
     // A stand-in git that cannot finish before the abort lands, so the
     // signal provably reaches a live process. `exec` replaces the shell
     // with the sleeper, so no orphaned child outlives it.
-    const bin = await mkdtemp(join(tmpdir(), 'obversa-rdc-bin-'));
+    const bin = await mkdtemp(join(tmpdir(), 'curate-bin-'));
     temporaryDirectories.push(bin);
     await writeFile(join(bin, 'git'), '#!/bin/sh\nexec sleep 10\n');
     await chmod(join(bin, 'git'), 0o755);
@@ -726,4 +727,12 @@ describe('gitHistory', () => {
     expect(result.candidates[0]!.sourceId).toBe('history');
     expect(result.candidates[0]!.repository).toBe('shared-key');
   });
+});
+
+it('allows a host to override commit keyword weights', async () => {
+  const directory = await repository([{ subject: 'backup evidence', files: { 'backup.md': 'backup' } }]);
+  const result = await read(gitHistory(directory, { keyword: { sharedWordCap: 0 } }), { task: 'backup evidence' });
+  expect(result.status).toBe('read');
+  if (result.status !== 'read') throw new Error('Expected commit candidates');
+  expect(result.candidates[0]!.signals.shared_words).toBe(0);
 });

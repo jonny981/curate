@@ -1,0 +1,51 @@
+{
+  "name": "@curatejs/chat",
+  "version": "0.1.0",
+  "description": "Local Claude Code and Codex transcripts for Curate.",
+  "author": "Jonny Neill <jonnyneill@hotmail.com>",
+  "type": "module",
+  "license": "MIT",
+  "sideEffects": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup && tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "keywords": [
+    "agent",
+    "memory",
+    "workflow",
+    "curate"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jonny981/curate.git",
+    "directory": "packages/chat"
+  },
+  "homepage": "https://github.com/jonny981/curate#readme",
+  "bugs": {
+    "url": "https://github.com/jonny981/curate/issues"
+  },
+  "dependencies": {
+    "@curatejs/core": "workspace:^"
+  }
+}

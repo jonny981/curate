@@ -4,7 +4,8 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { chat, pickFromSources, type CandidateReadRequest, type ChatProvider } from '../src/index.js';
+import { pickFromSources, type CandidateReadRequest } from '@curatejs/core';
+import { chat, type ChatProvider } from '../src/index.js';
 import { rankChat } from '../src/chat-rank.js';
 import { porterStem } from '../src/porter.js';
 
@@ -295,4 +296,14 @@ describe('chat keyword ranking', () => {
     for (const [word, stem] of Object.entries(examples)) expect(porterStem(word)).toBe(stem);
     expect(porterStem('a'.repeat(62) + 'ies')).toBe('a'.repeat(62) + 'ies');
   });
+});
+
+it('allows keyword overrides without changing the chat defaults', () => {
+  const parts = () => [{ id: 'a', title: '', text: 'run', heading: '', name: '', front: '', score: 0 }];
+  const normal = parts();
+  const overridden = parts();
+  rankChat(normal, 'running');
+  rankChat(overridden, 'running', { stem: false });
+  expect(normal[0]!.score).toBeGreaterThan(0);
+  expect(overridden[0]!.score).toBe(0);
 });

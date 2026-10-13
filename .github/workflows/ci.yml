@@ -24,9 +24,41 @@ jobs:
         run: corepack enable
       - name: Install
         run: pnpm install --frozen-lockfile
+      - name: Build
+        run: pnpm build
       - name: Typecheck
         run: pnpm typecheck
       - name: Test
         run: pnpm test
-      - name: Build
-        run: pnpm build
+      - name: Pack all packages
+        run: |
+          for package in core chat git markdown; do
+            pnpm --filter @curatejs/$package pack --pack-destination "$PWD/packed"
+          done
+      - name: Test clean consumer
+        run: node tools/verify-consumer.mjs packed
+
+  package:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        package: [core, chat, git, markdown]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Enable Corepack (pinned pnpm)
+        run: corepack enable
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Build dependencies
+        run: pnpm --filter '@curatejs/${{ matrix.package }}^...' build
+      - name: Build package
+        run: pnpm --filter @curatejs/${{ matrix.package }} build
+      - name: Typecheck package
+        run: pnpm --filter @curatejs/${{ matrix.package }} typecheck
+      - name: Test package
+        run: pnpm --filter @curatejs/${{ matrix.package }} test
+      - name: Pack package
+        run: pnpm --filter @curatejs/${{ matrix.package }} pack --pack-destination packed

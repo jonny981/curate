@@ -1,4 +1,5 @@
 export type MemoryCandidateRole = 'reference' | 'rule';
+export type CandidateSourceKind = 'chat' | 'git-history' | 'markdown';
 
 export interface MemoryCandidate {
   readonly sourceId: string;
@@ -8,6 +9,10 @@ export interface MemoryCandidate {
   readonly title: string;
   readonly text: string;
   readonly contentRef?: string;
+  /** Optional document identity for hosts that supply parts themselves. */
+  readonly documentId?: string;
+  /** Zero-based rank within this source for each search line; null means absent. */
+  readonly searchRanks?: readonly (number | null)[];
   /** Transcript metadata; separate from the candidate's reference role. */
   readonly chat?: {
     readonly provider: 'claude-code' | 'codex';
@@ -98,7 +103,7 @@ export type PickEntryStatus =
       readonly answer: 'refused' | 'missing' | 'error';
       readonly detail?: string;
     }
-  | { readonly status: 'unassessed'; readonly reason: 'limits' | 'time' | 'cancelled' };
+  | { readonly status: 'unassessed'; readonly reason: 'limits' | 'time' | 'cancelled' | 'document' };
 
 export type PickRecordEntry = {
   readonly sourceId: string;
@@ -106,6 +111,11 @@ export type PickRecordEntry = {
   readonly id: string;
   readonly role: MemoryCandidateRole;
   readonly priority: number;
+  readonly searchRanks?: readonly (number | null)[];
+  /** Final ordering score; the decision probability remains separate. */
+  readonly orderScore?: number;
+  /** The first part judged for this document, within this entry's source. */
+  readonly representative?: string;
   readonly signals: Readonly<Record<string, number>>;
   /** The candidate's own content handle (a commit's full SHA); kept so
    *  a saved record names the exact bytes, not a short display form. */
@@ -114,23 +124,38 @@ export type PickRecordEntry = {
   readonly path?: string;
   readonly repository?: string;
   readonly truncated?: boolean;
+  /** Source kind used to choose a fitted set, when per-kind sets are enabled. */
+  readonly sourceKind?: CandidateSourceKind;
+  /** Which branch the optional decision rule took; status records whether it kept the item. */
+  readonly outcome?: 'drop' | 'keep' | 'check';
+  readonly agreement?: { readonly key: string } & PickAnswer;
   /** Individual fitted answers, before combining them. */
   readonly questions?: readonly ({ readonly key: string } & PickAnswer)[];
 } & PickEntryStatus;
 
-/** Fitted narrow questions in the prototype's JSON format. */
+export interface PickCriterion {
+  readonly key: string;
+  readonly instructions: string;
+  readonly true: string;
+  readonly false: string;
+}
+
+/** Fitted narrow questions. Negative weights invert a question's contribution. */
 export interface PickCascade {
   readonly bias: number;
-  readonly questions: readonly {
-    readonly key: string;
-    readonly instructions: string;
-    readonly true: string;
-    readonly false: string;
-    readonly weight: number;
-  }[];
+  readonly questions: readonly (PickCriterion & { readonly weight: number })[];
   readonly first?: string;
   readonly band?: readonly [number, number];
   readonly firstOnly?: { readonly bias: number; readonly weight: number };
+}
+
+export interface PickDecisionRule {
+  /** Scores below this bar drop. Defaults to 0.3. */
+  readonly low?: number;
+  /** Scores above this bar keep. Defaults to 0.7. */
+  readonly high?: number;
+  /** Scores at either bar or between them need this answer at 0.5 or more. */
+  readonly question: PickCriterion;
 }
 
 export interface PickRecord {
@@ -140,7 +165,15 @@ export interface PickRecord {
   readonly candidates: readonly PickRecordEntry[];
   readonly rulesCoverage: 'complete' | 'incomplete';
   readonly cascade?: PickCascade;
+  /** A source-specific set overrides cascade; undeclared kinds use cascade. */
+  readonly cascadesByKind?: Readonly<Partial<Record<CandidateSourceKind, PickCascade>>>;
+  /** Source identities mapped to kinds; pickFromSources fills these from source.kind. */
+  readonly sourceKinds?: Readonly<Record<string, CandidateSourceKind>>;
+  /** Optional three-outcome rule for references. Rules keep their own threshold. */
+  readonly decisionRule?: PickDecisionRule;
   readonly keepTop?: number;
+  readonly rankProtection?: boolean;
+  readonly bestPartFirst?: boolean;
 }
 
 export interface PickResult {
@@ -152,8 +185,18 @@ export interface PickOptions {
   readonly task: string;
   readonly decide: PickDecide;
   readonly cascade?: PickCascade;
+  /** A source-specific set overrides cascade; undeclared kinds use cascade. */
+  readonly cascadesByKind?: Readonly<Partial<Record<CandidateSourceKind, PickCascade>>>;
+  /** Source identities mapped to kinds; pickFromSources fills these from source.kind. */
+  readonly sourceKinds?: Readonly<Record<string, CandidateSourceKind>>;
+  /** Optional three-outcome rule for references. Rules keep their own threshold. */
+  readonly decisionRule?: PickDecisionRule;
   /** Put these top ranked hits first if they pass the threshold. */
   readonly keepTop?: number;
+  /** Blend search rank and decision probability for selected references. Off by default. */
+  readonly rankProtection?: boolean;
+  /** Judge each document's best keyword part before its other fed parts. Off by default. */
+  readonly bestPartFirst?: boolean;
   /** False when a source that can supply rule candidates did not finish
    *  enumerating them; its read returned `complete: false`. The combined
    *  coverage can then never report a complete applicable-rule set, even
@@ -250,6 +293,7 @@ function signalScore(candidate: MemoryCandidate): number {
 function rankAndInterleave(
   pool: readonly MemoryCandidate[],
   priority: Map<MemoryCandidate, number>,
+  lane?: number,
 ): MemoryCandidate[] {
   const groups = new Map<string, MemoryCandidate[]>();
   for (const candidate of pool) {
@@ -259,9 +303,18 @@ function rankAndInterleave(
   }
   const ordered: MemoryCandidate[] = [];
   for (const group of groups.values()) {
-    group.sort((left, right) =>
-      signalScore(right) - signalScore(left) || left.id.localeCompare(right.id));
-    group.forEach((candidate, rank) => priority.set(candidate, rank));
+    const rankOf = (candidate: MemoryCandidate) => candidate.searchRanks === undefined
+      ? undefined
+      : lane === undefined
+        ? Math.min(...candidate.searchRanks.filter((rank): rank is number => rank !== null))
+        : candidate.searchRanks[lane] ?? Number.POSITIVE_INFINITY;
+    group.sort((left, right) => {
+      const a = rankOf(left), b = rankOf(right);
+      return (a === undefined && b === undefined ? signalScore(right) - signalScore(left)
+        : (a ?? Number.POSITIVE_INFINITY) - (b ?? Number.POSITIVE_INFINITY))
+        || left.id.localeCompare(right.id);
+    });
+    group.forEach((candidate, rank) => priority.set(candidate, rankOf(candidate) ?? rank));
   }
   let added = true;
   for (let round = 0; added; round += 1) {
@@ -319,8 +372,45 @@ export async function pick(
   candidates: readonly MemoryCandidate[],
   options: PickOptions,
 ): Promise<PickResult> {
+  for (const candidate of candidates) {
+    const ranks = candidate.searchRanks;
+    if (ranks !== undefined && (!ranks.some((rank) => rank !== null)
+      || ranks.some((rank) => rank !== null && (!Number.isSafeInteger(rank) || rank < 0)))) {
+      throw new TypeError('searchRanks needs nonnegative safe integers or null and at least one rank.');
+    }
+  }
   checkCascade(options.cascade);
-  const cascade = options.cascade;
+  for (const set of Object.values(options.cascadesByKind ?? {})) checkCascade(set);
+  const decisionRule = options.decisionRule;
+  const low = probabilityLimit(decisionRule?.low, 'decisionRule.low', 0.3);
+  const high = probabilityLimit(decisionRule?.high, 'decisionRule.high', 0.7);
+  if (decisionRule && (low > high || !decisionRule.question.key || !decisionRule.question.instructions
+    || !decisionRule.question.true || !decisionRule.question.false)) {
+    throw new TypeError('decisionRule needs ordered bars and a named question with both criteria.');
+  }
+  if (decisionRule) {
+    for (const set of [options.cascade, ...Object.values(options.cascadesByKind ?? {})]) {
+      const existing = set?.questions.find((q) => q.key === decisionRule.question.key);
+      if (existing && (existing.instructions !== decisionRule.question.instructions
+        || existing.true !== decisionRule.question.true || existing.false !== decisionRule.question.false)) {
+        throw new TypeError('decisionRule question must match the cascade question with the same key.');
+      }
+    }
+  }
+  const kindFor = (candidate: MemoryCandidate) => options.sourceKinds && Object.hasOwn(options.sourceKinds, candidate.sourceId)
+    ? options.sourceKinds[candidate.sourceId] : undefined;
+  const cascadeFor = (candidate: MemoryCandidate) => {
+    const kind = kindFor(candidate);
+    return (kind === undefined ? undefined : options.cascadesByKind?.[kind]) ?? options.cascade;
+  };
+  if (decisionRule?.question.key === 'reference'
+    && candidates.some((c) => c.role === 'reference' && !cascadeFor(c))) {
+    const existing = PICK_QUESTIONS.reference;
+    if (decisionRule.question.instructions !== existing.question
+      || decisionRule.question.true !== existing.trueCriterion || decisionRule.question.false !== existing.falseCriterion) {
+      throw new TypeError('decisionRule question must match the reference question with the same key.');
+    }
+  }
   const keepTop = options.keepTop ?? 0;
   if (!Number.isSafeInteger(keepTop) || keepTop < 0) {
     throw new TypeError('keepTop must be a nonnegative safe integer.');
@@ -366,15 +456,29 @@ export async function pick(
   }
   queue.push(...references);
 
-  const feed = queue.slice(0, limits.maxCandidates);
+  const lanes = queue.reduce((count, candidate) => Math.max(count, candidate.searchRanks?.length ?? 1), 1);
+  const eligible = new Set<MemoryCandidate>();
+  for (let lane = 0; lane < lanes; lane += 1) {
+    const present = (candidate: MemoryCandidate) => candidate.searchRanks === undefined
+      || candidate.searchRanks[lane] != null;
+    const laneQueue = lanes === 1 ? queue : [
+      ...rankAndInterleave(rules.filter((c) => c.applies !== 'always' && present(c)), new Map(), lane),
+      ...rankAndInterleave(references.filter(present), new Map(), lane),
+    ];
+    for (const candidate of laneQueue.slice(0, limits.maxCandidates)) eligible.add(candidate);
+  }
+  const feed = queue.filter((candidate) => eligible.has(candidate));
   const answered = new Map<MemoryCandidate, Map<string, CheckedAnswer>>();
-  const specsFor = (candidate: MemoryCandidate) => candidate.role === 'reference' && cascade
-    ? cascade.questions.map((q) => ({ key: q.key, question: q.instructions, trueCriterion: q.true, falseCriterion: q.false }))
-    : [{ key: candidate.role, ...PICK_QUESTIONS[candidate.role] }];
+  const specsFor = (candidate: MemoryCandidate) => {
+    const cascade = cascadeFor(candidate);
+    return candidate.role === 'reference' && cascade
+      ? cascade.questions.map((q) => ({ key: q.key, question: q.instructions, trueCriterion: q.true, falseCriterion: q.false }))
+      : [{ key: candidate.role, ...PICK_QUESTIONS[candidate.role] }];
+  };
   type Pending = { candidate: MemoryCandidate; spec: ReturnType<typeof specsFor>[number]; question: PickQuestion };
   const pending = (candidate: MemoryCandidate, spec: ReturnType<typeof specsFor>[number]): Pending => {
     const shown = takeCharacters(candidate.text, limits.maxQuestionText);
-    const fitted = candidate.role === 'reference' && cascade !== undefined;
+    const fitted = candidate.role === 'reference' && (cascadeFor(candidate) !== undefined || spec.key !== 'reference');
     return { candidate, spec, question: {
       key: fitted ? JSON.stringify([candidate.sourceId, candidate.id, spec.key]) : questionKey(candidate),
       ...(fitted ? { questionKey: spec.key } : {}),
@@ -427,54 +531,131 @@ export async function pick(
       if (timedOut) { stop = 'time'; break; }
     }
   };
-  await ask(feed.flatMap((candidate) => specsFor(candidate)
-    .filter((spec) => candidate.role === 'rule' || !cascade?.first || spec.key === cascade.first)
-    .map((spec) => pending(candidate, spec))));
-  if (cascade?.first && !stop) {
-    await ask(feed.flatMap((candidate) => {
-      const first = answered.get(candidate)?.get(cascade.first!);
-      if (candidate.role === 'rule' || first?.status !== 'answered'
-        || first.probability < cascade.band![0] || first.probability > cascade.band![1]) return [];
-      return specsFor(candidate).filter((spec) => spec.key !== cascade.first).map((spec) => pending(candidate, spec));
-    }));
-  }
-  for (const candidate of queue) {
-    const got = answered.get(candidate);
-    if (!got) {
-      statuses.set(candidate, { status: 'unassessed', reason: stop ?? 'limits' });
-      continue;
+  const combined = new Map<MemoryCandidate, CheckedAnswer>();
+  const outcomes = new Map<MemoryCandidate, 'drop' | 'keep' | 'check'>();
+  const evaluate = async (phase: readonly MemoryCandidate[]) => {
+    await ask(phase.flatMap((candidate) => specsFor(candidate)
+      .filter((spec) => candidate.role === 'rule' || !cascadeFor(candidate)?.first || spec.key === cascadeFor(candidate)!.first)
+      .map((spec) => pending(candidate, spec))));
+    if (!stop) {
+      await ask(phase.flatMap((candidate) => {
+        const cascade = cascadeFor(candidate);
+        if (candidate.role === 'rule' || !cascade?.first) return [];
+        const first = answered.get(candidate)?.get(cascade.first);
+        if (first?.status !== 'answered'
+          || first.probability < cascade.band![0] || first.probability > cascade.band![1]) return [];
+        return specsFor(candidate).filter((spec) => spec.key !== cascade.first).map((spec) => pending(candidate, spec));
+      }));
     }
-    let answer: CheckedAnswer;
-    if (candidate.role === 'reference' && cascade) {
-      const first = cascade.first === undefined ? undefined : got.get(cascade.first);
-      if (first?.status === 'answered'
-        && (first.probability < cascade.band![0] || first.probability > cascade.band![1])) {
-        answer = { status: 'answered', probability: 1 / (1 + Math.exp(-(cascade.firstOnly!.bias + cascade.firstOnly!.weight * logit(first.probability)))) };
-      } else {
-        // A returned missing answer contributes nothing, as in the prototype.
-        // A question never attempted because a limit stopped us is unassessed.
-        if (stop && cascade.questions.some((q) => !got.has(q.key))
-          && (!cascade.first || first?.status === 'answered')) {
-          statuses.set(candidate, { status: 'unassessed', reason: stop });
-          continue;
-        }
-        const probabilities = cascade.questions.map((q) => got.get(q.key));
-        if (probabilities.some((a) => a?.status === 'answered')) {
-          const z = cascade.bias + cascade.questions.reduce((sum, q, i) => {
-            const a = probabilities[i];
-            return sum + (a?.status === 'answered' ? q.weight * logit(a.probability) : 0);
-          }, 0);
-          answer = { status: 'answered', probability: 1 / (1 + Math.exp(-z)) };
-        } else answer = first ?? got.values().next().value ?? { status: 'missing' };
+    for (const candidate of phase) {
+      const cascade = cascadeFor(candidate);
+      const got = answered.get(candidate);
+      if (!got) {
+        statuses.set(candidate, { status: 'unassessed', reason: stop ?? 'limits' });
+        continue;
       }
-    } else answer = got.values().next().value!;
-    if (answer.status === 'answered') {
-      const threshold = candidate.role === 'rule' ? thresholds.rule : thresholds.reference;
-      if (answer.probability >= threshold) {
-        selected.push(candidate);
-        statuses.set(candidate, { status: 'selected', asked: true, probability: answer.probability });
-      } else statuses.set(candidate, { status: 'rejected', probability: answer.probability });
-    } else statuses.set(candidate, { status: 'unanswered', answer: answer.status, detail: answer.detail });
+      let answer: CheckedAnswer;
+      if (candidate.role === 'reference' && cascade) {
+        const first = cascade.first === undefined ? undefined : got.get(cascade.first);
+        if (first?.status === 'answered'
+          && (first.probability < cascade.band![0] || first.probability > cascade.band![1])) {
+          answer = { status: 'answered', probability: 1 / (1 + Math.exp(-(cascade.firstOnly!.bias + cascade.firstOnly!.weight * logit(first.probability)))) };
+        } else {
+          // A returned missing answer contributes nothing, as in the prototype.
+          // A question never attempted because a limit stopped us is unassessed.
+          if (stop && cascade.questions.some((q) => !got.has(q.key))
+            && (!cascade.first || first?.status === 'answered')) {
+            statuses.set(candidate, { status: 'unassessed', reason: stop });
+            continue;
+          }
+          const probabilities = cascade.questions.map((q) => got.get(q.key));
+          if (probabilities.some((a) => a?.status === 'answered')) {
+            const z = cascade.bias + cascade.questions.reduce((sum, q, i) => {
+              const a = probabilities[i];
+              return sum + (a?.status === 'answered' ? q.weight * logit(a.probability) : 0);
+            }, 0);
+            answer = { status: 'answered', probability: 1 / (1 + Math.exp(-z)) };
+          } else answer = first ?? got.values().next().value ?? { status: 'missing' };
+        }
+      } else answer = got.values().next().value!;
+      combined.set(candidate, answer);
+    }
+    if (decisionRule && !stop) {
+      const q = decisionRule.question;
+      await ask(phase.flatMap((candidate) => {
+        const answer = combined.get(candidate);
+        if (candidate.role !== 'reference' || answer?.status !== 'answered'
+          || answer.probability < low || answer.probability > high
+          || answered.get(candidate)?.has(q.key)) return [];
+        return [pending(candidate, { key: q.key, question: q.instructions, trueCriterion: q.true, falseCriterion: q.false })];
+      }));
+    }
+    for (const candidate of phase) {
+      const answer = combined.get(candidate);
+      if (!answer) continue;
+      if (answer.status === 'answered') {
+        const threshold = candidate.role === 'rule' ? thresholds.rule : thresholds.reference;
+        let keep = answer.probability >= threshold;
+        if (decisionRule && candidate.role === 'reference') {
+          const outcome = answer.probability < low ? 'drop' : answer.probability > high ? 'keep' : 'check';
+          outcomes.set(candidate, outcome);
+          const agreement = answered.get(candidate)?.get(decisionRule.question.key);
+          if (outcome === 'check' && !agreement && stop) {
+            statuses.set(candidate, { status: 'unassessed', reason: stop });
+            continue;
+          }
+          keep = outcome === 'keep' || (outcome === 'check' && agreement?.status === 'answered' && agreement.probability >= 0.5);
+        }
+        if (keep) {
+          selected.push(candidate);
+          statuses.set(candidate, { status: 'selected', asked: true, probability: answer.probability });
+        } else statuses.set(candidate, { status: 'rejected', probability: answer.probability });
+      } else statuses.set(candidate, { status: 'unanswered', answer: answer.status, detail: answer.detail });
+    }
+  };
+
+  const representatives = new Map<MemoryCandidate, MemoryCandidate>();
+  if (options.bestPartFirst) {
+    const terms = [...new Set(options.task.toLowerCase().split(/[^a-z0-9]+/).filter((word) => word.length > 2))];
+    const matches = (candidate: MemoryCandidate) => {
+      const words = new Set(`${candidate.title} ${candidate.text}`.toLowerCase().split(/[^a-z0-9]+/));
+      return terms.filter((term) => words.has(term)).length;
+    };
+    const groups = new Map<string, MemoryCandidate[]>();
+    for (const candidate of feed) {
+      if (candidate.role === 'rule') continue;
+      const document = candidate.documentId !== undefined ? ['document', candidate.documentId]
+        : candidate.chat ? ['chat', candidate.chat.provider, candidate.chat.sessionId]
+          : candidate.contentRef?.includes('#L') ? ['note', candidate.contentRef.split('#L')[0]]
+            : candidate.path ? ['note', candidate.path] : ['item', candidate.id];
+      const key = JSON.stringify([candidate.sourceId, candidate.sourceRevision, document]);
+      const group = groups.get(key);
+      if (group) group.push(candidate);
+      else groups.set(key, [candidate]);
+    }
+    for (const group of groups.values()) {
+      const first = group.reduce((best, candidate) => matches(candidate) > matches(best) ? candidate : best);
+      for (const candidate of group) representatives.set(candidate, first);
+    }
+    await evaluate(feed.filter((c) => c.role === 'rule' || representatives.get(c) === c));
+    if (signal.aborted) stop = 'cancelled';
+    else if (Date.now() - started >= limits.maxElapsedMs) stop = 'time';
+    if (!stop) {
+      await evaluate(feed.filter((candidate) => {
+        const representative = representatives.get(candidate);
+        if (!representative || representative === candidate) return false;
+        const answer = combined.get(representative);
+        return statuses.get(representative)?.status === 'selected'
+          || [...(answered.get(representative)?.values() ?? [])].some((answer) => answer.status !== 'answered')
+          || answer?.status !== 'answered' || answer.probability >= low;
+      }));
+    }
+  } else await evaluate(feed);
+  for (const candidate of queue) {
+    if (!statuses.has(candidate)) {
+      statuses.set(candidate, { status: 'unassessed',
+        reason: stop ?? (eligible.has(candidate) && options.bestPartFirst ? 'document' : 'limits') });
+    }
   }
 
   // The changed-path link, one pass after the threshold pass: a
@@ -487,7 +668,7 @@ export async function pick(
   const chosen = new Set(selected);
   for (const candidate of candidates) {
     const status = statuses.get(candidate)!;
-    if (status.status !== 'rejected'
+    if (outcomes.has(candidate) || status.status !== 'rejected'
       || status.probability < thresholds.linkedPathBar
       || candidate.role !== 'reference'
       || candidate.path === undefined
@@ -512,14 +693,22 @@ export async function pick(
   const feedOrder = new Map(queue.map((candidate, index) => [candidate, index]));
   const weight = (candidate: MemoryCandidate) => {
     const status = statuses.get(candidate)!;
-    return status.status === 'selected' ? status.probability ?? 1 : 0;
+    const probability = status.status === 'selected' ? status.probability ?? 1 : 0;
+    if (!options.rankProtection || candidate.role === 'rule') return probability;
+    const rank = priority.get(candidate)! + 1;
+    const w = rank <= 3 ? 0.75 : rank <= 10 ? 0.60 : 0.40;
+    return w / rank + (1 - w) * probability;
   };
   selected.sort((a, b) => Number(b.role === 'rule') - Number(a.role === 'rule')
     || Number(top.has(b)) - Number(top.has(a)) || weight(b) - weight(a)
     || (feedOrder.get(a) ?? -1) - (feedOrder.get(b) ?? -1));
 
   const entries: PickRecordEntry[] = candidates.map((candidate) => {
+    const cascade = cascadeFor(candidate);
     const status = statuses.get(candidate)!;
+    const outcome = outcomes.get(candidate);
+    const agreement = decisionRule && outcome === 'check'
+      ? answered.get(candidate)?.get(decisionRule.question.key) : undefined;
     const wasTruncated = truncated.get(candidate);
     const base = {
       sourceId: candidate.sourceId,
@@ -528,6 +717,13 @@ export async function pick(
       role: candidate.role,
       priority: priority.get(candidate)!,
       signals: candidate.signals,
+      ...(candidate.searchRanks === undefined ? {} : { searchRanks: candidate.searchRanks }),
+      ...(options.rankProtection && candidate.role === 'reference' && status.status === 'selected'
+        ? { orderScore: weight(candidate) } : {}),
+      ...(representatives.has(candidate) ? { representative: representatives.get(candidate)!.id } : {}),
+      ...(options.cascadesByKind && kindFor(candidate) !== undefined ? { sourceKind: kindFor(candidate) } : {}),
+      ...(outcome === undefined ? {} : { outcome }),
+      ...(outcome === 'check' ? { agreement: { key: decisionRule!.question.key, ...(agreement ?? { status: 'missing' as const }) } } : {}),
       ...(candidate.contentRef === undefined ? {} : { contentRef: candidate.contentRef }),
       ...(candidate.changedPaths === undefined ? {} : { changedPaths: candidate.changedPaths }),
       ...(candidate.path === undefined ? {} : { path: candidate.path }),
@@ -555,8 +751,13 @@ export async function pick(
       thresholds,
       candidates: entries,
       rulesCoverage,
-      ...(cascade === undefined ? {} : { cascade }),
+      ...(options.cascade === undefined ? {} : { cascade: options.cascade }),
+      ...(options.cascadesByKind === undefined ? {} : { cascadesByKind: options.cascadesByKind }),
+      ...(options.cascadesByKind === undefined || options.sourceKinds === undefined ? {} : { sourceKinds: options.sourceKinds }),
+      ...(decisionRule === undefined ? {} : { decisionRule: { ...decisionRule, low, high } }),
       ...(options.keepTop === undefined ? {} : { keepTop }),
+      ...(options.rankProtection ? { rankProtection: true } : {}),
+      ...(options.bestPartFirst ? { bestPartFirst: true } : {}),
     },
   };
 }
