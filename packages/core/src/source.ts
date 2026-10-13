@@ -1,6 +1,6 @@
 import type { CandidateSourceKind, MemoryCandidate, PickOptions, PickResult } from './pick.js';
 import { DEFAULT_MAX_QUESTION_TEXT, pick } from './pick.js';
-import { stripSearchInstructions } from './search.js';
+import { phraseCount, stripSearchInstructions } from './search.js';
 
 /** What a source is asked for, once per search. */
 export interface CandidateReadRequest {
@@ -10,6 +10,9 @@ export interface CandidateReadRequest {
    *  line contributes its own results alongside the original task.
    *  Omit or supply [] for a single search; no model writes these lines. */
   readonly searchLines?: readonly string[];
+  /** Exact contiguous word phrases, retaining short words. Matched
+   *  against candidate text and titles; each phrase adds a separate search feed. */
+  readonly searchPhrases?: readonly string[];
   /** Remove explicit answer-format and citation clauses from search
    *  text only. Off by default; subject, counting and date needs remain. */
   readonly stripSearchInstructions?: boolean;
@@ -92,15 +95,22 @@ export interface PickSourcesResult extends PickResult {
   readonly reads: readonly CandidateReadResult[];
 }
 
-function searchTasks(request: CandidateReadRequest): string[] {
+function searchTasks(request: CandidateReadRequest): { task: string; phrase: boolean }[] {
   const searchTask = (task: string) => request.stripSearchInstructions ? stripSearchInstructions(task) : task;
-  const tasks = [searchTask(request.task)];
-  const seen = new Set([tasks[0]!.trim()]);
+  const tasks = [{ task: searchTask(request.task), phrase: false }];
+  const seen = new Set([tasks[0]!.task.trim()]);
   for (const line of request.searchLines ?? []) {
     const task = searchTask(line.trim());
     if (!task || seen.has(task.trim())) continue;
     seen.add(task.trim());
-    tasks.push(task);
+    tasks.push({ task, phrase: false });
+  }
+  const phrases = new Set<string>();
+  for (const line of request.searchPhrases ?? []) {
+    const task = line.trim();
+    if (!task || phrases.has(task)) continue;
+    phrases.add(task);
+    tasks.push({ task, phrase: true });
   }
   return tasks;
 }
@@ -110,7 +120,7 @@ async function readSearches(
   request: CandidateReadRequest,
 ): Promise<CandidateReadResult> {
   const tasks = searchTasks(request);
-  if (tasks.length === 1) return source.read({ ...request, task: tasks[0]! });
+  if (tasks.length === 1) return source.read({ ...request, task: tasks[0]!.task });
 
   const union = new Map<string, { candidate: MemoryCandidate; ranks: (number | null)[]; best: number }>();
   const reasons = new Set<string>();
@@ -119,8 +129,23 @@ async function readSearches(
   let resolvedRevision: string | undefined;
   let complete = true;
   let readAny = false;
-  for (const [lane, task] of tasks.entries()) {
-    const read = await source.read({ ...request, task, ...(revision === undefined ? {} : { revision }) });
+  for (const [lane, { task, phrase }] of tasks.entries()) {
+    // Phrase filtering must precede the per-read limit.
+    let read = await source.read({ ...request, task,
+      ...(phrase ? { limit: undefined } : {}),
+      ...(revision === undefined ? {} : { revision }) });
+    if (phrase && read.status === 'read') {
+      const matches = read.candidates.map((candidate) => ({ candidate, count: phraseCount(candidate.text, task) + phraseCount(candidate.title, task) }))
+        .filter(({ count }) => count > 0)
+        .sort((left, right) => right.count - left.count || left.candidate.id.localeCompare(right.candidate.id));
+      const limited = request.limit !== undefined && matches.length > request.limit;
+      read = { ...read,
+        candidates: (limited ? matches.slice(0, request.limit) : matches)
+          .map(({ candidate, count }) => ({ ...candidate, signals: { phrase: count } })),
+        complete: read.complete && !limited,
+        ...(limited ? { partial: [read.partial, `the phrase limit kept ${request.limit} of ${matches.length} candidates`].filter(Boolean).join('; ') } : {}),
+      };
+    }
     if (read.status === 'absent') {
       absent.add(read.reason);
       reasons.add(`search ${lane + 1} absent: ${read.reason}`);

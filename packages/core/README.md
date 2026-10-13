@@ -61,6 +61,7 @@ const picked = await pickFromSources(
   {
     task,
     searchLines: ['Backup copies are encrypted and tested by restoring them.'],
+    searchPhrases: ['restored a', 'tested the backup'],
     stripSearchInstructions: true,
   },
   { task, decide, limits: { maxCandidates: 200 } },
@@ -75,12 +76,31 @@ const picked = await pickFromSources(
   interleaved feed. Their union can exceed that number, so extra searches
   add decisions without displacing original candidates. Batch and time
   limits still apply to the combined run.
-- **Read budget:** `request.limit` applies to each source read. Markdown
+- **Read budget:** `request.limit` applies to each keyword source read. Markdown
   and chat keep their best matches; git history enumerates the latest
   commits before ranking. A git read limit therefore excludes older
-  commits from every search. Resolved revisions are reused across reads.
+  commits from keyword searches. Phrase searches filter before this limit,
+  as described below. Resolved revisions are reused across reads.
 - **Single search:** Omit `searchLines` or pass `[]`. Duplicate lines
   and lines that repeat the original task add no read.
+
+`searchPhrases` adds exact, contiguous word searches over candidate text and titles.
+Case and punctuation are ignored; short words and word order remain.
+For example, “got my” matches “I even got my vinyl signed”, while
+“forgot my” and “got a copy of my” do not match. There is no stemming.
+A phrase cannot span the title and text. Matches are ordered by occurrence
+count, then item id.
+The original task and keyword lines keep their ordinary search behavior.
+
+Phrase matching runs in core after the source reads its candidates,
+before the per-read `limit` is applied. It asks the source to enumerate
+without that limit, so a phrase read can cost more local I/O than a keyword
+read. Exclusions, revision pins and cancellation still reach the reader.
+A source that stops enumeration remains incomplete. A phrase with no
+matches contributes no candidates. The per-search decision budget also
+applies to each phrase; only matching candidates enter that feed.
+Omit `searchPhrases` or pass `[]` to keep phrase searches off.
+Curate generates no phrases and makes no model call.
 
 For direct `pick` calls, hosts supplying `searchRanks` must include the
 original search at index 0 and extra searches after it. Supply ranks for
@@ -103,13 +123,33 @@ answer accuracy. The union comparisons use a budget per search.
 | Option | Default | Measured reason |
 | --- | --- | --- |
 | **Reference selection** | Keep every scored item; bar 0 | In the saved-decision sweep, 0.05/0.5 removed every fed fragment of 50 answer turns; 0.2/0.6 removed 70; a single 0.6 cut removed 183. Keeping everything added no selection losses. Seven of 445 labelled turns were absent from the feed. This measures retention before curation, not final answer accuracy. |
-| **Extra search lines** | Run when supplied | At 100 parts per search, a hypothetical passage adds 25 answer turns and 64.3 decision items per question; at 200, it adds 14 turns and 118.8 items. The original feed stays intact. At 600, it adds no labelled evidence and 150.9 items. |
+| **Extra search lines** | Run when supplied | Using the chat package, five subject lines plus five alternate-name lines at 100 parts reach 440/445 turns and add 207.3 decisions per question. At 200, five subject lines reach 442/445 and add 214.2. At 600, task-only search reaches all 445; extra lines add no labelled evidence. |
+| **Phrase searches** | Off unless supplied | One event phrase recovers one extra labelled turn at 100 parts for 0.9 extra decisions per question on average. Keyword lines also recover that turn. On its sports-event order question, the phrase adds two parts, compared with 58 for one subject line. At 200 and 600 it adds no labelled turns. |
 | **Instruction removal** | Off | It changed zero tuning questions and ranks. Benefit on tasks with output instructions is unmeasured. |
 | **Rank protection** | Off | In a 60-question cached sample, recall in the first four items fell from 94.09% to 84.68%; in the first eight, from 100% to 99.71%. Full-feed packing is unmeasured. |
 | **Best part first** | Off | One part per session reached 259/445 answer turns. Even an optimistic continuation at 0.4 reached only 423/445. This does not establish a safe way to skip parts. |
 
-The extra-line gains use keyword search of the hypothetical passage.
-They do not measure vector search. The rank sample uses saved “needed”
+The line comparison generates five subject lines, five alternate-name
+lines and five subject-free event phrases per tuning question with a
+subscription model, then tests prefixes of one, three and five.
+Keywords use the chat package's default ranking. Core unions the feeds
+and applies the budget per search. These host settings retain every
+labelled turn and every complete labelled turn found with all fifteen
+lines, checked question by question:
+
+| Parts per search | Subject lines | Alternate-name lines | Event phrases |
+| --- | --- | --- | --- |
+| 100 | 5 | 5 | 0 |
+| 200 | 5 | 0 | 0 |
+| 600 | 0 | 0 | 0 |
+
+Hosts can keep event phrases for cheaper retrieval of specific events.
+The sports-event order example uses “watched” to recover its third
+labelled turn. A count/list-only route would omit that question.
+The combined keyword settings also find that turn, so omitting phrases
+from these combined defaults preserves its evidence.
+
+The line gains use keyword and phrase search, not vector search. The rank sample uses saved “needed”
 answers, rather than a complete decision feed. The document check uses
 a 0.4 continuation gate; it does not validate the optional 0.3 gate below.
 
