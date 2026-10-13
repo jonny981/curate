@@ -1,11 +1,11 @@
 # @curatejs/core
 
-Curate selects the memory an agent needs for a task from typed sources. Its RDC process ranks candidates, asks your decision function which ones matter, and asks your writer to turn the selected evidence into the dated log the task needs. Selection and curation each return a record.
+Curate selects the memory an agent needs for a task from typed sources. Its RDC process ranks candidates, asks your decision function how strongly each item bears on the task, and asks your writer to turn the evidence into the dated log the task needs. Selection and curation each return a record.
 
 ## RDC process
 
 - **Rank:** Order memory candidates by their signals.
-- **Decide:** Ask your decision function which candidates the task needs.
+- **Decide:** Keep every scored reference by default; use decision probability to order and weight it. Check rules against their separate applicability bar.
 - **Curate:** Call `curate(task, picked, { write })` to write the dated log the working model reads.
 
 ## Install
@@ -102,6 +102,7 @@ answer accuracy. The union comparisons use a budget per search.
 
 | Option | Default | Measured reason |
 | --- | --- | --- |
+| **Reference selection** | Keep every scored item; bar 0 | In the saved-decision sweep, 0.05/0.5 removed every fed fragment of 50 answer turns; 0.2/0.6 removed 70; a single 0.6 cut removed 183. Keeping everything added no selection losses. Seven of 445 labelled turns were absent from the feed. This measures retention before curation, not final answer accuracy. |
 | **Extra search lines** | Run when supplied | At 100 parts per search, a hypothetical passage adds 25 answer turns and 64.3 decision items per question; at 200, it adds 14 turns and 118.8 items. The original feed stays intact. At 600, it adds no labelled evidence and 150.9 items. |
 | **Instruction removal** | Off | It changed zero tuning questions and ranks. Benefit on tasks with output instructions is unmeasured. |
 | **Rank protection** | Off | In a 60-question cached sample, recall in the first four items fell from 94.09% to 84.68%; in the first eight, from 100% to 99.71%. Full-feed packing is unmeasured. |
@@ -116,7 +117,24 @@ a 0.4 continuation gate; it does not validate the optional 0.3 gate below.
 
 `pick(candidates, { task, decide })` ranks the candidates, asks `decide`
 in bounded batches, and returns the selected candidates with a
-`PickRecord`. `pickFromSources(sources, request, options)` reads the
+`PickRecord`. The reference threshold defaults to zero, so every reference
+with a valid decision probability is kept, including zero. The model
+orders and weights these items rather than dropping them. References
+with no valid decision answer remain unanswered; limits can leave items
+unassessed.
+
+For a single cut, set your own bar:
+
+```ts
+const picked = await pick(candidates, {
+  task, decide, thresholds: { reference: 0.05 },
+});
+```
+
+Rule applicability keeps its separate default bar of 0.6, adjustable
+through `thresholds.rule`. `applies: always` rules bypass that check.
+
+`pickFromSources(sources, request, options)` reads the
 sources first, then picks over the combined candidates; a rule source
 that returned `complete: false` or was absent makes the record's
 `rulesCoverage` `'incomplete'`, even when every supplied rule was
@@ -125,10 +143,9 @@ the same way.
 
 Each candidate's `changedPaths` names the repository paths it changed;
 `gitHistory` fills it from the commit's diff, never from paths the text
-mentions. After the threshold pass one more pass runs: a reference
-candidate answered at or above `linkedPathBar` (0.4 by default, below
-the reference threshold on purpose) still passes when a
-threshold-selected commit from the same `repository` names its `path` in
+mentions. With an optional reference cut enabled, a reference answered
+at or above `linkedPathBar` (0.4 by default) still passes when a selected
+commit from the same `repository` names its `path` in
 `changedPaths`. The record entry names the commit that carried it over
 in `link`, and a linked candidate never carries another. The bar is a
 chosen default, not a measured best; `PickThresholds.linkedPathBar`
@@ -191,56 +208,11 @@ the score when an item is about a different subject. These sets ask
 neither `own` nor `preference` of commits or notes. Fitted scores order
 evidence; they do not measure the chance of a correct final answer.
 
-### Optional decision rule
-
-`decisionRule` replaces the reference threshold with three outcomes.
-It is off when omitted. The chat package’s `CHAT_DECISION_RULE` supplies bars of 0.3 and 0.7
-and the named `personal_fact` question: whether the item states a
-personal fact that bears on the task.
-
-```ts
-import { pick } from '@curatejs/core';
-import { CHAT_CASCADE, CHAT_DECISION_RULE } from '@curatejs/chat';
-
-const picked = await pick(candidates, {
-  task, decide, cascade: CHAT_CASCADE, decisionRule: CHAT_DECISION_RULE,
-});
-```
-
-- **Drop:** A score below `low` drops the item.
-- **Keep:** A score above `high` keeps the item.
-- **Check:** A score at either bar or between them keeps the item only
-  when the named second question answers at 0.5 or more.
-
-Supply `{ low, high, question: { key, instructions, true, false } }` to
-use other bars or another named question. Omitted bars default to 0.3
-and 0.7. Both bars must be between 0 and 1, with `low` at or below `high`.
-The rule applies to all reference candidates in the call; choose a
-source-suited second question when mixing sources.
-
-Questions with the same key must have the same wording and criteria;
-a conflicting definition fails before the decision function is called.
-An answer already returned for that key is reused. When the named
-question has not been asked, Curate asks it only for middle scores,
-after scoring. Its answer does not change that score.
-A missing, refused or failed second answer cannot keep the item.
-A limit that stops the second question before it is asked leaves the
-item unassessed. Rule candidates keep their own threshold, and
-`applies: always` rules remain selected without a question.
-A changed-path link cannot override a drop or a failed check.
-
-Each scored reference entry records `outcome: 'drop' | 'keep' | 'check'`.
-A check also records `agreement`, including the question key and answer.
-The entry's `status` says whether it was selected, rejected or
-unassessed. The record keeps the rule and its resolved bars.
-When the rule is omitted, no outcome or agreement fields are added.
-
-By default, selected items are ordered by decision probability, strongest first,
-with ranked order breaking ties. There is no fixed character cap.
+By default, all scored reference items are kept and ordered by decision
+probability, strongest first, with ranked order breaking ties. There is no fixed character cap.
 `keepTop: N` marks the first N ranked keyword hits. Those that pass
 the threshold move to the front; rejected items stay rejected. N must be a
-nonnegative safe integer. Fitted sets, the decision rule and top-hit
-promotion are opt-in.
+nonnegative safe integer. Fitted sets and top-hit promotion are opt-in.
 
 ### Optional rank protection
 
@@ -250,9 +222,9 @@ with extra searches it is the best rank across them. The weight `w` is
 0.75 at ranks 1–3, 0.60 at 4–10, and 0.40 below that. Rules stay first,
 and `keepTop` retains its explicit promotion.
 
-This affects order only. Every item still has to pass its threshold or
-decision rule. The record stores `orderScore` separately; curator weights
-remain the original decision probabilities. Omit the option or pass
+This affects order only. Optional reference cuts still apply; rules keep
+their separate applicability bar. The record stores `orderScore`
+separately; curator weights remain the original decision probabilities. Omit the option or pass
 `false` to retain the default order and record format.
 
 ### Optional best part first
@@ -264,11 +236,11 @@ their file, and commits remain separate items. Source and revision are
 part of every group identity. Hosts can supply `candidate.documentId`
 for their own parts; candidates without document metadata stay separate.
 
-Curate applies the representative's question set and decision rule
-before asking about its other fed parts. It continues when that part is
-selected, scores at least `decisionRule.low` (0.3 by default), or has a
-missing, refused or failed answer. A rejected middle-band check still
-continues. A confident rejection below the low bar skips the other parts;
+Curate applies the representative's question set before asking about its
+other fed parts. It continues when that part is selected, scores at least
+0.3, or has a missing, refused or failed answer. With the default reference
+bar of zero, every scored representative continues. When an optional cut
+is enabled, a rejected representative below 0.3 skips the other parts;
 their records say `unassessed` with reason `document`. They are never
 recorded as rejected without a decision.
 
@@ -283,10 +255,14 @@ option or pass `false` to judge the whole feed as usual.
 `pickFromSources`. It calls your `write(prompt, signal)` function to
 write the log the task needs, with no fixed character cap.
 `prompt.instructions` contains the v4 dated-log wording and three weight
-bands: 0.6 or more, 0.1 to 0.6, and below 0.1. `prompt.body` contains the
+bands: 0.6 or more, 0.1 to below 0.6, and below 0.1. `prompt.body` contains the
 task and selected reference items in their selected order. Each header
 keeps the full item id, the candidate's date value, and its decision
-weight rounded to two decimal places. A missing date stays missing.
+weight without rounding. A missing date stays missing.
+The instructions ask the writer to keep every observation from items at
+0.6 or more, include useful facts from items at 0.1 to below 0.6, and use
+items below 0.1 only when they clearly state a needed fact. The prompt
+asks for less space for low scores; they remain available as evidence.
 When ids clash across sources, their headers use `[sourceId, id]` as a
 JSON string so the writer can tell them apart.
 
@@ -337,7 +313,7 @@ lines keep their strict checks when preferences are enabled.
 `preferenceAdvice`, `preferenceChange`, `items`, `logLength`, `condensed`,
 and `overContextLimit`. It includes `taskDate` when supplied.
 Each item includes its prompt `id`, the full `candidate`, and
-the exact decision `weight` before rounding.
+the exact decision `weight`.
 
 Set `contextLimit` to the positive integer number of characters the
 caller's working model can accept:

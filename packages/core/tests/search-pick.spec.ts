@@ -9,8 +9,6 @@ const answer = (probability: number): PickAnswer => ({ status: 'answered', proba
 const criterion = (key: string): PickCriterion => ({
   key, instructions: `Check ${key}?`, true: `${key} applies.`, false: `${key} does not apply.`,
 });
-const agreement = criterion('agreement');
-const decisionRule = { question: agreement };
 
 function decisions(resolve: (question: PickQuestion) => PickAnswer | undefined = () => answer(0.9)) {
   const calls: PickQuestion[][] = [];
@@ -141,19 +139,19 @@ describe('rank protection', () => {
   });
 
   it('passes decision probabilities to the curator after rank protection changes the order', async () => {
-    const stub = decisions((question) => answer(question.id === 'first' ? 0.6 : 0.9));
+    const stub = decisions((question) => answer(question.id === 'first' ? 0.600123 : 0.9));
     const picked = await pick([
       item('first', { signals: { score: 9 } }), item('second'),
     ], { task: 'Find evidence', decide: stub.decide, rankProtection: true });
     const curated = await curate('Find evidence', picked, {
       write: async (prompt) => {
-        expect(prompt.body).toContain('### first (0.60): first');
-        expect(prompt.body).toContain('### second (0.90): second');
+        expect(prompt.body).toContain('### first (0.600123): first');
+        expect(prompt.body).toContain('### second (0.9): second');
         return '[2025-01-01] Evidence (said 2025-01-01; first, second)';
       },
     });
     expect(curated.record.items.map((entry) => [entry.id, entry.weight]))
-      .toEqual([['first', 0.6], ['second', 0.9]]);
+      .toEqual([['first', 0.600123], ['second', 0.9]]);
   });
 
   it('uses a candidate’s best lane rank instead of its weaker keyword rank', async () => {
@@ -174,7 +172,7 @@ describe('rank protection', () => {
       if (question.id === 'refused' || question.id === 'error') return { status: question.id };
       return answer(question.id === 'rejected' ? 0.1 : 0.9);
     });
-    const result = await pick(candidates, { task: 'Find evidence', decide: stub.decide, rankProtection: true });
+    const result = await pick(candidates, { task: 'Find evidence', decide: stub.decide, rankProtection: true, thresholds: { reference: 0.6 } });
     expect(result.selected.map((candidate) => candidate.id)).toEqual(['selected']);
     expect(result.record.candidates.map((entry) => entry.status))
       .toEqual(['rejected', 'unanswered', 'unanswered', 'unanswered', 'selected']);
@@ -202,7 +200,7 @@ describe('best document part first', () => {
     await pick([
       item('repeat', { documentId: 'guide', signals: { score: 9 }, text: 'battery battery battery' }),
       item('best', { documentId: 'guide', title: 'CHARGE schedule', text: 'battery' }),
-    ], { task: 'battery charge schedule', decide: stub.decide, bestPartFirst: true });
+    ], { task: 'battery charge schedule', decide: stub.decide, bestPartFirst: true, thresholds: { reference: 0.6 } });
     expect(stub.calls.map((batch) => batch.map((question) => question.id))).toEqual([['best'], ['repeat']]);
   });
 
@@ -226,7 +224,7 @@ describe('best document part first', () => {
     const result = await pick([
       item('tail', { ...left, text: 'Background' }),
       item('representative', { ...right, text: 'battery charge' }),
-    ], { task: 'battery charge', decide: stub.decide, bestPartFirst: true });
+    ], { task: 'battery charge', decide: stub.decide, bestPartFirst: true, thresholds: { reference: 0.6 } });
     expect(stub.ids()).toEqual(['representative']);
     expect(result.record.candidates[0]).toMatchObject({ status: 'unassessed', reason: 'document' });
   });
@@ -255,43 +253,30 @@ describe('best document part first', () => {
     await pick([
       item('tail', { documentId: 'shared', contentRef: 'a.md#L1-L2' }),
       item('representative', { documentId: 'shared', contentRef: 'b.md#L3-L4', text: 'battery charge' }),
-    ], { task: 'battery charge', decide: stub.decide, bestPartFirst: true });
+    ], { task: 'battery charge', decide: stub.decide, bestPartFirst: true, thresholds: { reference: 0.6 } });
     expect(stub.ids()).toEqual(['representative']);
   });
 
-  it.each([0.3, 0.5, 0.8])('expands at probability %s even if the middle agreement rejects', async (probability) => {
-    const stub = decisions((question) => answer(question.questionKey === 'agreement'
-      ? (question.id === 'representative' ? 0 : 1)
-      : question.id === 'representative' ? probability : 0.9));
+  it.each([0, 0.2, 0.3, 0.5, 0.8])('expands a selected representative at probability %s by default', async (probability) => {
+    const stub = decisions((question) => answer(question.id === 'representative' ? probability : 0.9));
     const result = await pick(parts(), {
-      task: 'battery charge schedule', decide: stub.decide, bestPartFirst: true, decisionRule,
+      task: 'battery charge schedule', decide: stub.decide, bestPartFirst: true,
     });
-    expect(stub.ids()).toContain('tail');
-    expect(result.record.candidates[0]).toMatchObject({ status: 'selected' });
-    expect(result.record.candidates[1]).toMatchObject({ status: probability > 0.7 ? 'selected' : 'rejected' });
+    expect(stub.ids()).toEqual(['representative', 'tail']);
+    expect(result.selected).toHaveLength(2);
   });
 
-  it('skips the remaining parts only when the representative confidently falls below the low bar', async () => {
+  it('skips remaining parts when an explicitly rejected representative scores below 0.3', async () => {
     const stub = decisions((question) => answer(question.id === 'representative' ? 0.299 : 0.9));
     const result = await pick(parts(), {
-      task: 'battery charge schedule', decide: stub.decide, bestPartFirst: true, decisionRule,
+      task: 'battery charge schedule', decide: stub.decide, bestPartFirst: true, thresholds: { reference: 0.6 },
     });
     expect(stub.ids()).toEqual(['representative']);
     expect(result.record.candidates[0]).toMatchObject({ status: 'unassessed', reason: 'document' });
     expect(result.record.candidates[1]).toMatchObject({ status: 'rejected', probability: 0.299 });
   });
 
-  it('uses an overridden low bar for deciding whether to expand', async () => {
-    const stub = decisions((question) => answer(question.id === 'representative' ? 0.39 : 0.9));
-    const result = await pick(parts(), {
-      task: 'battery charge schedule', decide: stub.decide, bestPartFirst: true,
-      decisionRule: { ...decisionRule, low: 0.4 },
-    });
-    expect(stub.ids()).toEqual(['representative']);
-    expect(result.record.candidates[0]).toMatchObject({ status: 'unassessed', reason: 'document' });
-  });
-
-  it('expands a selected representative even below the default low bar', async () => {
+  it('expands a selected representative even below the 0.3 continuation score', async () => {
     const stub = decisions((question) => answer(question.id === 'representative' ? 0.2 : 0.9));
     const result = await pick(parts(), {
       task: 'battery charge schedule', decide: stub.decide, bestPartFirst: true, thresholds: { reference: 0.1 },
@@ -304,7 +289,7 @@ describe('best document part first', () => {
     const stub = decisions((question) => question.id === 'representative'
       ? status === 'missing' ? undefined : { status }
       : answer(0.9));
-    const result = await pick(parts(), { task: 'battery charge schedule', decide: stub.decide, bestPartFirst: true });
+    const result = await pick(parts(), { task: 'battery charge schedule', decide: stub.decide, bestPartFirst: true, thresholds: { reference: 0.6 } });
     expect(stub.ids()).toEqual(['representative', 'tail']);
     expect(result.record.candidates[0]).toMatchObject({ status: 'selected' });
     expect(result.record.candidates[1]).toMatchObject({ status: 'unanswered', answer: status });
@@ -335,16 +320,16 @@ describe('best document part first', () => {
     expect(result.record.candidates[1]).toMatchObject({ status: 'unassessed', reason: 'limits' });
   });
 
-  it('completes representative cascades and agreement before asking another part', async () => {
+  it('completes representative cascades before asking another part', async () => {
     const cascade: PickCascade = {
       bias: 0, first: 'relevant', band: [0.1, 0.9], firstOnly: { bias: 0, weight: 1 },
       questions: [{ ...criterion('relevant'), weight: 1 }, { ...criterion('needed'), weight: 0 }],
     };
-    const stub = decisions((question) => answer(question.questionKey === 'agreement' ? 0.1 : 0.5));
-    await pick(parts(), { task: 'battery charge schedule', decide: stub.decide, bestPartFirst: true, cascade, decisionRule });
+    const stub = decisions((question) => answer(0.5));
+    await pick(parts(), { task: 'battery charge schedule', decide: stub.decide, bestPartFirst: true, cascade });
     expect(stub.calls.map((batch) => batch.map((question) => `${question.id}:${question.questionKey}`))).toEqual([
-      ['representative:relevant'], ['representative:needed'], ['representative:agreement'],
-      ['tail:relevant'], ['tail:needed'], ['tail:agreement'],
+      ['representative:relevant'], ['representative:needed'],
+      ['tail:relevant'], ['tail:needed'],
     ]);
   });
 
@@ -359,7 +344,7 @@ describe('best document part first', () => {
       return answer(question.id === 'representative' ? 0.1 : 0.9);
     });
     const result = await pick(parts(), {
-      task: 'battery charge schedule', decide: stub.decide, bestPartFirst: true, cascade,
+      task: 'battery charge schedule', decide: stub.decide, bestPartFirst: true, cascade, thresholds: { reference: 0.6 },
     });
     expect(stub.ids()).toEqual(['representative', 'representative', 'tail', 'tail']);
     expect(result.record.candidates[0]).toMatchObject({ status: 'selected' });
@@ -373,7 +358,7 @@ describe('best document part first', () => {
     };
     const stub = decisions((question) => answer(question.id === 'representative' ? 0.1 : 0.9));
     const result = await pick(parts(), {
-      task: 'battery charge schedule', decide: stub.decide, bestPartFirst: true, cascade,
+      task: 'battery charge schedule', decide: stub.decide, bestPartFirst: true, cascade, thresholds: { reference: 0.6 },
     });
     expect(stub.calls.map((batch) => batch.map((question) => `${question.id}:${question.questionKey}`)))
       .toEqual([['representative:relevant']]);
@@ -406,7 +391,7 @@ describe('best document part first', () => {
       item('commit', { sourceId: 'commits', repository: 'repo', changedPaths: ['guide.md'] }),
       item('tail', { documentId: 'guide', repository: 'repo', path: 'guide.md' }),
       item('representative', { documentId: 'guide', text: 'battery charge schedule' }),
-    ], { task: 'battery charge schedule', decide: stub.decide, bestPartFirst: true });
+    ], { task: 'battery charge schedule', decide: stub.decide, bestPartFirst: true, thresholds: { reference: 0.6 } });
     expect(result.record.candidates[1]).toMatchObject({
       status: 'selected', probability: 0.45, link: { sourceId: 'commits', id: 'commit' },
     });
@@ -455,10 +440,10 @@ describe('stopping document assessment', () => {
     expect(result.record.candidates[0]).toMatchObject({ status: 'unassessed', reason: 'time' });
   });
 
-  it('retains the stop reason when the representative’s agreement cannot be asked', async () => {
+  it('retains the stop reason when the representative’s fitted assessment cannot finish', async () => {
     const stub = decisions(() => answer(0.5));
     const result = await pick(parts(), {
-      task: 'battery charge', decide: stub.decide, bestPartFirst: true, decisionRule, limits: { maxBatches: 1 },
+      task: 'battery charge', decide: stub.decide, bestPartFirst: true, cascade: { bias: 0, first: 'one', band: [0.1, 0.9], firstOnly: { bias: 0, weight: 1 }, questions: [{ ...criterion('one'), weight: 1 }, { ...criterion('two'), weight: 1 }] }, limits: { maxBatches: 1 },
     });
     expect(stub.ids()).toEqual(['representative']);
     expect(result.record.candidates.map((entry) => [entry.status, 'reason' in entry ? entry.reason : undefined]))
@@ -485,7 +470,7 @@ describe('stopping document assessment', () => {
     const result = await pick([
       item('rule-a', { role: 'rule', documentId: 'rules', signals: { score: 9 } }),
       item('rule-b', { role: 'rule', documentId: 'rules' }),
-    ], { task: 'battery charge', decide: stub.decide, bestPartFirst: true });
+    ], { task: 'battery charge', decide: stub.decide, bestPartFirst: true, thresholds: { reference: 0.6 } });
     expect(stub.ids()).toEqual(['rule-a', 'rule-b']);
     expect(result.record.rulesCoverage).toBe('complete');
     expect(result.selected.map((candidate) => candidate.id)).toEqual(['rule-b']);

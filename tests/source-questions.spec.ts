@@ -3,16 +3,11 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { pick, pickFromSources, type CandidateSource, type CandidateSourceKind, type MemoryCandidate, type PickAnswer, type PickCascade, type PickCriterion, type PickDecide, type PickDecisionRule } from '@curatejs/core';
+import { pick, pickFromSources, type CandidateSource, type CandidateSourceKind, type MemoryCandidate, type PickCascade, type PickCriterion, type PickDecide } from '@curatejs/core';
 import { chat } from '@curatejs/chat';
 import { gitHistory } from '@curatejs/git';
 import { knowledgeBase, rules } from '@curatejs/markdown';
 
-const agreement: PickCriterion = {
-  key: 'agreement', instructions: 'Does the task agree with this item?',
-  true: 'The task agrees.', false: 'The task conflicts.',
-};
-const decisionRule: PickDecisionRule = { question: agreement };
 const criterion = (key: string): PickCriterion => ({
   key, instructions: `Check ${key}?`, true: `${key} applies.`, false: `${key} does not apply.`,
 });
@@ -61,7 +56,7 @@ describe('questions chosen by source kind', () => {
       ['conversation:chat-first', 'commits:history-first', 'notes:note-evidence'],
       ['commits:history-next'],
     ]);
-    expect(result.selected.map((c) => c.sourceId)).toEqual(['notes']);
+    expect(result.selected.map((c) => c.sourceId)).toEqual(['notes', 'commits', 'conversation']);
     expect(result.record.candidates.map((c) => c.sourceKind)).toEqual(['chat', 'git-history', 'markdown']);
     expect(result.record.candidates[0]?.questions).toEqual([
       { key: 'chat-first', status: 'answered', probability: 0.1 }, { key: 'chat-next', status: 'missing' },
@@ -139,18 +134,16 @@ describe('questions chosen by source kind', () => {
     expect(result.record.candidates[1]).not.toHaveProperty('sourceKind');
   });
 
-  it('leaves selection and records unchanged when optional routing and the decision rule are absent', async () => {
+  it('leaves selection and records unchanged when optional routing are absent', async () => {
     const candidates = [candidate('a'), candidate('b')];
     const original = await pick(candidates, { task: 'Choose evidence', cascade: fitted('shared'), decide: answers(0.9) });
     const disabled = await pick(candidates, {
       task: 'Choose evidence', cascade: fitted('shared'), decide: answers(0.9),
-      sourceKinds: { notes: 'chat' }, cascadesByKind: undefined, decisionRule: undefined,
+      sourceKinds: { notes: 'chat' }, cascadesByKind: undefined,
     });
     expect(disabled).toEqual(original);
     expect(disabled.record).not.toHaveProperty('sourceKinds');
     expect(disabled.record).not.toHaveProperty('cascadesByKind');
-    expect(disabled.record).not.toHaveProperty('decisionRule');
-    expect(disabled.record.candidates.every((entry) => !('outcome' in entry) && !('agreement' in entry))).toBe(true);
     const read = await pickFromSources([source('notes', 'chat')], { task: 'Choose evidence' }, {
       task: 'Choose evidence', cascade: fitted('shared'), decide: answers(0.9),
     });
@@ -160,109 +153,14 @@ describe('questions chosen by source kind', () => {
   });
 });
 
-describe('reference decision rule', () => {
-  it('drops below the low bar, keeps above the high bar, and asks only the inclusive middle', async () => {
-    const probabilities: Record<string, number> = { low: 0.29, lower: 0.3, middle: 0.5, upper: 0.7, high: 0.71 };
-    const calls: string[][] = [];
-    const result = await pick(Object.keys(probabilities).map((id) => candidate(id)), {
-      task: 'Choose evidence', decisionRule, thresholds: { reference: 1 },
-      decide: async ({ questions }) => {
-        calls.push(questions.map((q) => `${q.id}:${q.questionKey ?? 'relevance'}`));
-        return Object.fromEntries(questions.map((q) => [q.key, {
-          status: 'answered', probability: q.questionKey === 'agreement' ? (q.id === 'upper' ? 0.49 : 0.5) : probabilities[q.id]!,
-        }]));
-      },
-    });
-    expect(calls).toEqual([
-      ['high:relevance', 'low:relevance', 'lower:relevance', 'middle:relevance', 'upper:relevance'],
-      ['lower:agreement', 'middle:agreement', 'upper:agreement'],
-    ]);
-    expect(result.selected.map((c) => c.id)).toEqual(['high', 'middle', 'lower']);
-    expect(result.record.candidates.map((c) => [c.id, c.outcome, c.status])).toEqual([
-      ['low', 'drop', 'rejected'], ['lower', 'check', 'selected'], ['middle', 'check', 'selected'],
-      ['upper', 'check', 'rejected'], ['high', 'keep', 'selected'],
-    ]);
-    expect(result.record.candidates[1]?.agreement).toEqual({ key: 'agreement', status: 'answered', probability: 0.5 });
-    expect(result.record.candidates[0]).not.toHaveProperty('agreement');
-    expect(result.record.candidates[4]).not.toHaveProperty('agreement');
-    expect(result.record.decisionRule).toEqual({ ...decisionRule, low: 0.3, high: 0.7 });
-  });
-
-  it('honours custom bars including one shared boundary', async () => {
-    const result = await pick([candidate('a')], {
-      task: 'Choose evidence', decisionRule: { ...decisionRule, low: 0.5, high: 0.5 }, decide: answers(0.5),
-    });
-    expect(result.record.candidates[0]).toMatchObject({
-      outcome: 'check', status: 'selected', agreement: { status: 'answered', probability: 0.5 },
-    });
-    expect(result.record.decisionRule).toEqual({ ...decisionRule, low: 0.5, high: 0.5 });
-  });
-
-  it('reuses the matching fitted answer without asking agreement twice', async () => {
-    const calls: string[][] = [];
-    const result = await pick([candidate('a')], {
-      task: 'Choose evidence', decisionRule, cascade: { bias: 0, questions: [{ ...agreement, weight: 0 }] },
-      decide: async ({ questions }) => {
-        calls.push(questions.map((q) => q.questionKey!));
-        expect(questions[0]).toMatchObject({
-          question: agreement.instructions, trueCriterion: agreement.true, falseCriterion: agreement.false,
-        });
-        return Object.fromEntries(questions.map((q) => [q.key, { status: 'answered', probability: 0.6 }]));
-      },
-    });
-    expect(calls).toEqual([['agreement']]);
-    expect(result.record.candidates[0]).toMatchObject({
-      status: 'selected', probability: 0.5, outcome: 'check', agreement: { probability: 0.6 },
-    });
-  });
-
-  it('asks an agreement skipped by the first-question shortcut only for a middle score', async () => {
-    const calls: string[][] = [];
-    const result = await pick([candidate('a')], {
-      task: 'Choose evidence', decisionRule,
-      cascade: {
-        bias: 0, first: 'evidence', band: [0.4, 0.6], firstOnly: { bias: 0, weight: 0 },
-        questions: [{ ...criterion('evidence'), weight: 1 }, { ...agreement, weight: 1 }],
-      },
-      decide: async ({ questions }) => {
-        calls.push(questions.map((q) => q.questionKey!));
-        return Object.fromEntries(questions.map((q) => [q.key, {
-          status: 'answered', probability: q.questionKey === 'evidence' ? 0.9 : 0.7,
-        }]));
-      },
-    });
-    expect(calls).toEqual([['evidence'], ['agreement']]);
-    expect(result.record.candidates[0]).toMatchObject({
-      status: 'selected', probability: 0.5, agreement: { status: 'answered', probability: 0.7 },
-    });
-    expect(result.record.candidates[0]?.questions?.[1]).toEqual({ key: 'agreement', status: 'answered', probability: 0.7 });
-  });
-
-  it('keeps answer identities separate for the same candidate id in different sources', async () => {
-    const result = await pick([candidate('same', { sourceId: 'one' }), candidate('same', { sourceId: 'two' })], {
-      task: 'Choose evidence', decisionRule, cascadesByKind: { chat: fitted('chat'), markdown: fitted('note') },
-      sourceKinds: { one: 'chat', two: 'markdown' },
-      decide: async ({ questions }) => {
-        expect(new Set(questions.map((q) => q.key)).size).toBe(questions.length);
-        return Object.fromEntries(questions.map((q) => [q.key, {
-          status: 'answered', probability: q.questionKey === 'agreement' ? (q.sourceId === 'one' ? 1 : 0) : 0.5,
-        }]));
-      },
-    });
-    expect(result.selected.map((c) => c.sourceId)).toEqual(['one']);
-    expect(result.record.candidates.map((c) => c.agreement)).toEqual([
-      { key: 'agreement', status: 'answered', probability: 1 },
-      { key: 'agreement', status: 'answered', probability: 0 },
-    ]);
-  });
-
-  it('applies neither reference question sets nor the reference decision rule to rules', async () => {
+describe('rule questions', () => {
+  it('does not apply reference question sets to rules', async () => {
     const asked: string[] = [];
     const result = await pick([
       candidate('always', { role: 'rule', applies: 'always' }),
       candidate('applies', { role: 'rule' }), candidate('irrelevant', { role: 'rule' }), candidate('reference'),
     ], {
-      task: 'Choose evidence', decisionRule, sourceKinds: { notes: 'markdown' },
+      task: 'Choose evidence', sourceKinds: { notes: 'markdown' },
       cascadesByKind: { markdown: fitted('evidence') }, thresholds: { rule: 0.8 },
       decide: async ({ questions }) => {
         asked.push(...questions.map((q) => `${q.id}:${q.questionKey ?? q.role}`));
@@ -274,78 +172,10 @@ describe('reference decision rule', () => {
     expect(asked).toEqual(['applies:rule', 'irrelevant:rule', 'reference:evidence']);
     expect(result.selected.map((c) => c.id)).toEqual(['always', 'applies', 'reference']);
     expect(result.record.candidates[0]).toMatchObject({ status: 'selected', asked: false });
-    expect(result.record.candidates.slice(0, 3).every((c) => !('outcome' in c) && !('agreement' in c) && !('questions' in c))).toBe(true);
+    expect(result.record.candidates.slice(0, 3).every((c) => !('questions' in c))).toBe(true);
     expect(result.record.rulesCoverage).toBe('complete');
   });
 
-  it.each<PickAnswer | undefined>([
-    undefined, { status: 'missing', detail: 'No answer' }, { status: 'refused', detail: 'Declined' },
-    { status: 'error', detail: 'Failed' }, { status: 'answered', probability: NaN },
-  ])('rejects a middle item when its agreement answer is unusable: %j', async (answer) => {
-    const result = await pick([candidate('a')], {
-      task: 'Choose evidence', decisionRule,
-      decide: async ({ questions }) => Object.fromEntries(questions.flatMap((q) =>
-        q.questionKey === 'agreement' ? (answer ? [[q.key, answer]] : []) : [[q.key, { status: 'answered', probability: 0.5 }]])),
-    });
-    expect(result.selected).toEqual([]);
-    expect(result.record.candidates[0]).toMatchObject({ status: 'rejected', outcome: 'check', probability: 0.5 });
-    expect(result.record.candidates[0]?.agreement?.status).toBe(
-      answer?.status === 'answered' ? 'error' : answer?.status ?? 'missing',
-    );
-  });
-
-  it('records an agreement call failure as a rejected check', async () => {
-    const result = await pick([candidate('a')], {
-      task: 'Choose evidence', decisionRule,
-      decide: async (batch, signal) => {
-        if (batch.questions[0]?.questionKey === 'agreement') throw new Error('Decision unavailable');
-        return answers(0.5)(batch, signal);
-      },
-    });
-    expect(result.selected).toEqual([]);
-    expect(result.record.candidates[0]).toMatchObject({
-      status: 'rejected', outcome: 'check', agreement: { status: 'error', detail: 'Decision unavailable' },
-    });
-  });
-
-  it('does not ask agreement when the initial assessment is missing', async () => {
-    let calls = 0;
-    const result = await pick([candidate('a')], {
-      task: 'Choose evidence', decisionRule, decide: async () => { calls++; return {}; },
-    });
-    expect(calls).toBe(1);
-    expect(result.record.candidates[0]).toMatchObject({ status: 'unanswered', answer: 'missing' });
-    expect(result.record.candidates[0]).not.toHaveProperty('outcome');
-  });
-
-  it('does not let a selected commit rescue a reference rejected by agreement or the low bar', async () => {
-    const candidates = [
-      candidate('commit', { repository: 'project', changedPaths: ['guide.md', 'other.md'] }),
-      candidate('disagrees', { repository: 'project', path: 'guide.md' }),
-      candidate('too-low', { repository: 'project', path: 'other.md' }),
-    ];
-    const decide: PickDecide = async ({ questions }) => Object.fromEntries(questions.map((q) => [q.key, {
-      status: 'answered', probability: q.questionKey === 'agreement' ? 0 : q.id === 'commit' ? 0.9 : 0.5,
-    }]));
-    const ordinary = await pick(candidates, { task: 'Choose evidence', decide });
-    expect(ordinary.selected).toHaveLength(3);
-    const result = await pick(candidates, { task: 'Choose evidence', decide, decisionRule: { ...decisionRule, low: 0.6 } });
-    expect(result.selected.map((c) => c.id)).toEqual(['commit']);
-    expect(result.record.candidates.slice(1).map((c) => c.outcome)).toEqual(['drop', 'drop']);
-    const middle = await pick(candidates, { task: 'Choose evidence', decide, decisionRule });
-    expect(middle.selected.map((c) => c.id)).toEqual(['commit']);
-    expect(middle.record.candidates.slice(1).map((c) => c.outcome)).toEqual(['check', 'check']);
-    expect(middle.record.candidates.slice(1).every((c) => !('link' in c))).toBe(true);
-  });
-
-  it('rejects an agreement key that conflicts with the ordinary relevance question', async () => {
-    let calls = 0;
-    await expect(pick([candidate('a')], {
-      task: 'Choose evidence', decisionRule: { question: { ...agreement, key: 'reference' } },
-      decide: async () => { calls++; return {}; },
-    })).rejects.toThrow('decisionRule');
-    expect(calls).toBe(0);
-  });
 });
 
 describe('built-in source routing', () => {
@@ -384,23 +214,23 @@ describe('built-in source routing', () => {
       const kindFor = new Map(readers.map((reader) => [reader.id, reader.kind]));
       const asked: string[] = [];
       const result = await pickFromSources(readers, { task: 'Validate inputs' }, {
-        task: 'Validate inputs', decisionRule,
+        task: 'Validate inputs',
         cascadesByKind: { chat: fitted('chat'), 'git-history': fitted('history'), markdown: fitted('note') },
         decide: async ({ questions }) => Object.fromEntries(questions.map((q) => {
           const kind = kindFor.get(q.sourceId);
           asked.push(`${kind}:${q.questionKey ?? q.role}`);
           if (q.role === 'rule') expect(q.questionKey).toBeUndefined();
-          else if (q.questionKey !== 'agreement') {
+          else {
             expect(q.questionKey).toBe(kind === 'chat' ? 'chat' : kind === 'git-history' ? 'history' : 'note');
           }
           return [q.key, { status: 'answered', probability: q.role === 'rule' ? 0.8
-            : q.questionKey === 'agreement' ? (kind === 'chat' ? 0 : 0.8) : 0.5 }];
+            : 0.5 }];
         })),
       });
       expect(result.reads.every((read) => read.status === 'read')).toBe(true);
-      expect(asked).toEqual(expect.arrayContaining(['chat:chat', 'git-history:history', 'markdown:note', 'markdown:rule', 'chat:agreement']));
+      expect(asked).toEqual(expect.arrayContaining(['chat:chat', 'git-history:history', 'markdown:note', 'markdown:rule']));
       expect(result.record.candidates.filter((entry) => entry.sourceKind === 'chat')).toEqual([
-        expect.objectContaining({ status: 'rejected', outcome: 'check', agreement: { key: 'agreement', status: 'answered', probability: 0 } }),
+        expect.objectContaining({ status: 'selected', probability: 0.5 }),
       ]);
       expect(result.selected.some((entry) => kindFor.get(entry.sourceId) === 'git-history')).toBe(true);
       expect(result.selected.some((entry) => kindFor.get(entry.sourceId) === 'markdown' && entry.role === 'reference')).toBe(true);
@@ -410,24 +240,23 @@ describe('built-in source routing', () => {
   });
 });
 
-describe('limits across source questions and agreement', () => {
-  it('shares candidate and batch limits across the assessment and agreement calls', async () => {
+describe('limits across source questions', () => {
+  it('shares candidate and batch limits across fitted assessment calls', async () => {
     const calls: number[] = [];
     const result = await pick([candidate('a'), candidate('b'), candidate('c')], {
-      task: 'Choose evidence', decisionRule, limits: { maxCandidates: 2, maxPerBatch: 1, maxBatches: 3 },
+      task: 'Choose evidence', cascade: { bias: 0, questions: [{ ...criterion('one'), weight: 1 }, { ...criterion('two'), weight: 1 }] }, limits: { maxCandidates: 2, maxPerBatch: 1, maxBatches: 3 },
       decide: async (batch, signal) => { calls.push(batch.questions.length); return answers(0.5)(batch, signal); },
     });
     expect(calls).toEqual([1, 1, 1]);
     expect(result.selected.map((c) => c.id)).toEqual(['a']);
-    expect(result.record.candidates[1]).toMatchObject({ status: 'unassessed', reason: 'limits', outcome: 'check' });
+    expect(result.record.candidates[1]).toMatchObject({ status: 'unassessed', reason: 'limits' });
     expect(result.record.candidates[2]).toMatchObject({ status: 'unassessed', reason: 'limits' });
-    expect(result.record.candidates[2]).not.toHaveProperty('outcome');
   });
 
-  it('leaves incomplete fitted assessments unassessed rather than asking agreement', async () => {
+  it('leaves incomplete fitted assessments unassessed when later questions cannot run', async () => {
     let calls = 0;
     const result = await pick([candidate('a')], {
-      task: 'Choose evidence', decisionRule,
+      task: 'Choose evidence',
       sourceKinds: { notes: 'markdown' }, cascadesByKind: {
         markdown: { bias: 0, questions: [{ ...criterion('one'), weight: 1 }, { ...criterion('two'), weight: 1 }] },
       },
@@ -436,74 +265,51 @@ describe('limits across source questions and agreement', () => {
     });
     expect(calls).toBe(1);
     expect(result.record.candidates[0]).toMatchObject({ status: 'unassessed', reason: 'limits' });
-    expect(result.record.candidates[0]).not.toHaveProperty('outcome');
   });
 
-  it('leaves agreement unassessed if cancellation arrives after relevance', async () => {
+  it('leaves fitted assessment unassessed if cancellation arrives after its first question', async () => {
     const controller = new AbortController();
     let calls = 0;
     const result = await pick([candidate('a')], {
-      task: 'Choose evidence', decisionRule, signal: controller.signal,
+      task: 'Choose evidence', cascade: { bias: 0, first: 'one', band: [0.1, 0.9], firstOnly: { bias: 0, weight: 1 }, questions: [{ ...criterion('one'), weight: 1 }, { ...criterion('two'), weight: 1 }] }, signal: controller.signal,
       decide: async (batch, signal) => { calls++; controller.abort(); return answers(0.5)(batch, signal); },
     });
     expect(calls).toBe(1);
     expect(result.selected).toEqual([]);
-    expect(result.record.candidates[0]).toMatchObject({ status: 'unassessed', reason: 'cancelled', outcome: 'check' });
+    expect(result.record.candidates[0]).toMatchObject({ status: 'unassessed', reason: 'cancelled' });
   });
 
-  it('uses the same elapsed budget for relevance and agreement', async () => {
+  it('uses the same elapsed budget for fitted questions', async () => {
     let now = 1_000;
     const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
     try {
       let calls = 0;
       const result = await pick([candidate('a')], {
-        task: 'Choose evidence', decisionRule, limits: { maxElapsedMs: 10 },
+        task: 'Choose evidence', cascade: { bias: 0, first: 'one', band: [0.1, 0.9], firstOnly: { bias: 0, weight: 1 }, questions: [{ ...criterion('one'), weight: 1 }, { ...criterion('two'), weight: 1 }] }, limits: { maxElapsedMs: 10 },
         decide: async (batch, signal) => { calls++; now += 10; return answers(0.5)(batch, signal); },
       });
       expect(calls).toBe(1);
-      expect(result.record.candidates[0]).toMatchObject({ status: 'unassessed', reason: 'time', outcome: 'check' });
+      expect(result.record.candidates[0]).toMatchObject({ status: 'unassessed', reason: 'time' });
     } finally { clock.mockRestore(); }
   });
 
-  it('rejects an attempted agreement that never finishes before the time limit', async () => {
+  it('records a fitted question that never finishes before the time limit', async () => {
     const result = await pick([candidate('a')], {
-      task: 'Choose evidence', decisionRule, limits: { maxElapsedMs: 20 },
-      decide: async (batch, signal) => batch.questions[0]?.questionKey === 'agreement'
+      task: 'Choose evidence', cascade: { bias: 0, first: 'one', band: [0.1, 0.9], firstOnly: { bias: 0, weight: 1 }, questions: [{ ...criterion('one'), weight: 1 }, { ...criterion('two'), weight: 1 }] }, limits: { maxElapsedMs: 20 },
+      decide: async (batch, signal) => batch.questions[0]?.questionKey === 'two'
         ? new Promise(() => {}) : answers(0.5)(batch, signal),
     });
-    expect(result.selected).toEqual([]);
+    expect(result.selected.map((entry) => entry.id)).toEqual(['a']);
     expect(result.record.candidates[0]).toMatchObject({
-      status: 'rejected', outcome: 'check', agreement: { status: 'error' },
+      status: 'selected', questions: [
+        { key: 'one', status: 'answered', probability: 0.5 },
+        { key: 'two', status: 'error' },
+      ],
     });
   });
 });
 
 describe('configuration validation', () => {
-  it.each([
-    { low: -0.1 }, { low: NaN }, { low: Infinity }, { high: 1.1 }, { high: NaN }, { high: -Infinity },
-    { low: 0.8, high: 0.2 },
-    { question: { ...agreement, key: '' } }, { question: { ...agreement, instructions: '' } },
-    { question: { ...agreement, true: '' } }, { question: { ...agreement, false: '' } },
-  ])('rejects invalid decision rules before calling decide: %j', async (invalid) => {
-    let calls = 0;
-    await expect(pick([candidate('a')], {
-      task: 'Choose evidence', decisionRule: { ...decisionRule, ...invalid },
-      decide: async () => { calls++; return {}; },
-    })).rejects.toThrow('decisionRule');
-    expect(calls).toBe(0);
-  });
-
-  it.each(['instructions', 'true', 'false'] as const)('rejects a shared agreement key with different %s', async (field) => {
-    let calls = 0;
-    const conflicting: PickCascade = { bias: 0, questions: [{ ...agreement, [field]: 'Different', weight: 1 }] };
-    for (const options of [{ cascade: conflicting }, { cascadesByKind: { chat: conflicting } }]) {
-      await expect(pick([candidate('a')], {
-        task: 'Choose evidence', decisionRule, ...options, decide: async () => { calls++; return {}; },
-      })).rejects.toThrow('must match');
-    }
-    expect(calls).toBe(0);
-  });
-
   it('validates per-kind sets even when no candidate uses the kind', async () => {
     let calls = 0;
     await expect(pick([candidate('a')], {

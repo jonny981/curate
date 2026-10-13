@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { pick, type MemoryCandidate, type PickCascade, type PickDecide } from '@curatejs/core';
-import { CHAT_CASCADE, CHAT_DECISION_RULE } from '@curatejs/chat';
+import { CHAT_CASCADE } from '@curatejs/chat';
 import { GIT_HISTORY_CASCADE } from '@curatejs/git';
 import { MARKDOWN_CASCADE } from '@curatejs/markdown';
 
@@ -17,7 +17,7 @@ async function score(cascade: PickCascade, values: Readonly<Record<string, numbe
     return [question.key, { status: 'answered', probability: values[key]! }];
   }));
   const result = await pick([candidate], {
-    task: 'Find evidence', cascade, decide, thresholds: { reference: 0 },
+    task: 'Find evidence', cascade, decide,
   });
   const entry = result.record.candidates[0]!;
   return { asked, probability: 'probability' in entry ? entry.probability : undefined };
@@ -46,18 +46,5 @@ describe('exported question defaults', () => {
     expect(offTopic.probability).toBeCloseTo(0.0836952709978445, 14);
     expect(offTopic.probability!).toBeLessThan(onTopic.probability!);
     expect(GIT_HISTORY_CASCADE.questions.find((question) => question.key === 'offtopic')!.weight).toBeLessThan(0);
-  });
-
-  it('exports the personal-fact agreement question with the chat decision boundaries', () => {
-    expect(CHAT_DECISION_RULE).toEqual({
-      low: 0.3,
-      high: 0.7,
-      question: {
-        key: 'personal_fact',
-        instructions: 'Does the user say something here about their own life (an event, a purchase, a person, an age, a place or a number) that bears on what the task asks?',
-        true: 'The user states a personal fact the task needs',
-        false: 'Nothing the user says here bears on the task',
-      },
-    });
   });
 });

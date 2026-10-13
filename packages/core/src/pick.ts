@@ -76,11 +76,12 @@ export interface PickLimits {
 }
 
 export interface PickThresholds {
+  /** Keep every scored reference by default; set a bar to filter. */
   readonly reference?: number;
   readonly rule?: number;
   /** The bar a 'reference' candidate at or above it still clears when a
    *  threshold-selected commit from the same `repository` names its
-   *  `path` in `changedPaths`. Below the reference threshold on purpose.
+   *  `path` in `changedPaths`. Applies only to references rejected by a cut.
    *  0.4 is a chosen default, not a measured best; it is not shown to
    *  beat the reference threshold everywhere. */
   readonly linkedPathBar?: number;
@@ -126,9 +127,6 @@ export type PickRecordEntry = {
   readonly truncated?: boolean;
   /** Source kind used to choose a fitted set, when per-kind sets are enabled. */
   readonly sourceKind?: CandidateSourceKind;
-  /** Which branch the optional decision rule took; status records whether it kept the item. */
-  readonly outcome?: 'drop' | 'keep' | 'check';
-  readonly agreement?: { readonly key: string } & PickAnswer;
   /** Individual fitted answers, before combining them. */
   readonly questions?: readonly ({ readonly key: string } & PickAnswer)[];
 } & PickEntryStatus;
@@ -149,15 +147,6 @@ export interface PickCascade {
   readonly firstOnly?: { readonly bias: number; readonly weight: number };
 }
 
-export interface PickDecisionRule {
-  /** Scores below this bar drop. Defaults to 0.3. */
-  readonly low?: number;
-  /** Scores above this bar keep. Defaults to 0.7. */
-  readonly high?: number;
-  /** Scores at either bar or between them need this answer at 0.5 or more. */
-  readonly question: PickCriterion;
-}
-
 export interface PickRecord {
   readonly questionVersion: string;
   readonly limits: PickLimits;
@@ -169,8 +158,6 @@ export interface PickRecord {
   readonly cascadesByKind?: Readonly<Partial<Record<CandidateSourceKind, PickCascade>>>;
   /** Source identities mapped to kinds; pickFromSources fills these from source.kind. */
   readonly sourceKinds?: Readonly<Record<string, CandidateSourceKind>>;
-  /** Optional three-outcome rule for references. Rules keep their own threshold. */
-  readonly decisionRule?: PickDecisionRule;
   readonly keepTop?: number;
   readonly rankProtection?: boolean;
   readonly bestPartFirst?: boolean;
@@ -189,8 +176,6 @@ export interface PickOptions {
   readonly cascadesByKind?: Readonly<Partial<Record<CandidateSourceKind, PickCascade>>>;
   /** Source identities mapped to kinds; pickFromSources fills these from source.kind. */
   readonly sourceKinds?: Readonly<Record<string, CandidateSourceKind>>;
-  /** Optional three-outcome rule for references. Rules keep their own threshold. */
-  readonly decisionRule?: PickDecisionRule;
   /** Put these top ranked hits first if they pass the threshold. */
   readonly keepTop?: number;
   /** Blend search rank and decision probability for selected references. Off by default. */
@@ -381,36 +366,12 @@ export async function pick(
   }
   checkCascade(options.cascade);
   for (const set of Object.values(options.cascadesByKind ?? {})) checkCascade(set);
-  const decisionRule = options.decisionRule;
-  const low = probabilityLimit(decisionRule?.low, 'decisionRule.low', 0.3);
-  const high = probabilityLimit(decisionRule?.high, 'decisionRule.high', 0.7);
-  if (decisionRule && (low > high || !decisionRule.question.key || !decisionRule.question.instructions
-    || !decisionRule.question.true || !decisionRule.question.false)) {
-    throw new TypeError('decisionRule needs ordered bars and a named question with both criteria.');
-  }
-  if (decisionRule) {
-    for (const set of [options.cascade, ...Object.values(options.cascadesByKind ?? {})]) {
-      const existing = set?.questions.find((q) => q.key === decisionRule.question.key);
-      if (existing && (existing.instructions !== decisionRule.question.instructions
-        || existing.true !== decisionRule.question.true || existing.false !== decisionRule.question.false)) {
-        throw new TypeError('decisionRule question must match the cascade question with the same key.');
-      }
-    }
-  }
   const kindFor = (candidate: MemoryCandidate) => options.sourceKinds && Object.hasOwn(options.sourceKinds, candidate.sourceId)
     ? options.sourceKinds[candidate.sourceId] : undefined;
   const cascadeFor = (candidate: MemoryCandidate) => {
     const kind = kindFor(candidate);
     return (kind === undefined ? undefined : options.cascadesByKind?.[kind]) ?? options.cascade;
   };
-  if (decisionRule?.question.key === 'reference'
-    && candidates.some((c) => c.role === 'reference' && !cascadeFor(c))) {
-    const existing = PICK_QUESTIONS.reference;
-    if (decisionRule.question.instructions !== existing.question
-      || decisionRule.question.true !== existing.trueCriterion || decisionRule.question.false !== existing.falseCriterion) {
-      throw new TypeError('decisionRule question must match the reference question with the same key.');
-    }
-  }
   const keepTop = options.keepTop ?? 0;
   if (!Number.isSafeInteger(keepTop) || keepTop < 0) {
     throw new TypeError('keepTop must be a nonnegative safe integer.');
@@ -431,7 +392,7 @@ export async function pick(
     ...(input.maxElapsedMs !== undefined ? { maxElapsedMs: input.maxElapsedMs } : {}),
   };
   const thresholds: Required<PickThresholds> = {
-    reference: probabilityLimit(options.thresholds?.reference, 'thresholds.reference'),
+    reference: probabilityLimit(options.thresholds?.reference, 'thresholds.reference', 0),
     rule: probabilityLimit(options.thresholds?.rule, 'thresholds.rule'),
     linkedPathBar: probabilityLimit(options.thresholds?.linkedPathBar, 'thresholds.linkedPathBar', DEFAULT_LINKED_PATH_BAR),
   };
@@ -532,7 +493,6 @@ export async function pick(
     }
   };
   const combined = new Map<MemoryCandidate, CheckedAnswer>();
-  const outcomes = new Map<MemoryCandidate, 'drop' | 'keep' | 'check'>();
   const evaluate = async (phase: readonly MemoryCandidate[]) => {
     await ask(phase.flatMap((candidate) => specsFor(candidate)
       .filter((spec) => candidate.role === 'rule' || !cascadeFor(candidate)?.first || spec.key === cascadeFor(candidate)!.first)
@@ -580,33 +540,12 @@ export async function pick(
       } else answer = got.values().next().value!;
       combined.set(candidate, answer);
     }
-    if (decisionRule && !stop) {
-      const q = decisionRule.question;
-      await ask(phase.flatMap((candidate) => {
-        const answer = combined.get(candidate);
-        if (candidate.role !== 'reference' || answer?.status !== 'answered'
-          || answer.probability < low || answer.probability > high
-          || answered.get(candidate)?.has(q.key)) return [];
-        return [pending(candidate, { key: q.key, question: q.instructions, trueCriterion: q.true, falseCriterion: q.false })];
-      }));
-    }
     for (const candidate of phase) {
       const answer = combined.get(candidate);
       if (!answer) continue;
       if (answer.status === 'answered') {
         const threshold = candidate.role === 'rule' ? thresholds.rule : thresholds.reference;
-        let keep = answer.probability >= threshold;
-        if (decisionRule && candidate.role === 'reference') {
-          const outcome = answer.probability < low ? 'drop' : answer.probability > high ? 'keep' : 'check';
-          outcomes.set(candidate, outcome);
-          const agreement = answered.get(candidate)?.get(decisionRule.question.key);
-          if (outcome === 'check' && !agreement && stop) {
-            statuses.set(candidate, { status: 'unassessed', reason: stop });
-            continue;
-          }
-          keep = outcome === 'keep' || (outcome === 'check' && agreement?.status === 'answered' && agreement.probability >= 0.5);
-        }
-        if (keep) {
+        if (answer.probability >= threshold) {
           selected.push(candidate);
           statuses.set(candidate, { status: 'selected', asked: true, probability: answer.probability });
         } else statuses.set(candidate, { status: 'rejected', probability: answer.probability });
@@ -647,7 +586,7 @@ export async function pick(
         const answer = combined.get(representative);
         return statuses.get(representative)?.status === 'selected'
           || [...(answered.get(representative)?.values() ?? [])].some((answer) => answer.status !== 'answered')
-          || answer?.status !== 'answered' || answer.probability >= low;
+          || answer?.status !== 'answered' || answer.probability >= 0.3;
       }));
     }
   } else await evaluate(feed);
@@ -668,7 +607,7 @@ export async function pick(
   const chosen = new Set(selected);
   for (const candidate of candidates) {
     const status = statuses.get(candidate)!;
-    if (outcomes.has(candidate) || status.status !== 'rejected'
+    if (status.status !== 'rejected'
       || status.probability < thresholds.linkedPathBar
       || candidate.role !== 'reference'
       || candidate.path === undefined
@@ -706,9 +645,6 @@ export async function pick(
   const entries: PickRecordEntry[] = candidates.map((candidate) => {
     const cascade = cascadeFor(candidate);
     const status = statuses.get(candidate)!;
-    const outcome = outcomes.get(candidate);
-    const agreement = decisionRule && outcome === 'check'
-      ? answered.get(candidate)?.get(decisionRule.question.key) : undefined;
     const wasTruncated = truncated.get(candidate);
     const base = {
       sourceId: candidate.sourceId,
@@ -722,8 +658,6 @@ export async function pick(
         ? { orderScore: weight(candidate) } : {}),
       ...(representatives.has(candidate) ? { representative: representatives.get(candidate)!.id } : {}),
       ...(options.cascadesByKind && kindFor(candidate) !== undefined ? { sourceKind: kindFor(candidate) } : {}),
-      ...(outcome === undefined ? {} : { outcome }),
-      ...(outcome === 'check' ? { agreement: { key: decisionRule!.question.key, ...(agreement ?? { status: 'missing' as const }) } } : {}),
       ...(candidate.contentRef === undefined ? {} : { contentRef: candidate.contentRef }),
       ...(candidate.changedPaths === undefined ? {} : { changedPaths: candidate.changedPaths }),
       ...(candidate.path === undefined ? {} : { path: candidate.path }),
@@ -754,7 +688,6 @@ export async function pick(
       ...(options.cascade === undefined ? {} : { cascade: options.cascade }),
       ...(options.cascadesByKind === undefined ? {} : { cascadesByKind: options.cascadesByKind }),
       ...(options.cascadesByKind === undefined || options.sourceKinds === undefined ? {} : { sourceKinds: options.sourceKinds }),
-      ...(decisionRule === undefined ? {} : { decisionRule: { ...decisionRule, low, high } }),
       ...(options.keepTop === undefined ? {} : { keepTop }),
       ...(options.rankProtection ? { rankProtection: true } : {}),
       ...(options.bestPartFirst ? { bestPartFirst: true } : {}),

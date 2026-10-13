@@ -52,6 +52,14 @@ const picked = await pickFromSources(sources, { task }, { task, decide });
 
 ## Defaults and overrides
 
+Core keeps every scored reference by default, ordered and weighted by
+decision probability. Set `thresholds.reference` for an optional single
+cut, for example 0.05. The curator receives exact scores. Its `tiers`
+instructions ask for less space for low-scored items.
+Rules retain their separate applicability bar. See
+[core's measured reason](../core/README.md#defaults-and-evidence) for the
+saved-decision sweep's answer-turn losses.
+
 - **Keyword settings:** `MARKDOWN_KEYWORD_SETTINGS` exports the ranking defaults. Pass a partial `keyword` object to the reader to override them.
 - **Questions:** `MARKDOWN_CASCADE` exports the fitted questions. Pass the cascade to core’s `cascade` or `cascadesByKind` option. The defaults are opt-in.
 - **Search wording:** `MARKDOWN_SEARCH_LINE_REGISTER` describes the wording for host-written extra search lines. Copy or replace this text in your host; the package generates no lines.
@@ -64,4 +72,4 @@ const source = knowledgeBase('docs', { keyword: { b: 0 } });
 
 `rules(directory, { keyword })` accepts the same overrides.
 
-See [core](../core/README.md) for selection, search lines, decision rules and curation.
+See [core](../core/README.md) for selection, search lines, optional cuts and curation.

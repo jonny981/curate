@@ -152,7 +152,7 @@ describe('curate', () => {
     const { write, calls } = writer();
     const result = await curate('Where did I go?', reversed, { write });
     expect(calls[0]!.body).toBe('TASK:\nWhere did I go?\n\nEVIDENCE:\n\n'
-      + '### notes#2 (2023-05-20, 0.88): Title notes#2\n\nText notes#2\n\n'
+      + '### notes#2 (2023-05-20, 0.876): Title notes#2\n\nText notes#2\n\n'
       + '### notes#1 (2023-04-01, 0.05): Title notes#1\n\nText notes#1');
     expect(result.record.items).toEqual([
       { id: 'notes#2', candidate: items[0], weight: 0.876 },
@@ -163,7 +163,7 @@ describe('curate', () => {
   it('does not invent a missing header date', async () => {
     const { write, calls } = writer();
     await curate('Recall', picked([candidate('notes#2')]), { write });
-    expect(calls[0]!.body).toContain('### notes#2 (0.90):');
+    expect(calls[0]!.body).toContain('### notes#2 (0.9):');
   });
 
   it('adds optional worked notes for instances, gaps, and latest values', async () => {
@@ -198,8 +198,8 @@ describe('curate', () => {
     const items = [candidate('same'), { ...candidate('same'), sourceId: 'other' }];
     const { write, calls } = writer('[2023-05-13] Visited York (said 2023-05-20; ["notes","same"])');
     const result = await curate('Recall', picked(items, [0.9, 0.3]), { write });
-    expect(calls[0]!.body).toContain('### ["notes","same"] (0.90):');
-    expect(calls[0]!.body).toContain('### ["other","same"] (0.30):');
+    expect(calls[0]!.body).toContain('### ["notes","same"] (0.9):');
+    expect(calls[0]!.body).toContain('### ["other","same"] (0.3):');
     expect(result.record.items.map((item) => [item.id, item.weight])).toEqual([
       ['["notes","same"]', 0.9], ['["other","same"]', 0.3],
     ]);

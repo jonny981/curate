@@ -1,9 +1,29 @@
 # Curate
 
-Curate selects the evidence an agent needs for a task. It ranks candidates,
-asks your decision function which ones matter, and asks your writer to turn
-selected evidence into a dated log. Both steps return a record. The host
-chooses the model route; these packages import no model engine.
+Curate keeps every scored reference item by default, strongest decision
+probability first. The decision function orders and weights the evidence;
+it does not drop low scores. Your writer turns the evidence into a dated
+log. Both steps return a record. The host chooses the model route; these
+packages import no model engine.
+
+## Reference defaults
+
+The reference bar is zero. A saved-decision sweep over 249 LongMemEval
+questions and 445 labelled answer turns found that bars of 0.05/0.5 lost
+50 whole answer turns, 0.2/0.6 lost 70, and a single 0.6 cut lost 183.
+Keeping every fed item added no selection losses. Seven labelled turns
+were absent from that feed; this check measures retention before curation,
+not final answer accuracy.
+
+Set `thresholds.reference` for an optional single cut, for example 0.05.
+Rules keep their separate 0.6 applicability bar. References with no valid
+decision answer remain unanswered; limits can leave items unassessed. Selection and curation have no fixed total
+character cap.
+
+The curator receives every item’s exact decision score. Its `tiers`
+instructions ask it to retain observations at 0.6 or more, include useful
+facts from 0.1 to below 0.6, and use items below 0.1 only when they clearly
+state a needed fact. The prompt asks for less space for low scores.
 
 ## Packages
 

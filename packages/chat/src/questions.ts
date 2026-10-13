@@ -1,4 +1,4 @@
-import type { PickCascade, PickDecisionRule } from '@curatejs/core';
+import type { PickCascade } from '@curatejs/core';
 
 /** Questions and fitted weights for chat evidence. */
 export const CHAT_CASCADE: PickCascade = {
@@ -29,16 +29,4 @@ export const CHAT_CASCADE: PickCascade = {
       weight: 0.5134,
     },
   ],
-};
-
-/** Keep middle-band chat evidence when it contains a needed personal fact. */
-export const CHAT_DECISION_RULE: PickDecisionRule = {
-  low: 0.3,
-  high: 0.7,
-  question: {
-    key: 'personal_fact',
-    instructions: 'Does the user say something here about their own life (an event, a purchase, a person, an age, a place or a number) that bears on what the task asks?',
-    true: 'The user states a personal fact the task needs',
-    false: 'Nothing the user says here bears on the task',
-  },
 };
