@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   curate,
   DEFAULT_MAX_QUESTION_TEXT,
+  chat,
   gitHistory,
   knowledgeBase,
   pick,
@@ -11,6 +12,8 @@ import {
   rules,
   SourceReadError,
   type CandidateSource,
+  type ChatOptions,
+  type ChatProvider,
   type CurateOptions,
   type CurateRecord,
   type CurateResult,
@@ -56,6 +59,12 @@ describe('@curatejs/core', () => {
     };
     const base: CandidateSource = knowledgeBase('/nonexistent', baseOptions);
     const ruleSource: CandidateSource = rules('/nonexistent');
+    const provider: ChatProvider = 'codex';
+    const chatOptions: ChatOptions = {
+      id: 'transcripts', providers: [provider], paths: ['/nonexistent'],
+      since: '14 days', includeTools: false, maxQuestionText: 700,
+    };
+    const transcripts: CandidateSource = chat(chatOptions);
     const thresholds: PickThresholds = { reference: 0.6, rule: 0.6, linkedPathBar: 0.4 };
     const candidate: MemoryCandidate = {
       sourceId: 'history',
@@ -73,6 +82,8 @@ describe('@curatejs/core', () => {
     expect(history.role).toBe('reference');
     expect(base.role).toBe('reference');
     expect(ruleSource.role).toBe('rule');
+    expect(transcripts.role).toBe('reference');
+    expect(transcripts.id).toBe('transcripts');
     expect(thresholds.linkedPathBar).toBe(0.4);
     expect(candidate.changedPaths).toHaveLength(1);
     expect(typeof pick).toBe('function');

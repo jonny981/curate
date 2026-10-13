@@ -92,6 +92,55 @@ signal for commits that wrote lines still live in the task's named
 paths; `coChange: true` adds one for commits that touched files which
 historically change with them. Both are off unless asked for.
 
+## Chat transcripts
+
+`chat(options)` reads local JSONL transcripts as reference candidates.
+
+```ts
+import { chat, gitHistory, knowledgeBase } from '@curatejs/core';
+
+const sources = [
+  gitHistory('.'),
+  knowledgeBase('docs'),
+  chat({ providers: ['claude-code', 'codex'], since: '14 days' }),
+];
+```
+
+- **Providers:** Claude Code reads `~/.claude/projects/`; Codex reads
+  `~/.codex/sessions/`. Both folders are scanned recursively. `providers`
+  defaults to both. `paths: ['/path/to/transcripts']` replaces the default
+  folders for each selected provider.
+- **Dates:** `since` accepts an ISO date or a duration such as `'14 days'`
+  or `'12 hours'`, measured from read start. Only messages at or after
+  that date are emitted. Omit it to read all dated messages.
+- **Parts:** Each user or assistant text block becomes a candidate. Text
+  is split at line ends into at most 700 characters. Longer lines are
+  hard-cut. `maxQuestionText` and the request's text budget can tighten
+  that limit. Joining the parts reproduces the scrubbed block.
+- **Metadata:** `candidate.chat` carries `provider`, `sessionId` and the
+  message `role`. The candidate's own `role` stays `'reference'`. `date`
+  holds the message timestamp with meaning `'recorded'`. `contentRef`
+  names the provider, session, JSONL line, block and part.
+- **Tools:** Tool calls and results are excluded by default.
+  `includeTools: true` includes them with message roles `'tool-call'` and
+  `'tool-result'`. Thinking blocks and Codex event copies are excluded.
+- **Scrubbing:** Full message blocks and tool arguments are scrubbed
+  before splitting or ranking. Patterns cover private keys, common API
+  keys and tokens, named passwords and credentials, credentials in URLs,
+  and long strings that look like secrets. A 40-character hex commit id
+  is retained. Pattern matching is not a guarantee that arbitrary secret
+  text will be recognized.
+- **Ranking:** Chat uses the LongMemEval settings: BM25 with `k1: 0.6`
+  and `b: 0`, Porter word stems, short identifiers, noun weights, and
+  merged rankings for the full query, content words and names. Markdown
+  and git use their own settings. No model or network call is made.
+- **Read results:** Missing folders return `absent` when none can be read.
+  Missing folders alongside readable folders, skipped symbolic links,
+  undated messages, and a candidate limit make the read incomplete.
+  Excluded paths are refused before opening content. Cancellation and
+  file or JSON failures throw `SourceReadError`. Revision pins return
+  `absent` because transcripts have no git revision.
+
 ## Picking
 
 `pick(candidates, { task, decide })` ranks the candidates, asks `decide`
