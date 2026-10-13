@@ -1,30 +1,12 @@
+import { asSourceReadError } from '@curatejs/core/internal';
 import { describe, expect, it } from 'vitest';
 
-import {
-  curate,
-  DEFAULT_MAX_QUESTION_TEXT,
-  chat,
-  gitHistory,
-  knowledgeBase,
-  pick,
-  PICK_QUESTION_VERSION,
-  pickFromSources,
-  rules,
-  SourceReadError,
-  type CandidateSource,
-  type ChatOptions,
-  type ChatProvider,
-  type CurateOptions,
-  type CurateRecord,
-  type CurateResult,
-  type CurateWrite,
-  type GitHistoryOptions,
-  type KnowledgeBaseOptions,
-  type MemoryCandidate,
-  type PickThresholds,
-} from '../src/index.js';
+import { curate, DEFAULT_MAX_QUESTION_TEXT, pick, PICK_QUESTION_VERSION, pickFromSources, SourceReadError, type CandidateSource, type CurateOptions, type CurateRecord, type CurateResult, type CurateWrite, type MemoryCandidate, type PickThresholds } from '@curatejs/core';
+import { chat, type ChatOptions, type ChatProvider } from '@curatejs/chat';
+import { gitHistory, type GitHistoryOptions } from '@curatejs/git';
+import { knowledgeBase, rules, type KnowledgeBaseOptions } from '@curatejs/markdown';
 
-describe('@curatejs/core', () => {
+describe('package exports', () => {
   it('exports the curate step and its caller-supplied writer types', async () => {
     const write: CurateWrite = async () => '[2023-05-13] Visited York (said 2023-05-20; trip)';
     const options: CurateOptions = { write, working: false };
@@ -92,4 +74,12 @@ describe('@curatejs/core', () => {
     expect(DEFAULT_MAX_QUESTION_TEXT).toBeGreaterThan(0);
     expect(PICK_QUESTION_VERSION).toContain('memory-pick');
   });
+});
+
+it('keeps source error identity and cancellation across core entry points', () => {
+  const cancelled = new SourceReadError('cancelled', 'Stopped');
+  expect(asSourceReadError(cancelled)).toBe(cancelled);
+  const failed = asSourceReadError(new Error('Unreadable'));
+  expect(failed).toBeInstanceOf(SourceReadError);
+  expect(failed.code).toBe('failed');
 });

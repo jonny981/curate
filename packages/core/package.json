@@ -1,7 +1,7 @@
 {
   "name": "@curatejs/core",
   "version": "0.1.0",
-  "description": "Rank, decide, curate: typed memory sources and the selection that picks what a step reads.",
+  "description": "Select and curate task evidence from host-supplied sources.",
   "author": "Jonny Neill <jonnyneill@hotmail.com>",
   "type": "module",
   "license": "MIT",
@@ -18,6 +18,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./internal": {
+      "types": "./dist/internal.d.ts",
+      "import": "./dist/internal.js"
     }
   },
   "files": [

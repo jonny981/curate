@@ -121,15 +121,15 @@ describe('selection after decisions', () => {
 
   it('orders by decision weight and keeps all passing items without a size cap', async () => {
     const result = await pick(candidates.map((c) => ({ ...c, text: 'x'.repeat(30_000) })), { task: 'Recall', decide });
-    expect(result.selected.map((c) => c.id)).toEqual(['strong', 'keyword']);
+    expect(result.selected.map((c) => c.id)).toEqual(['strong', 'keyword', 'weak']);
     expect(result.selected.every((c) => c.text.length === 30_000)).toBe(true);
   });
 
   it('promotes selected top keyword hits without admitting rejected ones', async () => {
-    const result = await pick(candidates, { task: 'Recall', decide, keepTop: 2 });
+    const result = await pick(candidates, { task: 'Recall', decide, keepTop: 2, thresholds: { reference: 0.6 } });
     expect(result.selected.map((c) => c.id)).toEqual(['keyword', 'strong']);
     expect(result.record.keepTop).toBe(2);
-    expect((await pick(candidates, { task: 'Recall', decide, keepTop: 0 })).selected.map((c) => c.id))
+    expect((await pick(candidates, { task: 'Recall', decide, keepTop: 0, thresholds: { reference: 0.6 } })).selected.map((c) => c.id))
       .toEqual(['strong', 'keyword']);
   });
 

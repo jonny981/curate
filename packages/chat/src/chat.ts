@@ -2,15 +2,17 @@ import { lstat, readdir, readFile, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, join, relative, resolve, sep } from 'node:path';
 
-import { canonicalPath } from './git.js';
-import { rankChat } from './chat-rank.js';
+import { canonicalPath } from '@curatejs/core/internal';
+import { rankChat, type ChatKeywordSettings } from './chat-rank.js';
 import { scrubChat } from './chat-scrub.js';
-import { DEFAULT_MAX_QUESTION_TEXT, type MemoryCandidate } from './pick.js';
-import { SourceReadError, type CandidateReadRequest, type CandidateSource } from './source.js';
+import { DEFAULT_MAX_QUESTION_TEXT, type MemoryCandidate } from '@curatejs/core';
+import { SourceReadError, type CandidateReadRequest, type CandidateSource } from '@curatejs/core';
 
 export type ChatProvider = 'claude-code' | 'codex';
 
 export interface ChatOptions {
+  /** Override the exported CHAT_KEYWORD_SETTINGS. */
+  readonly keyword?: Partial<ChatKeywordSettings>;
   readonly id?: string;
   /** Defaults to both providers. */
   readonly providers?: readonly ChatProvider[];
@@ -159,7 +161,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
   cutoff(options.since, Date.now());
   const id = scrubChat(options.id ?? `chat:${providers.map((provider) => `${provider}:${roots.get(provider)!.join(',')}`).join(';')}`);
   return {
-    id, role: 'reference',
+    id, kind: 'chat', role: 'reference',
     async read(request: CandidateReadRequest) {
       cancelled(request.signal);
       const size = Math.min(DEFAULT_MAX_QUESTION_TEXT, budget, positive(request.maxQuestionText ?? DEFAULT_MAX_QUESTION_TEXT, 'maxQuestionText'));
@@ -243,7 +245,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
       }
       if (!folders && reasons.length) return { status: 'absent', reason: 'no-chat-folders' };
       const ranked = candidates.map((candidate) => ({ id: candidate.id, title: candidate.title, text: candidate.text, heading: '', name: '', front: '', score: 0 }));
-      rankChat(ranked, [request.task, ...(request.paths ?? [])].join(' '));
+      rankChat(ranked, [request.task, ...(request.paths ?? [])].join(' '), options.keyword);
       const scores = new Map(ranked.map((part) => [part.id, part.score]));
       const scored = candidates.map((candidate) => ({ ...candidate, signals: { keyword: scores.get(candidate.id)! } }))
         .sort((a, b) => b.signals.keyword - a.signals.keyword || a.id.localeCompare(b.id));

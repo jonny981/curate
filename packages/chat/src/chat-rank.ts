@@ -1,6 +1,14 @@
 import { porterStem } from './porter.js';
 
-const SETTINGS = { k1: 0.6, b: 0, stem: true, short: true, stop: 'none', nouns: true };
+export interface ChatKeywordSettings {
+  readonly k1: number;
+  readonly b: number;
+  readonly stem: boolean;
+  readonly short: boolean;
+  readonly stop: 'baseline' | 'none' | 'content';
+  readonly nouns: boolean;
+}
+export const CHAT_KEYWORD_SETTINGS: ChatKeywordSettings = { k1: 0.6, b: 0, stem: true, short: true, stop: 'none', nouns: true };
 export interface ChatPart { id: string; title: string; text: string; heading: string; name: string; front: string; score: number }
 const STOP = new Set('about after agent answers before change context every into only question should that their there these this what when where which with would'.split(' '));
 const COMMON = new Set('a an and are as at be been being but by can could did do does for from had has have how i if in is it its me my of on or our so than the them then they to was we were who why will you your asked am also get got tell please many much'.split(' '));
@@ -10,7 +18,7 @@ function keywordsOf(task: string, short = false, stop = 'baseline') {
   const words = stop === 'baseline' ? task.toLowerCase().split(/[^a-z0-9-]+/).filter(w => w.length > 4 && !STOP.has(w)) : task.toLowerCase().split(/[^a-z0-9-]+/).filter(w => w.length > 4 && (stop === 'none' || (!COMMON.has(w) && !STOP.has(w))));
   return [...new Set([...ids, ...(task.match(/[@\w./-]*[./@][\w./-]+|[a-z]+[A-Z]\w+|`[^`]+`/g) ?? []).map(w => w.replace(/`/g,'')), ...words].map(w => w.toLowerCase()))];
 }
-function score(candidates: ChatPart[], task: string, config: typeof SETTINGS, stems: Record<string, string>, queryText: string | null = null) {
+function score(candidates: ChatPart[], task: string, config: ChatKeywordSettings, stems: Record<string, string>, queryText: string | null = null) {
   const shortIds = new Set(config.short ? keywordsOf(task,true).filter(w => w.length <= 2) : []);
   const tok = (t: string) => t.toLowerCase().split(/[^a-z0-9]+/).filter(w => w.length > 2 || shortIds.has(w)).map(w => config.stem ? (stems[w] ?? w) : w);
   const query = [...new Set(queryText === null ? keywordsOf(task,config.short,config.stop).flatMap(tok) : tok(queryText))];
@@ -29,9 +37,9 @@ function score(candidates: ChatPart[], task: string, config: typeof SETTINGS, st
   });
 }
 /** The LongMemEval chat calculation, using plain TypeScript Porter stems. */
-export function rankChat(candidates: ChatPart[], task: string): void {
+export function rankChat(candidates: ChatPart[], task: string, settings: Partial<ChatKeywordSettings> = {}): void {
   if (!candidates.length) return;
-  const config = SETTINGS;
+  const config = { ...CHAT_KEYWORD_SETTINGS, ...settings };
   const words = [...new Set([task, ...candidates.map(c => `${c.title} ${c.text}`)].join(' ').toLowerCase().split(/[^a-z0-9]+/).filter(w => w.length > 2))];
   const stems = Object.fromEntries(words.map(w => [w, porterStem(w)]));
   const raw = score(candidates, task, config, stems);

@@ -154,7 +154,7 @@ export async function curate(
   if (!items.length) throw new Error('curate: no selected reference items to curate.');
 
   const blocks = items.map(({ id, candidate, weight }) =>
-    `### ${id} (${candidate.date ? `${candidate.date.value}, ` : ''}${weight.toFixed(2)}): ${candidate.title}\n\n${candidate.text}`.trim());
+    `### ${id} (${candidate.date ? `${candidate.date.value}, ` : ''}${weight}): ${candidate.title}\n\n${candidate.text}`.trim());
   const instructions = !working ? INSTRUCTIONS : INSTRUCTIONS.replace(NO_WORKING,
     '- In the log itself, do not judge: give every observation its dates, including ones near the edge of a period the task names.')
     + '\nAfter the log, add a short section headed "Working (the curator\'s; check it against the log):". For a count or a list: number each distinct instance that falls inside the period the task names, with its date and id, then name any instance you left out and why (outside the period, or the same as another). For a question about time or order: the dates involved and the computed difference or order. For something that changed: the latest value and its date. Leave out any part the task does not need.';

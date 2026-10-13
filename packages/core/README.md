@@ -1,14 +1,12 @@
 # @curatejs/core
 
-Curate selects the memory an agent needs for a task from typed sources. Its RDC process ranks candidates, asks your decision function which ones matter, and asks your writer to turn the selected evidence into the dated log the task needs. Selection and curation each return a record.
+Curate selects the memory an agent needs for a task from typed sources. Its RDC process ranks candidates, asks your decision function how strongly each item bears on the task, and asks your writer to turn the evidence into the dated log the task needs. Selection and curation each return a record.
 
 ## RDC process
 
 - **Rank:** Order memory candidates by their signals.
-- **Decide:** Ask your decision function which candidates the task needs.
+- **Decide:** Keep every scored reference by default; use decision probability to order and weight it. Check rules against their separate applicability bar.
 - **Curate:** Call `curate(task, picked, { write })` to write the dated log the working model reads.
-
-Curate started as the memory package inside [Obversa](https://github.com/jonny981/obversa).
 
 ## Install
 
@@ -20,11 +18,14 @@ The host supplies its own sources, decision function, and writer. The package im
 
 ## Requirements
 
-- Node.js 22.12 or later
-- git on the `PATH` for `gitHistory` and for the repository tiers of
-  `knowledgeBase`; without it `gitHistory` reports `absent`, a pinned
-  `knowledgeBase` cannot resolve its revision, and an unpinned one just
-  skips the git tier
+Node.js 22.12 or later.
+
+## Source packages
+
+Core supplies no reader. Install [chat](../chat/README.md), [git](../git/README.md)
+or [markdown](../markdown/README.md) for built-in readers. Each depends on core.
+The `@curatejs/core/internal` entry contains shared file, git and keyword helpers
+used by those packages; it supplies no source or ranking defaults.
 
 ## Sources
 
@@ -47,105 +48,93 @@ resolved once and used for every operation that read performs; a source
 that cannot honour a pin answers `absent` rather than guess. A
 candidate's `text` is the retained snapshot of the exact text scored.
 
-## Markdown sources
+## Search options
 
-`knowledgeBase(dir)` reads a directory of notes: one candidate per
-`## ` section of each `.md` file, all role `reference`. A section longer
-than `maxQuestionText` (700 characters by default, the budget `pick`
-shows the decision model) is offered in parts cut at line ends so every
-part is judged. A note that says it was replaced (`superseded`,
-`retired`, `deprecated`, `obsolete`, `withdrawn` in frontmatter or the
-first 400 characters of its body) keeps its candidates at a negative
-signal: ranked lower, never hidden. A note's declared date (frontmatter `date`, `written`,
-`effective` or `applies-from`) is carried with its meaning. When the
-corpus sits inside a work tree and the note declares none, its last
-committed change date is carried with meaning `changed` instead; outside
-a repository, or for a note git has never tracked, there is no date.
-Notes inside a work tree also carry `path` (their repository-relative
-file) and `repository`, which is what lets a selected commit link them
-in. A `revision` pin on `knowledgeBase` reads the tree that revision
-names: the earlier contents, no later files, and the resolved SHA on the
-result.
-
-`rules(dir)` reads a folder of rules: one candidate per `.md` file, all
-role `rule`, the folder's `README.md` excluded. Frontmatter
-`applies: always` marks a rule that every task follows: `pick` selects
-it without asking. Only a rules source emits role `rule`; a note can
-never declare itself one.
-
-## Git history
-
-`gitHistory(repo)` reads a repository's commits: one candidate per
-non-merge commit, newest first, with the subject as `title`, the body as
-`text`, the commit date with meaning `recorded`, and `changedPaths`
-holding every file the commit changed relative to the repository root.
-`contentRef` keeps the full commit SHA and `id` shows the short one.
-Git runs with no shell, a scrubbed environment, a time limit and an
-output cap. Missing git, a path that is not a directory, or a directory
-outside a work tree reports `absent`; a pin the repository does not have
-throws.
-
-With no exclusions, one `git log` pass carries everything. With
-exclusions, paths are listed first and a commit that touched an excluded
-path is dropped before its body is ever fetched. `blame: true` adds a
-signal for commits that wrote lines still live in the task's named
-paths; `coChange: true` adds one for commits that touched files which
-historically change with them. Both are off unless asked for.
-
-## Chat transcripts
-
-`chat(options)` reads local JSONL transcripts as reference candidates.
+`pickFromSources` accepts host-written `searchLines` in its read request.
+Each source searches the task and every distinct, nonblank line. A line
+can be keywords or a short passage describing what the answer evidence
+would say. Curate generates no lines and calls no model to search.
 
 ```ts
-import { chat, gitHistory, knowledgeBase } from '@curatejs/core';
-
-const sources = [
-  gitHistory('.'),
-  knowledgeBase('docs'),
-  chat({ providers: ['claude-code', 'codex'], since: '14 days' }),
-];
+const picked = await pickFromSources(
+  sources,
+  {
+    task,
+    searchLines: ['Backup copies are encrypted and tested by restoring them.'],
+    stripSearchInstructions: true,
+  },
+  { task, decide, limits: { maxCandidates: 200 } },
+);
 ```
 
-- **Providers:** Claude Code reads `~/.claude/projects/`; Codex reads
-  `~/.codex/sessions/`. Both folders are scanned recursively. `providers`
-  defaults to both. `paths: ['/path/to/transcripts']` replaces the default
-  folders for each selected provider.
-- **Dates:** `since` accepts an ISO date or a duration such as `'14 days'`
-  or `'12 hours'`, measured from read start. Only messages at or after
-  that date are emitted. Omit it to read all dated messages.
-- **Parts:** Each user or assistant text block becomes a candidate. Text
-  is split at line ends into at most 700 characters. Longer lines are
-  hard-cut. `maxQuestionText` and the request's text budget can tighten
-  that limit. Joining the parts reproduces the scrubbed block.
-- **Metadata:** `candidate.chat` carries `provider`, `sessionId` and the
-  message `role`. The candidate's own `role` stays `'reference'`. `date`
-  holds the message timestamp with meaning `'recorded'`. `contentRef`
-  names the provider, session, JSONL line, block and part.
-- **Tools:** Tool calls and results are excluded by default.
-  `includeTools: true` includes them with message roles `'tool-call'` and
-  `'tool-result'`. Thinking blocks and Codex event copies are excluded.
-- **Scrubbing:** Full message blocks and tool arguments are scrubbed
-  before splitting or ranking. Patterns cover private keys, common API
-  keys and tokens, named passwords and credentials, credentials in URLs,
-  and long strings that look like secrets. A 40-character hex commit id
-  is retained. Pattern matching is not a guarantee that arbitrary secret
-  text will be recognized.
-- **Ranking:** Chat uses the LongMemEval settings: BM25 with `k1: 0.6`
-  and `b: 0`, Porter word stems, short identifiers, noun weights, and
-  merged rankings for the full query, content words and names. Markdown
-  and git use their own settings. No model or network call is made.
-- **Read results:** Missing folders return `absent` when none can be read.
-  Missing folders alongside readable folders, skipped symbolic links,
-  undated messages, and a candidate limit make the read incomplete.
-  Excluded paths are refused before opening content. Cancellation and
-  file or JSON failures throw `SourceReadError`. Revision pins return
-  `absent` because transcripts have no git revision.
+- **Results:** The union keeps each `[sourceId, id]` once, with its best
+  rank and the candidate data from that search. `searchRanks` records
+  each zero-based rank within its source; `null` means absent from that
+  search. The lowest rank becomes the record's `priority`.
+- **Candidate budget:** `maxCandidates` applies to each search's
+  interleaved feed. Their union can exceed that number, so extra searches
+  add decisions without displacing original candidates. Batch and time
+  limits still apply to the combined run.
+- **Read budget:** `request.limit` applies to each source read. Markdown
+  and chat keep their best matches; git history enumerates the latest
+  commits before ranking. A git read limit therefore excludes older
+  commits from every search. Resolved revisions are reused across reads.
+- **Single search:** Omit `searchLines` or pass `[]`. Duplicate lines
+  and lines that repeat the original task add no read.
+
+For direct `pick` calls, hosts supplying `searchRanks` must include the
+original search at index 0 and extra searches after it. Supply ranks for
+every part of a searched source. Sources without those ranks retain
+their ordinary signal order in each feed.
+
+`stripSearchInstructions: true` removes explicit, standalone output
+clauses such as “cite both” and “answer in one line” from search text.
+The exported `stripSearchInstructions(task)` helper performs the same
+operation. It preserves unfamiliar wording and retrieval needs such as
+counting, dates, comparisons and identifying the newer fact. The full
+task still goes to `decide`; pass that same task to `curate`.
+
+### Defaults and evidence
+
+The LongMemEval tuning check covers 249 questions and 445 labelled
+answer-turn starts. It measures evidence reaching decisions, not final
+answer accuracy. The union comparisons use a budget per search.
+
+| Option | Default | Measured reason |
+| --- | --- | --- |
+| **Reference selection** | Keep every scored item; bar 0 | In the saved-decision sweep, 0.05/0.5 removed every fed fragment of 50 answer turns; 0.2/0.6 removed 70; a single 0.6 cut removed 183. Keeping everything added no selection losses. Seven of 445 labelled turns were absent from the feed. This measures retention before curation, not final answer accuracy. |
+| **Extra search lines** | Run when supplied | At 100 parts per search, a hypothetical passage adds 25 answer turns and 64.3 decision items per question; at 200, it adds 14 turns and 118.8 items. The original feed stays intact. At 600, it adds no labelled evidence and 150.9 items. |
+| **Instruction removal** | Off | It changed zero tuning questions and ranks. Benefit on tasks with output instructions is unmeasured. |
+| **Rank protection** | Off | In a 60-question cached sample, recall in the first four items fell from 94.09% to 84.68%; in the first eight, from 100% to 99.71%. Full-feed packing is unmeasured. |
+| **Best part first** | Off | One part per session reached 259/445 answer turns. Even an optimistic continuation at 0.4 reached only 423/445. This does not establish a safe way to skip parts. |
+
+The extra-line gains use keyword search of the hypothetical passage.
+They do not measure vector search. The rank sample uses saved “needed”
+answers, rather than a complete decision feed. The document check uses
+a 0.4 continuation gate; it does not validate the optional 0.3 gate below.
 
 ## Picking
 
 `pick(candidates, { task, decide })` ranks the candidates, asks `decide`
 in bounded batches, and returns the selected candidates with a
-`PickRecord`. `pickFromSources(sources, request, options)` reads the
+`PickRecord`. The reference threshold defaults to zero, so every reference
+with a valid decision probability is kept, including zero. The model
+orders and weights these items rather than dropping them. References
+with no valid decision answer remain unanswered; limits can leave items
+unassessed.
+
+For a single cut, set your own bar:
+
+```ts
+const picked = await pick(candidates, {
+  task, decide, thresholds: { reference: 0.05 },
+});
+```
+
+Rule applicability keeps its separate default bar of 0.6, adjustable
+through `thresholds.rule`. `applies: always` rules bypass that check.
+
+`pickFromSources(sources, request, options)` reads the
 sources first, then picks over the combined candidates; a rule source
 that returned `complete: false` or was absent makes the record's
 `rulesCoverage` `'incomplete'`, even when every supplied rule was
@@ -154,10 +143,9 @@ the same way.
 
 Each candidate's `changedPaths` names the repository paths it changed;
 `gitHistory` fills it from the commit's diff, never from paths the text
-mentions. After the threshold pass one more pass runs: a reference
-candidate answered at or above `linkedPathBar` (0.4 by default, below
-the reference threshold on purpose) still passes when a
-threshold-selected commit from the same `repository` names its `path` in
+mentions. With an optional reference cut enabled, a reference answered
+at or above `linkedPathBar` (0.4 by default) still passes when a selected
+commit from the same `repository` names its `path` in
 `changedPaths`. The record entry names the commit that carried it over
 in `link`, and a linked candidate never carries another. The bar is a
 chosen default, not a measured best; `PickThresholds.linkedPathBar`
@@ -174,11 +162,92 @@ to the fitted sum; when every answer is missing, the item stays unanswered.
 If a limit stops required questions before they are asked, the item stays
 unassessed.
 
-Selected items are ordered by decision probability, strongest first,
-with ranked order breaking ties. There is no fixed character cap.
+### Question sets by source
+
+`cascadesByKind` accepts a question set for each source kind: `chat`,
+`git-history`, and `markdown`. The built-in sources declare their `kind`.
+Custom sources can declare it too. A supplied `cascade` remains the
+fallback for a kind without a set and for a source without a kind.
+Without either set, the ordinary reference question applies.
+Rule candidates keep their separate applicability question.
+
+```ts
+import { pickFromSources } from '@curatejs/core';
+import { chat, CHAT_CASCADE } from '@curatejs/chat';
+import { gitHistory, GIT_HISTORY_CASCADE } from '@curatejs/git';
+import { knowledgeBase, MARKDOWN_CASCADE } from '@curatejs/markdown';
+
+const picked = await pickFromSources(
+  [chat({ paths: ['transcripts'] }), gitHistory('.'), knowledgeBase('docs')],
+  { task },
+  {
+    task, decide,
+    cascadesByKind: {
+      chat: CHAT_CASCADE,
+      'git-history': GIT_HISTORY_CASCADE,
+      markdown: MARKDOWN_CASCADE,
+    },
+  },
+);
+```
+
+For direct `pick` calls, supply `sourceKinds: { conversations: 'chat' }`
+to map each candidate's `sourceId` to its kind. `pickFromSources` fills
+that map from the sources that returned those candidates; a declared
+source kind takes precedence over the supplied map.
+The record keeps the per-kind sets, source map and each candidate's kind.
+The single `cascade` path keeps its record format when per-kind sets
+are omitted.
+
+The chat package’s `CHAT_CASCADE` contains the fitted relevance, own-situation and needed
+questions, with relevance asked first. `GIT_HISTORY_CASCADE` and
+`MARKDOWN_CASCADE`, exported by git and markdown respectively, share four fitted questions: `current`, `needed`,
+`when`, and `offtopic`. They ask about relevance, needed information,
+timing, and a different subject. The negative `offtopic` weight lowers
+the score when an item is about a different subject. These sets ask
+neither `own` nor `preference` of commits or notes. Fitted scores order
+evidence; they do not measure the chance of a correct final answer.
+
+By default, all scored reference items are kept and ordered by decision
+probability, strongest first, with ranked order breaking ties. There is no fixed character cap.
 `keepTop: N` marks the first N ranked keyword hits. Those that pass
 the threshold move to the front; rejected items stay rejected. N must be a
-nonnegative safe integer. Both options are off by default.
+nonnegative safe integer. Fitted sets and top-hit promotion are opt-in.
+
+### Optional rank protection
+
+`rankProtection: true` orders selected references by
+`w / rank + (1 - w) * probability`. Rank is one-based within the source;
+with extra searches it is the best rank across them. The weight `w` is
+0.75 at ranks 1–3, 0.60 at 4–10, and 0.40 below that. Rules stay first,
+and `keepTop` retains its explicit promotion.
+
+This affects order only. Optional reference cuts still apply; rules keep
+their separate applicability bar. The record stores `orderScore`
+separately; curator weights remain the original decision probabilities. Omit the option or pass
+`false` to retain the default order and record format.
+
+### Optional best part first
+
+`bestPartFirst: true` first asks about the fed part with the most distinct
+task words in each document. Words must have more than two characters;
+ties use feed order. Chat parts group by provider and session, notes by
+their file, and commits remain separate items. Source and revision are
+part of every group identity. Hosts can supply `candidate.documentId`
+for their own parts; candidates without document metadata stay separate.
+
+Curate applies the representative's question set before asking about its
+other fed parts. It continues when that part is selected, scores at least
+0.3, or has a missing, refused or failed answer. With the default reference
+bar of zero, every scored representative continues. When an optional cut
+is enabled, a rejected representative below 0.3 skips the other parts;
+their records say `unassessed` with reason `document`. They are never
+recorded as rejected without a decision.
+
+Each fed reference records its `representative` item id. Batch, candidate,
+time and cancellation limits remain in force. A stopped run reports the
+stop reason for unasked parts. Rules are asked independently. Omit the
+option or pass `false` to judge the whole feed as usual.
 
 ## Curating
 
@@ -186,10 +255,14 @@ nonnegative safe integer. Both options are off by default.
 `pickFromSources`. It calls your `write(prompt, signal)` function to
 write the log the task needs, with no fixed character cap.
 `prompt.instructions` contains the v4 dated-log wording and three weight
-bands: 0.6 or more, 0.1 to 0.6, and below 0.1. `prompt.body` contains the
+bands: 0.6 or more, 0.1 to below 0.6, and below 0.1. `prompt.body` contains the
 task and selected reference items in their selected order. Each header
 keeps the full item id, the candidate's date value, and its decision
-weight rounded to two decimal places. A missing date stays missing.
+weight without rounding. A missing date stays missing.
+The instructions ask the writer to keep every observation from items at
+0.6 or more, include useful facts from items at 0.1 to below 0.6, and use
+items below 0.1 only when they clearly state a needed fact. The prompt
+asks for less space for low scores; they remain available as evidence.
 When ids clash across sources, their headers use `[sourceId, id]` as a
 JSON string so the writer can tell them apart.
 
@@ -240,7 +313,7 @@ lines keep their strict checks when preferences are enabled.
 `preferenceAdvice`, `preferenceChange`, `items`, `logLength`, `condensed`,
 and `overContextLimit`. It includes `taskDate` when supplied.
 Each item includes its prompt `id`, the full `candidate`, and
-the exact decision `weight` before rounding.
+the exact decision `weight`.
 
 Set `contextLimit` to the positive integer number of characters the
 caller's working model can accept:

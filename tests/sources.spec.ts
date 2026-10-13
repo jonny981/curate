@@ -4,15 +4,8 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import {
-  gitHistory,
-  pickFromSources,
-  SourceReadError,
-  type CandidateReadResult,
-  type CandidateSource,
-  type MemoryCandidate,
-  type PickAnswer,
-} from '../src/index.js';
+import { pickFromSources, SourceReadError, type CandidateReadResult, type CandidateSource, type MemoryCandidate, type PickAnswer } from '@curatejs/core';
+import { gitHistory } from '@curatejs/git';
 
 function candidate(overrides: Partial<MemoryCandidate> & Pick<MemoryCandidate, 'sourceId' | 'id'>): MemoryCandidate {
   return {
@@ -63,7 +56,7 @@ describe('pickFromSources', () => {
   });
 
   it('proceeds past a git history source that reports absent', async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'obversa-rdc-src-'));
+    const directory = await mkdtemp(join(tmpdir(), 'curate-src-'));
     try {
       const result = await pickFromSources(
         [

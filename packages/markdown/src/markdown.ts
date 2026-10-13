@@ -1,3 +1,5 @@
+import { MARKDOWN_KEYWORD_SETTINGS, type MarkdownKeywordSettings } from './defaults.js';
+import { hits, taskTerms, tokenize } from '@curatejs/core/internal';
 import { lstat, readdir, readFile, realpath } from 'node:fs/promises';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 
@@ -12,16 +14,21 @@ import {
   runGit,
   runGitBytes,
   type WorkTreeProbe,
-} from './git.js';
-import { DEFAULT_MAX_QUESTION_TEXT, type MemoryCandidate } from './pick.js';
+} from '@curatejs/core/internal';
+import { DEFAULT_MAX_QUESTION_TEXT, type MemoryCandidate } from '@curatejs/core';
 import {
   SourceReadError,
   type CandidateReadRequest,
   type CandidateReadResult,
   type CandidateSource,
-} from './source.js';
+} from '@curatejs/core';
 
-export interface KnowledgeBaseOptions {
+export interface RulesOptions {
+  /** Override the exported MARKDOWN_KEYWORD_SETTINGS. */
+  readonly keyword?: Partial<MarkdownKeywordSettings>;
+}
+
+export interface KnowledgeBaseOptions extends RulesOptions {
   /** Characters of candidate text the decision model is shown; the same
    *  budget pick's `maxQuestionText` carries. A section longer than this
    *  is offered in parts cut at line ends, so every part is judged. The
@@ -32,8 +39,6 @@ export interface KnowledgeBaseOptions {
    *  the corpus sits inside a work tree; defaults to the toplevel. */
   readonly repository?: string;
 }
-const TOKEN = /[\p{L}\p{N}]+/gu;
-const CODE_FORM = /[@\w./-]*[./@][\w./-]+|[a-z]+[A-Z]\w+|`[^`]+`/g;
 const FRONTMATTER = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*\r?\n?/;
 const SECTION_BREAK = /\n(?=## )/g;
 const HEADING = /^#{1,6} +(.+)$/m;
@@ -45,14 +50,6 @@ const REPLACED_WORDS = '(superseded|retired|deprecated|obsolete|withdrawn)';
 const REPLACED_FRONTMATTER = new RegExp(`\\b${REPLACED_WORDS}\\b`, 'i');
 const REPLACED_LINE = new RegExp(`^>?\\s*\\**${REPLACED_WORDS}\\b`, 'im');
 const LINK = /\[\[([^\]|#]+)|\]\(([^)#]+\.md)\b[^)]*\)/g;
-const STOP = new Set([
-  'about', 'after', 'agent', 'and', 'answers', 'are', 'before', 'change',
-  'context', 'every', 'for', 'into', 'not', 'only', 'question', 'should',
-  'that', 'the', 'their', 'there', 'these', 'this', 'what', 'when', 'where',
-  'which', 'with', 'would', 'you',
-]);
-const BM25_K1 = 1.2;
-const BM25_B = 0.75;
 /** Characters of a note's body scanned for a replaced marker. */
 const FIRST_CHARACTERS = 400;
 const DATE_FIELDS: ReadonlyArray<readonly [string, 'recorded' | 'effective']> = [
@@ -61,32 +58,6 @@ const DATE_FIELDS: ReadonlyArray<readonly [string, 'recorded' | 'effective']> = 
   ['effective', 'effective'],
   ['applies-from', 'effective'],
 ];
-
-function tokenize(value: string): readonly string[] {
-  return value.normalize('NFKC').toLowerCase().match(TOKEN) ?? [];
-}
-
-// Shared with the git-history reader, which scores the same terms against
-// commit subjects and bodies.
-export function taskTerms(task: string, paths: readonly string[] = []): readonly string[] {
-  const words = new Set<string>();
-  const add = (value: string) => {
-    for (const token of tokenize(value)) {
-      if (token.length > 2 && !STOP.has(token)) words.add(token);
-    }
-  };
-  for (const word of task.toLowerCase().split(/[^a-z0-9-]+/)) add(word);
-  for (const form of task.match(CODE_FORM) ?? []) add(form.replace(/`/g, ''));
-  for (const part of paths.flatMap((path) => path.split('/'))) {
-    if (part.length >= 4) add(part);
-  }
-  return [...words];
-}
-
-export function hits(text: string, terms: readonly string[]): number {
-  const words = new Set(tokenize(text));
-  return terms.filter((term) => words.has(term)).length;
-}
 
 interface Walked {
   readonly files: readonly string[];
@@ -242,7 +213,7 @@ function splitParts(text: string, limit: number): readonly string[] {
   return parts;
 }
 
-function bm25Scores(docs: readonly string[], terms: readonly string[]): readonly number[] {
+function bm25Scores(docs: readonly string[], terms: readonly string[], keyword: MarkdownKeywordSettings): readonly number[] {
   const count = docs.length;
   const tokens = docs.map(tokenize);
   const lengths = tokens.map((doc) => doc.length);
@@ -264,8 +235,8 @@ function bm25Scores(docs: readonly string[], terms: readonly string[]): readonly
       const f = counts.get(term) ?? 0;
       if (n === 0 || f === 0) continue;
       const idf = Math.log(1 + (count - n + 0.5) / (n + 0.5));
-      score += idf * (f * (BM25_K1 + 1))
-        / (f + BM25_K1 * (1 - BM25_B + BM25_B * (lengths[index]! / avgLength)));
+      score += idf * (f * (keyword.k1 + 1))
+        / (f + keyword.k1 * (1 - keyword.b + keyword.b * (lengths[index]! / avgLength)));
     }
     return score;
   });
@@ -274,8 +245,9 @@ function bm25Scores(docs: readonly string[], terms: readonly string[]): readonly
 function withBm25(
   candidates: readonly MemoryCandidate[],
   terms: readonly string[],
+  keyword: MarkdownKeywordSettings,
 ): MemoryCandidate[] {
-  const scores = bm25Scores(candidates.map((candidate) => candidate.text), terms);
+  const scores = bm25Scores(candidates.map((candidate) => candidate.text), terms, keyword);
   return candidates.map((candidate, index) =>
     scores[index] === 0
       ? candidate
@@ -653,15 +625,17 @@ export function knowledgeBase(
   if (!Number.isSafeInteger(maxQuestionText) || maxQuestionText < 1) {
     throw new TypeError('maxQuestionText must be a positive safe integer.');
   }
+  const keyword = { ...MARKDOWN_KEYWORD_SETTINGS, ...options.keyword };
   const resolved = resolve(directory);
   return {
     id: `knowledge-base:${resolved}`,
+    kind: 'markdown',
     role: 'reference',
     async read(request) {
       const state = await openDirectory(resolved, request, true);
       if ('status' in state) return state;
       const notes = await readTexts(state, request.signal);
-      const terms = taskTerms(request.task, request.paths ?? []);
+      const terms = taskTerms(request.task, request.paths ?? [], keyword.stopWords);
       const paths = request.paths ?? [];
       if (request.maxQuestionText !== undefined
         && (!Number.isSafeInteger(request.maxQuestionText) || request.maxQuestionText < 1)) {
@@ -753,13 +727,13 @@ export function knowledgeBase(
             const heading = section.heading ?? basename(file);
             const signals: Record<string, number> = {};
             const headingHits = hits(heading, terms);
-            if (headingHits > 0) signals['heading-words'] = Math.min(2, headingHits * 2);
+            if (headingHits > 0) signals['heading-words'] = Math.min(keyword.headingCap, headingHits * keyword.headingWeight);
             const fileHits = hits(`${name} ${note.frontmatter}`, terms);
-            if (fileHits > 0) signals['file-words'] = Math.min(1, fileHits);
-            if (paths.some((path) => text.includes(path))) signals['names-path'] = 3;
+            if (fileHits > 0) signals['file-words'] = Math.min(keyword.fileCap, fileHits);
+            if (paths.some((path) => text.includes(path))) signals['names-path'] = keyword.namedPathWeight;
             const linked = inbound.get(name) ?? 0;
-            if (linked > 0) signals['inbound-links'] = Math.min(1, Math.log10(1 + linked));
-            if (replaced) signals['replaced'] = -2;
+            if (linked > 0) signals['inbound-links'] = Math.min(keyword.inboundLinkCap, Math.log10(1 + linked));
+            if (replaced) signals['replaced'] = keyword.replacedWeight;
             candidates.push({
               sourceId: `knowledge-base:${resolved}`,
               role: 'reference',
@@ -778,7 +752,7 @@ export function knowledgeBase(
         }
       }
 
-      return finish(request, withBm25(candidates, terms), state.skipped, state.pinned?.revision);
+      return finish(request, withBm25(candidates, terms, keyword), state.skipped, state.pinned?.revision);
     },
   };
 }
@@ -789,27 +763,29 @@ export function knowledgeBase(
  * `applies: always` is carried onto the candidate so pick selects the
  * rule without asking. This is the only source that emits role 'rule'.
  */
-export function rules(directory: string): CandidateSource {
+export function rules(directory: string, options: RulesOptions = {}): CandidateSource {
   if (typeof directory !== 'string' || directory.trim() === '') {
     throw new TypeError('directory must be a non-empty string.');
   }
+  const keyword = { ...MARKDOWN_KEYWORD_SETTINGS, ...options.keyword };
   const resolved = resolve(directory);
   return {
     id: `rules:${resolved}`,
+    kind: 'markdown',
     role: 'rule',
     async read(request) {
       const state = await openDirectory(resolved, request, false);
       if ('status' in state) return state;
       const files = state.files.filter((file) => basename(file).toLowerCase() !== 'readme.md');
       const notes = await readTexts({ ...state, files }, request.signal);
-      const terms = taskTerms(request.task, request.paths ?? []);
+      const terms = taskTerms(request.task, request.paths ?? [], keyword.stopWords);
       const paths = request.paths ?? [];
 
       const candidates: MemoryCandidate[] = [];
       for (const [file, note] of notes) {
         const name = relative(state.root, file).split(sep).join('/');
         const signals: Record<string, number> = {};
-        if (paths.some((path) => note.body.includes(path))) signals['names-path'] = 3;
+        if (paths.some((path) => note.body.includes(path))) signals['names-path'] = keyword.namedPathWeight;
         const date = declaredDate(note.fields);
         candidates.push({
           sourceId: `rules:${resolved}`,
@@ -824,7 +800,7 @@ export function rules(directory: string): CandidateSource {
         });
       }
 
-      return finish(request, withBm25(candidates, terms), state.skipped);
+      return finish(request, withBm25(candidates, terms, keyword), state.skipped);
     },
   };
 }

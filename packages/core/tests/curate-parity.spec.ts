@@ -16,7 +16,7 @@ const fixtures = readdirSync(directory).filter((file) => file.endsWith('.json'))
 describe('prototype curator prompt parity', () => {
   for (const { file, input } of fixtures) {
     for (const { working, prompt } of input.prompts) {
-      it(`matches ${file} except fixed character caps with working=${working}`, async () => {
+      it(`matches ${file} except fixed character caps and score rounding with working=${working}`, async () => {
         const calls: CuratePrompt[] = [];
         await curate(input.task, input.picked, {
           working,
@@ -29,7 +29,14 @@ describe('prototype curator prompt parity', () => {
         expect(calls[0]!.instructions).toBe(prompt.instructions
           .replace('At most 3500 characters.\n', '')
           .replace(' Keep the log and the working together within 3500 characters.', ''));
-        expect(calls[0]!.body).toBe(prompt.body);
+        let body = prompt.body;
+        for (const item of input.picked.selected) {
+          const entry = input.picked.record.candidates.find((candidate) => candidate.sourceId === item.sourceId && candidate.id === item.id)!;
+          const weight = entry.status === 'selected' ? entry.probability! : 0;
+          const date = item.date ? `${item.date.value}, ` : '';
+          body = body.replace(`### ${item.id} (${date}${weight.toFixed(2)}):`, `### ${item.id} (${date}${weight}):`);
+        }
+        expect(calls[0]!.body).toBe(body);
       });
     }
   }
