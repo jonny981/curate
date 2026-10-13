@@ -8,6 +8,12 @@ export interface MemoryCandidate {
   readonly title: string;
   readonly text: string;
   readonly contentRef?: string;
+  /** Transcript metadata; separate from the candidate's reference role. */
+  readonly chat?: {
+    readonly provider: 'claude-code' | 'codex';
+    readonly sessionId: string;
+    readonly role: 'user' | 'assistant' | 'tool-call' | 'tool-result';
+  };
   /** Repository paths this candidate changed. For a commit: the files in
    *  its diff, not paths the text mentions. */
   readonly changedPaths?: readonly string[];
