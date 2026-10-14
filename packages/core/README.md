@@ -338,7 +338,14 @@ in bounded batches, and returns the selected candidates with a
 with a valid decision probability is kept, including zero. The model
 orders and weights these items rather than dropping them. References
 with no valid decision answer remain unanswered; limits can leave items
-unassessed.
+unassessed. A `decide` call that throws fails the pick with a `PickError`,
+unless the elapsed limit stopped the call or the caller's signal aborted
+it. The error's `record` carries the pick's record, which names the
+batch's candidate ids and the error's message in `decideError`. A failed
+decision batch leaves its candidates unanswered even when an earlier
+batch answered some of their questions; a failed tag batch leaves a
+decided selection standing and records the error on the tag answers.
+There is no retry and no fallback.
 
 For a single cut, set your own bar:
 
@@ -735,6 +742,7 @@ every returned candidate.
 | Dial | Default | Cost and loss |
 | --- | --- | --- |
 | **`maxPerBatch`** | 150 questions | Changes request size only; all batches run. |
+| **`maxBatchChars`** | Off | Sizes each request: a batch holds as many whole items as fit within N characters, counting the task's text, each item's id, title, date and text once per item in the batch, and each question's wording and true and false criteria per question. An item larger than the bound goes alone; nothing is dropped or cut. With `maxPerBatch` set too, a batch closes at whichever bound it reaches first. |
 | **`maxCandidates`** | Off | Stops at N candidates per search lane. A saved tuning comparison at 100 parts lost 43 of 445 labelled answer-turn starts; 600 retained all 445 in that comparison. This does not prove a safe cut for other data. |
 | **`maxBatches`** | Off | Stops after N requests; every unasked candidate is recorded. With 151 one-question candidates and one 150-question batch, one candidate remains unassessed. Cascades can use multiple requests per candidate. |
 | **`maxElapsedMs`** | Off | Stops questions when the elapsed time is reached. Loss depends on response time; stopped and failed questions remain in the record. |

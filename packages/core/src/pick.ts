@@ -87,6 +87,15 @@ export type PickDecide = (
 export interface PickLimits {
   /** Request size only; every batch is processed unless an explicit stop is set. */
   readonly maxPerBatch?: number;
+  /** Request size only: a batch holds as many whole items as fit within
+   *  this many characters, counting the task's text, each item's id,
+   *  title, date and text once per item in the batch, and each
+   *  question's wording and true and false criteria per question. A
+   *  single item larger than the bound goes alone; nothing is dropped
+   *  or truncated. With `maxPerBatch` set too, a batch closes at
+   *  whichever bound it reaches first. Omitted means no character
+   *  bound. */
+  readonly maxBatchChars?: number;
   /** Optional stopping dials. Omitted means no limit; skipped items are recorded. */
   readonly maxBatches?: number;
   readonly maxCandidates?: number;
@@ -133,7 +142,7 @@ export type PickEntryStatus =
       readonly answer: 'refused' | 'missing' | 'error';
       readonly detail?: string;
     }
-  | { readonly status: 'unassessed'; readonly reason: 'limits' | 'time' | 'cancelled' | 'document' };
+  | { readonly status: 'unassessed'; readonly reason: 'limits' | 'time' | 'cancelled' | 'document' | 'error' };
 
 export type PickRecordEntry = {
   readonly sourceId: string;
@@ -215,6 +224,14 @@ export interface PickRecord {
         readonly appliedReference?: number };
   readonly candidates: readonly PickRecordEntry[];
   readonly rulesCoverage: 'complete' | 'incomplete';
+  /** Present when a decide call rejected its batch and ended the pick:
+   *  the batch's candidate ids and the error's message. The pick fails
+   *  with a PickError carrying this record; a failed decision batch
+   *  leaves its candidates unanswered and everything still unasked is
+   *  unassessed. A failed tag batch leaves a decided selection standing
+   *  and records the error on the tag's answers, since tags never
+   *  change what is selected. */
+  readonly decideError?: { readonly candidates: readonly string[]; readonly message: string };
   readonly cascade?: PickCascade;
   /** A source-specific set overrides cascade; undeclared kinds use cascade. */
   readonly cascadesByKind?: Readonly<Partial<Record<CandidateSourceKind, PickCascade>>>;
@@ -232,6 +249,17 @@ export interface PickRecord {
 export interface PickResult {
   readonly selected: readonly MemoryCandidate[];
   readonly record: PickRecord;
+}
+
+/** Thrown when a decide call rejects its batch; the run's record is
+ *  carried on `record` with the failure named in `record.decideError`. */
+export class PickError extends Error {
+  readonly record: PickRecord;
+  constructor(message: string, record: PickRecord, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'PickError';
+    this.record = record;
+  }
 }
 
 export interface PickOptions {
@@ -319,6 +347,7 @@ type CheckedAnswer =
 
 interface ResolvedLimits {
   readonly maxPerBatch: number;
+  readonly maxBatchChars: number;
   readonly maxBatches: number;
   readonly maxCandidates: number;
   readonly maxElapsedMs: number;
@@ -343,6 +372,20 @@ function probabilityLimit(value: number | undefined, name: string, fallback: num
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** What one item adds to its batch's counted size once per batch,
+ *  however many of its questions the batch holds: the item's id, title,
+ *  date and text. */
+function itemChars(question: PickQuestion): number {
+  return question.id.length + question.title.length + question.text.length
+    + (question.date === undefined ? 0 : question.date.value.length + question.date.meaning.length);
+}
+
+/** What one question adds to its batch's counted size: the question's
+ *  wording and its true and false criteria. */
+function questionChars(question: PickQuestion): number {
+  return question.question.length + question.trueCriterion.length + question.falseCriterion.length;
 }
 
 function takeCharacters(
@@ -527,6 +570,7 @@ export async function pick(
   const input = options.limits ?? {};
   const limits: ResolvedLimits = {
     maxPerBatch: positiveLimit(input.maxPerBatch, 'maxPerBatch', DEFAULT_MAX_PER_BATCH),
+    maxBatchChars: positiveLimit(input.maxBatchChars, 'maxBatchChars', Number.POSITIVE_INFINITY),
     maxBatches: positiveLimit(input.maxBatches, 'maxBatches', Number.POSITIVE_INFINITY),
     maxCandidates: positiveLimit(input.maxCandidates, 'maxCandidates', Number.POSITIVE_INFINITY),
     maxElapsedMs: positiveLimit(input.maxElapsedMs, 'maxElapsedMs', Number.POSITIVE_INFINITY),
@@ -534,6 +578,7 @@ export async function pick(
   };
   const recordedLimits: PickLimits = {
     maxPerBatch: limits.maxPerBatch,
+    ...(input.maxBatchChars !== undefined ? { maxBatchChars: input.maxBatchChars } : {}),
     ...(input.maxQuestionText !== undefined ? { maxQuestionText: input.maxQuestionText } : {}),
     ...(input.maxBatches !== undefined ? { maxBatches: input.maxBatches } : {}),
     ...(input.maxCandidates !== undefined ? { maxCandidates: input.maxCandidates } : {}),
@@ -606,14 +651,33 @@ export async function pick(
     } };
   };
   let batches = 0;
-  let stop: 'limits' | 'time' | 'cancelled' | undefined;
+  let stop: 'limits' | 'time' | 'cancelled' | 'error' | undefined;
+  let decideFailure:
+    { readonly ids: readonly string[]; readonly message: string; readonly error: unknown } | undefined;
+  /** Candidates in a rejected decision batch: their verdicts are not
+   *  trusted even when an earlier batch answered some questions. */
+  const decideFailed = new Set<MemoryCandidate>();
   const ask = async (asks: Pending[], sink = answered) => {
-    for (let index = 0; index < asks.length; index += limits.maxPerBatch) {
+    for (let index = 0; index < asks.length;) {
       if (signal.aborted) { stop = 'cancelled'; break; }
       if (batches >= limits.maxBatches) { stop = 'limits'; break; }
       const remaining = limits.maxElapsedMs - (Date.now() - started);
       if (remaining <= 0) { stop = 'time'; break; }
-      const slice = asks.slice(index, index + limits.maxPerBatch);
+      // A batch packs whole items until the character bound; the first
+      // item always goes, so a single oversized item is sent alone. An
+      // item counts once per batch however many of its questions it holds.
+      const slice: Pending[] = [];
+      const counted = new Set<MemoryCandidate>();
+      let batchChars = options.task.length;
+      for (const item of asks.slice(index, index + limits.maxPerBatch)) {
+        const size = questionChars(item.question)
+          + (counted.has(item.candidate) ? 0 : itemChars(item.question));
+        if (slice.length > 0 && batchChars + size > limits.maxBatchChars) break;
+        batchChars += size;
+        counted.add(item.candidate);
+        slice.push(item);
+      }
+      index += slice.length;
       const questions = slice.map((item) => item.question);
       const deadline = Number.isFinite(remaining) ? AbortSignal.timeout(Math.ceil(remaining)) : undefined;
       let answers: Record<string, PickAnswer> | undefined;
@@ -633,11 +697,25 @@ export async function pick(
         timedOut = deadline?.aborted === true;
         decideError = error;
       }
+      // A rejected batch is reported, not swallowed: the record names
+      // the batch's candidate ids and the error's message, and the pick
+      // fails on it; no retry and no fallback. A call the elapsed limit
+      // or the caller's signal already stopped ends the run, not the pick.
+      if (decideError !== undefined && !timedOut && !signal.aborted) {
+        decideFailure = {
+          ids: [...new Set(slice.map(({ question }) => question.id))],
+          message: decideError instanceof Error ? decideError.message : String(decideError),
+          error: decideError,
+        };
+        if (sink === answered) for (const item of slice) decideFailed.add(item.candidate);
+        stop = 'error';
+      }
       for (const { candidate, spec, question } of slice) {
         const answer: CheckedAnswer = timedOut
           ? { status: 'error', detail: 'The decide call did not finish before the elapsed limit.' }
-          : decideError !== undefined || answers === undefined
-            ? { status: 'error', detail: decideError instanceof Error ? decideError.message : 'The decide call failed.' }
+          : answers === undefined
+            ? { status: 'error', detail: decideError instanceof Error ? decideError.message
+                : decideError === undefined ? 'The decide call failed.' : String(decideError) }
             : checkAnswer(answers[question.key]);
         let got = sink.get(candidate);
         if (!got) { got = new Map(); sink.set(candidate, got); }
@@ -647,11 +725,12 @@ export async function pick(
       }
       batches += 1;
       if (timedOut) { stop = 'time'; break; }
+      if (decideFailure !== undefined) break;
     }
   };
   const combined = new Map<MemoryCandidate, CheckedAnswer>();
   // Candidates a stop left half-assessed inside a cascade.
-  const curtailed = new Map<MemoryCandidate, 'limits' | 'time' | 'cancelled'>();
+  const curtailed = new Map<MemoryCandidate, 'limits' | 'time' | 'cancelled' | 'error'>();
   const evaluate = async (phase: readonly MemoryCandidate[]) => {
     await ask(phase.flatMap((candidate) => specsFor(candidate)
       .filter((spec) => candidate.role === 'rule' || !cascadeFor(candidate)?.first || spec.key === cascadeFor(candidate)!.first)
@@ -741,6 +820,15 @@ export async function pick(
     : sizeBar(thresholds.referenceBySize, decided);
   const appliedReference = thresholds.referenceBySize === undefined ? undefined : referenceBar;
   for (const candidate of feed) {
+    // A failed decision batch leaves its candidates unanswered even
+    // when an earlier batch answered some of their questions: a
+    // verdict combined from a half-failed cascade is not a verdict.
+    if (decideFailed.has(candidate)) {
+      statuses.set(candidate, {
+        status: 'unanswered', answer: 'error', detail: decideFailure!.message,
+      });
+      continue;
+    }
     const held = curtailed.get(candidate);
     const answer = held === undefined ? combined.get(candidate) : undefined;
     if (held !== undefined || !answer) {
@@ -885,26 +973,32 @@ export async function pick(
     ? 'incomplete' as const
     : 'complete' as const;
 
-  return {
-    selected,
-    record: {
-      questionVersion: candidates.some((candidate) => candidate.kind !== undefined)
-        ? 'memory-pick-questions-2' : PICK_QUESTION_VERSION,
-      limits: recordedLimits,
-      thresholds: { ...thresholds,
-        ...(appliedReference === undefined ? {} : { appliedReference }) },
-      ...(options.ranking === undefined ? {} : { ranking: options.ranking }),
-      candidates: entries,
-      rulesCoverage,
-      ...(options.cascade === undefined ? {} : { cascade: options.cascade }),
-      ...(options.cascadesByKind === undefined ? {} : { cascadesByKind: options.cascadesByKind }),
-      ...(options.tags === undefined ? {} : { tags: options.tags }),
-      ...(options.tagsByKind === undefined ? {} : { tagsByKind: options.tagsByKind }),
-      ...((options.cascadesByKind === undefined && options.tagsByKind === undefined)
-        || options.sourceKinds === undefined ? {} : { sourceKinds: options.sourceKinds }),
-      ...(options.keepTop === undefined ? {} : { keepTop }),
-      ...(options.rankProtection ? { rankProtection: true } : {}),
-      ...(options.bestPartFirst ? { bestPartFirst: true } : {}),
-    },
+  const record: PickRecord = {
+    questionVersion: candidates.some((candidate) => candidate.kind !== undefined)
+      ? 'memory-pick-questions-2' : PICK_QUESTION_VERSION,
+    limits: recordedLimits,
+    thresholds: { ...thresholds,
+      ...(appliedReference === undefined ? {} : { appliedReference }) },
+    ...(options.ranking === undefined ? {} : { ranking: options.ranking }),
+    candidates: entries,
+    rulesCoverage,
+    ...(decideFailure === undefined ? {} : {
+      decideError: { candidates: decideFailure.ids, message: decideFailure.message },
+    }),
+    ...(options.cascade === undefined ? {} : { cascade: options.cascade }),
+    ...(options.cascadesByKind === undefined ? {} : { cascadesByKind: options.cascadesByKind }),
+    ...(options.tags === undefined ? {} : { tags: options.tags }),
+    ...(options.tagsByKind === undefined ? {} : { tagsByKind: options.tagsByKind }),
+    ...((options.cascadesByKind === undefined && options.tagsByKind === undefined)
+      || options.sourceKinds === undefined ? {} : { sourceKinds: options.sourceKinds }),
+    ...(options.keepTop === undefined ? {} : { keepTop }),
+    ...(options.rankProtection ? { rankProtection: true } : {}),
+    ...(options.bestPartFirst ? { bestPartFirst: true } : {}),
   };
+  if (decideFailure !== undefined) {
+    throw new PickError(
+      `The decide call failed for candidates ${decideFailure.ids.join(', ')}: ${decideFailure.message}`,
+      record, { cause: decideFailure.error });
+  }
+  return { selected, record };
 }

@@ -117,6 +117,31 @@ export function parseSearches(value) {
   return value;
 }
 
+// The request's state carries each item's evidence once, however many
+// of the item's questions the batch holds; a question names the item it
+// asks about by its number in the state.
+export function jevRequest(batch) {
+  const items = new Map();
+  for (const question of batch.questions) {
+    const key = `${question.sourceId}\n${question.id}`;
+    if (!items.has(key)) items.set(key, question);
+  }
+  const numbers = new Map([...items.keys()].map((key, index) => [key, index + 1]));
+  const number = (question) => numbers.get(`${question.sourceId}\n${question.id}`);
+  const state = [batch.task, ...[...items.values()].map((question) =>
+    `Item ${number(question)}: ${question.id}${question.date === undefined ? ''
+      : ` (${question.date.meaning} ${question.date.value})`}\n${question.title}\n\n${question.text}`)].join('\n\n');
+  return {
+    model: 'jev-latest',
+    state,
+    questions: Object.fromEntries(batch.questions.map((question, index) => [`q${index}`, {
+      type: 'noul',
+      instructions: `${question.question}\n\nItem ${number(question)}`,
+      criteria: { true: question.trueCriterion, false: question.falseCriterion },
+    }])),
+  };
+}
+
 export function decisionAnswers(batch, raw) {
   return Object.fromEntries(batch.questions.map((question, index) => {
     const probability = raw?.[`q${index}`]?.noul ?? raw?.[`q${index}`]?.probability;
@@ -224,7 +249,7 @@ export async function pickFullSources(sources, request, options) {
     }
     return { ...source, read: async ({ task }) => reads.get(task) };
   }));
-  return pickFromSources(cached, request, { ...options, limits: { maxQuestionText } });
+  return pickFromSources(cached, request, { ...options, limits: { ...options.limits, maxQuestionText } });
 }
 
 export function curationEvidence(picked, collectedDate) {
@@ -290,9 +315,7 @@ export async function run(args = process.argv.slice(2)) {
     const searchStart = Date.now();
     record.searches = parseSearches(JSON.parse(await subscription(searchPrompt, folder, 'searches', record, save)));
     record.timings.searchesMs = Date.now() - searchStart;
-    let decisionFailed = false;
     const decide = async (batch, signal) => {
-      if (decisionFailed) throw new Error('Decision route stopped after a failed call.');
       const call = { questions: batch.questions.length, started: new Date().toISOString() };
       record.jev.push(call);
       await save();
@@ -301,10 +324,7 @@ export async function run(args = process.argv.slice(2)) {
         const response = await fetch('https://api.typesafe.ai/v1/systemone', {
           method: 'POST', headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },
           signal: AbortSignal.any([signal, AbortSignal.timeout(120_000)]),
-          body: JSON.stringify({ model: 'jev-latest', state: batch.task,
-            questions: Object.fromEntries(batch.questions.map((q, i) => [`q${i}`, { type: 'noul',
-              instructions: `${q.question}\n\n${q.title}\n\n${q.text}`,
-              criteria: { true: q.trueCriterion, false: q.falseCriterion } }])) }),
+          body: JSON.stringify(jevRequest(batch)),
         });
         if (!response.ok) throw new Error(`Decision service returned HTTP ${response.status}.`);
         const raw = await response.json();
@@ -315,16 +335,26 @@ export async function run(args = process.argv.slice(2)) {
         if (Object.values(result).some((answer) => answer.status !== 'answered')) throw new Error('Decision service left questions unanswered.');
         return result;
       } catch (error) {
-        decisionFailed = true;
         call.error = error.message;
         throw error;
       } finally { call.ms = Date.now() - then; await save(); }
     };
+    // Jev documents 32,000 tokens for a request's state plus its longest
+    // question; three characters per token is a conservative estimate for
+    // English text and JSON. Subtracting the longest question's characters
+    // keeps the state plus that question inside the bound; the separate
+    // 64,000-token whole-request limit covers the per-question JSON
+    // framing the batch count does not measure.
+    const maxBatchChars = 32_000 * 3 - Math.max(
+      ...[CHAT_CASCADE, GIT_HISTORY_CASCADE, MARKDOWN_CASCADE]
+        .flatMap((cascade) => cascade.questions)
+        .map((question) => question.instructions.length + question.true.length + question.false.length));
     const count = Math.max(...kinds.map((kind) => record.searches[kind].keywords.length + record.searches[kind].answers.length));
     const pickStart = Date.now();
     const request = { task: options.task, searchLines: Array.from({ length: count }, (_, i) => `curate-search:${i}`) };
     const pickOptions = { task: options.task, decide,
       cascadesByKind: { chat: CHAT_CASCADE, 'git-history': GIT_HISTORY_CASCADE, markdown: MARKDOWN_CASCADE },
+      limits: { maxBatchChars },
       ...(settings.threshold === undefined ? {} : { thresholds: { reference: settings.threshold } }) };
     const picked = await pickFullSources(sources.map((source) =>
       searchSource(source, record.searches, record.reads, folder, settings)), request, pickOptions);
@@ -335,10 +365,14 @@ export async function run(args = process.argv.slice(2)) {
       ...(read.lanes === undefined ? {} : { lanes: read.lanes }) }));
     record.timings.rankAndDecideMs = Date.now() - pickStart;
     await save();
-    if (decisionFailed) throw new Error('Decision route failed; stopped before curation.');
     await writeFile(join(folder, 'selection.json'), JSON.stringify({ selected: picked.selected, record: { ...picked.record, candidates: picked.record.candidates.filter((entry) => entry.status === 'selected') } }), { mode: 0o600 });
     await writeLog(options.task, picked, folder, record, save);
-  } catch (error) { record.status = 'failed'; record.error = error.message; throw error; }
+  } catch (error) {
+    // A PickError carries the pick's record: the failed batch's ids, the
+    // unanswered candidates, and the answers that came back. Keep it.
+    if (error?.record !== undefined) record.pick = error.record;
+    record.status = 'failed'; record.error = error.message; throw error;
+  }
   finally { record.timings.totalMs = Date.now() - started; await save(); }
   return folder;
 }

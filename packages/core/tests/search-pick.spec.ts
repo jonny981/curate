@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { curate, pick, type MemoryCandidate, type PickAnswer, type PickCascade, type PickCriterion, type PickDecide, type PickQuestion } from '../src/index.js';
+import { curate, pick, type MemoryCandidate, type PickAnswer, type PickCascade, type PickCriterion, type PickDecide, type PickError, type PickQuestion } from '../src/index.js';
 
 const item = (id: string, overrides: Partial<MemoryCandidate> = {}): MemoryCandidate => ({
   sourceId: 'notes', id, role: 'reference', title: id, text: 'Evidence',
@@ -295,19 +295,27 @@ describe('best document part first', () => {
     expect(result.record.candidates[1]).toMatchObject({ status: 'unanswered', answer: status });
   });
 
-  it('expands after the representative’s decision call throws', async () => {
+  it('fails the pick when the representative’s decision call throws', async () => {
     const asked: string[] = [];
-    const result = await pick(parts(), {
+    const failure = await pick(parts(), {
       task: 'battery charge schedule', bestPartFirst: true,
       decide: async ({ questions }) => {
         asked.push(...questions.map((question) => question.id));
         if (questions.some((question) => question.id === 'representative')) throw new Error('decision failed');
         return Object.fromEntries(questions.map((question) => [question.key, answer(0.9)]));
       },
-    });
-    expect(asked).toEqual(['representative', 'tail']);
-    expect(result.record.candidates[0]).toMatchObject({ status: 'selected' });
-    expect(result.record.candidates[1]).toMatchObject({ status: 'unanswered', answer: 'error' });
+    }).then(
+      () => { throw new Error('the pick resolved'); },
+      (reason: unknown) => reason as PickError,
+    );
+    expect(asked).toEqual(['representative']);
+    expect(failure.message).toContain('decision failed');
+    expect(failure.message).toContain('representative');
+    expect(failure.record.decideError).toEqual({ candidates: ['representative'], message: 'decision failed' });
+    expect(failure.record.candidates).toMatchObject([
+      { status: 'unassessed', reason: 'error' },
+      { status: 'unanswered', answer: 'error', detail: 'decision failed' },
+    ]);
   });
 
   it('never expands a document beyond the fed candidates or the lane budgets', async () => {

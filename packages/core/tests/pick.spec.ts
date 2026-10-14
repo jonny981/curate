@@ -3,10 +3,12 @@ import { describe, expect, it } from 'vitest';
 import {
   pick,
   curate,
+  PickError,
   PICK_QUESTION_VERSION,
   type MemoryCandidate,
   type PickAnswer,
   type PickBatch,
+  type PickCascade,
   type PickDecide,
 } from '../src/index.js';
 
@@ -237,19 +239,120 @@ describe('pick', () => {
       entry.status === 'unassessed' && entry.reason === 'time')).toBe(true);
   });
 
-  it('marks an in-flight batch as unanswered when the decide call fails', async () => {
+  it('fails the pick when the decide call throws, carrying a record that names the batch and the error', async () => {
     const candidates = [
-      candidate({ sourceId: 'notes', id: 'a' }),
-      candidate({ sourceId: 'notes', id: 'b' }),
+      candidate({ sourceId: 'notes', id: 'alpha', signals: { score: 3 } }),
+      candidate({ sourceId: 'notes', id: 'beta', signals: { score: 2 } }),
+      candidate({ sourceId: 'notes', id: 'unasked', signals: { score: 1 } }),
     ];
-    const { decide } = stubDecide(() => {
+    const { decide, calls } = stubDecide(() => {
       throw new Error('engine down');
     });
 
-    const result = await pick(candidates, { task: 'fix it', decide });
+    const failure = await pick(candidates, {
+      task: 'fix it', decide, limits: { maxPerBatch: 2 },
+    }).then(
+      () => { throw new Error('the pick resolved'); },
+      (reason: unknown) => reason as PickError,
+    );
 
-    expect(result.record.candidates.every((entry) =>
-      entry.status === 'unanswered' && entry.answer === 'error')).toBe(true);
+    expect(failure).toBeInstanceOf(PickError);
+    expect(failure.message).toBe('The decide call failed for candidates alpha, beta: engine down');
+    expect(failure.record.decideError).toEqual({ candidates: ['alpha', 'beta'], message: 'engine down' });
+    expect(failure.record.candidates.map((entry) => entry.status)).toEqual([
+      'unanswered', 'unanswered', 'unassessed',
+    ]);
+    expect(failure.record.candidates[0]).toMatchObject({ answer: 'error', detail: 'engine down' });
+    expect(failure.record.candidates[2]).toMatchObject({ reason: 'error' });
+    // No retry and no later batch: the first failure ends the pick.
+    expect(calls).toHaveLength(1);
+  });
+
+  it('records cancelled rather than failing when the aborted decide call throws', async () => {
+    const controller = new AbortController();
+    const candidates = Array.from({ length: 4 }, (_, index) =>
+      candidate({ sourceId: 'notes', id: `n${index}`, signals: { score: 5 - index } }));
+    const { decide, calls } = stubDecide((batch, call) => {
+      if (call === 1) {
+        controller.abort();
+        throw new Error('the host aborted the request');
+      }
+      return allAnswered(batch, 0.9);
+    });
+
+    const result = await pick(candidates, {
+      task: 'write the report', decide, limits: { maxPerBatch: 2 }, signal: controller.signal,
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(result.record.candidates.map((entry) => entry.status)).toEqual([
+      'unanswered', 'unanswered', 'unassessed', 'unassessed',
+    ]);
+    expect(result.record.candidates.slice(2).every((entry) =>
+      entry.status === 'unassessed' && entry.reason === 'cancelled')).toBe(true);
+  });
+
+  it('marks a candidate unanswered when a later batch of its cascade fails after an earlier batch answered', async () => {
+    const cascade: PickCascade = {
+      bias: 0,
+      first: 'gate',
+      band: [0, 0.9],
+      firstOnly: { bias: 0, weight: 1 },
+      questions: [
+        { key: 'gate', instructions: 'Gate?', true: 'yes', false: 'no', weight: 1 },
+        { key: 'rest', instructions: 'Rest?', true: 'yes', false: 'no', weight: 1 },
+      ],
+    };
+    const { decide, calls } = stubDecide((batch, call) => {
+      if (call === 2) throw new Error('second request rejected');
+      return Object.fromEntries(batch.questions.map((question) => [
+        question.key, answered(question.id === 'b' ? 0.99 : 0.5),
+      ]));
+    });
+
+    const failure = await pick([
+      candidate({ sourceId: 'notes', id: 'a', signals: { score: 2 } }),
+      candidate({ sourceId: 'notes', id: 'b', signals: { score: 1 } }),
+    ], { task: 't', decide, cascade }).then(
+      () => { throw new Error('the pick resolved'); },
+      (reason: unknown) => reason as PickError,
+    );
+
+    expect(calls).toHaveLength(2);
+    // The failed batch held only a's remaining question; b's gate answer
+    // landed outside the band, so its cascade finished on the first call.
+    expect(failure.record.decideError).toEqual({ candidates: ['a'], message: 'second request rejected' });
+    const byId = new Map(failure.record.candidates.map((entry) => [entry.id, entry]));
+    expect(byId.get('a')).toMatchObject({ status: 'unanswered', answer: 'error', detail: 'second request rejected' });
+    expect(byId.get('a')!.questions).toEqual([
+      { key: 'gate', status: 'answered', probability: 0.5 },
+      { key: 'rest', status: 'error', detail: 'second request rejected' },
+    ]);
+    expect(byId.get('b')).toMatchObject({ status: 'selected' });
+  });
+
+  it('keeps a decided selection standing when a tag batch fails, with the error on the tag answers', async () => {
+    const { decide, calls } = stubDecide((batch, call) => {
+      if (call === 2) throw new Error('tag request rejected');
+      return allAnswered(batch, 0.9);
+    });
+
+    const failure = await pick([candidate({ sourceId: 'notes', id: 'a' })], {
+      task: 't', decide,
+      tags: [{ key: 'intent', questions: [{ key: 'why', instructions: 'Why?', true: 't', false: 'f' }] }],
+    }).then(
+      () => { throw new Error('the pick resolved'); },
+      (reason: unknown) => reason as PickError,
+    );
+
+    expect(calls).toHaveLength(2);
+    expect(failure.record.decideError).toEqual({ candidates: ['a'], message: 'tag request rejected' });
+    const entry = failure.record.candidates[0]!;
+    expect(entry.status).toBe('selected');
+    expect(entry.tags?.intent?.answers).toEqual([
+      { key: 'why', status: 'error', detail: 'tag request rejected' },
+    ]);
+    expect(entry.tags?.intent?.value).toBeUndefined();
   });
 
   it('reports incomplete rule coverage when limits stop before the last rule', async () => {
@@ -339,6 +442,114 @@ describe('pick', () => {
     expect(shown.find((question) => question.id === 'long')?.text).toBe('x'.repeat(10));
     expect(shown.find((question) => question.id === 'short')?.text).toBe('tiny');
     expect(result.record.candidates.map((entry) => entry.truncated)).toEqual([true, false]);
+  });
+
+  // Each question in these cascades counts 11 characters of wording and
+  // criteria ('Is it?' + 'yes' + 'no'); each item counts its id, title,
+  // date and text once per batch however many questions it carries.
+  const countingCascade: PickCascade = {
+    bias: 0,
+    questions: [
+      { key: 'one', instructions: 'Is it?', true: 'yes', false: 'no', weight: 1 },
+      { key: 'two', instructions: 'Is it?', true: 'yes', false: 'no', weight: 1 },
+    ],
+  };
+
+  it('closes a batch at maxBatchChars, counting the task, each item once and each question’s wording', async () => {
+    const candidates = [
+      candidate({ sourceId: 'notes', id: 'a', title: 'a', text: 'x'.repeat(10), signals: { score: 3 } }),
+      candidate({
+        sourceId: 'notes', id: 'b', title: 'b', text: 'x'.repeat(10), signals: { score: 2 },
+        date: { value: '2026-01-01', meaning: 'recorded' },
+      }),
+      candidate({ sourceId: 'notes', id: 'c', title: 'c', text: 'x'.repeat(10), signals: { score: 1 } }),
+    ];
+    const { decide, calls } = stubDecide((batch) => allAnswered(batch, 0.9));
+
+    // 'a' counts 12 + 11 + 11 = 34 and 'b' counts 30 + 22 = 52 with its
+    // date; the task's 6 characters leave room for a + b (92) inside the
+    // bound of 110, but even c's first question (115) would pass it.
+    const result = await pick(candidates, {
+      task: 'fix it', decide, cascade: countingCascade, limits: { maxBatchChars: 110 },
+    });
+
+    expect(calls.map((batch) => batch.questions.map((question) => `${question.id}:${question.questionKey}`)))
+      .toEqual([['a:one', 'a:two', 'b:one', 'b:two'], ['c:one', 'c:two']]);
+    expect(result.record.limits).toEqual({ maxPerBatch: 150, maxBatchChars: 110 });
+    expect(result.record.candidates.every((entry) => entry.status === 'selected')).toBe(true);
+  });
+
+  it('counts an item once per batch however many of its questions the batch holds', async () => {
+    const cascade: PickCascade = {
+      bias: 0,
+      questions: ['one', 'two', 'three'].map((key) => ({
+        key, instructions: 'Is it?', true: 'yes', false: 'no', weight: 1,
+      })),
+    };
+    const { decide, calls } = stubDecide((batch) => allAnswered(batch, 0.9));
+
+    // The item counts 1 + 1 + 20 = 22 once, plus 11 per question:
+    // 1 + 22 + 33 = 56 reaches the bound exactly. Counting the item per
+    // question (1 + 66 = 67) would split its questions across batches.
+    await pick([candidate({ sourceId: 'notes', id: 'a', title: 'a', text: 'x'.repeat(20) })], {
+      task: 't', decide, cascade, limits: { maxBatchChars: 56 },
+    });
+
+    expect(calls.map((batch) => batch.questions.map((question) => question.questionKey)))
+      .toEqual([['one', 'two', 'three']]);
+  });
+
+  it('sends an item larger than maxBatchChars alone and drops or cuts nothing', async () => {
+    const candidates = [
+      candidate({ sourceId: 'notes', id: 'big', title: 'big', text: 'x'.repeat(200), signals: { score: 3 } }),
+      candidate({ sourceId: 'notes', id: 's2', title: 's2', text: 'x'.repeat(10), signals: { score: 2 } }),
+      candidate({ sourceId: 'notes', id: 's1', title: 's1', text: 'x'.repeat(10), signals: { score: 1 } }),
+    ];
+    const { decide, calls } = stubDecide((batch) => allAnswered(batch, 0.9));
+
+    // 'big' counts 206 + 11 = 217, over the bound of 51, so it goes by
+    // itself; the small items count 14 + 11 = 25 each and share a batch.
+    const result = await pick(candidates, {
+      task: 't', decide,
+      cascade: { bias: 0, questions: [countingCascade.questions[0]!] },
+      limits: { maxBatchChars: 51 },
+    });
+
+    expect(calls.map((batch) => batch.questions.map((question) => question.id)))
+      .toEqual([['big'], ['s2', 's1']]);
+    expect(result.selected.map((item) => item.id).sort()).toEqual(['big', 's1', 's2']);
+    const questions = calls.flatMap((batch) => batch.questions);
+    expect(questions.find((question) => question.id === 'big')?.text).toBe('x'.repeat(200));
+    expect(result.record.candidates.every((entry) => entry.status === 'selected')).toBe(true);
+  });
+
+  it('closes a batch at maxPerBatch or maxBatchChars, whichever it reaches first', async () => {
+    const candidates = Array.from({ length: 4 }, (_, index) => candidate({
+      sourceId: 'notes', id: `n${index}`, title: `n${index}`,
+      text: 'x'.repeat(20), signals: { score: 4 - index },
+    }));
+
+    // The count bound bites first: each item counts 24 + 11 = 35, all
+    // four fit the character budget, so batches split at three questions.
+    const counted = stubDecide((batch) => allAnswered(batch, 0.9));
+    await pick(candidates, {
+      task: 't', decide: counted.decide,
+      cascade: { bias: 0, questions: [countingCascade.questions[0]!] },
+      limits: { maxPerBatch: 3, maxBatchChars: 1000 },
+    });
+    expect(counted.calls.map((batch) => batch.questions.map((question) => question.id)))
+      .toEqual([['n0', 'n1', 'n2'], ['n3']]);
+
+    // The character bound bites first: 1 + 35 + 35 = 71 fits two items,
+    // a third would pass it, so batches pair despite the room for 150.
+    const sized = stubDecide((batch) => allAnswered(batch, 0.9));
+    await pick(candidates, {
+      task: 't', decide: sized.decide,
+      cascade: { bias: 0, questions: [countingCascade.questions[0]!] },
+      limits: { maxPerBatch: 150, maxBatchChars: 71 },
+    });
+    expect(sized.calls.map((batch) => batch.questions.map((question) => question.id)))
+      .toEqual([['n0', 'n1'], ['n2', 'n3']]);
   });
 
   it('carries changedPaths into the record when a candidate has them', async () => {

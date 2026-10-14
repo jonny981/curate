@@ -1,6 +1,7 @@
-import { execFileSync } from 'node:child_process';
-import { readSync } from 'node:fs';
-import { copyFile, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { execFileSync, spawn } from 'node:child_process';
+import { EventEmitter } from 'node:events';
+import { readSync, writeFileSync } from 'node:fs';
+import { copyFile, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -10,7 +11,7 @@ import { curate, pickFromSources, type CandidateReadRequest, type CandidateSourc
 import { chat } from '@curatejs/chat';
 import { gitHistory } from '@curatejs/git';
 // @ts-expect-error The standalone JavaScript command has no type declarations.
-import { allowedSession, curationEvidence, decisionAnswers, pickFullSources, rankMatches, parseArgs, parseSearches, parseSources, searchSource, sessionHeader, snapshotCodex } from '../skills/curate/run.mjs';
+import { allowedSession, curationEvidence, decisionAnswers, jevRequest, pickFullSources, rankMatches, parseArgs, parseSearches, parseSources, run, searchSource, sessionHeader, snapshotCodex } from '../skills/curate/run.mjs';
 
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
@@ -20,10 +21,16 @@ vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
   return { ...actual, copyFile: vi.fn(actual.copyFile), readFile: vi.fn(actual.readFile) };
 });
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return { ...actual, spawn: vi.fn(actual.spawn) };
+});
 
 const directories: string[] = [];
 afterEach(async () => {
   vi.clearAllMocks();
+  vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
   await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
 });
 async function folder() {
@@ -327,6 +334,54 @@ it('asks sources to cut search lanes inside the reads it caches, unless the cut 
   expect(seen.every((flag) => flag === false)).toBe(true);
 });
 
+it('passes caller decision limits such as maxBatchChars through to the pick', async () => {
+  const directory = await folder();
+  const source: CandidateSource = { id: 'notes', kind: 'markdown', role: 'reference',
+    read: async () => ({ status: 'read', complete: true, candidates: [
+      { sourceId: 'notes', id: 'one', role: 'reference', title: 'Orchard', text: 'Orchard notes.', signals: { bm25: 1 } },
+    ] }) };
+
+  const picked = await pickFullSources([source], { task: 'orchard' }, {
+    task: 'orchard', limits: { maxBatchChars: 40 },
+    decide: async (batch: { questions: { key: string }[] }) =>
+      Object.fromEntries(batch.questions.map((question) => [question.key, { status: 'answered', probability: 0.8 }])),
+  });
+
+  expect(picked.record.limits.maxBatchChars).toBe(40);
+});
+
+it('sends each item’s evidence in the Jev state once and names the item in each question', () => {
+  const question = (key: string, id: string, text: string, wording: string) => ({
+    key, sourceId: 'commits', id, title: `title of ${id}`, text,
+    date: { value: '2026-01-01', meaning: 'recorded' }, role: 'reference',
+    question: wording, trueCriterion: 'yes', falseCriterion: 'no',
+  });
+  const batch = {
+    task: 'task text',
+    questions: [
+      question('one.gate', 'commit one', 'FIRST BODY', 'Is it useful?'),
+      question('one.rest', 'commit one', 'FIRST BODY', 'Does it say when?'),
+      question('two.gate', 'commit two', 'SECOND BODY', 'Is it useful?'),
+    ],
+  };
+
+  const payload = jevRequest(batch);
+  const serialized = JSON.stringify(payload);
+  // The item's body is on the wire once, however many of its questions
+  // the batch holds: a wide cascade cannot multiply the request past
+  // the batch's counted size.
+  expect(serialized.match(/FIRST BODY/g)).toHaveLength(1);
+  expect(serialized.match(/SECOND BODY/g)).toHaveLength(1);
+  expect(payload.state).toContain('task text');
+  expect(payload.state).toContain('Item 1: commit one (recorded 2026-01-01)');
+  expect(payload.state).toContain('Item 2: commit two (recorded 2026-01-01)');
+  expect(payload.questions).toEqual({
+    q0: { type: 'noul', instructions: 'Is it useful?\n\nItem 1', criteria: { true: 'yes', false: 'no' } },
+    q1: { type: 'noul', instructions: 'Does it say when?\n\nItem 1', criteria: { true: 'yes', false: 'no' } },
+    q2: { type: 'noul', instructions: 'Is it useful?\n\nItem 2', criteria: { true: 'yes', false: 'no' } },
+  });
+});
+
 it('sends the full long commit text rather than cutting it at the default part size', async () => {
   const directory = await folder();
   const text = 'Orchard evidence. '.repeat(100) + 'Keep the final constraint.';
@@ -472,4 +527,55 @@ it('labels collection dates for undated evidence without changing weights or ord
   } });
   expect(result.log).toBe(log);
   expect(result.record.items.map((item) => [item.id, item.weight])).toEqual([['dated', 0.9], ['undated', 0.7]]);
+});
+
+it('saves the pick record naming the rejected batch when the decision service fails', async () => {
+  const directory = await folder();
+  const home = join(directory, 'home');
+  const notes = join(directory, 'notes');
+  await mkdir(home);
+  await mkdir(notes);
+  await writeFile(join(notes, 'orchard.md'), '# Orchard\n\nThe orchard has trees. Fruit trees grow here.\n');
+  const sourcesFile = join(directory, 'sources.json');
+  await writeFile(sourcesFile, JSON.stringify({ sources: [{ type: 'markdown', path: notes }] }));
+  const searches = Object.fromEntries(['chat', 'git-history', 'markdown'].map((kind) => [
+    kind, { keywords: ['orchard', 'orchard trees'], answers: ['The orchard has trees.', 'Fruit trees grow here.'] },
+  ]));
+  vi.stubEnv('HOME', home);
+  vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
+  vi.stubGlobal('fetch', vi.fn(async () => new Response('rejected', { status: 400 })));
+  const realSpawn = vi.mocked(spawn).getMockImplementation()!;
+  // The subscription search call reads the output file the spawned
+  // process was asked to write; this fake writes the search lines there.
+  vi.mocked(spawn).mockImplementation(((_command: string, args: string[]) => {
+    const child = new EventEmitter() as EventEmitter & {
+      stdout: EventEmitter;
+      stderr: EventEmitter;
+      stdin: { on: () => void; end: (text: string) => void };
+    };
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = {
+      on: () => {},
+      end: () => {
+        writeFileSync(args[args.indexOf('-o') + 1]!, JSON.stringify(searches));
+        queueMicrotask(() => child.emit('close', 0));
+      },
+    };
+    return child;
+  }) as unknown as typeof spawn);
+  try {
+    await expect(run(['--sources', sourcesFile, 'orchard'])).rejects.toThrow('The decide call failed');
+  } finally {
+    vi.mocked(spawn).mockImplementation(realSpawn);
+  }
+  const folders = await readdir(join(home, '.curate', 'runs'));
+  expect(folders).toHaveLength(1);
+  const saved = JSON.parse(await readFile(join(home, '.curate', 'runs', folders[0]!, 'record.json'), 'utf8'));
+  expect(saved.status).toBe('failed');
+  expect(saved.error).toContain('Decision service returned HTTP 400.');
+  expect(saved.pick?.decideError?.message).toBe('Decision service returned HTTP 400.');
+  expect(saved.pick?.decideError?.candidates?.length).toBeGreaterThan(0);
+  const ids = new Set<string>((saved.pick?.candidates ?? []).map((entry: { id: string }) => entry.id));
+  expect(saved.pick?.decideError?.candidates?.every((id: string) => ids.has(id))).toBe(true);
 });

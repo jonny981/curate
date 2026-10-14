@@ -78,6 +78,24 @@ for reader options and core’s README for the decision and writer contracts.
 The [curate skill](skills/curate/SKILL.md) runs the four packages over local
 history with source-specific searches, Jev decisions and subscription
 curation. Source settings and run records stay outside the repository.
+Jev packs each decision batch into one request. The request's state
+carries each item's evidence once, however many of the item's questions
+the batch holds, and each question names the item it asks about. The
+skill sizes batches to Jev's documented limit:
+
+```ts
+// skills/curate/run.mjs (excerpt)
+// Jev documents 32,000 tokens for a request's state plus its longest
+// question; three characters per token is a conservative estimate for
+// English text and JSON. Subtracting the longest question's characters
+// keeps the state plus that question inside the bound; the separate
+// 64,000-token whole-request limit covers the per-question JSON
+// framing the batch count does not measure.
+const maxBatchChars = 32_000 * 3 - Math.max(
+  ...[CHAT_CASCADE, GIT_HISTORY_CASCADE, MARKDOWN_CASCADE]
+    .flatMap((cascade) => cascade.questions)
+    .map((question) => question.instructions.length + question.true.length + question.false.length));
+```
 
 ```sh
 node skills/curate/run.mjs "Which decisions and tried ideas bear on this task?"
