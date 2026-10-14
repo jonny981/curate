@@ -39,18 +39,18 @@ export interface CandidateReadRequest {
    *  source whose signals hold an ordering or rank-merge score puts the
    *  lane's own match score there; a phrase lane's match score is the
    *  phrase's occurrence count. A search lane with no positive score
-   *  matched nothing, so it admits nothing while any other search lane
-   *  of the read scored; when every search lane scores zero the read
-   *  keeps every candidate rather than none, as a single flat search
-   *  does. `searchPhrases` lanes keep every exact match either way, and
-   *  a source whose role is not 'reference' is never cut. Kind lanes are
-   *  never cut on phrase occurrences either: a streaming reader ranks
-   *  each kind-lane match by the task's own score (the request's
-   *  `topic`) and cuts that curve inside the read; a reader that does
-   *  not returns every match and the pick keeps them all. A bare
-   *  `source.read` call leaves the option unset: the read returns its
-   *  full ranked result, and only a read that received `laneCut: true`
-   *  narrows inside the read. */
+   *  matched nothing, so it admits nothing and holds no bodies while
+   *  it waits on its siblings; a read that keeps nothing records
+   *  `noSearchMatch`, so the caller sees the miss and can ask more
+   *  broadly rather than be handed the whole history. `searchPhrases`
+   *  lanes keep every exact match either way, and a source whose role
+   *  is not 'reference' is never cut. Kind lanes are never cut on phrase occurrences
+   *  either: a streaming reader ranks each kind-lane match by the
+   *  task's own score (the request's `topic`) and cuts that curve
+   *  inside the read; a reader that does not returns every match and
+   *  the pick keeps them all. A bare `source.read` call leaves the
+   *  option unset: the read returns its full ranked result, and only a
+   *  read that received `laneCut: true` narrows inside the read. */
   readonly laneCut?: boolean;
   /** In kind lanes on a chat-kind source, keep only the person's own
    *  messages (chat role 'user'); use it when the task asks what a named
@@ -142,6 +142,10 @@ export type CandidateReadResult =
        *  kept set in lane order. A reader that ignores the flag returns
        *  an ordinary read and the pick scores its candidates itself. */
       readonly meaningLane?: boolean;
+      /** No lane of this reference read kept anything: nothing in it
+       *  matched the searches. The caller can see the miss and ask
+       *  more broadly rather than be handed the whole history. */
+      readonly noSearchMatch?: boolean;
     }
   | {
       /** Expected absence: no repository, no git binary, no record
@@ -269,9 +273,10 @@ async function readKeywordSearches(
       task: tasks[0]!.task, lane: 'search' as const,
       read: read.status === 'read' ? read.matched ?? read.candidates.length : 0,
     };
-    if (read.status !== 'read' || !laneCut || read.laneCutApplied === true) {
-      return read.status === 'read'
-        ? { ...read, lanes: [{ ...report, kept: read.candidates.length }] } : read;
+    if (read.status !== 'read') return read;
+    if (!laneCut || read.laneCutApplied === true) {
+      return { ...read, lanes: [{ ...report, kept: read.candidates.length }],
+        ...(laneCut && read.candidates.length === 0 ? { noSearchMatch: true } : {}) };
     }
     const groups = new Map<string, MemoryCandidate[]>();
     for (const candidate of read.candidates) {
@@ -279,24 +284,21 @@ async function readKeywordSearches(
       if (group === undefined) groups.set(candidate.sourceId, [candidate]);
       else group.push(candidate);
     }
+    // A lane where nothing scored above zero matched nothing and keeps
+    // nothing; only a positive score gives the curve something to cut.
     const kept: MemoryCandidate[] = [];
-    for (const group of groups.values()) kept.push(...cutLane(group, true).kept);
-    return { ...read, candidates: kept, lanes: [{ ...report, kept: kept.length }] };
+    for (const group of groups.values()) {
+      if (!group.some((candidate) => laneScoreOf(candidate) > 0)) continue;
+      kept.push(...cutLane(group, true).kept);
+    }
+    return { ...read, candidates: kept, lanes: [{ ...report, kept: kept.length }],
+      ...(kept.length === 0 ? { noSearchMatch: true } : {}) };
   }
 
   const union = new Map<string, { candidate: MemoryCandidate; ranks: (number | null)[]; best: number }>();
-  // A search lane where nothing scores above zero matched nothing: it
-  // holds no curve and admits nothing while any sibling search lane of
-  // this read scored. Zero-score groups are stashed here and admitted
-  // only when every search lane scored zero — the same keep-everything
-  // the single-lane fallback gives a flat read.
-  const zeroPool = new Map<string, { candidate: MemoryCandidate; ranks: (number | null)[]; best: number }>();
   const reasons = new Set<string>();
   const absent = new Set<string>();
   const reports: SearchLaneReport[] = [];
-  const zeroed: number[] = [];
-  let searchLanes = 0;
-  let scoredSearchLanes = 0;
   let revision = request.revision;
   let resolvedRevision: string | undefined;
   let complete = true;
@@ -342,21 +344,20 @@ async function readKeywordSearches(
       else group.push(candidate);
     }
     let laneKept = 0;
-    let laneZeroed = 0;
     for (const group of groups.values()) {
       const positive = kind !== 'search' || !laneCut
         || group.some((candidate) => laneScoreOf(candidate) > 0);
-      // A reader that already cut this lane returns the kept set; only
-      // the zero-score pool check still applies to it. A kind lane is
-      // never cut here: the phrase's occurrence count is no relevance
-      // measure, and a reader that did not score the task keeps every
-      // match rather than lose a one-off direction.
+      // A search lane where nothing scores above zero matched nothing:
+      // it admits nothing and holds no bodies while it waits on its
+      // siblings. A reader that already cut this lane returns the kept
+      // set, and a kind lane is never cut here: the phrase's occurrence
+      // count is no relevance measure, and a reader that did not score
+      // the task keeps every match rather than lose a one-off direction.
+      if (!positive) continue;
       const cut = read.laneCutApplied === true && kind !== 'phrase'
         ? { kept: group, read: group.length }
         : cutLane(group, positive && kind === 'search' && laneCut);
-      const pool = positive ? union : zeroPool;
-      laneKept += positive ? cut.kept.length : 0;
-      laneZeroed += positive ? 0 : cut.kept.length;
+      laneKept += cut.kept.length;
       const ranked = new Set<string>();
       for (const candidate of cut.kept) {
         const key = JSON.stringify([candidate.sourceId, candidate.id]);
@@ -365,11 +366,11 @@ async function readKeywordSearches(
         ranked.add(key);
         const value = read.revision === undefined || candidate.sourceRevision !== undefined
           ? candidate : { ...candidate, sourceRevision: read.revision };
-        const existing = pool.get(key);
+        const existing = union.get(key);
         if (existing === undefined) {
           const ranks = Array<number | null>(tasks.length).fill(null);
           ranks[lane] = rank;
-          pool.set(key, { candidate: value, ranks, best: rank });
+          union.set(key, { candidate: value, ranks, best: rank });
         } else {
           existing.ranks[lane] = rank;
           if (rank < existing.best) {
@@ -379,38 +380,19 @@ async function readKeywordSearches(
         }
       }
     }
-    if (kind === 'search') {
-      searchLanes += 1;
-      if (laneZeroed < read.candidates.length) scoredSearchLanes += 1;
-    }
-    zeroed.push(laneZeroed);
     reports.push({ task, lane: kind, read: returned, kept: laneKept });
   }
   if (!readAny) return { status: 'absent', reason: [...absent].join('; ') };
-  // Every search lane of this read scored zero: no lane had a curve to
-  // cut on, so the zero lanes' candidates join the union after all.
-  if (scoredSearchLanes === 0 && searchLanes > 0) {
-    for (const [key, entry] of zeroPool) {
-      const existing = union.get(key);
-      if (existing === undefined) union.set(key, entry);
-      else entry.ranks.forEach((rank, lane) => {
-        if (rank === null) return;
-        existing.ranks[lane] = rank;
-        if (rank < existing.best) {
-          existing.best = rank;
-          existing.candidate = entry.candidate;
-        }
-      });
-    }
-    reports.forEach((report, lane) => {
-      reports[lane] = { ...report, kept: report.kept + zeroed[lane]! };
-    });
-  }
+  // No lane of this read kept anything into the union: nothing
+  // matched, and the caller sees the miss rather than the whole
+  // history.
+  const noSearchMatch = laneCut && union.size === 0;
   return {
     status: 'read', complete,
     ...(resolvedRevision === undefined ? {} : { revision: resolvedRevision }),
     candidates: [...union.values()].map(({ candidate, ranks }) => ({ ...candidate, searchRanks: ranks })),
     lanes: reports,
+    ...(noSearchMatch ? { noSearchMatch: true } : {}),
     ...(reasons.size === 0 ? {} : { partial: [...reasons].join('; ') }),
   };
 }
@@ -509,9 +491,14 @@ async function readSearches(
       meaningReports[offset] = { task: query, lane: 'meaning', read: laneRead.matched ?? laneRead.candidates.length, kept };
     }
     lanes.push(...meaningReports.filter((report) => report !== undefined));
+    const combined = [...union.values()];
     const partial = [read.partial, ...reasons].filter(Boolean).join('; ');
-    return { ...read, complete: read.complete && reasons.length === 0,
-      candidates: [...union.values()], lanes,
+    // The flag reads the combined read: a meaning lane that matched
+    // rescues a keyword miss, and only a read that kept nothing is one.
+    const { noSearchMatch: _keywordMiss, ...rest } = read;
+    return { ...rest, complete: read.complete && reasons.length === 0,
+      candidates: combined, lanes,
+      ...(laneCut && combined.length === 0 ? { noSearchMatch: true } : {}),
       ...(partial === '' ? {} : { partial }) };
   }
 
@@ -560,7 +547,9 @@ async function readSearches(
     lanes.push({ task: query, lane: 'meaning', read: pool,
       kept: meaningful.filter((candidate) => (candidate.searchRanks?.[tasks.length + offset] ?? null) !== null).length });
   }
-  return { ...read, complete, candidates: meaningful, lanes,
+  const { noSearchMatch: _keywordMiss, ...rest } = read;
+  return { ...rest, complete, candidates: meaningful, lanes,
+    ...(laneCut && meaningful.length === 0 ? { noSearchMatch: true } : {}),
     ...(partial === undefined ? {} : { partial }) };
 }
 
@@ -651,8 +640,7 @@ export async function pickFromSources(
     combined = [...unique.values()];
   }
   const result = await pick(combined, {
-    ...options, rulesEnumerationComplete,
-    ...(options.cascadesByKind === undefined && options.tagsByKind === undefined ? {} : { sourceKinds }),
+    ...options, rulesEnumerationComplete, sourceKinds,
   });
   return { ...result, reads };
 }

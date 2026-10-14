@@ -173,6 +173,59 @@ describe('local meaning search', () => {
     expect(result.selected.find((candidate) => candidate.id === 'dog')?.searchRanks).toEqual([null, 0]);
   });
 
+  it('keeps nothing and records no search match when no similarity is positive', async () => {
+    // This reader ignores the meaningLane flag, so the pool is scored
+    // here: zero keyword scores and zero similarities admit nothing.
+    const result = await pickFromSources([{
+      id: 'notes', role: 'reference',
+      read: async () => ({
+        status: 'read' as const, complete: true,
+        candidates: [item('bill', 'invoice'), item('dog', 'puppy')],
+      }),
+    }], { task: 'pets', meaning: { embed: async (texts) =>
+        texts.map((text) => (text === 'pets' ? [1, 0] : [0, 1])) } },
+      { task: 'pets', decide });
+    const read = result.reads[0]!;
+    if (read.status !== 'read') throw new Error('read failed');
+    expect(read.candidates).toEqual([]);
+    expect(read.noSearchMatch).toBe(true);
+    expect(result.selected).toEqual([]);
+  });
+
+  it('reports no miss when a meaning match rescues a keyword miss, scored here or streamed', async () => {
+    // The fallback path scores the returned pool itself: 'puppy' alone
+    // has a positive similarity to 'pets'.
+    const plain = await pickFromSources([{
+      id: 'notes', role: 'reference',
+      read: async () => ({
+        status: 'read' as const, complete: true,
+        candidates: [item('bill', 'invoice'), item('dog', 'puppy')],
+      }),
+    }], { task: 'pets', meaning: { embed } }, { task: 'pets', decide });
+    const plainRead = plain.reads[0]!;
+    if (plainRead.status !== 'read') throw new Error('read failed');
+    expect(plainRead.candidates.map((candidate) => candidate.id)).toEqual(['dog']);
+    expect(plainRead.noSearchMatch).toBeUndefined();
+    // A reader serving the lane itself returns its kept set flagged
+    // meaningLane; the flag is still computed on the combined read.
+    const streamed = await pickFromSources([{
+      id: 'notes', role: 'reference',
+      read: async (request) => request.meaningLane === undefined
+        ? {
+            status: 'read' as const, complete: true,
+            candidates: [item('bill', 'invoice'), item('dog', 'puppy')],
+          }
+        : {
+            status: 'read' as const, complete: true, meaningLane: true as const, matched: 2,
+            candidates: [{ ...item('dog', 'puppy'), signals: { similarity: 0.9 }, laneScore: 0.9 }],
+          },
+    }], { task: 'pets', meaning: { embed } }, { task: 'pets', decide });
+    const streamedRead = streamed.reads[0]!;
+    if (streamedRead.status !== 'read') throw new Error('read failed');
+    expect(streamedRead.candidates.map((candidate) => candidate.id)).toEqual(['dog']);
+    expect(streamedRead.noSearchMatch).toBeUndefined();
+  });
+
   it('keeps meaning reports in query order when a lane is absent', async () => {
     const result = await pickFromSources([{
       id: 'notes', role: 'reference',

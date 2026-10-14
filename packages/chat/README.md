@@ -61,10 +61,11 @@ const source = chat({ providers: ['claude-code', 'codex'], since: '14 days' });
   collects keyword statistics, a second scores each part against them,
   and a third reads back only the transcripts the read keeps. With the
   lane cut on (the `pickFromSources` default), peak heap stays roughly
-  flat as the history grows. One case still holds every part: a read
-  where nothing scores above zero has no curve to cut on, so it keeps
-  them all for the pick. A read with `laneCut: false` also returns
-  every part. A phrase lane needs only the matching pass.
+  flat as the history grows. A search lane where nothing scores above
+  zero keeps only ids, never bodies; a read that keeps nothing
+  records `noSearchMatch` so the caller can ask more broadly. A read
+  with `laneCut: false` returns every part. A phrase lane needs only
+  the matching pass.
 
 ## Defaults and overrides
 

@@ -155,7 +155,8 @@ export type PickRecordEntry = {
   readonly path?: string;
   readonly repository?: string;
   readonly truncated?: boolean;
-  /** Source kind used to choose a fitted set, when per-kind sets are enabled. */
+  /** The candidate's source kind, recorded whenever `sourceKinds` names
+   *  one for its source: 'chat', 'git-history' or 'markdown'. */
   readonly sourceKind?: CandidateSourceKind;
   /** Individual fitted answers, before combining them. */
   readonly questions?: readonly ({ readonly key: string } & PickAnswer)[];
@@ -863,8 +864,7 @@ export async function pick(
       ...(options.rankProtection && candidate.role === 'reference' && status.status === 'selected'
         ? { orderScore: weight(candidate) } : {}),
       ...(representatives.has(candidate) ? { representative: representatives.get(candidate)!.id } : {}),
-      ...((options.cascadesByKind !== undefined || options.tagsByKind !== undefined)
-        && kindFor(candidate) !== undefined ? { sourceKind: kindFor(candidate) } : {}),
+      ...(kindFor(candidate) === undefined ? {} : { sourceKind: kindFor(candidate) }),
       ...(candidate.contentRef === undefined ? {} : { contentRef: candidate.contentRef }),
       ...(candidate.changedPaths === undefined ? {} : { changedPaths: candidate.changedPaths }),
       ...(candidate.path === undefined ? {} : { path: candidate.path }),

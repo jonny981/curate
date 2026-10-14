@@ -134,21 +134,24 @@ describe('questions chosen by source kind', () => {
     expect(result.record.candidates[1]).not.toHaveProperty('sourceKind');
   });
 
-  it('leaves selection and records unchanged when optional routing are absent', async () => {
+  it('keeps shared questions and still records kinds when optional routing is absent', async () => {
     const candidates = [candidate('a'), candidate('b')];
     const original = await pick(candidates, { task: 'Choose evidence', cascade: fitted('shared'), decide: answers(0.9) });
     const disabled = await pick(candidates, {
       task: 'Choose evidence', cascade: fitted('shared'), decide: answers(0.9),
       sourceKinds: { notes: 'chat' }, cascadesByKind: undefined,
     });
-    expect(disabled).toEqual(original);
+    expect(disabled.selected).toEqual(original.selected);
+    expect(disabled.record.candidates.map((entry) => entry.questions)).toEqual(
+      original.record.candidates.map((entry) => entry.questions));
+    expect(disabled.record.candidates[0]?.sourceKind).toBe('chat');
     expect(disabled.record).not.toHaveProperty('sourceKinds');
     expect(disabled.record).not.toHaveProperty('cascadesByKind');
     const read = await pickFromSources([source('notes', 'chat')], { task: 'Choose evidence', laneCut: false }, {
       task: 'Choose evidence', cascade: fitted('shared'), decide: answers(0.9),
     });
     expect(read.record).not.toHaveProperty('sourceKinds');
-    expect(read.record.candidates[0]).not.toHaveProperty('sourceKind');
+    expect(read.record.candidates[0]?.sourceKind).toBe('chat');
     expect(read.record.candidates[0]?.questions?.[0]?.key).toBe('shared');
   });
 });

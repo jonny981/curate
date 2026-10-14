@@ -95,11 +95,15 @@ describe('lane cuts', () => {
     expect(result.reads[0]).toMatchObject({ lanes: [{ task: 'task', lane: 'search', read: 3000, kept: 3000 }] });
   });
 
-  it('keeps a lane whole when no candidate scored', async () => {
+  it('keeps nothing and records no search match when no candidate scored', async () => {
     const flat = [candidate('a', 0), candidate('b', 0), candidate('c', -1)];
     const result = await pickFromSources([reader(flat)], { task: 'task' }, { task: 'task', decide: yes });
-    expect(result.selected.map((item) => item.id)).toEqual(['a', 'b', 'c']);
-    expect(result.reads[0]).toMatchObject({ lanes: [{ task: 'task', lane: 'search', read: 3, kept: 3 }] });
+    expect(result.selected).toEqual([]);
+    const read = result.reads[0]!;
+    if (read.status !== 'read') throw new Error('read failed');
+    expect(read.candidates).toEqual([]);
+    expect(read.noSearchMatch).toBe(true);
+    expect(read.lanes).toEqual([{ task: 'task', lane: 'search', read: 3, kept: 0 }]);
   });
 
   it('cuts on laneScore when a candidate carries one, not the merged signal', async () => {
@@ -142,18 +146,41 @@ describe('lane cuts', () => {
       { task: 'flat', lane: 'search', read: 2, kept: 0 },
       { task: 'extra', lane: 'search', read: 6, kept: 3 },
     ]);
-    // The union is only the scoring lane's cut.
+    // The union is only the scoring lane's cut, and the read scored.
     expect(read.candidates.map((item) => item.id).sort()).toEqual(['e0', 'e1', 'e2']);
+    expect(read.noSearchMatch).toBeUndefined();
   });
 
-  it('keeps every candidate when every search lane of the read scored zero', async () => {
+  it('keeps nothing and records no search match when every search lane of the read scored zero', async () => {
     const flat = reader([candidate('a', 0), candidate('b', 0)]);
     const result = await pickFromSources([flat], { task: 'flat', searchLines: ['also flat'] }, { task: 'flat', decide: yes });
-    expect(result.selected.map((item) => item.id).sort()).toEqual(['a', 'b']);
+    expect(result.selected).toEqual([]);
     const read = result.reads[0]!;
     if (read.status !== 'read') throw new Error('read failed');
-    expect(read.lanes?.map((lane) => lane.kept)).toEqual([2, 2]);
-    expect(read.candidates.find((item) => item.id === 'a')?.searchRanks).toEqual([0, 0]);
+    expect(read.candidates).toEqual([]);
+    expect(read.noSearchMatch).toBe(true);
+    expect(read.lanes?.map((lane) => lane.kept)).toEqual([0, 0]);
+  });
+
+  it('reports no miss when a phrase lane matched what keyword lanes missed', async () => {
+    const source: CandidateSource = {
+      id: 'reader', role: 'reference',
+      read: async () => ({
+        status: 'read', complete: true,
+        candidates: [candidate('hit', 0, { text: 'got my invoice today' }), candidate('other', 0)],
+      }),
+    };
+    const result = await pickFromSources([source], { task: 'task', searchPhrases: ['got my'] }, { task: 'task', decide: yes });
+    const read = result.reads[0]!;
+    if (read.status !== 'read') throw new Error('read failed');
+    // The keyword lane scored zero but the phrase lane matched: the
+    // read kept a candidate, so it is no miss.
+    expect(read.lanes).toEqual([
+      { task: 'task', lane: 'search', read: 2, kept: 0 },
+      { task: 'got my', lane: 'phrase', read: 2, kept: 1 },
+    ]);
+    expect(read.candidates.map((item) => item.id)).toEqual(['hit']);
+    expect(read.noSearchMatch).toBeUndefined();
   });
 });
 

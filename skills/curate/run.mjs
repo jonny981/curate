@@ -331,6 +331,7 @@ export async function run(args = process.argv.slice(2)) {
     record.pick = picked.record;
     record.sourcesRead = picked.reads.map((read, i) => ({ source: sources[i].id, status: read.status,
       parts: read.candidates?.length ?? 0, complete: read.complete, partial: read.partial, reason: read.reason,
+      ...(read.noSearchMatch === true ? { noSearchMatch: true } : {}),
       ...(read.lanes === undefined ? {} : { lanes: read.lanes }) }));
     record.timings.rankAndDecideMs = Date.now() - pickStart;
     await save();

@@ -377,7 +377,11 @@ export function gitHistory(
             .sort((a, b) => (similarities[b] ?? 0) - (similarities[a] ?? 0)
               || `commit ${admitted[a]!.short}`.localeCompare(`commit ${admitted[b]!.short}`));
           const bend = cut ? laneBend(order.map((index) => similarities[index]!)) : undefined;
-          const kept = bend === undefined ? order : order.filter((index) => similarities[index]! > bend);
+          // A cut lane where nothing scored above zero matched nothing:
+          // it keeps no parts rather than fetch every body.
+          const kept = bend === undefined
+            ? (cut && !order.some((index) => similarities[index]! > 0) ? [] : order)
+            : order.filter((index) => similarities[index]! > bend);
           // `limit` carries the caller's `nearest` cap: it slices the
           // kept set after the curve, not the enumeration before it.
           const limited = request.limit === undefined ? kept : kept.slice(0, request.limit);

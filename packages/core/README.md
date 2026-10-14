@@ -148,11 +148,10 @@ or rank-merge score. Chat's signals hold a rank-merge score, so the
 chat curve reads the pre-merge keyword score, never a rank position.
 Candidates at or below the bend drop out. Equal scores fall together,
 two or fewer positive scores always stay, and a lane with no bend
-keeps every positive score. A search lane where nothing scored keeps
-every candidate only when every search lane of the read scored zero:
-the curves have nothing to cut on, and relevance is the decision
-stage's call. When a sibling search lane did score, a zero-score lane
-matched nothing and admits nothing. The count comes from the scores,
+keeps every positive score. A search lane where nothing scored admits
+nothing: it matched nothing. When a read keeps no candidates at all
+it reports `noSearchMatch` on its read result, so the caller sees
+the miss and can ask more broadly. The count comes from the scores,
 so no lane has a fixed cut and the union has no ceiling. `searchPhrases` lanes are
 never cut: an exact phrase is its own evidence. A kind lane is never
 cut on how often its phrase occurs: the count says a match exists, not
@@ -425,9 +424,8 @@ For direct `pick` calls, supply `sourceKinds: { conversations: 'chat' }`
 to map each candidate's `sourceId` to its kind. `pickFromSources` fills
 that map from the sources that returned those candidates; a declared
 source kind takes precedence over the supplied map.
-The record keeps the per-kind sets, source map and each candidate's kind.
-The single `cascade` path keeps its record format when per-kind sets
-are omitted.
+The record keeps the per-kind sets and source map. Each candidate
+entry records `sourceKind` when its kind is known.
 
 The chat package’s `CHAT_CASCADE` contains the fitted relevance, own-situation and needed
 questions, with relevance asked first. `GIT_HISTORY_CASCADE` and
@@ -545,10 +543,12 @@ bytes between overlapping reads within one `pickFromSources` call.
 `pickFromSources`. It calls your `write(prompt, signal)` function to
 write the log the task needs, with no fixed character cap.
 `prompt.instructions` contains the v4 dated-log wording and three weight
-bands: 0.6 or more, 0.1 to below 0.6, and below 0.1. `prompt.body` contains the
+tiers: 0.6 or more, 0.1 to below 0.6, and below 0.1. `prompt.body` contains the
 task and selected reference items in their selected order. Each header
-keeps the full item id, the candidate's date value, and its decision
-weight without rounding. A missing date stays missing.
+keeps the full item id, the candidate's date value, its source kind when
+the read recorded one, its decision weight without rounding, and any
+recorded tags: `### notes.md#2 (2023-05-30, markdown, 0.87, intent: correction): title`.
+A missing date stays missing.
 The instructions ask the writer to keep every observation from items at
 0.6 or more, include useful facts from items at 0.1 to below 0.6, and use
 items below 0.1 only when they clearly state a needed fact. The prompt
@@ -626,6 +626,7 @@ lines keep their strict checks when preferences are enabled.
 `preferenceAdvice`, `preferenceChange`, `items`, `logLength`, `condensed`,
 and `overContextLimit`. It includes `taskDate` when supplied.
 It includes `context` when supplied and `taskKinds` when routing is enabled.
+A chained write adds `batchTokens` and `batches`.
 Each item includes its prompt `id`, the full `candidate`, and
 the exact decision `weight`.
 
@@ -645,7 +646,7 @@ retained observations to keep their event dates, said dates, full source
 ids, and replacement dates. The result must pass the same format checks.
 These checks do not prove that the writer followed the tier instructions.
 
-`contextLimit` cannot combine with `bands` or `batchSize`; see below.
+`contextLimit` cannot combine with `batchTokens`; see below.
 The record
 includes `contextLimit` when supplied. `logLength` is the
 first validated log's length after trimming. `condensed` says whether
@@ -679,86 +680,47 @@ weights and a selection with no reference items fail before `write`.
 Writer failures propagate to the caller. `signal` reaches the writer;
 the host must make its model call honour cancellation.
 
-### Score bands and chained writes
+### Token batches and chained writes
 
-`bands` writes the log in chained passes by decision weight, strongest
-first. Each band is `{ above, detail }`: `above` is the band's weight
-floor between 0 and 1, and `detail` says how fully the band's facts are
-written: `whole`, `light`, `compressed` or `heavy`. Floors must be
-distinct; the option sorts them for you. A reference joins the
-strongest band whose floor its weight reaches; a weight below every
-floor joins the lowest band. A starting shape is
-`0.5` whole, `0.3` light, `0.1` compressed and `0` heavy.
+`batchTokens` writes the log in chained passes, strongest evidence
+first. References go to the writer in decision-weight order (equal
+weights put the newer date first), cut into consecutive batches that
+each hold as many whole items as fit the budget. The size is an
+estimate: characters divided by four. An item larger than `batchTokens`
+sits alone in its own batch and is never cut. No item is split.
 
 ```ts
-const curated = await curate(task, picked, {
-  write,
-  bands: [
-    { above: 0.5, detail: 'whole' },
-    { above: 0.3, detail: 'light' },
-    { above: 0.1, detail: 'compressed' },
-    { above: 0, detail: 'heavy' },
-  ],
-});
+const curated = await curate(task, picked, { write, batchTokens: 2000 });
 ```
 
-The strongest nonempty band's references go to the writer alone first.
-Every observation line then gets a stable id (`L1`, `L2`, ...) that
-stays with it for the rest of the run. Each lower band gets the task,
-the log so far with its line ids and its own evidence, with
-instructions to add facts the log does not already state and to keep
-each existing line exactly as it stands.
+The strongest batch's references go to the writer alone first. Every
+observation line then gets a stable id (`L1`, `L2`, ...) that stays
+with it for the rest of the run. Each later batch gets the task, the
+log so far with its line ids and its own evidence, with instructions
+to add facts the log does not already state and to keep each existing
+line exactly as it stands.
 
-A later pass may displace an existing line only by naming its id and
-saying what it corrects: the new line ends with
-`(replaces L7: the subject it corrects)`. The merge applies the
-displacement only when the new line is newer by its event date, the
-two lines share at least two subject words, every word of the stated
-reason appears in both lines, the new line cites an item tagged a
-correction, decision or revert (or recorded yes for 'corrects
-something earlier'), and recorded, recognised importance exists on
-both sides with the new line's at least as high as the replaced
-line's. Shared words that name only the thing the lines are about are
-not enough. A lowercase fact word only one line states is the changed
-value when other words separate it from the shared subject
-('automatic' against 'manual' after 'deployment mode is'), and a
-different fact when it sits next to a shared subject word ('region'
-against 'schedule' in 'deployment region' against 'deployment
-schedule'). Numbers and routine words like 'weekly' never count.
-Ideas, questions and low-importance items only
-add lines. A pass may not reword or drop an existing line it does not
-name: a changed line is put back as written and a dropped line with
-no valid claim is restored. A `(replaces [YYYY-MM-DD])` marker is
-never honoured in a chained write: the first pass is asked for none,
-and any marker a reply carries anyway is dropped and recorded as
-refused. When it is unclear, both lines stay with their own dates.
+Every line an earlier batch wrote stays in the log, id and wording
+unchanged; a later pass only adds lines. A changed line is put back as
+written and a dropped line is restored where it stood. A line a later
+pass adds may end with `(replaces L7: the subject it corrects)` to
+tell the reader it is newer; the marked line stays in the log either
+way. The writer is asked to mark only a newer correction or decision
+about the same subject that is at least as important, and to write no
+mark when it is unclear. A `(replaces [YYYY-MM-DD])` marker is never
+honoured in a chained write: the first pass is asked for none, and in
+any pass a date marker, or a mark naming an id the log does not hold,
+is stripped from the line it sits on.
 
-`batchSize` caps how many reference items one writer call receives.
-Each band's items go to the writer in weight order, strongest first,
-cut into batches of that size, and every batch is its own layering
-pass under the same line ids and displacement rules, so the writer
-never reads a whole band at once. Set it without `bands` to chain a
-single band at `whole` detail:
-
-```ts
-const curated = await curate(task, picked, { write, batchSize: 50 });
-```
-
-It is off by default: omit it to give each band's whole lane to the
-writer in one call. It must be a positive integer. Nothing is cut or
-dropped; batching only splits the evidence across more calls.
-
-`record.bands` keeps the band spec in run order, `record.batchSize`
-the supplied size, and `record.layers` lists
-each pass with its band index, detail and item count, the lines it
-added with their new ids, the lines it displaced with both ids, the
-rule that allowed it and the reason the writer stated, and the drops,
-rewordings and named claims the rules refused with the reason. Omit
-`bands` and `batchSize` to write the log in one call; a single call
-writes no line
-ids. A chained write cannot combine with `contextLimit`: a condensing pass
-cannot preserve a chained log's line ids and protections, so passing
-both throws a `TypeError` before the writer runs.
+`record.batchTokens` keeps the supplied budget and `record.batches`
+lists each pass in run order with its item count, the lines it added
+with their new ids, and the replacement marks it wrote: each mark's
+new line id and the earlier id it names. Omit `batchTokens` to write
+the log in one call; a single call writes no line ids. A chained write
+cannot combine with `contextLimit`: a condensing pass cannot preserve
+a chained log's line ids, so passing both throws a `TypeError` before
+the writer runs. `batchTokens` must be a positive integer. Nothing is
+cut or dropped; batching only splits the evidence across more calls.
 
 ## Optional evidence limits
 
@@ -778,11 +740,11 @@ every returned candidate.
 | **`maxElapsedMs`** | Off | Stops questions when the elapsed time is reached. Loss depends on response time; stopped and failed questions remain in the record. |
 | **`maxQuestionText`** | Off | Cuts each decision item to N Unicode characters and records `truncated`. For a 1,000-character item at 700, 300 characters are hidden. Readers can split instead; direct `pick` callers must choose their own cut. |
 | **Source read `limit`** | Off | Chat and Markdown keep ranked candidates; git keeps newest commits before ranking. Readers report partial coverage. A limit of 1 on 2 candidates drops 1. |
-| **Read `laneCut`** | On for reference sources | Cuts each keyword and meaning lane where its own score curve flattens; `false` keeps every returned candidate. The curve reads the lane's own match score (chat: the pre-merge keyword score, not the rank-merge ordering score). A search lane where nothing scored keeps every candidate when every search lane of the read scored zero, and adds nothing when a sibling lane scored; `searchPhrases` lanes are never cut, and kind lanes are never cut on phrase counts: a streaming reader cuts them on each match's task score, and a reader that cannot score returns every match. Kept counts vary with each lane's scores; loss on labelled data is unmeasured. On by default because a ranked read can return every part a source holds, and deciding is the expensive stage. |
+| **Read `laneCut`** | On for reference sources | Cuts each keyword and meaning lane where its own score curve flattens; `false` keeps every returned candidate. The curve reads the lane's own match score (chat: the pre-merge keyword score, not the rank-merge ordering score). A search lane where nothing scored adds nothing; a read that keeps no candidates records `noSearchMatch`, so the caller can ask more broadly; `searchPhrases` lanes are never cut, and kind lanes are never cut on phrase counts: a streaming reader cuts them on each match's task score, and a reader that cannot score returns every match. Kept counts vary with each lane's scores; loss on labelled data is unmeasured. On by default because a ranked read can return every part a source holds, and deciding is the expensive stage. |
 | **`thresholds.reference`** | 0 | A saved 0.6 cut removed every fed fragment of 183 labelled answer turns. A user cut reduces curation input; the default adds no cut loss. |
 | **`thresholds.rule`** | 0 | A user applicability cut omits rules below its probability. Quality loss on labelled rule tasks is unmeasured; the default adds no cut loss. |
 | **`contextLimit`** | Off | Requests a second writer call to condense the complete log. Format checks do not prove fact retention. No quality loss curve has been established; leave off for full retention. Cannot combine with a chained write. |
-| **`batchSize`** | Off | Splits a chained write into passes of N reference items each, strongest first. Changes only how many calls the writer makes; no evidence is dropped. Cannot combine with `contextLimit`. |
+| **`batchTokens`** | Off | Splits a chained write into passes of about N estimated tokens of evidence each, strongest first. Changes only how many calls the writer makes; no evidence is dropped. Cannot combine with `contextLimit`. |
 
 Unlimited inputs can require more decision requests and model context.
 Reader failures, cancellation, missing answers and model failures still

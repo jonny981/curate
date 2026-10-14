@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { pickFromSources, type CandidateReadRequest } from '@curatejs/core';
+import { pickFromSources, type CandidateReadRequest, type PickDecide } from '@curatejs/core';
 import { chat, type ChatProvider } from '../src/index.js';
 import { CHAT_KEYWORD_SETTINGS, rankChat } from '../src/chat-rank.js';
 import { porterStem } from '../src/porter.js';
@@ -253,7 +253,7 @@ describe('chat source contract', () => {
     expect(result.record.candidates.every((candidate) => !candidate.truncated)).toBe(true);
   });
 
-  it('still feeds a short-word task to the picker when no part scores', async () => {
+  it('records no search match and keeps nothing when no part scores', async () => {
     const directory = await transcript('codex', [
       message('codex', 'user', 'my dog is Rex'),
       message('codex', 'assistant', 'noted, Rex is a good name'),
@@ -266,8 +266,12 @@ describe('chat source contract', () => {
         return Object.fromEntries(batch.questions.map((question) => [question.key, { status: 'answered' as const, probability: 0.9 }]));
       },
     });
-    expect(result.selected).toHaveLength(2);
-    expect(seen.join(' ')).toContain('Rex');
+    expect(result.selected).toEqual([]);
+    expect(seen).toEqual([]);
+    const laneRead = result.reads[0]!;
+    if (laneRead.status !== 'read') throw new Error('read failed');
+    expect(laneRead.candidates).toEqual([]);
+    expect(laneRead.noSearchMatch).toBe(true);
   });
 
   it('fails on corrupt JSON without putting transcript contents in the error', async () => {
@@ -533,5 +537,70 @@ describe('streaming read', () => {
     expect(meaningResult.candidates.every((candidate) => candidate.signals['similarity'] === 1)).toBe(true);
     const peak = Math.max(...samples);
     expect(peak).toBeLessThan(1024 * 1024 * 1024);
+  });
+
+  it('emits nothing for a lane that scores zero beside a lane that scored', async () => {
+    const directory = await transcript('codex', [
+      message('codex', 'user', 'S3 backup recovery steps'),
+      message('codex', 'assistant', 'unrelated breakfast chatter'),
+    ]);
+    const cut = await read('codex', directory, {}, { task: 'zxq unmatched words', laneCut: true });
+    // A zero-score lane keeps no candidates at all: no part's body is
+    // read back or held.
+    expect(cut.candidates).toEqual([]);
+    expect(cut.matched).toBe(2);
+    expect(cut.laneCutApplied).toBe(true);
+
+    const decide: PickDecide = async (batch) => Object.fromEntries(
+      batch.questions.map((q) => [q.key, { status: 'answered' as const, probability: 0.9 }]));
+    const picked = await pickFromSources([chat({ paths: [directory], providers: ['codex'] })], {
+      task: 'S3 backup recovery', searchLines: ['zxq unmatched words'],
+    }, { task: 'S3 backup recovery', decide });
+    const laneRead = picked.reads[0]!;
+    if (laneRead.status !== 'read') throw new Error('read failed');
+    expect(laneRead.lanes).toEqual([
+      { task: 'S3 backup recovery', lane: 'search', read: 2, kept: 1 },
+      { task: 'zxq unmatched words', lane: 'search', read: 2, kept: 0 },
+    ]);
+    // The zero lane's parts hold no place in the union at all.
+    expect(laneRead.candidates.map((candidate) => candidate.text)).toEqual(['S3 backup recovery steps']);
+    expect(laneRead.noSearchMatch).toBeUndefined();
+  });
+
+  it('keeps nothing and records no search match on a 75,000-part history that matches nothing', { timeout: 300_000 }, async () => {
+    const directory = await folder();
+    const sessions = join(directory, '2026/10/02');
+    await mkdir(sessions, { recursive: true });
+    // 1,500 messages of about 900 characters in each file: two parts
+    // each, 75,000 parts over 25 files.
+    const text = `routine note ${'filler words only '.repeat(50)}`;
+    const lines: string[] = [];
+    for (let row = 0; row < 1500; row += 1) {
+      lines.push(JSON.stringify(message('codex', 'user', `${text} ${row}`)));
+    }
+    const body = `${lines.join('\n')}\n`;
+    for (let file = 0; file < 25; file += 1) {
+      await writeFile(join(sessions, `session-${String(file).padStart(4, '0')}.jsonl`), body);
+    }
+    const decide: PickDecide = async (batch) => Object.fromEntries(
+      batch.questions.map((q) => [q.key, { status: 'answered' as const, probability: 0.9 }]));
+    let peak = process.memoryUsage().heapUsed;
+    const timer = setInterval(() => { peak = Math.max(peak, process.memoryUsage().heapUsed); }, 10);
+    let result;
+    try {
+      result = await pickFromSources([chat({ providers: ['codex'], paths: [directory] })],
+        { task: 'qxzwv no such terms anywhere' },
+        { task: 'qxzwv no such terms anywhere', decide });
+    } finally {
+      clearInterval(timer);
+    }
+    expect(peak).toBeLessThan(1024 * 1024 * 1024);
+    const laneRead = result.reads[0]!;
+    if (laneRead.status !== 'read') throw new Error('read failed');
+    expect(laneRead.matched).toBe(75_000);
+    expect(laneRead.candidates).toEqual([]);
+    expect(laneRead.noSearchMatch).toBe(true);
+    expect(laneRead.lanes).toEqual([{ task: 'qxzwv no such terms anywhere', lane: 'search', read: 75_000, kept: 0 }]);
+    expect(result.selected).toEqual([]);
   });
 });

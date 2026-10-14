@@ -1141,7 +1141,11 @@ function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 'rules'
             || (parts[left]!.id < parts[right]!.id ? -1 : parts[left]!.id > parts[right]!.id ? 1 : 0));
         const cut = request.laneCut === true;
         const bend = cut ? laneBend(order.map((index) => simOf.get(index) ?? 0)) : undefined;
-        const keptAll = bend === undefined ? order : order.filter((index) => (simOf.get(index) ?? 0) > bend);
+        // A cut lane where nothing scored above zero matched nothing:
+        // it keeps no parts rather than read back every body.
+        const keptAll = bend === undefined
+          ? (cut && !order.some((index) => (simOf.get(index) ?? 0) > 0) ? [] : order)
+          : order.filter((index) => (simOf.get(index) ?? 0) > bend);
         // `limit` carries the caller's `nearest` cap: it slices the kept
         // set after the curve, not the enumeration before it.
         const kept = limit === undefined ? keptAll : keptAll.slice(0, limit);
@@ -1299,7 +1303,12 @@ function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 'rules'
       const pool = kindLane || limit === undefined ? laneRanked : laneRanked.slice(0, limit);
       const cut = request.laneCut === true;
       const bend = cut ? laneBend(pool.map((index) => sums[index]!)) : undefined;
-      const curveKept = bend === undefined ? pool : pool.filter((index) => sums[index]! > bend);
+      // A cut keyword lane where nothing scored above zero matched
+      // nothing: it keeps no parts rather than read back every body. A
+      // kind lane still keeps its phrase matches, scored or not.
+      const curveKept = bend === undefined
+        ? (cut && !kindLane && !pool.some((index) => sums[index]! > 0) ? [] : pool)
+        : pool.filter((index) => sums[index]! > bend);
       const kept = kindLane && limit !== undefined ? curveKept.slice(0, limit) : curveKept;
       const limitBase = kindLane ? curveKept.length : laneRanked.length;
 
