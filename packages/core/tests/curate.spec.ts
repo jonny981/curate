@@ -315,10 +315,12 @@ describe('curate', () => {
     expect(calls).toHaveLength(2);
   });
 
-  it('rejects a malformed first log before attempting to condense', async () => {
+  it('rejects a malformed first log after one format repair, before attempting to condense', async () => {
     const { write, calls } = writer('undated summary');
     await expect(curate('Recall', picked(), { write, contextLimit: 1 })).rejects.toThrow('curate: malformed log');
-    expect(calls).toHaveLength(1);
+    expect(calls).toHaveLength(2);
+    expect(calls[1]!.instructions).toContain('rejected for its format');
+    expect(calls.some((call) => call.instructions.includes('Condense the log'))).toBe(false);
   });
 
   it.each([0, -1, 1.5, NaN, Infinity])('rejects an invalid context limit of %s before writing', async (contextLimit) => {

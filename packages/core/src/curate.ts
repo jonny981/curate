@@ -71,6 +71,8 @@ export interface CurateRecord {
   readonly contextLimit?: number;
   /** The returned log still exceeds the caller's budget. */
   readonly overContextLimit: boolean;
+  /** How many writer replies failed the format check and were sent back once with the reason. */
+  readonly repairs?: number;
   /** The estimated token budget a chained write cut the evidence into. */
   readonly batchTokens?: number;
   /** Each pass over the log, strongest first: one token-sized batch. */
@@ -90,6 +92,7 @@ export interface CurateResult {
 }
 
 const WORKING_HEADING = "Working (the curator's; check it against the log):";
+const REPAIR = 'A log you wrote for this task was rejected for its format; the rejected log and the reason follow the evidence. Return the same log corrected and nothing else: each observation line starts with exactly one event date in square brackets, [YYYY-MM-DD], and ends with (said YYYY-MM-DD; the full item id from its header). For an event known only to a month or a span, put its first date in the brackets and say the span in the text. Change only the format; keep every fact, date and id.';
 const NO_WORKING = '- Do not answer the task, do not count, and do not decide whether an observation falls inside a period the task names: give its dates and leave that to the reader.';
 const CONTEXT = '\nKeep every fact with the context that gives it meaning: each observation names who, where and which item, activity or event it concerns. Carry these links from the same session, including its other evidence items, into that line instead of leaving them on another line. Resolve pronouns only when that session states the link. Do not invent a person, place, item or connection. Preserve these links when merging or condensing logs.';
 const COUNT = '\nThis task needs a count or a list. Write every instance across the supplied sessions as its own line, including small ones and ones mentioned in passing. When two items tell the same instance, write it once with both ids; when you are not sure, write both and end the later observation text with "(may be the same as [the earlier date])".';
@@ -395,15 +398,33 @@ export async function curate(
       size += needed;
     }
   }
+  // A reply that fails the format check goes back once with the reason
+  // and the rejected text; a second failure stops the curation.
+  let repairs = 0;
+  const writeChecked = async (prompt: CuratePrompt): Promise<string> => {
+    const raw = await options.write(prompt, signal);
+    signal.throwIfAborted();
+    try {
+      return checkLog(raw, working, ids, preferenceAdvice, preferenceChange);
+    } catch (error) {
+      if (!(error instanceof Error) || !error.message.startsWith('curate: malformed log')) throw error;
+      repairs += 1;
+      const reason = error.message.replace(/^curate: malformed log; /, '');
+      const fixed = await options.write({
+        instructions: `${prompt.instructions}\n${REPAIR}`,
+        body: `${prompt.body}\n\nREJECTED LOG (${reason}):\n${String(raw)}`,
+      }, signal);
+      signal.throwIfAborted();
+      return checkLog(fixed, working, ids, preferenceAdvice, preferenceChange);
+    }
+  };
   let recordBatches: CurateBatch[] | undefined;
   let log: string;
   if (batches === undefined) {
-    const raw = await options.write({
+    log = await writeChecked({
       instructions: instructions + additions,
       body: `TASK:\n${datedTask}\n\nEVIDENCE:\n\n${blocks.join('\n\n')}`,
-    }, signal);
-    signal.throwIfAborted();
-    log = checkLog(raw, working, ids, preferenceAdvice, preferenceChange);
+    });
   } else {
     // Chained write: the strongest batch writes the log alone; each
     // later batch layers over the existing `Ln` line ids. Every
@@ -415,16 +436,14 @@ export async function curate(
     let nextLineId = 1;
     for (const indexes of batches) {
       if (recordBatches.length === 0) {
-        const raw = await options.write({
+        const checkedFirst = await writeChecked({
           instructions: `${instructions.replace(REPLACES, FIRST_REPLACES)}${additions}`,
           body: `TASK:\n${datedTask}\n\nEVIDENCE:\n\n${indexes.map((index) => blocks[index]).join('\n\n')}`,
-        }, signal);
-        signal.throwIfAborted();
+        });
         // The first pass was asked for no replacement markers; a writer
         // that left one anyway keeps the line's text and loses the
         // marker.
-        const unmarked = stripReplaces(
-          checkLog(raw, working, ids, preferenceAdvice, preferenceChange), patterns.observation);
+        const unmarked = stripReplaces(checkedFirst, patterns.observation);
         const numbered = numberLines(unmarked, patterns, new Set(), nextLineId);
         log = numbered.log;
         nextLineId = numbered.next;
@@ -433,12 +452,10 @@ export async function curate(
           added: written.map((line) => ({ id: line.lineId!, line: line.line })),
           marks: [] });
       } else {
-        const raw = await options.write({
+        const checked = await writeChecked({
           instructions: layerInstructions(instructions) + additions,
           body: `TASK:\n${datedTask}\n\nLOG SO FAR:\n${log}\n\nEVIDENCE:\n\n${indexes.map((index) => blocks[index]).join('\n\n')}`,
-        }, signal);
-        signal.throwIfAborted();
-        const checked = checkLog(raw, working, ids, preferenceAdvice, preferenceChange);
+        });
         const live = new Set(parseObservations(log, patterns).map((line) => line.lineId!));
         const numbered = numberLines(checked, patterns, live, nextLineId);
         nextLineId = numbered.next;
@@ -479,6 +496,7 @@ export async function curate(
       ...(condensed ? { condensedLength: log.length } : {}),
       ...(contextLimit === undefined ? {} : { contextLimit }),
       overContextLimit: contextLimit !== undefined && log.length > contextLimit,
+      ...(repairs ? { repairs } : {}),
     },
   };
 }
