@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { pickFromSources, type CandidateReadRequest } from '@curatejs/core';
 import { chat, type ChatProvider } from '../src/index.js';
-import { rankChat } from '../src/chat-rank.js';
+import { CHAT_KEYWORD_SETTINGS, rankChat } from '../src/chat-rank.js';
 import { porterStem } from '../src/porter.js';
 
 const directories: string[] = [];
@@ -240,7 +240,7 @@ describe('chat source contract', () => {
     const text = 'hello world\n'.repeat(20);
     const directory = await transcript('codex', [message('codex', 'user', text)]);
     const seen: string[] = [];
-    const result = await pickFromSources([chat({ paths: [directory], providers: ['codex'] })], { task: 'hello' }, {
+    const result = await pickFromSources([chat({ paths: [directory], providers: ['codex'] })], { task: 'hello', laneCut: false }, {
       task: 'hello', limits: { maxQuestionText: 50 },
       decide: async (batch) => {
         seen.push(...batch.questions.map((question) => question.text));
@@ -251,6 +251,23 @@ describe('chat source contract', () => {
     expect(seen.every((part) => part.length <= 50)).toBe(true);
     expect(seen.join('')).toBe(text);
     expect(result.record.candidates.every((candidate) => !candidate.truncated)).toBe(true);
+  });
+
+  it('still feeds a short-word task to the picker when no part scores', async () => {
+    const directory = await transcript('codex', [
+      message('codex', 'user', 'my dog is Rex'),
+      message('codex', 'assistant', 'noted, Rex is a good name'),
+    ]);
+    const seen: string[] = [];
+    const result = await pickFromSources([chat({ paths: [directory], providers: ['codex'] })], { task: "What's my dog's name?" }, {
+      task: "What's my dog's name?",
+      decide: async (batch) => {
+        seen.push(...batch.questions.map((question) => question.text));
+        return Object.fromEntries(batch.questions.map((question) => [question.key, { status: 'answered' as const, probability: 0.9 }]));
+      },
+    });
+    expect(result.selected).toHaveLength(2);
+    expect(seen.join(' ')).toContain('Rex');
   });
 
   it('fails on corrupt JSON without putting transcript contents in the error', async () => {
@@ -316,4 +333,205 @@ it('allows keyword overrides without changing the chat defaults', () => {
   rankChat(overridden, 'running', { stem: false });
   expect(normal[0]!.score).toBeGreaterThan(0);
   expect(overridden[0]!.score).toBe(0);
+});
+
+// The previous reader's rank calculation, frozen verbatim: the streaming
+// reader must agree with it part for part. Comparing the read against
+// today's shared implementation would only prove the two passes line
+// up, never that the result still matches what the old reader emitted.
+const OLD_STOP = new Set('about after agent answers before change context every into only question should that their there these this what when where which with would'.split(' '));
+const OLD_COMMON = new Set('a an and are as at be been being but by can could did do does for from had has have how i if in is it its me my of on or our so than the them then they to was we were who why will you your asked am also get got tell please many much'.split(' '));
+const OLD_VERBS = new Set('ask asked buy bought count describe determine find give go going know like list make mention need prefer recommend say said suggest take tell think use want went work'.split(' '));
+function oldKeywords(task: string, short = false, stop = 'baseline') {
+  const ids = short ? task.split(/(?<=[.?!:])\s+/).flatMap(s => s.split(/[^A-Za-z0-9]+/).filter(Boolean).filter((w,i) => /\d/.test(w) || (i > 0 && /[A-Z]/.test(w)))).map(w => w.toLowerCase()) : [];
+  const words = stop === 'baseline' ? task.toLowerCase().split(/[^a-z0-9-]+/).filter(w => w.length > 4 && !OLD_STOP.has(w)) : task.toLowerCase().split(/[^a-z0-9-]+/).filter(w => w.length > 4 && (stop === 'none' || (!OLD_COMMON.has(w) && !OLD_STOP.has(w))));
+  return [...new Set([...ids, ...(task.match(/[@\w./-]*[./@][\w./-]+|[a-z]+[A-Z]\w+|`[^`]+`/g) ?? []).map(w => w.replace(/`/g,'')), ...words].map(w => w.toLowerCase()))];
+}
+interface FrozenPart { id: string; title: string; text: string; heading: string; name: string; front: string }
+function oldScore(candidates: readonly FrozenPart[], task: string, stems: Record<string, string>, queryText: string | null = null) {
+  const config = CHAT_KEYWORD_SETTINGS;
+  const shortIds = new Set(config.short ? oldKeywords(task,true).filter(w => w.length <= 2) : []);
+  const tok = (t: string) => t.toLowerCase().split(/[^a-z0-9]+/).filter(w => w.length > 2 || shortIds.has(w)).map(w => stems[w] ?? w);
+  const query = [...new Set(queryText === null ? oldKeywords(task,config.short,config.stop).flatMap(tok) : tok(queryText))];
+  const docs = candidates.map(c => tok(`${c.title} ${c.text}`));
+  const avg = docs.reduce((n,d) => n+d.length,0)/Math.max(1,docs.length);
+  const df = new Map<string, number>(); for (const d of docs) for (const w of new Set(d)) df.set(w,(df.get(w)??0)+1);
+  const named = new Set(tok((task.match(/\b[A-Z][\w]*\b/g) ?? []).join(' ')));
+  const k1 = config.k1 ?? 1.2, b = config.b ?? .75;
+  return docs.map(d => {
+    const tf = new Map<string, number>(); for (const w of d) tf.set(w,(tf.get(w)??0)+1);
+    return query.reduce((sum,q) => {
+      const f = tf.get(q)??0; if (!f) return sum;
+      const weight = config.nouns ? named.has(q) ? 2 : OLD_VERBS.has(q) || /(?:ing|ed)$/.test(q) ? .5 : 1 : 1;
+      return sum + weight*Math.log(1+(docs.length-df.get(q)!+.5)/(df.get(q)!+.5))*f*(k1+1)/(f+k1*(1-b+b*d.length/avg));
+    },0);
+  });
+}
+/** Returns the merged score and the lane's own base score per part. */
+function frozenRank(parts: readonly FrozenPart[], task: string) {
+  const config = CHAT_KEYWORD_SETTINGS;
+  const words = [...new Set([task, ...parts.map(c => `${c.title} ${c.text}`)].join(' ').toLowerCase().split(/[^a-z0-9]+/).filter(w => w.length > 2))];
+  const stems = Object.fromEntries(words.map(w => [w, porterStem(w)]));
+  const raw = oldScore(parts, task, stems);
+  const top = Math.max(...raw, 1e-9);
+  const keywords = oldKeywords(task, config.short, config.stop);
+  const hits = (text: string) => keywords.filter(k => text.toLowerCase().includes(k)).length;
+  const base = raw.map((s, i) => 3 * s / top + Math.min(2, hits(parts[i]!.heading) * 2) + Math.min(1, hits(`${parts[i]!.name} ${parts[i]!.front}`)));
+  const sorted = (scores: number[]) => parts.map((p, i) => ({ p, s: scores[i]! })).sort((a, b) => b.s - a.s || a.p.id.localeCompare(b.p.id));
+  const content = oldKeywords(task, false, 'content').filter(w => !OLD_VERBS.has(w) && !/(?:ing|ed)$/.test(w)).join(' ');
+  const names = (task.match(/\b[A-Z][\w]*\b/g) ?? []).filter(w => !OLD_COMMON.has(w.toLowerCase()) && !OLD_STOP.has(w.toLowerCase())).join(' ');
+  const fusion = new Map(parts.map(p => [p.id, 0]));
+  const bonus = new Map<string, number>();
+  [sorted(base), ...[content, names].filter(Boolean).map(q => sorted(oldScore(parts, task, stems, q)))].forEach((list, j) => {
+    list.forEach(({ p, s }, r) => {
+      if (s <= 0) return;
+      fusion.set(p.id, fusion.get(p.id)! + (j === 0 ? 2 : 1) / (60 + r + 1));
+      bonus.set(p.id, Math.max(bonus.get(p.id) ?? 0, r === 0 ? 0.05 : r < 3 ? 0.02 : 0));
+    });
+  });
+  return parts.map((p, i) => ({ id: p.id, merged: fusion.get(p.id)! + (bonus.get(p.id) ?? 0), base: base[i]! }));
+}
+
+describe('streaming read', () => {
+  it('keeps the previous reader\'s parts, scores and order on a small fixture', async () => {
+    const texts = [
+      'Alice runs beside the river with S3 backups.',
+      'Alice prefers walking beside the lake.',
+      'Bob manages S3 and EC2 backups.',
+      'unrelated breakfast notes',
+      'the S3 runbook says snapshot first',
+    ];
+    const directory = await transcript('codex', texts.map((text, index) =>
+      message('codex', index % 2 === 0 ? 'user' : 'assistant', text)));
+    const task = 'Where does Alice run her S3 backups?';
+    const result = await read('codex', directory, {}, { task });
+    // The whole fixture must arrive: each message is one part.
+    expect(result.candidates.map((candidate) => candidate.text).sort())
+      .toEqual([...texts].sort());
+    const expected = new Map(frozenRank(
+      result.candidates.map((candidate) => ({
+        id: candidate.id, title: candidate.title, text: candidate.text,
+        heading: '', name: '', front: '',
+      })),
+      task,
+    ).map((entry) => [entry.id, entry]));
+    const order = [...expected.values()]
+      .sort((a, b) => b.merged - a.merged || a.id.localeCompare(b.id))
+      .map((entry) => entry.id);
+    expect(result.candidates.map((candidate) => candidate.id)).toEqual(order);
+    for (const candidate of result.candidates) {
+      const want = expected.get(candidate.id)!;
+      expect(candidate.signals['keyword']).toBe(want.merged);
+      expect(candidate.laneScore).toBe(want.base);
+    }
+  });
+
+  it('narrows inside the read only when the pick resolves laneCut on', async () => {
+    const directory = await transcript('codex', [
+      message('codex', 'user', 'battery backup schedule decided'),
+      message('codex', 'assistant', 'unrelated breakfast'),
+      message('codex', 'user', 'battery cells degrade'),
+      message('codex', 'assistant', 'a fourth note'),
+    ]);
+    const uncut = await read('codex', directory, {}, { task: 'battery' });
+    expect(uncut.laneCutApplied).toBeUndefined();
+    expect(uncut.candidates).toHaveLength(4);
+    const cut = await read('codex', directory, {}, { task: 'battery', laneCut: true });
+    expect(cut.laneCutApplied).toBe(true);
+    expect(cut.matched).toBe(4);
+    // Two parts carry the task term and score above the bend; the two
+    // zero-scored parts are dropped, so the cut provably removed some.
+    expect(cut.candidates).toHaveLength(2);
+    expect(cut.candidates.map((candidate) => candidate.text).sort())
+      .toEqual(['battery backup schedule decided', 'battery cells degrade']);
+    expect(cut.candidates.every((candidate) => candidate.laneScore !== undefined)).toBe(true);
+  });
+
+  it('serves a phrase lane by matching the exact phrase without scoring', async () => {
+    const directory = await transcript('codex', [
+      message('codex', 'user', 'we need to ship Friday'),
+      message('codex', 'assistant', 'we need to ship Friday and we need to rest'),
+      message('codex', 'user', 'the phrase is absent here'),
+    ]);
+    const result = await read('codex', directory, {}, { task: 'we need to', phraseLane: true });
+    expect(result.candidates).toHaveLength(2);
+    expect(result.candidates.map((candidate) => candidate.laneScore)).toEqual([2, 1]);
+    expect(result.candidates.every((candidate) => Object.keys(candidate.signals).join(',') === 'phrase')).toBe(true);
+  });
+
+  it('keeps heap roughly flat over a generated history of 75,500 messages', { timeout: 300_000 }, async () => {
+    const directory = await folder();
+    const sessions = join(directory, '2026/10/02');
+    await mkdir(sessions, { recursive: true });
+    const perFile = 500;
+    const files = 151;
+    // Every message mixes the 'filler words' anchor with generated words
+    // no other message shares, so the corpus vocabulary (over 13 million
+    // distinct words) far exceeds what the stem cache retains: a cache
+    // that grew with the vocabulary would show in the heap samples. The
+    // anchor recurs every ~38 words, inside any 700-character part, so
+    // the kind lane still matches every part.
+    const padding = (index: number) => {
+      const words: string[] = [];
+      for (let chunk = 0; chunk < 5; chunk += 1) {
+        words.push('filler', 'words');
+        for (let word = 0; word < 36; word += 1) {
+          words.push(`vocab${index * 180 + chunk * 36 + word}`);
+        }
+      }
+      return words.join(' ');
+    };
+    for (let file = 0; file < files; file += 1) {
+      const lines: string[] = [];
+      for (let row = 0; row < perFile; row += 1) {
+        const index = file * perFile + row;
+        const text = row % 100 === 0 ? `battery backup note ${file}-${row}` : `routine note ${file}-${row}`;
+        lines.push(JSON.stringify(message('codex', row % 2 === 0 ? 'user' : 'assistant', `${text} ${padding(index)}`)));
+      }
+      await writeFile(join(sessions, `session-${String(file).padStart(4, '0')}.jsonl`), `${lines.join('\n')}\n`);
+    }
+    const embed = async (texts: readonly string[]) =>
+      texts.map((text) => (text.includes('battery backup') ? [1, 0] : [0, 1]));
+    const source = chat({ providers: ['codex'], paths: [directory] });
+    const samples: number[] = [];
+    const timer = setInterval(() => samples.push(process.memoryUsage().heapUsed), 5);
+    let result: Awaited<ReturnType<ReturnType<typeof chat>['read']>>;
+    let kindResult: typeof result;
+    let meaningResult: typeof result;
+    try {
+      result = await source.read({ task: 'battery backup', laneCut: true });
+      // A kind lane matches 'filler words' in every part and must rank
+      // the matches by the topic, never buffer every matched body; the
+      // meaning lane likewise scores and releases each batch.
+      kindResult = await source.read({
+        task: 'filler words', phraseLane: true, topic: 'battery backup', laneCut: true,
+      });
+      meaningResult = await source.read({
+        task: 'battery backup', laneCut: true, meaningLane: { embed },
+      });
+    } finally {
+      clearInterval(timer);
+    }
+    samples.push(process.memoryUsage().heapUsed);
+    for (const lane of [result, kindResult, meaningResult]) {
+      expect(lane.status).toBe('read');
+      if (lane.status !== 'read') throw new Error('Expected a read');
+      expect(lane.laneCutApplied).toBe(true);
+    }
+    if (result.status !== 'read' || kindResult.status !== 'read'
+      || meaningResult.status !== 'read') return;
+    // Every message holds about 2 KB, so the split cap turns the
+    // 75,500 messages into more candidate parts; the counts prove the
+    // whole history was scored before the lane cuts.
+    expect(result.matched).toBeGreaterThanOrEqual(perFile * files);
+    expect(kindResult.matched).toBeGreaterThanOrEqual(perFile * files);
+    expect(kindResult.candidates.every((candidate) =>
+      (candidate.signals['phrase'] ?? 0) > 0 && (candidate.signals['keyword'] ?? 0) > 0)).toBe(true);
+    expect(meaningResult.meaningLane).toBe(true);
+    expect(meaningResult.matched).toBeGreaterThanOrEqual(perFile * files);
+    expect(meaningResult.candidates.length).toBeGreaterThan(0);
+    expect(meaningResult.candidates.every((candidate) => candidate.signals['similarity'] === 1)).toBe(true);
+    const peak = Math.max(...samples);
+    expect(peak).toBeLessThan(1024 * 1024 * 1024);
+  });
 });

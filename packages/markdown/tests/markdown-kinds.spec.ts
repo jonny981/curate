@@ -85,7 +85,7 @@ describe('Markdown paths and shared reads', () => {
   it('keeps same-named files from separate roots distinct', async () => {
     const left = await tree({ 'note.md': 'Left.' });
     const right = await tree({ 'note.md': 'Right.' });
-    const result = await pickFromSources([markdown({ paths: [left, right], kind: 'knowledge' })], { task: 'notes', searchLines: ['facts'] }, { task: 'notes', decide: yes });
+    const result = await pickFromSources([markdown({ paths: [left, right], kind: 'knowledge' })], { task: 'notes', searchLines: ['facts'], laneCut: false }, { task: 'notes', decide: yes });
     expect(result.selected).toHaveLength(2);
     expect(new Set(result.selected.map((c) => c.id)).size).toBe(2);
   });

@@ -1,4 +1,6 @@
 import type { MemoryCandidate } from './pick.js';
+import { cutScoreCurve } from './lanes.js';
+import { normalize, similarity } from './vectors.js';
 
 /** One local vector per complete input text, in input order. */
 export type EmbeddingFunction = (
@@ -10,21 +12,10 @@ export interface MeaningSearchOptions {
   readonly embed: EmbeddingFunction;
   /** Optional user dial per query and source. Omit to keep every rank. */
   readonly nearest?: number;
-}
-
-function normalize(vector: ArrayLike<number>, dimensions?: number): Float64Array {
-  if (!vector.length || (dimensions !== undefined && vector.length !== dimensions)) {
-    throw new TypeError('Embeddings must have the same nonzero dimension.');
-  }
-  const values = Float64Array.from(vector);
-  let squared = 0;
-  for (const value of values) {
-    if (!Number.isFinite(value)) throw new TypeError('Embeddings must contain finite numbers.');
-    squared += value * value;
-  }
-  if (!squared || !Number.isFinite(squared)) throw new TypeError('Embeddings must have a finite nonzero length.');
-  const length = Math.sqrt(squared);
-  return values.map((value) => value / length);
+  /** Cut each query's similarity ranks where its own score curve
+   *  flattens, from the scores themselves. On by default; pass false
+   *  to keep every rank (still subject to `nearest`). */
+  readonly laneCut?: boolean;
 }
 
 /** Add local meaning ranks without changing keyword ranks or signals.
@@ -58,11 +49,7 @@ export async function addMeaningRanks(
     embedded.forEach((vector, offset) => {
       const normalized = normalize(vector, queryVectors[0]!.length);
       queryVectors.forEach((query, lane) => {
-        let similarity = 0;
-        for (let dimension = 0; dimension < query.length; dimension += 1) {
-          similarity += query[dimension]! * normalized[dimension]!;
-        }
-        scores[lane]![start + offset] = similarity;
+        scores[lane]![start + offset] = similarity(query, normalized);
       });
     });
   }
@@ -86,7 +73,12 @@ export async function addMeaningRanks(
     scores.forEach((laneScores, lane) => {
       const order = [...group].sort((left, right) => laneScores[right]! - laneScores[left]!
         || unique[left]!.id.localeCompare(unique[right]!.id));
-      order.slice(0, options.nearest).forEach((index, rank) => { ranks[index]![keywordLanes + lane] = rank; });
+      const curve = cutScoreCurve(order.map((index) => laneScores[index]!));
+      const kept = options.laneCut === false || curve === 0 ? order.length
+        : Math.min(order.length, curve);
+      order.slice(0, Math.min(options.nearest ?? kept, kept)).forEach((index, rank) => {
+        ranks[index]![keywordLanes + lane] = rank;
+      });
     });
   }
   return unique.flatMap((candidate, index) => ranks[index]!.some((rank) => rank !== null)

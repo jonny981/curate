@@ -64,11 +64,13 @@ describe('extra source searches', () => {
   it('keeps exact single-read results without supplied extras or with an empty list', async () => {
     const read = readResult([candidate('b'), candidate('a')], { revision: 'fixed' });
     const reader = source(async () => read);
-    const baseline = await pickSource(reader, { task: 'original' });
+    const baseline = await pickSource(reader, { task: 'original', laneCut: false });
     for (const searchLines of [[], ['', 'original', 'original']]) {
-      const disabled = await pickSource(reader, { task: 'original', searchLines, stripSearchInstructions: false });
+      const disabled = await pickSource(reader, { task: 'original', searchLines, stripSearchInstructions: false, laneCut: false });
       expect(disabled).toEqual(baseline);
-      expect(disabled.reads[0]).toBe(read);
+      expect(disabled.reads[0]).toEqual({
+        ...read, lanes: [{ task: 'original', lane: 'search', read: 2, kept: 2 }],
+      });
       expect(disabled.selected.every((item) => !('searchRanks' in item))).toBe(true);
     }
   });

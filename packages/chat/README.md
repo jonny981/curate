@@ -57,6 +57,14 @@ const source = chat({ providers: ['claude-code', 'codex'], since: '14 days' });
   Excluded paths are refused before opening content. Cancellation and
   file or JSON failures throw `SourceReadError`. Revision pins return
   `absent` because transcripts have no git revision.
+- **Memory:** The read streams the history: one pass over the transcripts
+  collects keyword statistics, a second scores each part against them,
+  and a third reads back only the transcripts the read keeps. With the
+  lane cut on (the `pickFromSources` default), peak heap stays roughly
+  flat as the history grows. One case still holds every part: a read
+  where nothing scores above zero has no curve to cut on, so it keeps
+  them all for the pick. A read with `laneCut: false` also returns
+  every part. A phrase lane needs only the matching pass.
 
 ## Defaults and overrides
 
@@ -72,6 +80,7 @@ saved-decision sweep's answer-turn losses.
 - **Keyword settings:** `CHAT_KEYWORD_SETTINGS` exports the ranking defaults. Pass a partial `keyword` object to the reader to override them.
 - **Questions:** `CHAT_CASCADE` exports the fitted questions. Pass the cascade to core’s `cascade` or `cascadesByKind` option. The defaults are opt-in.
 - **Search wording:** `CHAT_SEARCH_LINE_REGISTER` describes the wording for host-written extra search lines. Copy or replace this text in your host; the package generates no lines.
+- **Kind phrases:** `CHAT_KIND_PHRASES` exports phrases in the chat register for `directions`, `decisions` and `corrections`. Pass one list to core's `kindLanes` option, for example `{ chat: CHAT_KIND_PHRASES.directions }`; kind lanes stay off by default.
 
 ```ts
 import { chat, CHAT_KEYWORD_SETTINGS, CHAT_CASCADE, CHAT_SEARCH_LINE_REGISTER } from '@curatejs/chat';

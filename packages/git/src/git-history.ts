@@ -13,7 +13,7 @@ import {
   resolveCommit,
   runGit,
 } from '@curatejs/core/internal';
-import { hits, taskTerms } from '@curatejs/core/internal';
+import { hits, taskTerms, phraseCount, laneBend, embedQuery, embedSimilarities } from '@curatejs/core/internal';
 import type { MemoryCandidate } from '@curatejs/core';
 import {
   SourceReadError,
@@ -50,11 +50,44 @@ interface LogCommit {
   readonly changedPaths: readonly string[];
 }
 
+/** What a read keeps per commit once its page or body batch is released:
+ *  the candidate's fields and its measured shared-word count, never the
+ *  body unless the result emits it. */
+interface ScoredCommit {
+  readonly sha: string;
+  readonly short: string;
+  readonly date: string;
+  readonly subject: string;
+  readonly changedPaths: readonly string[];
+  /** Shared task-term hits, set when a body was measured for this commit. */
+  shared?: number;
+  /** The body, held only while the result still needs it. */
+  body?: string;
+}
+
+/** Split or trimmed strings are slices of the page they came from, so
+ *  a retained field would pin that whole page of log output. Fields a
+ *  result keeps are copied flat before they are stored. */
+const flat = (text: string): string => Buffer.from(text).toString('utf8');
+
+const scored = (commit: Omit<LogCommit, 'body'>, extra: { shared?: number; body?: string } = {}): ScoredCommit => ({
+  sha: flat(commit.sha), short: flat(commit.short), date: flat(commit.date),
+  subject: flat(commit.subject), changedPaths: commit.changedPaths.map(flat),
+  ...(extra.shared === undefined ? {} : { shared: extra.shared }),
+  ...(extra.body === undefined ? {} : { body: flat(extra.body) }),
+});
+
 /** Records are separated by \x1e and fields by \x1f; `-z` leaves paths
  *  literal and NUL-separated, so a name with spaces or non-ASCII bytes is
  *  never quoted. */
 const FULL_FORMAT = '%x1e%H%x1f%h%x1f%cI%x1f%s%x1f%b%x1f';
 const META_FORMAT = '%x1e%H%x1f%h%x1f%cI%x1f%s';
+/** Commits per `git log` call. A long history is enumerated in pages so
+ *  one call's output stays far under the process output cap and the
+ *  parsed page's memory is released before the next. */
+const LOG_PAGE = 4096;
+/** Commits per batched body fetch, bounding one `--stdin` call's output. */
+const BODY_PAGE = 2048;
 
 function parseLog(output: string, withBody: boolean): LogCommit[] {
   const commits: LogCommit[] = [];
@@ -103,7 +136,7 @@ async function readBodies(
     ['log', '--no-walk=unsorted', '--stdin', '--format=%x1e%b'],
     { input: `${shas.join('\n')}\n`, signal },
   );
-  return output.split('\x1e').slice(1).map((body) => body.trim());
+  return output.split('\x1e').slice(1).map((body) => flat(body.trim()));
 }
 
 /** A path a caller wrote, as a repository-relative path. Absolute paths
@@ -140,10 +173,12 @@ const NO_COMMIT = /Needed a single revision|does not have any commits|unknown re
  * shell, a scrubbed environment, a time limit, an output limit, and the
  * request's abort signal reaching the process.
  *
- * With no exclusions, one `git log` pass enumerates commits and paths.
- * With exclusions, a metadata pass lists paths first and a commit that
- * touched any excluded path is dropped before its body is ever fetched.
- * `blame` and `coChange` are opt-in extras on top.
+ * With no exclusions, `git log` pages enumerate commits and paths, and
+ * each page is scored as it arrives. With exclusions, a metadata pass
+ * lists paths first and a commit that touched any excluded path is
+ * dropped before its body is ever fetched. A lane-cut read keeps compact
+ * per-commit scores and fetches bodies only for the commits the curve
+ * kept. `blame` and `coChange` are opt-in extras on top.
  */
 export function gitHistory(
   repo: string | URL,
@@ -227,41 +262,9 @@ export function gitHistory(
           );
           if (path !== undefined) excluded.add(path);
         }
-        // With no exclusions, one more commit than the limit is
-        // enumerated so `complete` knows whether the list was truncated,
-        // and the single log pass carries bodies with it. With
-        // exclusions the order changes: a metadata pass enumerates
-        // everything without the limit, the excluded-path filter admits
-        // commits first, and the limit slices the admitted set — a run
-        // of excluded commits can never eat the window. The bodies of
-        // admitted commits come from one batched `git log --stdin` below.
-        const wanted = excluded.size === 0 && request.limit !== undefined
-          ? request.limit + 1
-          : undefined;
-        const logArgs = [
-          'log', '--no-merges', '--no-renames', '-z',
-          `--format=${excluded.size === 0 ? FULL_FORMAT : META_FORMAT}`,
-          '--name-only',
-        ];
-        if (wanted !== undefined) logArgs.push('-n', String(wanted));
-        logArgs.push(sha);
-        const enumerated = parseLog(
-          await runGit(toplevel, logArgs, { signal }),
-          excluded.size === 0,
-        );
-        // A commit touching any excluded path is not admitted, even when
-        // it also touched an allowed one; its body is never fetched.
-        const admitted = excluded.size === 0
-          ? enumerated
-          : enumerated.filter((commit) => !touches(commit.changedPaths, [...excluded]));
-        const truncated = request.limit !== undefined && admitted.length > request.limit;
-        const kept = request.limit === undefined ? admitted : admitted.slice(0, request.limit);
-        const commits: LogCommit[] = excluded.size === 0
-          ? kept
-          : (await readBodies(toplevel, kept.map((commit) => commit.sha), signal))
-            .map((body, index) => ({ ...kept[index]!, body }));
-
-        const terms = taskTerms(request.task, request.paths ?? [], keyword.stopWords);
+        // A kind lane's `task` is the phrase; its `topic` is the task
+        // the lane serves, and that is what the matches are scored on.
+        const terms = taskTerms(request.topic ?? request.task, request.paths ?? [], keyword.stopWords);
         const named: string[] = [];
         for (const path of request.paths ?? []) {
           const name = repoPath(
@@ -274,7 +277,266 @@ export function gitHistory(
         // '.' under `git -C <toplevel>` names the same whole tree.
         const pathspec = named.map((name) => (name === '' ? '.' : name));
         const now = Date.now();
-        const bySha = new Map(commits.map((commit) => [commit.sha, commit] as const));
+        const cut = request.laneCut === true;
+
+        // With no exclusions the log pages carry bodies: a bare read keeps
+        // them for its candidates, a lane-cut read measures each page's
+        // shared words and releases the bodies, and a phrase read counts
+        // each page's phrase and keeps only the matching bodies. With
+        // exclusions the pages carry metadata only; the bodies of admitted
+        // commits come from bounded `git log --stdin` batches, so a commit
+        // that touched an excluded path never has its body read. One more
+        // commit than the limit is enumerated when it can be known up
+        // front, so `complete` knows whether the list was truncated;
+        // phrase, kind and meaning lanes and exclusions enumerate the
+        // whole history, since the limit then slices a filtered set, not
+        // the enumeration.
+        const wanted = excluded.size === 0 && request.limit !== undefined
+          && request.phraseLane !== true && request.meaningLane === undefined
+          ? request.limit + 1
+          : undefined;
+        const enumerated: ScoredCommit[] = [];
+        const phrases: { commit: ScoredCommit; count: number }[] = [];
+        const embedding = request.meaningLane === undefined ? undefined
+          : await embedQuery(request.meaningLane.embed, request.task, signal);
+        let pendingEmbed: string[] = [];
+        const similarities: number[] = [];
+        const flushEmbed = async () => {
+          if (pendingEmbed.length === 0 || embedding === undefined) return;
+          similarities.push(
+            ...await embedSimilarities(request.meaningLane!.embed, embedding, pendingEmbed, signal));
+          pendingEmbed = [];
+        };
+        for (let offset = 0; wanted === undefined || offset < wanted;) {
+          const page = wanted === undefined ? LOG_PAGE : Math.min(LOG_PAGE, wanted - offset);
+          const batch = parseLog(
+            await runGit(toplevel, [
+              'log', '--no-merges', '--no-renames', '-z',
+              `--format=${excluded.size === 0 ? FULL_FORMAT : META_FORMAT}`,
+              '--name-only', '-n', String(page),
+              ...(offset === 0 ? [] : ['--skip', String(offset)]), sha,
+            ], { signal }),
+            excluded.size === 0,
+          );
+          for (const commit of batch) {
+            if (excluded.size !== 0) {
+              enumerated.push(scored(commit));
+            } else if (embedding !== undefined) {
+              // The page's body is embedded and released with it; only
+              // the similarity survives.
+              enumerated.push(scored(commit));
+              pendingEmbed.push(`${commit.subject}\n${commit.body}`);
+              if (pendingEmbed.length === 32) await flushEmbed();
+            } else if (request.phraseLane === true && request.topic !== undefined) {
+              // A kind lane's match keeps the commit's topic score, not
+              // its body: only commits the curve keeps get one back.
+              const count = phraseCount(commit.subject, request.task) + phraseCount(commit.body, request.task);
+              if (count > 0) {
+                phrases.push({
+                  commit: scored(commit, { shared: hits(`${commit.subject}\n${commit.body}`, terms) }),
+                  count,
+                });
+              }
+            } else if (request.phraseLane === true) {
+              const count = phraseCount(commit.subject, request.task) + phraseCount(commit.body, request.task);
+              if (count > 0) phrases.push({ commit: scored(commit, { body: commit.body }), count });
+            } else if (cut) {
+              enumerated.push(scored(commit, { shared: hits(`${commit.subject}\n${commit.body}`, terms) }));
+            } else {
+              enumerated.push(scored(commit, { body: commit.body }));
+            }
+          }
+          if (batch.length < page) break;
+          offset += batch.length;
+        }
+        await flushEmbed();
+        // A commit touching any excluded path is not admitted, even when
+        // it also touched an allowed one; its body is never fetched.
+        const admitted = excluded.size === 0
+          ? enumerated
+          : enumerated.filter((commit) => !touches(commit.changedPaths, [...excluded]));
+
+        // A meaning lane embeds each admitted commit's subject and body
+        // in bounded batches, keeps the similarity curve's side, and
+        // fetches bodies only for the kept commits. With exclusions the
+        // bodies it needs arrive in the same bounded batches, after the
+        // path filter has dropped their commits.
+        if (embedding !== undefined) {
+          if (excluded.size !== 0) {
+            for (let start = 0; start < admitted.length; start += BODY_PAGE) {
+              const slice = admitted.slice(start, start + BODY_PAGE);
+              const bodies = await readBodies(toplevel, slice.map((commit) => commit.sha), signal);
+              for (const [index, body] of bodies.entries()) {
+                pendingEmbed.push(`${slice[index]!.subject}\n${body}`);
+                if (pendingEmbed.length === 32) await flushEmbed();
+              }
+            }
+            await flushEmbed();
+          }
+          const order = admitted.map((_, index) => index)
+            .sort((a, b) => (similarities[b] ?? 0) - (similarities[a] ?? 0)
+              || `commit ${admitted[a]!.short}`.localeCompare(`commit ${admitted[b]!.short}`));
+          const bend = cut ? laneBend(order.map((index) => similarities[index]!)) : undefined;
+          const kept = bend === undefined ? order : order.filter((index) => similarities[index]! > bend);
+          // `limit` carries the caller's `nearest` cap: it slices the
+          // kept set after the curve, not the enumeration before it.
+          const limited = request.limit === undefined ? kept : kept.slice(0, request.limit);
+          for (let start = 0; start < limited.length; start += BODY_PAGE) {
+            const slice = limited.slice(start, start + BODY_PAGE);
+            const bodies = await readBodies(toplevel, slice.map((index) => admitted[index]!.sha), signal);
+            slice.forEach((index, at) => { admitted[index]!.body = bodies[at]!; });
+          }
+          const limitedReads = request.limit !== undefined && kept.length > request.limit;
+          return {
+            status: 'read' as const,
+            revision: sha,
+            meaningLane: true as const,
+            candidates: limited.map((index): MemoryCandidate => ({
+              sourceId: id,
+              sourceRevision: sha,
+              role: 'reference',
+              id: `commit ${admitted[index]!.short}`,
+              title: admitted[index]!.subject,
+              text: admitted[index]!.body ?? '',
+              contentRef: admitted[index]!.sha,
+              date: { value: admitted[index]!.date, meaning: 'recorded' as const },
+              changedPaths: admitted[index]!.changedPaths,
+              repository: options.repository ?? toplevel,
+              signals: { similarity: similarities[index]! },
+              laneScore: similarities[index]!,
+            })),
+            complete: !limitedReads,
+            matched: admitted.length,
+            ...(cut ? { laneCutApplied: true as const } : {}),
+            ...(limitedReads
+              ? { partial: `the limit kept ${request.limit} of ${kept.length} candidates` }
+              : {}),
+          };
+        }
+
+        // A kind lane keeps the commits whose subject or body contains
+        // the exact phrase, then ranks them by the task's own signal
+        // score — never by how often the phrase occurs, so a direction
+        // said once survives a phrase everyone says. Matches carry
+        // compact scores until the curve cut picks the kept set; only
+        // those bodies are fetched.
+        if (request.phraseLane === true && request.topic !== undefined) {
+          if (excluded.size !== 0) {
+            for (let start = 0; start < admitted.length; start += BODY_PAGE) {
+              const slice = admitted.slice(start, start + BODY_PAGE);
+              const bodies = await readBodies(toplevel, slice.map((commit) => commit.sha), signal);
+              slice.forEach((commit, index) => {
+                const count = phraseCount(commit.subject, request.task)
+                  + phraseCount(bodies[index]!, request.task);
+                if (count > 0) {
+                  phrases.push({
+                    commit: { ...commit, shared: hits(`${commit.subject}\n${bodies[index]!}`, terms) },
+                    count,
+                  });
+                }
+              });
+            }
+          }
+          const laneSignals = (commit: ScoredCommit): Record<string, number> => {
+            const out: Record<string, number> = {};
+            const shared = commit.shared ?? 0;
+            if (shared > 0) out['shared_words'] = Math.min(keyword.sharedWordCap, shared);
+            const ageDays = (now - Date.parse(commit.date)) / 86_400_000;
+            out['recency'] = Math.exp(-Math.max(0, ageDays) / keyword.recencyDays);
+            if (named.length > 0 && touches(commit.changedPaths, named)) {
+              out['named_path_touch'] = keyword.namedPathWeight;
+            }
+            return out;
+          };
+          const laneSum = (entry: { signals: Record<string, number> }) =>
+            Object.values(entry.signals).reduce((sum, value) => sum + value, 0);
+          const ranked = phrases
+            .map(({ commit, count }) => ({ commit, count, signals: laneSignals(commit) }))
+            .sort((left, right) => laneSum(right) - laneSum(left)
+              || `commit ${left.commit.short}`.localeCompare(`commit ${right.commit.short}`));
+          // The curve sees every match; `limit` slices what it keeps.
+          const bend = cut ? laneBend(ranked.map(laneSum)) : undefined;
+          const curveKept = bend === undefined ? ranked : ranked.filter((entry) => laneSum(entry) > bend);
+          const limitedByCount = request.limit !== undefined && curveKept.length > request.limit;
+          const kept = limitedByCount ? curveKept.slice(0, request.limit) : curveKept;
+          for (let start = 0; start < kept.length; start += BODY_PAGE) {
+            const slice = kept.slice(start, start + BODY_PAGE);
+            const bodies = await readBodies(toplevel, slice.map((entry) => entry.commit.sha), signal);
+            slice.forEach((entry, index) => { entry.commit.body = bodies[index]!; });
+          }
+          return {
+            status: 'read' as const,
+            revision: sha,
+            candidates: kept.map((entry): MemoryCandidate => ({
+              sourceId: id,
+              sourceRevision: sha,
+              role: 'reference',
+              id: `commit ${entry.commit.short}`,
+              title: entry.commit.subject,
+              text: entry.commit.body ?? '',
+              contentRef: entry.commit.sha,
+              date: { value: entry.commit.date, meaning: 'recorded' as const },
+              changedPaths: entry.commit.changedPaths,
+              repository: options.repository ?? toplevel,
+              signals: { ...entry.signals, phrase: entry.count },
+              laneScore: laneSum(entry),
+            })),
+            complete: !limitedByCount,
+            ...(cut ? { laneCutApplied: true as const, matched: phrases.length } : {}),
+            ...(limitedByCount
+              ? { partial: `the limit kept ${request.limit} of ${curveKept.length} candidates` }
+              : {}),
+          };
+        }
+
+        // A phrase lane keeps the commits whose subject or body
+        // contains the exact phrase; keyword scoring is skipped.
+        if (request.phraseLane === true) {
+          // With exclusions the admitted commits' bodies arrive in
+          // bounded batches for counting; without them the page loop
+          // counted each commit as its page arrived and `phrases` is
+          // already complete.
+          if (excluded.size !== 0) {
+            for (let start = 0; start < admitted.length; start += BODY_PAGE) {
+              const slice = admitted.slice(start, start + BODY_PAGE);
+              const bodies = await readBodies(toplevel, slice.map((commit) => commit.sha), signal);
+              slice.forEach((commit, index) => {
+                const count = phraseCount(commit.subject, request.task) + phraseCount(bodies[index]!, request.task);
+                if (count > 0) phrases.push({ commit: { ...commit, body: bodies[index]! }, count });
+              });
+            }
+          }
+          const matched = phrases
+            .sort((a, b) => b.count - a.count
+              || `commit ${a.commit.short}`.localeCompare(`commit ${b.commit.short}`));
+          const limited = request.limit !== undefined && matched.length > request.limit;
+          const emitted = limited ? matched.slice(0, request.limit) : matched;
+          return {
+            status: 'read' as const,
+            revision: sha,
+            candidates: emitted.map(({ commit, count }): MemoryCandidate => ({
+              sourceId: id,
+              sourceRevision: sha,
+              role: 'reference',
+              id: `commit ${commit.short}`,
+              title: commit.subject,
+              text: commit.body ?? '',
+              contentRef: commit.sha,
+              date: { value: commit.date, meaning: 'recorded' as const },
+              changedPaths: commit.changedPaths,
+              repository: options.repository ?? toplevel,
+              signals: { phrase: count },
+              laneScore: count,
+            })),
+            complete: !limited,
+            ...(limited
+              ? { partial: `the phrase limit kept ${request.limit} of ${matched.length} candidates` }
+              : {}),
+          };
+        }
+        const truncated = request.limit !== undefined && admitted.length > request.limit;
+        const scoped = request.limit === undefined ? admitted : admitted.slice(0, request.limit);
+        const bySha = new Set(scoped.map((commit) => commit.sha));
         const liveLines = new Map<string, number>();
         const coChange = new Map<string, number>();
         if (options.blame === true && named.length > 0) {
@@ -333,45 +595,89 @@ export function gitHistory(
           }
         }
 
-        const candidates: MemoryCandidate[] = commits.map((commit) => {
-          const signals: Record<string, number> = {};
-          const shared = hits(`${commit.subject}\n${commit.body}`, terms);
-          if (shared > 0) signals['shared_words'] = Math.min(keyword.sharedWordCap, shared);
+        // Scoring needs each scoped commit's body once: when the pages
+        // carried metadata only, the bodies come in bounded batches whose
+        // contents are measured and released. A lane-cut read keeps just
+        // the shared-word count; a bare read keeps the body it will emit.
+        if (excluded.size !== 0) {
+          for (let start = 0; start < scoped.length; start += BODY_PAGE) {
+            const slice = scoped.slice(start, start + BODY_PAGE);
+            const bodies = await readBodies(toplevel, slice.map((commit) => commit.sha), signal);
+            slice.forEach((commit, index) => {
+              commit.shared = hits(`${commit.subject}\n${bodies[index]!}`, terms);
+              if (!cut) commit.body = bodies[index]!;
+            });
+          }
+        }
+
+        const signals = (commit: ScoredCommit) => {
+          const out: Record<string, number> = {};
+          const shared = commit.shared ?? hits(`${commit.subject}\n${commit.body ?? ''}`, terms);
+          if (shared > 0) out['shared_words'] = Math.min(keyword.sharedWordCap, shared);
           const ageDays = (now - Date.parse(commit.date)) / 86_400_000;
-          signals['recency'] = Math.exp(-Math.max(0, ageDays) / keyword.recencyDays);
+          out['recency'] = Math.exp(-Math.max(0, ageDays) / keyword.recencyDays);
           if (named.length > 0 && touches(commit.changedPaths, named)) {
-            signals['named_path_touch'] = keyword.namedPathWeight;
+            out['named_path_touch'] = keyword.namedPathWeight;
           }
           const lines = liveLines.get(commit.sha);
-          if (lines !== undefined) signals['live_lines'] = keyword.liveLinesWeight + Math.log10(lines);
-          if (coChange.has(commit.sha)) signals['co_change'] = keyword.coChangeWeight;
-          return {
-            sourceId: id,
-            sourceRevision: sha,
-            role: 'reference',
-            id: `commit ${commit.short}`,
-            title: commit.subject,
-            text: commit.body,
-            contentRef: commit.sha,
-            date: { value: commit.date, meaning: 'recorded' as const },
-            changedPaths: commit.changedPaths,
-            repository: options.repository ?? toplevel,
-            signals,
-          };
+          if (lines !== undefined) out['live_lines'] = keyword.liveLinesWeight + Math.log10(lines);
+          if (coChange.has(commit.sha)) out['co_change'] = keyword.coChangeWeight;
+          return out;
+        };
+        const emit = (commit: ScoredCommit, commitSignals: Record<string, number>): MemoryCandidate => ({
+          sourceId: id,
+          sourceRevision: sha,
+          role: 'reference',
+          id: `commit ${commit.short}`,
+          title: commit.subject,
+          text: commit.body ?? '',
+          contentRef: commit.sha,
+          date: { value: commit.date, meaning: 'recorded' as const },
+          changedPaths: commit.changedPaths,
+          repository: options.repository ?? toplevel,
+          signals: commitSignals,
         });
+        const signalSum = (entry: { signals: Record<string, number> }) =>
+          Object.values(entry.signals).reduce((sum, value) => sum + value, 0);
+        const partial = truncated
+          ? (excluded.size === 0
+            ? `the limit kept ${scoped.length} ${scoped.length === 1 ? 'commit' : 'commits'}; more exist`
+            : `the limit kept ${scoped.length} of ${admitted.length} admitted commits`)
+          : undefined;
+
+        // With the lane cut on, the reader narrows its own lane at the
+        // signal-sum score curve and reports the kept set, so the pick
+        // does not cut it again. Only the kept commits' bodies are then
+        // fetched, in bounded batches. A bare read keeps commit order.
+        if (cut) {
+          const ranked = scoped
+            .map((commit) => ({ commit, signals: signals(commit) }))
+            .sort((left, right) => signalSum(right) - signalSum(left)
+              || `commit ${left.commit.short}`.localeCompare(`commit ${right.commit.short}`));
+          const bend = laneBend(ranked.map(signalSum));
+          const emitted = bend === undefined ? ranked : ranked.filter((entry) => signalSum(entry) > bend);
+          for (let start = 0; start < emitted.length; start += BODY_PAGE) {
+            const slice = emitted.slice(start, start + BODY_PAGE);
+            const bodies = await readBodies(toplevel, slice.map((entry) => entry.commit.sha), signal);
+            slice.forEach((entry, index) => { entry.commit.body = bodies[index]!; });
+          }
+          return {
+            status: 'read' as const,
+            revision: sha,
+            candidates: emitted.map((entry) => emit(entry.commit, entry.signals)),
+            complete: !truncated,
+            laneCutApplied: true as const,
+            matched: scoped.length,
+            ...(partial === undefined ? {} : { partial }),
+          };
+        }
 
         return {
-          status: 'read',
+          status: 'read' as const,
           revision: sha,
-          candidates,
+          candidates: scoped.map((commit) => emit(commit, signals(commit))),
           complete: !truncated,
-          ...(truncated
-            ? {
-                partial: excluded.size === 0
-                  ? `the limit kept ${kept.length} ${kept.length === 1 ? 'commit' : 'commits'}; more exist`
-                  : `the limit kept ${kept.length} of ${admitted.length} admitted commits`,
-              }
-            : {}),
+          ...(partial === undefined ? {} : { partial }),
         };
       } catch (error) {
         throw asSourceReadError(error);

@@ -25,12 +25,17 @@ output cap. Missing git, a path that is not a directory, or a directory
 outside a work tree reports `absent`; a pin the repository does not have
 throws.
 
-With no exclusions, one `git log` pass carries everything. With
-exclusions, paths are listed first and a commit that touched an excluded
-path is dropped before its body is ever fetched. `blame: true` adds a
-signal for commits that wrote lines still live in the task's named
-paths; `coChange: true` adds one for commits that touched files which
-historically change with them. Both are off unless asked for.
+With no exclusions, `git log` enumerates the history in pages so one
+call's output stays small; with exclusions, paths are listed first and a
+commit that touched an excluded path is dropped before its body is ever
+fetched. Commit bodies are read in bounded batches. When a pick's lane
+cut is on, the read scores each page or batch as it arrives, keeps a
+compact score per commit, and fetches bodies only for the commits its
+own score curve kept.
+`blame: true` adds a signal for commits that wrote lines still live in
+the task's named paths; `coChange: true` adds one for commits that
+touched files which historically change with them. Both are off unless
+asked for.
 
 ## Usage
 
@@ -57,6 +62,7 @@ saved-decision sweep's answer-turn losses.
 - **Keyword settings:** `GIT_KEYWORD_SETTINGS` exports the ranking defaults. Pass a partial `keyword` object to the reader to override them.
 - **Questions:** `GIT_HISTORY_CASCADE` exports the fitted questions. Pass the cascade to core’s `cascade` or `cascadesByKind` option. The defaults are opt-in.
 - **Search wording:** `GIT_SEARCH_LINE_REGISTER` describes the wording for host-written extra search lines. Copy or replace this text in your host; the package generates no lines.
+- **Kind phrases:** `GIT_HISTORY_KIND_PHRASES` exports phrases in the commit register for `directions`, `decisions` and `corrections`. Pass one list to core's `kindLanes` option, for example `{ 'git-history': GIT_HISTORY_KIND_PHRASES.decisions }`; kind lanes stay off by default.
 
 ```ts
 import { gitHistory, GIT_KEYWORD_SETTINGS, GIT_HISTORY_CASCADE, GIT_SEARCH_LINE_REGISTER } from '@curatejs/git';

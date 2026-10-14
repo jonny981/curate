@@ -104,7 +104,7 @@ describe('questions chosen by source kind', () => {
     const calls: string[][] = [];
     const result = await pickFromSources([
       source('conversation', 'chat'), source('commits', 'git-history'), source('notes', 'markdown'), source('custom'),
-    ], { task: 'Choose evidence' }, {
+    ], { task: 'Choose evidence', laneCut: false }, {
       task: 'Choose evidence', cascade: fitted('fallback'),
       cascadesByKind: { chat: fitted('chat'), 'git-history': fitted('history'), markdown: fitted('note') },
       sourceKinds: { custom: 'markdown', conversation: 'markdown' },
@@ -122,7 +122,7 @@ describe('questions chosen by source kind', () => {
 
   it('routes source identities that also name built-in object properties', async () => {
     const asked: (string | undefined)[] = [];
-    const result = await pickFromSources([source('__proto__', 'chat'), source('constructor')], { task: 'Choose evidence' }, {
+    const result = await pickFromSources([source('__proto__', 'chat'), source('constructor')], { task: 'Choose evidence', laneCut: false }, {
       task: 'Choose evidence', cascadesByKind: { chat: fitted('chat') },
       decide: async (batch, signal) => {
         asked.push(...batch.questions.map((q) => q.questionKey));
@@ -144,7 +144,7 @@ describe('questions chosen by source kind', () => {
     expect(disabled).toEqual(original);
     expect(disabled.record).not.toHaveProperty('sourceKinds');
     expect(disabled.record).not.toHaveProperty('cascadesByKind');
-    const read = await pickFromSources([source('notes', 'chat')], { task: 'Choose evidence' }, {
+    const read = await pickFromSources([source('notes', 'chat')], { task: 'Choose evidence', laneCut: false }, {
       task: 'Choose evidence', cascade: fitted('shared'), decide: answers(0.9),
     });
     expect(read.record).not.toHaveProperty('sourceKinds');

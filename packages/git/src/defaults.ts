@@ -18,3 +18,13 @@ export const GIT_KEYWORD_SETTINGS: GitKeywordSettings = {
 
 /** Wording guidance for host-written extra searches; Curate generates no lines. */
 export const GIT_SEARCH_LINE_REGISTER = 'A commit subject and body.';
+
+/** Kind-lane phrases in the commit register, by the kind of message a
+ *  task asks for. Feed the matching list into `kindLanes` on the read
+ *  request (`{ 'git-history': GIT_HISTORY_KIND_PHRASES.decisions }`);
+ *  kind lanes stay off by default. */
+export const GIT_HISTORY_KIND_PHRASES: Readonly<Record<'directions' | 'decisions' | 'corrections', readonly string[]>> = {
+  directions: ['must', 'do not', 'never', 'always', 'required'],
+  decisions: ['chose', 'decided', 'picked', 'switch to', 'instead of', 'rather than'],
+  corrections: ['revert', 'fix', 'oops', 'typo', 'correct'],
+};

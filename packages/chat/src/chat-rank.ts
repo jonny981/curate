@@ -20,53 +20,133 @@ function keywordsOf(task: string, short = false, stop = 'baseline') {
   const words = stop === 'baseline' ? task.toLowerCase().split(/[^a-z0-9-]+/).filter(w => w.length > 4 && !STOP.has(w)) : task.toLowerCase().split(/[^a-z0-9-]+/).filter(w => w.length > 4 && (stop === 'none' || (!COMMON.has(w) && !STOP.has(w))));
   return [...new Set([...ids, ...(task.match(/[@\w./-]*[./@][\w./-]+|[a-z]+[A-Z]\w+|`[^`]+`/g) ?? []).map(w => w.replace(/`/g,'')), ...words].map(w => w.toLowerCase()))];
 }
-function score(candidates: ChatPart[], task: string, config: ChatKeywordSettings, stems: Record<string, string>, queryText: string | null = null) {
-  const shortIds = new Set(config.short ? keywordsOf(task,true).filter(w => w.length <= 2) : []);
-  const tok = (t: string) => t.toLowerCase().split(/[^a-z0-9]+/).filter(w => w.length > 2 || shortIds.has(w)).map(w => config.stem ? (stems[w] ?? w) : w);
-  const query = [...new Set(queryText === null ? keywordsOf(task,config.short,config.stop).flatMap(tok) : tok(queryText))];
-  const docs = candidates.map(c => tok(`${c.title} ${c.text}`));
-  const avg = docs.reduce((n,d) => n+d.length,0)/Math.max(1,docs.length);
-  const df = new Map<string, number>(); for (const d of docs) for (const w of new Set(d)) df.set(w,(df.get(w)??0)+1);
-  const named = new Set(tok((task.match(/\b[A-Z][\w]*\b/g) ?? []).join(' ')));
-  const k1 = config.k1 ?? 1.2, b = config.b ?? .75;
-  return docs.map(d => {
-    const tf = new Map<string, number>(); for (const w of d) tf.set(w,(tf.get(w)??0)+1);
-    return query.reduce((sum,q) => {
-      const f = tf.get(q)??0; if (!f) return sum;
-      const weight = config.nouns ? named.has(q) ? 2 : VERBS.has(q) || /(?:ing|ed)$/.test(q) ? .5 : 1 : 1;
-      return sum + weight*Math.log(1+(docs.length-df.get(q)!+.5)/(df.get(q)!+.5))*f*(k1+1)/(f+k1*(1-b+b*d.length/avg));
-    },0);
-  });
+
+/** A streamed LongMemEval chat rank. Feed every part once through
+ *  `observe`, which builds the corpus statistics (document frequencies,
+ *  lengths, stems) without holding any part; then feed every part
+ *  through `score`, which reads those statistics back into the three
+ *  BM25 queries. `finish` applies the heading/name/front extras and
+ *  the rank merge, so a reader can keep a part's two scores without
+ *  ever holding every part's text at once. Parts must be observed and
+ *  scored in the same order, and all observes must run before any
+ *  score, because every score needs the final statistics. */
+export interface ChatRankSession {
+  /** First pass: fold one part's `${title} ${text}` into the corpus
+   *  statistics. */
+  observe(text: string): void;
+  /** Second pass: the part's three query scores plus its
+   *  heading/name/front extras, stored internally by part order. */
+  score(text: string, fields: { heading: string; name: string; front: string }): void;
+  /** Merge the scored parts. `ids` ties equal scores to a stable order;
+   *  returns the merged ordering score (`scores`) and the pre-merge
+   *  lane score (`base`) in part order. */
+  finish(ids: readonly string[]): { scores: readonly number[]; base: readonly number[] };
 }
-/** The LongMemEval chat calculation, using plain TypeScript Porter stems. */
-export function rankChat(candidates: ChatPart[], task: string, settings: Partial<ChatKeywordSettings> = {}): void {
-  if (!candidates.length) return;
+
+export function startChatRank(task: string, settings: Partial<ChatKeywordSettings> = {}): ChatRankSession {
   const config = { ...CHAT_KEYWORD_SETTINGS, ...settings };
-  const words = [...new Set([task, ...candidates.map(c => `${c.title} ${c.text}`)].join(' ').toLowerCase().split(/[^a-z0-9]+/).filter(w => w.length > 2))];
-  const stems = Object.fromEntries(words.map(w => [w, porterStem(w)]));
-  const raw = score(candidates, task, config, stems);
-  const top = Math.max(...raw, 1e-9);
   const keywords = keywordsOf(task, config.short, config.stop);
-  const hits = (text: string) => keywords.filter(k => text.toLowerCase().includes(k)).length;
-  const base = raw.map((s, i) => 3 * s / top + Math.min(2, hits(candidates[i]!.heading) * 2) + Math.min(1, hits(`${candidates[i]!.name} ${candidates[i]!.front}`)));
-  if (config.rrf === false) {
-    candidates.forEach((candidate, index) => { candidate.score = base[index]!; });
-    return;
-  }
-  const sorted = (scores: number[]) => candidates.map((c, i) => ({ c, s: scores[i]! })).sort((a, b) => b.s - a.s || a.c.id.localeCompare(b.c.id));
-  const content = keywordsOf(task, false, 'content').filter(w => !VERBS.has(w) && !/(?:ing|ed)$/.test(w)).join(' ');
-  const names = (task.match(/\b[A-Z][\w]*\b/g) ?? []).filter(w => !COMMON.has(w.toLowerCase()) && !STOP.has(w.toLowerCase())).join(' ');
-  const fusion = new Map(candidates.map(c => [c.id, 0]));
-  const bonus = new Map<string, number>();
-  [sorted(base), ...[content, names].filter(Boolean).map(q => sorted(score(candidates, task, config, stems, q)))].forEach((list, j) => {
-    list.forEach(({ c, s }, r) => {
-      if (s <= 0) return;
-      fusion.set(c.id, fusion.get(c.id)! + (j === 0 ? 2 : 1) / (60 + r + 1));
-      bonus.set(c.id, Math.max(bonus.get(c.id) ?? 0, r === 0 ? 0.05 : r < 3 ? 0.02 : 0));
-    });
-  });
-  for (const c of candidates) {
-    // Use the frozen score directly: adding a freshness constant can change floating-point ties.
-    c.score = fusion.get(c.id)! + (bonus.get(c.id) ?? 0);
-  }
+  const hits = (text: string) => keywords.filter((k) => text.toLowerCase().includes(k)).length;
+  // A word's stem is deterministic, so the map is a cache, not state the
+  // whole corpus must fill before scoring: a word stems the same whether
+  // it was seen in an earlier document or not. It is capped so a large
+  // corpus vocabulary cannot grow the session without bound: the words
+  // seen first — the corpus's most common — stay cached, and words past
+  // the cap stem on every occurrence instead.
+  const stems = new Map<string, string>();
+  const stemOf = (word: string) => {
+    if (!config.stem) return word;
+    const stem = stems.get(word);
+    if (stem !== undefined) return stem;
+    const value = porterStem(word);
+    if (stems.size < 65_536) stems.set(word, value);
+    return value;
+  };
+  const shortIds = new Set(config.short ? keywordsOf(task, true).filter((w) => w.length <= 2) : []);
+  const tok = (text: string) => text.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 2 || shortIds.has(w)).map(stemOf);
+  const named = new Set(tok((task.match(/\b[A-Z][\w]*\b/g) ?? []).join(' ')));
+  const content = keywordsOf(task, false, 'content').filter((w) => !VERBS.has(w) && !/(?:ing|ed)$/.test(w)).join(' ');
+  const names = (task.match(/\b[A-Z][\w]*\b/g) ?? []).filter((w) => !COMMON.has(w.toLowerCase()) && !STOP.has(w.toLowerCase())).join(' ');
+  const queries = {
+    main: [...new Set(keywordsOf(task, config.short, config.stop).flatMap(tok))],
+    content: content ? [...new Set(tok(content))] : null,
+    names: names ? [...new Set(tok(names))] : null,
+  };
+  const queryTerms = new Set([queries.main, queries.content ?? [], queries.names ?? []].flat());
+  const df = new Map<string, number>();
+  let docs = 0;
+  let length = 0;
+  const parts: { raw: number; content: number; names: number; extra: number }[] = [];
+  const k1 = config.k1 ?? 1.2, b = config.b ?? .75;
+  const bm25 = (tokens: string[], query: readonly string[]) => {
+    const tf = new Map<string, number>();
+    for (const word of tokens) tf.set(word, (tf.get(word) ?? 0) + 1);
+    const avg = length / Math.max(1, docs);
+    return query.reduce((sum, q) => {
+      const f = tf.get(q) ?? 0;
+      if (!f) return sum;
+      const weight = config.nouns ? named.has(q) ? 2 : VERBS.has(q) || /(?:ing|ed)$/.test(q) ? .5 : 1 : 1;
+      return sum + weight * Math.log(1 + (docs - df.get(q)! + .5) / (df.get(q)! + .5)) * f * (k1 + 1) / (f + k1 * (1 - b + b * tokens.length / avg));
+    }, 0);
+  };
+  return {
+    observe(text) {
+      const tokens = tok(text);
+      docs += 1;
+      length += tokens.length;
+      for (const word of new Set(tokens)) if (queryTerms.has(word)) df.set(word, (df.get(word) ?? 0) + 1);
+    },
+    score(text, fields) {
+      const tokens = tok(text);
+      parts.push({
+        raw: bm25(tokens, queries.main),
+        content: queries.content === null ? 0 : bm25(tokens, queries.content),
+        names: queries.names === null ? 0 : bm25(tokens, queries.names),
+        extra: Math.min(2, hits(fields.heading) * 2) + Math.min(1, hits(`${fields.name} ${fields.front}`)),
+      });
+    },
+    finish(ids) {
+      const count = parts.length;
+      if (!count) return { scores: [], base: [] };
+      let top = 1e-9;
+      for (const part of parts) top = Math.max(top, part.raw);
+      const base = parts.map((part) => 3 * part.raw / top + part.extra);
+      if (config.rrf === false) return { scores: base, base };
+      const order = (values: readonly number[]) => values
+        .map((value, index) => ({ value, index }))
+        .sort((a, b) => b.value - a.value || ids[a.index]!.localeCompare(ids[b.index]!))
+        .map((entry) => entry.index);
+      const lists = [order(base)];
+      const contentScores = queries.content === null ? null : order(parts.map((part) => part.content));
+      const namesScores = queries.names === null ? null : order(parts.map((part) => part.names));
+      if (contentScores !== null) lists.push(contentScores);
+      if (namesScores !== null) lists.push(namesScores);
+      const value = (list: number, index: number) => list === 0 ? base[index]!
+        : list === 1 && contentScores !== null ? parts[index]!.content
+        : parts[index]!.names;
+      const fusion = new Array<number>(count).fill(0);
+      const bonus = new Array<number>(count).fill(0);
+      lists.forEach((list, j) => list.forEach((index, rank) => {
+        if (value(j, index) <= 0) return;
+        fusion[index] = fusion[index]! + (j === 0 ? 2 : 1) / (60 + rank + 1);
+        bonus[index] = Math.max(bonus[index]!, rank === 0 ? 0.05 : rank < 3 ? 0.02 : 0);
+      }));
+      return { scores: fusion.map((score, index) => score + bonus[index]!), base };
+    },
+  };
+}
+
+/** The LongMemEval chat calculation, using plain TypeScript Porter
+ *  stems. Sets each part's `score` and returns the pre-merge keyword
+ *  score per part: the lane's own match score, for the curve cut to
+ *  measure where the merged ranking score cannot. Runs the same
+ *  streamed calculation as a two-pass read. */
+export function rankChat(candidates: ChatPart[], task: string, settings: Partial<ChatKeywordSettings> = {}): readonly number[] {
+  if (!candidates.length) return [];
+  const rank = startChatRank(task, settings);
+  for (const part of candidates) rank.observe(`${part.title} ${part.text}`);
+  for (const part of candidates) rank.score(`${part.title} ${part.text}`, { heading: part.heading, name: part.name, front: part.front });
+  const { scores, base } = rank.finish(candidates.map((part) => part.id));
+  candidates.forEach((candidate, index) => { candidate.score = scores[index]!; });
+  return base;
 }

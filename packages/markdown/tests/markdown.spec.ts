@@ -197,7 +197,7 @@ describe('knowledgeBase', () => {
     const seen = new Map<string, string>();
     const result = await pickFromSources(
       [knowledgeBase(directory)],
-      { task: 'read it' },
+      { task: 'read it', laneCut: false },
       {
         task: 'read it',
         limits: { maxQuestionText: 100 },
@@ -1131,6 +1131,92 @@ describe('knowledgeBase git dates', () => {
     } finally {
       process.env.PATH = path;
     }
+  });
+
+  it('keeps the heap roughly flat over a generated corpus of 75,000 parts', { timeout: 600_000 }, async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'curate-md-'));
+    temporaryDirectories.push(directory);
+    const repo = join(directory, 'repo');
+    const docs = join(repo, 'docs');
+    await mkdir(docs, { recursive: true });
+    await git(repo, ['init', '-b', 'main']);
+    // 3,000 notes of 25 `## ` sections apiece — 75,000 parts over about
+    // 600 MB, with each file small enough that a pinned read's batched
+    // blob fetch stays inside the git output limit. Every section says
+    // 'never', so a kind lane matches the whole corpus; a read that
+    // buffers matched text or embeds held bodies would sit near a
+    // gigabyte while the streaming passes stay far under it.
+    const filler = 'routine words pad the section body so it weighs a few kilobytes '.repeat(125);
+    const files = 3_000;
+    const sectionsPerFile = 25;
+    for (let file = 0; file < files; file += 1) {
+      const sections: string[] = [];
+      for (let section = 0; section < sectionsPerFile; section += 1) {
+        const index = file * sectionsPerFile + section;
+        const topic = index % 100 === 0 ? 'battery backup evidence' : 'everything ordinary';
+        sections.push(`## Entry ${file}-${section}\nnever ${topic} ${filler} ${index}`);
+      }
+      await writeFile(join(docs, `doc-${String(file).padStart(4, '0')}.md`), `${sections.join('\n\n')}\n`);
+    }
+    await git(repo, ['add', 'docs']);
+    await git(repo, ['commit', '-m', 'add the corpus'], IDENTITY);
+    const pinned = (await git(repo, ['rev-parse', 'HEAD'])).trim();
+    const embed = async (texts: readonly string[]) =>
+      texts.map((text) => (text.includes('battery backup') ? [1, 0] : [0, 1]));
+    const source = knowledgeBase(docs, { maxQuestionText: 16_384 });
+
+    const samples: number[] = [];
+    const timer = setInterval(() => samples.push(process.memoryUsage().heapUsed), 10);
+    const results: Awaited<ReturnType<typeof read>>[] = [];
+    try {
+      results.push(await read(source, { task: 'battery backup evidence', laneCut: true }));
+      // A kind lane matches every section's 'never' and must rank the
+      // matches by the topic, never buffer all 75,000 bodies.
+      results.push(await read(source, {
+        task: 'never', phraseLane: true, topic: 'battery backup evidence', laneCut: true,
+      }));
+      results.push(await read(source, {
+        task: 'battery backup evidence', laneCut: true, meaningLane: { embed },
+      }));
+      results.push(await read(source, {
+        task: 'battery backup evidence', laneCut: true, revision: pinned,
+      }));
+    } finally {
+      clearInterval(timer);
+    }
+    samples.push(process.memoryUsage().heapUsed);
+
+    const [keyword, kind, meaning, pinnedRead] = results;
+    for (const result of results) {
+      expect(result.status).toBe('read');
+      if (result.status !== 'read') throw new Error('Expected a read');
+      // All 75,000 parts were scored before the cut.
+      expect(result.matched).toBe(75_000);
+      expect(result.laneCutApplied).toBe(true);
+    }
+    if (keyword === undefined || kind === undefined
+      || meaning === undefined || pinnedRead === undefined
+      || keyword.status !== 'read' || kind.status !== 'read'
+      || meaning.status !== 'read' || pinnedRead.status !== 'read') {
+      throw new Error('Expected reads');
+    }
+    // The 750 sections carrying the topic sit above the curve's bend;
+    // nothing else scores, so each kept part names its evidence.
+    expect(keyword.candidates).toHaveLength(750);
+    expect(keyword.candidates.every((candidate) =>
+      (candidate.signals['bm25'] ?? 0) > 0
+      && candidate.text.includes('battery backup evidence'))).toBe(true);
+    expect(kind.candidates).toHaveLength(750);
+    expect(kind.candidates.every((candidate) =>
+      (candidate.signals['phrase'] ?? 0) > 0 && (candidate.signals['bm25'] ?? 0) > 0)).toBe(true);
+    expect(meaning.meaningLane).toBe(true);
+    expect(meaning.candidates).toHaveLength(750);
+    expect(meaning.candidates.every((candidate) => candidate.signals['similarity'] === 1)).toBe(true);
+    expect(pinnedRead.candidates).toHaveLength(750);
+    expect(pinnedRead.candidates.every((candidate) =>
+      candidate.text.includes('battery backup evidence'))).toBe(true);
+    const peak = Math.max(...samples);
+    expect(peak).toBeLessThan(1024 * 1024 * 1024);
   });
 });
 

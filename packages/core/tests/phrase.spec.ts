@@ -71,6 +71,7 @@ describe('phrase searches', () => {
     const base = await pickFromSources([reader], { task: 'albums' }, { task: 'albums', decide: yes });
     const empty = await pickFromSources([reader], { task: 'albums', searchPhrases: ['', ' '] }, { task: 'albums', decide: yes });
     expect(empty).toEqual(base);
-    expect(empty.reads[0]).toBe(read);
+    expect(empty.reads[0]).toEqual({ ...read,
+      lanes: [{ task: 'albums', lane: 'search', read: 1, kept: 1 }] });
   });
 });

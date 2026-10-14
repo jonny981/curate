@@ -39,6 +39,13 @@ export interface MemoryCandidate {
     readonly meaning: 'changed' | 'effective' | 'recorded' | 'modified';
   };
   readonly signals: Readonly<Record<string, number>>;
+  /** The lane's own match score for the keyword lane's curve cut, when
+   *  `signals` carry an ordering or rank-merge score instead of the
+   *  lane's match strength. `cutLane` measures the score curve on it;
+   *  a source that ranks by merging ranked lists (the chat package)
+   *  carries its pre-merge keyword score here. Unused when `signals`
+   *  already carry match scores. */
+  readonly laneScore?: number;
   readonly applies?: 'always';
 }
 
@@ -46,6 +53,8 @@ export interface PickQuestion {
   readonly key: string;
   /** The fitted question's name, when a cascade is supplied. */
   readonly questionKey?: string;
+  /** The tag set this question belongs to, for a tag question. */
+  readonly tagSet?: string;
   readonly date?: MemoryCandidate['date'];
   readonly role: MemoryCandidateRole;
   readonly kind?: MemoryKind;
@@ -65,7 +74,10 @@ export interface PickBatch {
 
 export type PickAnswer =
   | { readonly status: 'answered'; readonly probability: number }
-  | { readonly status: 'refused' | 'missing' | 'error'; readonly detail?: string };
+  | { readonly status: 'refused' | 'missing' | 'error'; readonly detail?: string }
+  /** The question was never asked: a stopping dial ended the run first.
+   *  Only recorded for tag questions; a decide reply cannot produce it. */
+  | { readonly status: 'unassessed'; readonly detail?: string };
 
 export type PickDecide = (
   batch: PickBatch,
@@ -85,6 +97,15 @@ export interface PickLimits {
 export interface PickThresholds {
   /** Keep every scored reference by default; set a bar to filter. */
   readonly reference?: number;
+  /** A bar that rises with the answered-reference count, as [count,
+   *  bar] points in size order: below the first point the first bar
+   *  applies, above the last the last bar applies, and between two
+   *  points the bar moves linearly. Use it to keep everything on a
+   *  small decided set and cut more of the weakest as the set grows.
+   *  Point positions are a measurement question, not a guess: choose
+   *  them against the history the funnel will read. Supplied instead
+   *  of `reference`; the recorded `appliedReference` is the bar used. */
+  readonly referenceBySize?: readonly (readonly [number, number])[];
   /** Keep every scored rule by default; set a bar to filter applicability. */
   readonly rule?: number;
   /** The bar a 'reference' candidate at or above it still clears when a
@@ -138,6 +159,19 @@ export type PickRecordEntry = {
   readonly sourceKind?: CandidateSourceKind;
   /** Individual fitted answers, before combining them. */
   readonly questions?: readonly ({ readonly key: string } & PickAnswer)[];
+  /** Decision tags recorded on a kept reference: each named set's
+   *  chosen value plus the answers behind it. A single-question set
+   *  values to 'yes' at probability 0.5 or more, otherwise 'no'; a
+   *  multi-question set values to the first of its questions answered
+   *  at 0.5 or more, so a levelled set such as importance records the
+   *  highest level that cleared, and stays unset when no answer
+   *  reaches 0.5. Absent when the candidate was not a selected
+   *  reference or no tag sets applied to it. Tag questions a stop
+   *  left unasked record 'unassessed' with the stop reason. */
+  readonly tags?: Readonly<Record<string, {
+    readonly value?: string;
+    readonly answers: readonly ({ readonly key: string } & PickAnswer)[];
+  }>>;
 } & PickEntryStatus;
 
 export interface PickCriterion {
@@ -145,6 +179,20 @@ export interface PickCriterion {
   readonly instructions: string;
   readonly true: string;
   readonly false: string;
+}
+
+/** A named set of narrow yes/no questions whose answers label a kept
+ *  reference: intent, importance, emphasis and the like. Unlike a
+ *  cascade the questions do not combine into a selection probability;
+ *  every answer is recorded and the set's value is the first of its
+ *  questions answered at probability 0.5 or more — list questions so
+ *  earlier keys take precedence, highest level first for levelled
+ *  sets such as importance. No answer at 0.5 leaves the value unset.
+ *  Tag questions run only on references that pass relevance, so they
+ *  never change what is selected. */
+export interface PickTagSet {
+  readonly key: string;
+  readonly questions: readonly PickCriterion[];
 }
 
 /** Fitted narrow questions. Negative weights invert a question's contribution. */
@@ -160,7 +208,10 @@ export interface PickRecord {
   readonly ranking?: PickOptions['ranking'];
   readonly questionVersion: string;
   readonly limits: PickLimits;
-  readonly thresholds: Required<PickThresholds>;
+  readonly thresholds: Required<Omit<PickThresholds, 'referenceBySize'>>
+    & Pick<PickThresholds, 'referenceBySize'>
+    & { /** The bar `referenceBySize` produced for this set's size. */
+        readonly appliedReference?: number };
   readonly candidates: readonly PickRecordEntry[];
   readonly rulesCoverage: 'complete' | 'incomplete';
   readonly cascade?: PickCascade;
@@ -171,6 +222,10 @@ export interface PickRecord {
   readonly keepTop?: number;
   readonly rankProtection?: boolean;
   readonly bestPartFirst?: boolean;
+  /** The tag sets every kept reference answered, when supplied. */
+  readonly tags?: readonly PickTagSet[];
+  /** Extra tag sets asked only of references from that source kind. */
+  readonly tagsByKind?: Readonly<Partial<Record<CandidateSourceKind, readonly PickTagSet[]>>>;
 }
 
 export interface PickResult {
@@ -194,6 +249,15 @@ export interface PickOptions {
   readonly rankProtection?: boolean;
   /** Judge each document's best keyword part before its other fed parts. Off by default. */
   readonly bestPartFirst?: boolean;
+  /** Decision tag sets asked of every kept reference, after relevance
+   *  decides. Off by default; tags are recorded on the entry and never
+   *  change what is selected. */
+  readonly tags?: readonly PickTagSet[];
+  /** Extra tag sets asked only of kept references from that source
+   *  kind: commit-kind questions for 'git-history', note-kind ones for
+   *  'markdown'. Source kinds come from `sourceKinds`, which
+   *  pickFromSources fills from each source's `kind`. */
+  readonly tagsByKind?: Readonly<Partial<Record<CandidateSourceKind, readonly PickTagSet[]>>>;
   /** False when a source that can supply rule candidates did not finish
    *  enumerating them; its read returned `complete: false`. The combined
    *  coverage can then never report a complete applicable-rule set, even
@@ -379,6 +443,41 @@ function checkCascade(cascade: PickCascade | undefined): void {
   }
 }
 
+function checkTagSet(set: PickTagSet | undefined): void {
+  if (set === undefined) return;
+  const keys = set.questions.map((question) => question.key);
+  if (typeof set.key !== 'string' || !set.key.trim() || !keys.length || new Set(keys).size !== keys.length
+    || set.questions.some((question) => !question.instructions || !question.true || !question.false)) {
+    throw new TypeError('a tag set needs a key and unique, nonempty questions.');
+  }
+}
+
+/** The bar a size curve applies at `count`: flat below the first
+ *  point, flat above the last, linear between two points. */
+function sizeBar(points: readonly (readonly [number, number])[], count: number): number {
+  if (count <= points[0]![0]) return points[0]![1];
+  if (count >= points[points.length - 1]![0]) return points[points.length - 1]![1];
+  for (let index = 1; index < points.length; index += 1) {
+    const [size, bar] = points[index]!;
+    if (count <= size) {
+      const [lowerSize, lowerBar] = points[index - 1]!;
+      return lowerBar + (bar - lowerBar) * ((count - lowerSize) / (size - lowerSize));
+    }
+  }
+  return points[points.length - 1]![1];
+}
+
+function checkSizeCurve(points: readonly (readonly [number, number])[] | undefined): void {
+  if (points === undefined) return;
+  if (!Array.isArray(points) || !points.length
+    || points.some((point) => !Array.isArray(point) || point.length !== 2
+      || !Number.isSafeInteger(point[0]) || point[0]! < 0
+      || typeof point[1] !== 'number' || !Number.isFinite(point[1]) || point[1]! < 0 || point[1]! > 1)
+    || new Set(points.map((point) => point[0])).size !== points.length) {
+    throw new TypeError('thresholds.referenceBySize needs unique nonnegative integer counts with bars between 0 and 1.');
+  }
+}
+
 // Match the prototype: clamp each side separately, and missing answers add nothing.
 function logit(p: number): number {
   return Math.log(Math.max(p, 1e-4) / Math.max(1 - p, 1e-4));
@@ -402,12 +501,24 @@ export async function pick(
   }
   checkCascade(options.cascade);
   for (const set of Object.values(options.cascadesByKind ?? {})) checkCascade(set);
+  checkSizeCurve(options.thresholds?.referenceBySize);
+  for (const set of options.tags ?? []) checkTagSet(set);
+  for (const sets of Object.values(options.tagsByKind ?? {})) for (const set of sets ?? []) checkTagSet(set);
   const kindFor = (candidate: MemoryCandidate) => options.sourceKinds && Object.hasOwn(options.sourceKinds, candidate.sourceId)
     ? options.sourceKinds[candidate.sourceId] : undefined;
   const cascadeFor = (candidate: MemoryCandidate) => {
     const kind = kindFor(candidate);
     return (kind === undefined ? undefined : options.cascadesByKind?.[kind]) ?? options.cascade;
   };
+  const tagSetsFor = (candidate: MemoryCandidate) => {
+    const kind = kindFor(candidate);
+    const sets = [...options.tags ?? [], ...(kind === undefined ? [] : options.tagsByKind?.[kind] ?? [])];
+    if (new Set(sets.map((set) => set.key)).size !== sets.length) {
+      throw new TypeError('tag set keys must be unique per candidate, across tags and tagsByKind.');
+    }
+    return sets;
+  };
+  for (const candidate of candidates) tagSetsFor(candidate);
   const keepTop = options.keepTop ?? 0;
   if (!Number.isSafeInteger(keepTop) || keepTop < 0) {
     throw new TypeError('keepTop must be a nonnegative safe integer.');
@@ -427,10 +538,12 @@ export async function pick(
     ...(input.maxCandidates !== undefined ? { maxCandidates: input.maxCandidates } : {}),
     ...(input.maxElapsedMs !== undefined ? { maxElapsedMs: input.maxElapsedMs } : {}),
   };
-  const thresholds: Required<PickThresholds> = {
+  const thresholds: PickRecord['thresholds'] = {
     reference: probabilityLimit(options.thresholds?.reference, 'thresholds.reference', 0),
     rule: probabilityLimit(options.thresholds?.rule, 'thresholds.rule', 0),
     linkedPathBar: probabilityLimit(options.thresholds?.linkedPathBar, 'thresholds.linkedPathBar', DEFAULT_LINKED_PATH_BAR),
+    ...(options.thresholds?.referenceBySize === undefined ? {}
+      : { referenceBySize: [...options.thresholds.referenceBySize].sort((left, right) => left[0] - right[0]) }),
   };
   const signal = options.signal ?? new AbortController().signal;
   const started = Date.now();
@@ -474,14 +587,16 @@ export async function pick(
         ? PICK_QUESTIONS[candidate.role] : KIND_QUESTIONS[candidate.kind]) }];
   };
   type Pending = { candidate: MemoryCandidate; spec: ReturnType<typeof specsFor>[number]; question: PickQuestion };
-  const pending = (candidate: MemoryCandidate, spec: ReturnType<typeof specsFor>[number]): Pending => {
+  const pending = (candidate: MemoryCandidate, spec: ReturnType<typeof specsFor>[number], tagSet?: string): Pending => {
     const shown = Number.isFinite(limits.maxQuestionText)
       ? takeCharacters(candidate.text, limits.maxQuestionText)
       : { text: candidate.text, truncated: false };
-    const fitted = candidate.role === 'reference' && (cascadeFor(candidate) !== undefined || spec.key !== 'reference');
+    const fitted = tagSet !== undefined
+      || (candidate.role === 'reference' && (cascadeFor(candidate) !== undefined || spec.key !== 'reference'));
     return { candidate, spec, question: {
       key: fitted ? JSON.stringify([candidate.sourceId, candidate.id, spec.key]) : questionKey(candidate),
       ...(fitted ? { questionKey: spec.key } : {}),
+      ...(tagSet === undefined ? {} : { tagSet }),
       ...(candidate.date === undefined ? {} : { date: candidate.date }),
       ...(candidate.kind === undefined ? {} : { kind: candidate.kind }),
       role: candidate.role, question: spec.question, trueCriterion: spec.trueCriterion,
@@ -491,7 +606,7 @@ export async function pick(
   };
   let batches = 0;
   let stop: 'limits' | 'time' | 'cancelled' | undefined;
-  const ask = async (asks: Pending[]) => {
+  const ask = async (asks: Pending[], sink = answered) => {
     for (let index = 0; index < asks.length; index += limits.maxPerBatch) {
       if (signal.aborted) { stop = 'cancelled'; break; }
       if (batches >= limits.maxBatches) { stop = 'limits'; break; }
@@ -523,8 +638,8 @@ export async function pick(
           : decideError !== undefined || answers === undefined
             ? { status: 'error', detail: decideError instanceof Error ? decideError.message : 'The decide call failed.' }
             : checkAnswer(answers[question.key]);
-        let got = answered.get(candidate);
-        if (!got) { got = new Map(); answered.set(candidate, got); }
+        let got = sink.get(candidate);
+        if (!got) { got = new Map(); sink.set(candidate, got); }
         got.set(spec.key, answer);
         truncated.set(candidate, Number.isFinite(limits.maxQuestionText)
           && takeCharacters(candidate.text, limits.maxQuestionText).truncated);
@@ -534,6 +649,8 @@ export async function pick(
     }
   };
   const combined = new Map<MemoryCandidate, CheckedAnswer>();
+  // Candidates a stop left half-assessed inside a cascade.
+  const curtailed = new Map<MemoryCandidate, 'limits' | 'time' | 'cancelled'>();
   const evaluate = async (phase: readonly MemoryCandidate[]) => {
     await ask(phase.flatMap((candidate) => specsFor(candidate)
       .filter((spec) => candidate.role === 'rule' || !cascadeFor(candidate)?.first || spec.key === cascadeFor(candidate)!.first)
@@ -551,10 +668,7 @@ export async function pick(
     for (const candidate of phase) {
       const cascade = cascadeFor(candidate);
       const got = answered.get(candidate);
-      if (!got) {
-        statuses.set(candidate, { status: 'unassessed', reason: stop ?? 'limits' });
-        continue;
-      }
+      if (!got) continue;
       let answer: CheckedAnswer;
       if (candidate.role === 'reference' && cascade) {
         const first = cascade.first === undefined ? undefined : got.get(cascade.first);
@@ -566,7 +680,7 @@ export async function pick(
           // A question never attempted because a limit stopped us is unassessed.
           if (stop && cascade.questions.some((q) => !got.has(q.key))
             && (!cascade.first || first?.status === 'answered')) {
-            statuses.set(candidate, { status: 'unassessed', reason: stop });
+            curtailed.set(candidate, stop);
             continue;
           }
           const probabilities = cascade.questions.map((q) => got.get(q.key));
@@ -580,17 +694,6 @@ export async function pick(
         }
       } else answer = got.values().next().value!;
       combined.set(candidate, answer);
-    }
-    for (const candidate of phase) {
-      const answer = combined.get(candidate);
-      if (!answer) continue;
-      if (answer.status === 'answered') {
-        const threshold = candidate.role === 'rule' ? thresholds.rule : thresholds.reference;
-        if (answer.probability >= threshold) {
-          selected.push(candidate);
-          statuses.set(candidate, { status: 'selected', asked: true, probability: answer.probability });
-        } else statuses.set(candidate, { status: 'rejected', probability: answer.probability });
-      } else statuses.set(candidate, { status: 'unanswered', answer: answer.status, detail: answer.detail });
     }
   };
 
@@ -627,6 +730,30 @@ export async function pick(
       }));
     }
   } else await evaluate(feed);
+
+  // The reference bar may rise with the decided set's size, so the
+  // selection pass runs once the whole feed has answered.
+  const decided = feed.reduce((count, candidate) =>
+    count + Number(candidate.role === 'reference' && combined.get(candidate)?.status === 'answered'), 0);
+  const referenceBar = thresholds.referenceBySize === undefined
+    ? thresholds.reference
+    : sizeBar(thresholds.referenceBySize, decided);
+  const appliedReference = thresholds.referenceBySize === undefined ? undefined : referenceBar;
+  for (const candidate of feed) {
+    const held = curtailed.get(candidate);
+    const answer = held === undefined ? combined.get(candidate) : undefined;
+    if (held !== undefined || !answer) {
+      statuses.set(candidate, { status: 'unassessed', reason: held ?? stop ?? 'limits' });
+      continue;
+    }
+    if (answer.status === 'answered') {
+      const threshold = candidate.role === 'rule' ? thresholds.rule : referenceBar;
+      if (answer.probability >= threshold) {
+        selected.push(candidate);
+        statuses.set(candidate, { status: 'selected', asked: true, probability: answer.probability });
+      } else statuses.set(candidate, { status: 'rejected', probability: answer.probability });
+    } else statuses.set(candidate, { status: 'unanswered', answer: answer.status, detail: answer.detail });
+  }
   for (const candidate of queue) {
     if (!statuses.has(candidate)) {
       statuses.set(candidate, { status: 'unassessed',
@@ -665,6 +792,46 @@ export async function pick(
     });
   }
 
+  // Decision tags run on the kept references once relevance has
+  // decided: they label the kept pieces for curation and never change
+  // what is selected. They run under the same stopping dials, so a
+  // stop can leave tag questions unasked; the record marks every
+  // unasked tag question unassessed with the stop reason rather than
+  // 'missing', which a returned-but-empty answer already means.
+  const tagAnswers = new Map<MemoryCandidate, Map<string, CheckedAnswer>>();
+  if (!stop && (options.tags?.length || options.tagsByKind !== undefined)) {
+    const asks = selected.flatMap((candidate) => {
+      if (candidate.role !== 'reference') return [];
+      return tagSetsFor(candidate).flatMap((set) => set.questions.map((question) =>
+        pending(candidate, { key: `${set.key}.${question.key}`, question: question.instructions,
+          trueCriterion: question.true, falseCriterion: question.false }, set.key)));
+    });
+    await ask(asks, tagAnswers);
+  }
+  const recordedTags = (candidate: MemoryCandidate): PickRecordEntry['tags'] => {
+    if (candidate.role !== 'reference' || statuses.get(candidate)?.status !== 'selected') return undefined;
+    const sets = tagSetsFor(candidate);
+    if (!sets.length) return undefined;
+    const got = tagAnswers.get(candidate);
+    const tags: Record<string, { value?: string; answers: ({ key: string } & PickAnswer)[] }> = {};
+    for (const set of sets) {
+      const answers: ({ key: string } & PickAnswer)[] = set.questions.map((question) => ({ key: question.key,
+        ...(got?.get(`${set.key}.${question.key}`)
+          ?? { status: 'unassessed' as const, ...(stop === undefined ? {} : { detail: stop }) }) }));
+      // A set's value needs a clear answer: a lone-question set values
+      // to yes/no at 0.5, and a larger set values to the first of its
+      // questions answered at 0.5 or more — for a levelled set like
+      // importance that is the highest recorded level. When every
+      // answer is below 0.5 or missing, the value stays unset rather
+      // than naming the least-bad key.
+      const value = set.questions.length === 1
+        ? (answers[0]!.status === 'answered' ? (answers[0]!.probability >= 0.5 ? 'yes' : 'no') : undefined)
+        : answers.find((answer) => answer.status === 'answered' && answer.probability >= 0.5)?.key;
+      tags[set.key] = { ...(value === undefined ? {} : { value }), answers };
+    }
+    return tags;
+  };
+
   const top = new Set(feed.filter((candidate) => candidate.role === 'reference').slice(0, keepTop));
   const feedOrder = new Map(queue.map((candidate, index) => [candidate, index]));
   const weight = (candidate: MemoryCandidate) => {
@@ -683,6 +850,7 @@ export async function pick(
     const cascade = cascadeFor(candidate);
     const status = statuses.get(candidate)!;
     const wasTruncated = truncated.get(candidate);
+    const tags = recordedTags(candidate);
     const base = {
       sourceId: candidate.sourceId,
       sourceRevision: candidate.sourceRevision,
@@ -695,7 +863,8 @@ export async function pick(
       ...(options.rankProtection && candidate.role === 'reference' && status.status === 'selected'
         ? { orderScore: weight(candidate) } : {}),
       ...(representatives.has(candidate) ? { representative: representatives.get(candidate)!.id } : {}),
-      ...(options.cascadesByKind && kindFor(candidate) !== undefined ? { sourceKind: kindFor(candidate) } : {}),
+      ...((options.cascadesByKind !== undefined || options.tagsByKind !== undefined)
+        && kindFor(candidate) !== undefined ? { sourceKind: kindFor(candidate) } : {}),
       ...(candidate.contentRef === undefined ? {} : { contentRef: candidate.contentRef }),
       ...(candidate.changedPaths === undefined ? {} : { changedPaths: candidate.changedPaths }),
       ...(candidate.path === undefined ? {} : { path: candidate.path }),
@@ -704,6 +873,7 @@ export async function pick(
       ...(cascade && candidate.role === 'reference' && answered.has(candidate) ? {
         questions: cascade.questions.map((q) => ({ key: q.key, ...(answered.get(candidate)!.get(q.key) ?? { status: 'missing' as const }) })),
       } : {}),
+      ...(tags === undefined ? {} : { tags }),
     };
     return status.status === 'unanswered'
       ? { ...base, status: 'unanswered', answer: status.answer, detail: status.detail }
@@ -721,13 +891,17 @@ export async function pick(
       questionVersion: candidates.some((candidate) => candidate.kind !== undefined)
         ? 'memory-pick-questions-2' : PICK_QUESTION_VERSION,
       limits: recordedLimits,
-      thresholds,
+      thresholds: { ...thresholds,
+        ...(appliedReference === undefined ? {} : { appliedReference }) },
       ...(options.ranking === undefined ? {} : { ranking: options.ranking }),
       candidates: entries,
       rulesCoverage,
       ...(options.cascade === undefined ? {} : { cascade: options.cascade }),
       ...(options.cascadesByKind === undefined ? {} : { cascadesByKind: options.cascadesByKind }),
-      ...(options.cascadesByKind === undefined || options.sourceKinds === undefined ? {} : { sourceKinds: options.sourceKinds }),
+      ...(options.tags === undefined ? {} : { tags: options.tags }),
+      ...(options.tagsByKind === undefined ? {} : { tagsByKind: options.tagsByKind }),
+      ...((options.cascadesByKind === undefined && options.tagsByKind === undefined)
+        || options.sourceKinds === undefined ? {} : { sourceKinds: options.sourceKinds }),
       ...(options.keepTop === undefined ? {} : { keepTop }),
       ...(options.rankProtection ? { rankProtection: true } : {}),
       ...(options.bestPartFirst ? { bestPartFirst: true } : {}),

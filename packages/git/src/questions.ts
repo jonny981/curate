@@ -1,4 +1,20 @@
-import type { PickCascade } from '@curatejs/core';
+import type { PickCascade, PickTagSet } from '@curatejs/core';
+
+/** Commit-kind tag set for `tagsByKind`: fix, feature or revert. A
+ *  revert also counts as a correction for the displacement rule. */
+export const GIT_HISTORY_TAGS: readonly PickTagSet[] = [
+  {
+    key: 'commit-kind',
+    questions: [
+      { key: 'fix', instructions: 'Does this commit fix a bug, defect or regression?',
+        true: 'It fixes something broken.', false: 'It is not a fix.' },
+      { key: 'feature', instructions: 'Does this commit add or change behaviour on purpose: a feature, refactor or improvement?',
+        true: 'It adds or improves.', false: 'It is not a feature.' },
+      { key: 'revert', instructions: 'Does this commit undo or roll back an earlier change?',
+        true: 'It reverts an earlier change.', false: 'It is not a revert.' },
+    ],
+  },
+];
 
 /** Questions and fitted weights shared by commits and Markdown evidence. */
 export const GIT_HISTORY_CASCADE: PickCascade = {

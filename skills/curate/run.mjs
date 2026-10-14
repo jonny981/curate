@@ -192,7 +192,10 @@ export function searchSource(source, searches, audit, folder, settings = {}) {
     const task = match ? lines[Number(match[1])] : request.task;
     if (task === undefined) return { status: 'read', candidates: [], complete: true };
     const started = Date.now();
-    const read = await source.read({ ...request, task });
+    // The cut narrows each search lane inside the read, so the wrapped
+    // source's result holds only the kept set; an explicit laneCut off
+    // (a meaning full read, an opted-out caller) still wins.
+    const read = await source.read({ laneCut: true, ...request, task });
     const terms = new Set(words(task));
     const result = read.status !== 'read' ? read : { ...read, candidates: rankMatches(read.candidates.filter((candidate) =>
       ['keyword', 'shared_words', 'bm25', 'heading-words', 'file-words'].some((key) => candidate.signals[key] > 0)
@@ -212,7 +215,9 @@ export async function pickFullSources(sources, request, options) {
     const reads = new Map();
     let revision = request.revision;
     for (const task of new Set([request.task, ...(request.searchLines ?? [])])) {
-      const read = await source.read({ ...request, task, ...(revision === undefined ? {} : { revision }) });
+      // Lane cuts narrow each task and search line inside the read, so the
+      // cached results held for the pick carry only the kept candidates.
+      const read = await source.read({ laneCut: true, ...request, task, ...(revision === undefined ? {} : { revision }) });
       if (read.status === 'read' && read.revision !== undefined) revision ??= read.revision;
       reads.set(task, read);
       for (const candidate of read.candidates ?? []) maxQuestionText = Math.max(maxQuestionText, candidate.text.length);
@@ -325,7 +330,8 @@ export async function run(args = process.argv.slice(2)) {
       searchSource(source, record.searches, record.reads, folder, settings)), request, pickOptions);
     record.pick = picked.record;
     record.sourcesRead = picked.reads.map((read, i) => ({ source: sources[i].id, status: read.status,
-      parts: read.candidates?.length ?? 0, complete: read.complete, partial: read.partial, reason: read.reason }));
+      parts: read.candidates?.length ?? 0, complete: read.complete, partial: read.partial, reason: read.reason,
+      ...(read.lanes === undefined ? {} : { lanes: read.lanes }) }));
     record.timings.rankAndDecideMs = Date.now() - pickStart;
     await save();
     if (decisionFailed) throw new Error('Decision route failed; stopped before curation.');

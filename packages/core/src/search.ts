@@ -16,6 +16,48 @@ export function stripSearchInstructions(task: string): string {
   return removed ? parts.join('').replace(/[ \t]+/g, ' ').trim() : task;
 }
 
+/** Bytes of file text the shared `context.files` cache holds before it
+ *  stops taking new entries. Within the cap, one file is still read once
+ *  across lanes and overlapping sources; beyond it each pass re-reads
+ *  from disk, so a large corpus's contents are never all held at once. */
+export const SHARED_FILE_CACHE_BYTES = 64 * 1024 * 1024;
+
+/** Read one file's text through the pick's shared cache while it has
+ *  room, or straight from the reader once the cache is full. Over-cap
+ *  entries are dropped again after resolving so a later pass re-reads
+ *  the file instead of keeping its text. */
+export function sharedFileText(
+  context: { files: Map<string, Promise<string>>; fileBytes?: number } | undefined,
+  key: string,
+  read: () => Promise<string>,
+): Promise<string> {
+  if (context === undefined) return read();
+  const cached = context.files.get(key);
+  if (cached !== undefined) return cached;
+  const fetched = read().then((text) => {
+    context.fileBytes = (context.fileBytes ?? 0) + text.length;
+    if (context.fileBytes > SHARED_FILE_CACHE_BYTES) context.files.delete(key);
+    return text;
+  });
+  context.files.set(key, fetched);
+  return fetched;
+}
+
+/** Store text a caller already holds — for example a blob fetched in a
+ *  batch — under the shared cache's byte cap. Over the cap the text is
+ *  not kept, so a later pass fetches it again rather than the corpus
+ *  staying resident. */
+export function sharedFileStore(
+  context: { files: Map<string, Promise<string>>; fileBytes?: number } | undefined,
+  key: string,
+  text: string,
+): void {
+  if (context === undefined) return;
+  context.fileBytes = (context.fileBytes ?? 0) + text.length;
+  if (context.fileBytes > SHARED_FILE_CACHE_BYTES) return;
+  context.files.set(key, Promise.resolve(text));
+}
+
 /** Count whole-word, contiguous phrase occurrences. Punctuation and case
  *  do not matter; short words and word order do. No stemming is applied. */
 export function phraseCount(text: string, phrase: string): number {

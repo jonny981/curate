@@ -1,5 +1,15 @@
 import { MARKDOWN_KEYWORD_SETTINGS, type MarkdownKeywordSettings } from './defaults.js';
-import { hits, taskTerms, tokenize } from '@curatejs/core/internal';
+import {
+  hits,
+  taskTerms,
+  tokenize,
+  phraseCount,
+  laneBend,
+  sharedFileText,
+  sharedFileStore,
+  embedQuery,
+  embedSimilarities,
+} from '@curatejs/core/internal';
 import { lstat, readdir, readFile, realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, join, matchesGlob, relative, resolve, sep } from 'node:path';
@@ -368,47 +378,6 @@ function splitParts(text: string, limit: number): readonly string[] {
   return parts;
 }
 
-function bm25Scores(docs: readonly string[], terms: readonly string[], keyword: MarkdownKeywordSettings): readonly number[] {
-  const count = docs.length;
-  const tokens = docs.map(tokenize);
-  const lengths = tokens.map((doc) => doc.length);
-  const avgLength = count === 0 ? 0 : lengths.reduce((sum, n) => sum + n, 0) / count;
-  if (avgLength === 0) return docs.map(() => 0);
-  const documentFrequency = new Map<string, number>();
-  for (const doc of tokens) {
-    const seen = new Set(doc);
-    for (const term of terms) {
-      if (seen.has(term)) documentFrequency.set(term, (documentFrequency.get(term) ?? 0) + 1);
-    }
-  }
-  return tokens.map((doc, index) => {
-    const counts = new Map<string, number>();
-    for (const token of doc) counts.set(token, (counts.get(token) ?? 0) + 1);
-    let score = 0;
-    for (const term of terms) {
-      const n = documentFrequency.get(term) ?? 0;
-      const f = counts.get(term) ?? 0;
-      if (n === 0 || f === 0) continue;
-      const idf = Math.log(1 + (count - n + 0.5) / (n + 0.5));
-      score += idf * (f * (keyword.k1 + 1))
-        / (f + keyword.k1 * (1 - keyword.b + keyword.b * (lengths[index]! / avgLength)));
-    }
-    return score;
-  });
-}
-
-function withBm25(
-  candidates: readonly MemoryCandidate[],
-  terms: readonly string[],
-  keyword: MarkdownKeywordSettings,
-): MemoryCandidate[] {
-  const scores = bm25Scores(candidates.map((candidate) => candidate.text), terms, keyword);
-  return candidates.map((candidate, index) =>
-    scores[index] === 0
-      ? candidate
-      : { ...candidate, signals: { ...candidate.signals, bm25: scores[index]! } });
-}
-
 interface ReadState {
   readonly root: string;
   readonly files: readonly string[];
@@ -416,12 +385,13 @@ interface ReadState {
   /** Set when the corpus sits inside a work tree: the repository the
    *  notes belong to and the corpus's path inside it. */
   readonly repo?: { readonly toplevel: string; readonly prefix: string };
-  /** Set for a pinned read: the resolved SHA and each file's content at
-   *  that revision, so a candidate's text is what the snapshot held and
-   *  a note absent there stays absent. */
+  /** Set for a pinned read: the resolved SHA and each file's blob id at
+   *  that revision. Texts are fetched in bounded batches on each pass,
+   *  so a large pinned corpus is never held whole. A candidate's text
+   *  is what the snapshot held and a note absent there stays absent. */
   readonly pinned?: {
     readonly revision: string;
-    readonly contents: ReadonlyMap<string, string>;
+    readonly oids: ReadonlyMap<string, string>;
   };
 }
 
@@ -684,11 +654,6 @@ async function openDirectory(
         wanted.push({ abs, name: entry.name, oid: entry.oid });
       }
     }
-    const keys = wanted.map((entry) => `${revision}:${entry.abs}`);
-    const missing = wanted.filter((_, index) => !context.files.has(keys[index]!));
-    const pending = readBlobs(repo.toplevel, missing, request.signal);
-    missing.forEach((entry, index) => context.files.set(`${revision}:${entry.abs}`, pending.then((texts) => texts[index]!)));
-    const texts = await Promise.all(keys.map((key) => context.files.get(key)!));
     return {
       root,
       files: wanted.map((entry) => entry.abs).sort(),
@@ -696,7 +661,7 @@ async function openDirectory(
       repo,
       pinned: {
         revision,
-        contents: new Map(wanted.map((entry, index) => [entry.abs, texts[index]!])),
+        oids: new Map(wanted.map((entry) => [entry.abs, entry.oid])),
       },
     };
   } catch (error) {
@@ -711,63 +676,159 @@ async function openDirectory(
   }
 }
 
-async function readTexts(
+/** Pinned blobs per batch: one `cat-file --batch` call covers this many
+ *  files, so a pass over a pinned tree never holds more than a batch. */
+const PINNED_BATCH = 256;
+
+/** The text of each listed file, one at a time: the shared pick cache
+ *  while it has room, disk or a batched blob read otherwise. Pinned
+ *  files arrive in batches so a pass never holds the whole tree. */
+async function* fileTexts(
   state: ReadState,
+  files: readonly string[],
+  context: CandidateReadContext | undefined,
   signal: AbortSignal | undefined,
-  context: CandidateReadContext,
-): Promise<ReadonlyMap<string, Note>> {
-  const notes = new Map<string, Note>();
-  for (const file of state.files) {
-    if (signal?.aborted) throw new SourceReadError('cancelled', 'The read was cancelled.');
-    let raw: string;
-    if (state.pinned !== undefined) {
-      raw = state.pinned.contents.get(file)!;
-    } else {
+): AsyncGenerator<{ readonly file: string; readonly text: string }> {
+  if (state.pinned === undefined) {
+    for (const file of files) {
+      if (signal?.aborted) throw new SourceReadError('cancelled', 'The read was cancelled.');
       try {
-        let pending = context.files.get(`working:${file}`);
-        if (pending === undefined) {
-          pending = readFile(file, 'utf8');
-          context.files.set(`working:${file}`, pending);
-        }
-        raw = await pending;
+        yield { file, text: await sharedFileText(context, `working:${file}`, () => readFile(file, 'utf8')) };
       } catch (error) {
         throw new SourceReadError('failed', `Could not read ${file}: ${message(error)}`);
       }
     }
-    notes.set(file, parseNote(raw));
+    return;
   }
-  return notes;
+  const { revision, oids } = state.pinned;
+  for (let start = 0; start < files.length; start += PINNED_BATCH) {
+    if (signal?.aborted) throw new SourceReadError('cancelled', 'The read was cancelled.');
+    const chunk = files.slice(start, start + PINNED_BATCH);
+    const fresh = new Map<string, string>();
+    const missing = chunk.filter((file) => context?.files.get(`${revision}:${file}`) === undefined);
+    if (missing.length > 0) {
+      const texts = await readBlobs(
+        state.repo!.toplevel,
+        missing.map((file) => ({ oid: oids.get(file)! })),
+        signal,
+      );
+      missing.forEach((file, index) => {
+        sharedFileStore(context, `${revision}:${file}`, texts[index]!);
+        fresh.set(file, texts[index]!);
+      });
+    }
+    for (const file of chunk) {
+      const cached = context?.files.get(`${revision}:${file}`);
+      const text = fresh.get(file) ?? (cached === undefined ? undefined : await cached);
+      if (text === undefined) {
+        throw new SourceReadError('failed', `The repository is missing ${file}.`);
+      }
+      yield { file, text };
+    }
+  }
 }
 
-function finish(
-  request: CandidateReadRequest,
-  candidates: MemoryCandidate[],
-  skipped: number,
-  revision?: string,
-): CandidateReadResult {
-  candidates.sort((left, right) => {
-    const score = (candidate: MemoryCandidate) =>
-      Object.values(candidate.signals).reduce((sum, value) => sum + value, 0);
-    return score(right) - score(left) || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
-  });
-  const limit = request.limit;
-  if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1)) {
-    throw new TypeError('limit must be a positive safe integer.');
+/** A part as the candidates know it: identity, title, text and source
+ *  pointer, with the heading the keyword signals score. */
+interface EnumeratedPart {
+  readonly id: string;
+  readonly title: string;
+  readonly text: string;
+  readonly heading: string;
+  readonly contentRef: string;
+}
+
+/** The note's candidate parts in their stable order: body sections cut
+ *  to the part budget, or the whole body for the legacy rules reader. */
+function* noteParts(
+  note: Note,
+  file: string,
+  name: string,
+  legacy: 'knowledge' | 'rules' | undefined,
+  rule: boolean,
+  partBudget: number,
+): Generator<EnumeratedPart> {
+  const items: readonly (Section | RuleSection)[] = legacy === 'rules'
+    ? [{
+        text: note.body,
+        startLine: note.bodyOffset + 1,
+        endLine: note.bodyOffset + note.body.split('\n').length,
+        key: '',
+      }]
+    : rule ? ruleSections(note.body, note.bodyOffset) : sections(note.body, note.bodyOffset);
+  const fileId = legacy === undefined ? file : name;
+  for (const [sectionIndex, section] of items.entries()) {
+    const parts = legacy === 'rules' ? [section.text] : splitParts(section.text, partBudget);
+    const key = 'key' in section ? (section as RuleSection).key : String(sectionIndex + 1);
+    const sectionId = key === '' ? fileId : `${fileId}#${key}`;
+    for (const [partIndex, text] of parts.entries()) {
+      const heading = section.heading ?? basename(file);
+      yield {
+        id: parts.length === 1 ? sectionId : `${sectionId}.${partIndex + 1}`,
+        title: legacy === 'rules' ? name
+          : parts.length === 1 ? `${name}: ${heading}` : `${name}: ${heading} (part ${partIndex + 1})`,
+        text,
+        heading,
+        contentRef: legacy === 'rules' ? name : `${fileId}#L${section.startLine}-L${section.endLine}`,
+      };
+    }
   }
-  const reasons: string[] = [];
-  let emitted = candidates;
-  if (limit !== undefined && candidates.length > limit) {
-    emitted = candidates.slice(0, limit);
-    reasons.push(`the limit kept ${limit} of ${candidates.length} candidates`);
-  }
-  if (skipped > 0) reasons.push(`skipped ${skipped} symbolic-link ${skipped === 1 ? 'entry' : 'entries'}`);
-  return {
-    status: 'read',
-    ...(revision === undefined ? {} : { revision }),
-    candidates: emitted,
-    complete: reasons.length === 0,
-    ...(reasons.length === 0 ? {} : { partial: reasons.join('; ') }),
-  };
+}
+
+/** What a pass knows about one file without holding its text: the
+ *  fields the emitted candidates and their signals need, gathered on
+ *  the statistics pass. */
+interface FileMeta {
+  /** Its slot in the flat file list, which a part descriptor names. */
+  readonly index: number;
+  readonly file: string;
+  readonly name: string;
+  readonly directory: string;
+  readonly always: boolean;
+  /** Scope glob patterns when the file's rule scopes it; the skip
+   *  decision waits on the resolved repository root. */
+  readonly scope?: readonly string[];
+  /** Its parts could not be counted on the first pass because the scope
+   *  gate needed the repository resolved; a short second pass fills
+   *  them in. */
+  readonly deferred: boolean;
+  scopeSkipped: boolean;
+  readonly replaced: boolean;
+  readonly fileHits: number;
+  readonly declared?: MemoryCandidate['date'];
+  repoPath?: string;
+  repository?: string;
+  location: number;
+  inbound: number;
+  date?: MemoryCandidate['date'];
+  /** Where this file's parts sit in the flat part list. */
+  partStart: number;
+  partCount: number;
+}
+
+/** What a pass knows about one part without holding its text. */
+interface PartStat {
+  /** Index into the flat file list. */
+  readonly file: number;
+  readonly id: string;
+  /** Token count: the BM25 document length. */
+  readonly len: number;
+  readonly headingHits: number;
+  readonly namedPath: boolean;
+  /** A kind lane's exact-phrase count in this part's text and title;
+   *  recorded during the statistics pass so the lane can rank its
+   *  matches without holding their texts. */
+  readonly phrased?: number;
+}
+
+/** One corpus root's files with the per-file knowledge its parts need. */
+interface CorpusGroup {
+  readonly state: ReadState;
+  readonly files: readonly string[];
+  readonly metas: FileMeta[];
+  /** The repository after the date-lookup fallback: undefined when the
+   *  log failed, so paths and dates degrade like the old read's. */
+  repo?: { readonly toplevel: string; readonly prefix: string };
 }
 
 /** Markdown from folders, files or glob patterns, classified by the caller. */
@@ -802,13 +863,28 @@ function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 'rules'
         throw new TypeError('maxQuestionText must be a positive safe integer.');
       }
       const partBudget = Math.min(maxQuestionText, request.maxQuestionText ?? maxQuestionText);
-      const candidates: MemoryCandidate[] = [];
       const seen = new Set<string>();
       const reasons: string[] = [];
       let skipped = 0;
       let present = false;
       let revision: string | undefined;
-      const terms = taskTerms(request.task, request.paths ?? [], keyword.stopWords);
+      // A kind lane's `task` is the phrase; its `topic` is the task the
+      // lane serves, and that is what the matches are scored on.
+      const terms = taskTerms(request.topic ?? request.task, request.paths ?? [], keyword.stopWords);
+      const termSet = new Set(terms);
+      const phraseLane = request.phraseLane === true;
+      const kindLane = phraseLane && request.topic !== undefined;
+      const meaningLane = request.meaningLane !== undefined;
+      const groups: CorpusGroup[] = [];
+      const metas: FileMeta[] = [];
+      const parts: PartStat[] = [];
+      const documentFrequency = new Map<string, number>();
+      let totalLength = 0;
+
+      // The statistics pass reads each file once: it keeps the fields the
+      // emitted parts will need, counts the query terms' document
+      // frequencies and lengths, and records each part's identity — never
+      // the texts themselves.
       for (const path of paths) {
         const pattern = legacy === undefined && /[*?{}[\]]/.test(path);
         const prefix = pattern ? path.slice(0, path.search(/[*?{}[\]]/)) : path;
@@ -843,13 +919,9 @@ function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 'rules'
           seen.add(file);
           return true;
         });
-        const notes = await readTexts({ ...state, files }, request.signal, context);
-        // Resolve inbound links by their source-relative path; a wiki link
-        // without a path matches only a unique note name across folders.
-        const inbound = new Map<string, number>();
         const notePaths = new Set<string>();
         const notesByName = new Map<string, string[]>();
-        for (const file of notes.keys()) {
+        for (const file of files) {
           const name = relative(state.root, file).split(sep).join('/');
           notePaths.add(name);
           const leaf = name.slice(name.lastIndexOf('/') + 1);
@@ -857,8 +929,15 @@ function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 'rules'
           if (same === undefined) notesByName.set(leaf, [name]);
           else same.push(name);
         }
-        for (const [file, note] of notes) {
-          const from = relative(state.root, file).split(sep).join('/');
+        const group: CorpusGroup = { state, files, metas: [] };
+        const linksByMeta: string[][] = [];
+        let anyUndeclared = false;
+        for await (const { file, text } of fileTexts(state, files, context, request.signal)) {
+          const note = parseNote(text);
+          const name = relative(state.root, file).split(sep).join('/');
+          // Links count from every file, including ones a scope rule
+          // skips, like the old read's notes map.
+          const links: string[] = [];
           for (const match of note.body.matchAll(LINK)) {
             const raw = (match[1] ?? match[2] ?? '').trim();
             if (raw === '') continue;
@@ -876,82 +955,409 @@ function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 'rules'
                 target = same?.length === 1 ? same[0] : undefined;
               }
             }
-            if (target === undefined || target === from) continue;
-            inbound.set(target, (inbound.get(target) ?? 0) + 1);
+            if (target === undefined || target === name) continue;
+            links.push(target);
           }
-        }
-
-
-        let lastChanged: ReadonlyMap<string, string> = new Map();
-        let repo = state.repo;
-        if (repo !== undefined && (legacy === undefined
-          || [...notes.values()].some((note) => declaredDate(note.fields, legacy === undefined) === undefined))) {
-          try {
-            lastChanged = await logDates(repo.toplevel, repo.prefix, state.pinned?.revision, request.signal);
-          } catch (error) {
-            if (state.pinned !== undefined || isCancel(error)) throw asSourceReadError(error);
-            repo = undefined;
-          }
-        }
-        for (const [file, note] of notes) {
-          if (request.signal?.aborted) throw new SourceReadError('cancelled', 'The read was cancelled.');
-          const name = relative(state.root, file).split(sep).join('/');
-          const repoPath = repo === undefined ? undefined : relative(repo.toplevel, file).split(sep).join('/');
           const always = role === 'rule' && ((legacy === undefined && note.fields.get('alwaysapply') === 'true')
             || note.fields.get('applies') === 'always');
           const scope = legacy === undefined && role === 'rule' ? ruleScope(file, note) : undefined;
-          const taskPaths = (request.paths ?? []).map((path) =>
-            relative(repo?.toplevel ?? state.root, resolve(repo?.toplevel ?? state.root, path)).split(sep).join('/'));
-          if (!always && scope !== undefined && taskPaths.length > 0
-            && !taskPaths.some((path) => scope.some((pattern) => matchesGlob(path, pattern)))) continue;
-          const changed = repoPath === undefined ? undefined : lastChanged.get(repoPath);
-          const date: MemoryCandidate['date'] = legacy !== undefined
-            ? declaredDate(note.fields, legacy === undefined) ?? (changed === undefined ? undefined : { value: changed, meaning: 'changed' })
-            : repo === undefined
-            ? declaredDate(note.fields, legacy === undefined) ?? { value: (await stat(file)).mtime.toISOString(), meaning: 'modified' }
+          // The scope gate reads request paths against the repository
+          // root, which the date lookup below can still unset; a file
+          // the gate could skip defers its part count until it resolves.
+          const deferred = !always && scope !== undefined && (request.paths ?? []).length > 0;
+          const declared = declaredDate(note.fields, legacy === undefined);
+          if (legacy !== undefined && declared === undefined) anyUndeclared = true;
+          const meta: FileMeta = {
+            index: metas.length,
+            file, name, directory: dirname(file),
+            always, scope, deferred,
+            scopeSkipped: false,
+            replaced: REPLACED_FRONTMATTER.test(note.frontmatter) || REPLACED_LINE.test(note.body),
+            fileHits: hits(`${name} ${note.frontmatter}`, terms),
+            declared,
+            partStart: parts.length,
+            partCount: 0,
+            inbound: 0,
+            location: 0,
+          };
+          // A meaning lane needs each part's slot for materialization
+          // but no keyword statistics; a kind lane needs both the
+          // statistics for its topic score and each part's phrase count.
+          if (!deferred && (!phraseLane || kindLane)) {
+            for (const part of noteParts(note, file, name, legacy, role === 'rule', partBudget)) {
+              if (meaningLane) {
+                parts.push({ file: meta.index, id: part.id, len: 0, headingHits: 0, namedPath: false });
+                continue;
+              }
+              const tokens = tokenize(part.text);
+              totalLength += tokens.length;
+              for (const term of new Set(tokens)) {
+                if (termSet.has(term)) {
+                  documentFrequency.set(term, (documentFrequency.get(term) ?? 0) + 1);
+                }
+              }
+              parts.push({
+                file: meta.index,
+                id: part.id,
+                len: tokens.length,
+                headingHits: hits(part.heading, terms),
+                namedPath: (request.paths ?? []).some((hint) => part.text.includes(hint)),
+                ...(kindLane
+                  ? { phrased: phraseCount(part.text, request.task) + phraseCount(part.title, request.task) }
+                  : {}),
+              });
+            }
+            meta.partCount = parts.length - meta.partStart;
+          }
+          metas.push(meta);
+          group.metas.push(meta);
+          linksByMeta.push(links);
+        }
+        const inbound = new Map<string, number>();
+        for (const links of linksByMeta) {
+          for (const target of links) inbound.set(target, (inbound.get(target) ?? 0) + 1);
+        }
+        let lastChanged: ReadonlyMap<string, string> = new Map();
+        group.repo = state.repo;
+        if (state.repo !== undefined && (legacy === undefined || anyUndeclared)) {
+          try {
+            lastChanged = await logDates(state.repo.toplevel, state.repo.prefix, state.pinned?.revision, request.signal);
+          } catch (error) {
+            if (state.pinned !== undefined || isCancel(error)) throw asSourceReadError(error);
+            group.repo = undefined;
+          }
+        }
+        const taskPaths = (request.paths ?? []).map((hint) =>
+          relative(group.repo?.toplevel ?? state.root, resolve(group.repo?.toplevel ?? state.root, hint)).split(sep).join('/'));
+        const deferredFiles: FileMeta[] = [];
+        for (const meta of group.metas) {
+          meta.inbound = inbound.get(meta.name) ?? 0;
+          meta.scopeSkipped = !meta.always && meta.scope !== undefined && taskPaths.length > 0
+            && !taskPaths.some((hint) => meta.scope!.some((glob) => matchesGlob(hint, glob)));
+          if (meta.deferred && !meta.scopeSkipped) deferredFiles.push(meta);
+          if (meta.scopeSkipped) continue;
+          meta.repoPath = group.repo === undefined ? undefined
+            : relative(group.repo.toplevel, meta.file).split(sep).join('/');
+          meta.repository = meta.repoPath === undefined ? undefined
+            : options.repository ?? group.repo!.toplevel;
+          const changed = meta.repoPath === undefined ? undefined : lastChanged.get(meta.repoPath);
+          meta.date = legacy !== undefined
+            ? meta.declared ?? (changed === undefined ? undefined : { value: changed, meaning: 'changed' })
+            : group.repo === undefined
+            ? meta.declared ?? { value: (await stat(meta.file)).mtime.toISOString(), meaning: 'modified' }
             : changed === undefined ? undefined : { value: changed, meaning: 'changed' };
-          const replaced = REPLACED_FRONTMATTER.test(note.frontmatter) || REPLACED_LINE.test(note.body);
-          const directory = dirname(file);
-          const location = options.kind === 'instructions'
-            ? instructionLocation(directory, request.paths ?? [], repo?.toplevel ?? state.root) : 0;
-          const items: readonly (Section | RuleSection)[] = legacy === 'rules'
-            ? [{ text: note.body, startLine: note.bodyOffset + 1, endLine: note.bodyOffset + note.body.split('\n').length, key: '' }]
-            : role === 'rule' ? ruleSections(note.body, note.bodyOffset) : sections(note.body, note.bodyOffset);
-          for (const [sectionIndex, section] of items.entries()) {
-            const parts = legacy === 'rules' ? [section.text] : splitParts(section.text, partBudget);
-            const key = 'key' in section ? (section as RuleSection).key : String(sectionIndex + 1);
-            const fileId = legacy === undefined ? file : name;
-            const sectionId = key === '' ? fileId : `${fileId}#${key}`;
-            for (const [partIndex, text] of parts.entries()) {
-              const heading = section.heading ?? basename(file);
-              const signals: Record<string, number> = {};
-              const headingHits = hits(heading, terms);
-              if (legacy !== 'rules' && headingHits > 0) signals['heading-words'] = Math.min(keyword.headingCap, headingHits * keyword.headingWeight);
-              const fileHits = hits(`${name} ${note.frontmatter}`, terms);
-              if (legacy !== 'rules' && fileHits > 0) signals['file-words'] = Math.min(keyword.fileCap, fileHits);
-              if ((request.paths ?? []).some((path) => text.includes(path))) signals['names-path'] = keyword.namedPathWeight;
-              const linked = inbound.get(name) ?? 0;
-              if (legacy !== 'rules' && linked > 0) signals['inbound-links'] = Math.min(keyword.inboundLinkCap, Math.log10(1 + linked));
-              if (legacy !== 'rules' && replaced) signals['replaced'] = keyword.replacedWeight;
-              if (location > 0) signals['instruction-location'] = location;
-              candidates.push({
-                sourceId: id, role, ...(legacy === undefined ? { kind: options.kind } : {}),
-                id: parts.length === 1 ? sectionId : `${sectionId}.${partIndex + 1}`,
-                title: legacy === 'rules' ? name : parts.length === 1 ? `${name}: ${heading}` : `${name}: ${heading} (part ${partIndex + 1})`,
-                text, contentRef: legacy === 'rules' ? name : `${legacy === undefined ? file : name}#L${section.startLine}-L${section.endLine}`,
-                ...(date === undefined ? {} : { date }),
-                ...(repoPath === undefined ? {} : { path: repoPath, repository: options.repository ?? repo!.toplevel }),
-                ...(options.kind === 'instructions' ? { directory } : {}),
-                ...(always ? { applies: 'always' as const } : {}), signals,
+          meta.location = options.kind === 'instructions'
+            ? instructionLocation(meta.directory, request.paths ?? [], group.repo?.toplevel ?? group.state.root) : 0;
+        }
+        // The scope gate has resolved; files it deferred re-read once to
+        // count their parts into the statistics.
+        if (!phraseLane || kindLane) {
+          for (const meta of deferredFiles) {
+            meta.partStart = parts.length;
+            for await (const { text } of fileTexts(group.state, [meta.file], context, request.signal)) {
+              const note = parseNote(text);
+              for (const part of noteParts(note, meta.file, meta.name, legacy, role === 'rule', partBudget)) {
+                if (meaningLane) {
+                  parts.push({ file: meta.index, id: part.id, len: 0, headingHits: 0, namedPath: false });
+                  continue;
+                }
+                const tokens = tokenize(part.text);
+                totalLength += tokens.length;
+                for (const term of new Set(tokens)) {
+                  if (termSet.has(term)) {
+                    documentFrequency.set(term, (documentFrequency.get(term) ?? 0) + 1);
+                  }
+                }
+                parts.push({
+                  file: meta.index,
+                  id: part.id,
+                  len: tokens.length,
+                  headingHits: hits(part.heading, terms),
+                  namedPath: (request.paths ?? []).some((hint) => part.text.includes(hint)),
+                  ...(kindLane
+                    ? { phrased: phraseCount(part.text, request.task) + phraseCount(part.title, request.task) }
+                    : {}),
+                });
+              }
+            }
+            meta.partCount = parts.length - meta.partStart;
+          }
+        }
+        groups.push(group);
+      }
+      if (!present) return { status: 'absent', reason: reasons.join('; ') };
+      const limit = request.limit;
+      if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1)) {
+        throw new TypeError('limit must be a positive safe integer.');
+      }
+
+      const emit = (meta: FileMeta, part: EnumeratedPart, signals: Record<string, number>): MemoryCandidate => ({
+        sourceId: id, role, ...(legacy === undefined ? { kind: options.kind } : {}),
+        id: part.id,
+        title: part.title,
+        text: part.text,
+        contentRef: part.contentRef,
+        ...(meta.date === undefined ? {} : { date: meta.date }),
+        ...(meta.repoPath === undefined ? {} : { path: meta.repoPath, repository: meta.repository }),
+        ...(options.kind === 'instructions' ? { directory: meta.directory } : {}),
+        ...(meta.always ? { applies: 'always' as const } : {}),
+        signals,
+      });
+
+      // A meaning lane embeds each part in bounded batches and keeps
+      // the parts the similarity curve keeps; the corpus's text is
+      // never held, and the keyword scoring pass is skipped.
+      if (meaningLane) {
+        const embed = request.meaningLane!.embed;
+        const query = await embedQuery(embed, request.task, request.signal);
+        const simOf = new Map<number, number>();
+        let pending: { index: number; text: string }[] = [];
+        const flush = async () => {
+          if (pending.length === 0) return;
+          const scores = await embedSimilarities(embed, query, pending.map((part) => part.text), request.signal);
+          pending.forEach((part, at) => simOf.set(part.index, scores[at]!));
+          pending = [];
+        };
+        for (const group of groups) {
+          let cursor = 0;
+          for await (const { file, text } of fileTexts(group.state, group.files, context, request.signal)) {
+            const meta = group.metas[cursor++]!;
+            if (meta.partCount === 0) continue;
+            const note = parseNote(text);
+            let local = 0;
+            for (const part of noteParts(note, file, meta.name, legacy, role === 'rule', partBudget)) {
+              // A file that grew between passes emits extra parts; they
+              // have no slot in the part list, so they are skipped.
+              if (local >= meta.partCount) break;
+              pending.push({ index: meta.partStart + local, text: part.text });
+              local += 1;
+              if (pending.length === 32) await flush();
+            }
+          }
+        }
+        await flush();
+        const order = parts.map((_, index) => index)
+          .sort((left, right) => (simOf.get(right) ?? 0) - (simOf.get(left) ?? 0)
+            || (parts[left]!.id < parts[right]!.id ? -1 : parts[left]!.id > parts[right]!.id ? 1 : 0));
+        const cut = request.laneCut === true;
+        const bend = cut ? laneBend(order.map((index) => simOf.get(index) ?? 0)) : undefined;
+        const keptAll = bend === undefined ? order : order.filter((index) => (simOf.get(index) ?? 0) > bend);
+        // `limit` carries the caller's `nearest` cap: it slices the kept
+        // set after the curve, not the enumeration before it.
+        const kept = limit === undefined ? keptAll : keptAll.slice(0, limit);
+        const wanted = new Set<number>(kept);
+        const byIndex = new Map<number, MemoryCandidate>();
+        for (const group of groups) {
+          const needed = group.metas.filter((meta) => {
+            for (let index = meta.partStart; index < meta.partStart + meta.partCount; index += 1) {
+              if (wanted.has(index)) return true;
+            }
+            return false;
+          });
+          if (needed.length === 0) continue;
+          let cursor = 0;
+          for await (const { file, text } of fileTexts(group.state, needed.map((meta) => meta.file), context, request.signal)) {
+            const meta = needed[cursor++]!;
+            const note = parseNote(text);
+            let local = 0;
+            for (const part of noteParts(note, file, meta.name, legacy, role === 'rule', partBudget)) {
+              const index = meta.partStart + local;
+              local += 1;
+              if (!wanted.has(index)) continue;
+              const similarity = simOf.get(index) ?? 0;
+              byIndex.set(index, {
+                ...emit(meta, part, { similarity }),
+                laneScore: similarity,
               });
             }
           }
         }
+        const emitted = kept.map((index) => byIndex.get(index))
+          .filter((candidate): candidate is MemoryCandidate => candidate !== undefined);
+        const partial: string[] = [];
+        if (limit !== undefined && keptAll.length > limit) {
+          partial.push(`the limit kept ${limit} of ${keptAll.length} candidates`);
+        }
+        if (skipped > 0) partial.push(`skipped ${skipped} symbolic-link ${skipped === 1 ? 'entry' : 'entries'}`);
+        return {
+          status: 'read' as const,
+          ...(revision === undefined ? {} : { revision }),
+          candidates: emitted,
+          meaningLane: true as const,
+          complete: partial.length === 0 && reasons.length === 0,
+          ...(partial.length === 0 && reasons.length === 0
+            ? {}
+            : { partial: [...reasons, ...partial].join('; ') }),
+          matched: parts.length,
+          ...(cut ? { laneCutApplied: true as const } : {}),
+        };
       }
-      if (!present) return { status: 'absent', reason: reasons.join('; ') };
-      const result = finish(request, withBm25(candidates, terms, keyword), skipped, revision);
-      if (result.status !== 'read' || reasons.length === 0) return result;
-      return { ...result, complete: false, partial: [...reasons, ...(result.partial === undefined ? [] : [result.partial])].join('; ') };
+
+      // A phrase lane keeps the parts whose text or title holds
+      // the exact phrase; keyword statistics are skipped for it.
+      if (phraseLane && !kindLane) {
+        const matched: { candidate: MemoryCandidate; count: number }[] = [];
+        for (const group of groups) {
+          let cursor = 0;
+          for await (const { file, text } of fileTexts(group.state, group.files, context, request.signal)) {
+            const meta = group.metas[cursor++]!;
+            if (meta.scopeSkipped) continue;
+            const note = parseNote(text);
+            for (const part of noteParts(note, file, meta.name, legacy, role === 'rule', partBudget)) {
+              const count = phraseCount(part.text, request.task) + phraseCount(part.title, request.task);
+              if (count === 0) continue;
+              matched.push({ candidate: emit(meta, part, { phrase: count }), count });
+            }
+          }
+        }
+        matched.sort((left, right) => right.count - left.count || left.candidate.id.localeCompare(right.candidate.id));
+        const limited = limit !== undefined && matched.length > limit;
+        const kept = limited ? matched.slice(0, limit) : matched;
+        const partial: string[] = [];
+        if (limited) partial.push(`the phrase limit kept ${limit} of ${matched.length} candidates`);
+        if (skipped > 0) partial.push(`skipped ${skipped} symbolic-link ${skipped === 1 ? 'entry' : 'entries'}`);
+        const candidates = kept.map(({ candidate, count }) => ({ ...candidate, laneScore: count }));
+        if (reasons.length === 0) {
+          return {
+            status: 'read',
+            ...(revision === undefined ? {} : { revision }),
+            candidates,
+            complete: partial.length === 0,
+            ...(partial.length === 0 ? {} : { partial: partial.join('; ') }),
+          };
+        }
+        return {
+          status: 'read',
+          ...(revision === undefined ? {} : { revision }),
+          candidates,
+          complete: false,
+          partial: [...reasons, ...partial].join('; '),
+        };
+      }
+
+      // The scoring pass re-reads each file and BM25-scores its parts
+      // against the corpus statistics the first pass collected.
+      const scores = new Float64Array(parts.length);
+      const count = parts.length;
+      const average = count === 0 ? 0 : totalLength / count;
+      if (average > 0) {
+        for (const group of groups) {
+          let cursor = 0;
+          for await (const { file, text } of fileTexts(group.state, group.files, context, request.signal)) {
+            const meta = group.metas[cursor++]!;
+            if (meta.partCount === 0) continue;
+            const note = parseNote(text);
+            let local = 0;
+            for (const part of noteParts(note, file, meta.name, legacy, role === 'rule', partBudget)) {
+              // A file that grew between passes emits extra parts; they
+              // never had statistics, so they are skipped.
+              if (local >= meta.partCount) break;
+              const tokens = tokenize(part.text);
+              const counts = new Map<string, number>();
+              for (const token of tokens) counts.set(token, (counts.get(token) ?? 0) + 1);
+              let score = 0;
+              for (const term of terms) {
+                const n = documentFrequency.get(term) ?? 0;
+                const f = counts.get(term) ?? 0;
+                if (n === 0 || f === 0) continue;
+                const idf = Math.log(1 + (count - n + 0.5) / (n + 0.5));
+                score += idf * (f * (keyword.k1 + 1))
+                  / (f + keyword.k1 * (1 - keyword.b + keyword.b * (tokens.length / average)));
+              }
+              scores[meta.partStart + local] = score;
+              local += 1;
+            }
+          }
+        }
+      }
+
+      // Rank by the same signal sum the candidates report, slice the
+      // read's limit, then — when the lane cut is on — keep what the
+      // score curve keeps.
+      const sums = parts.map((part, index) => {
+        const meta = metas[part.file]!;
+        let sum = scores[index]!;
+        if (legacy !== 'rules' && part.headingHits > 0) sum += Math.min(keyword.headingCap, part.headingHits * keyword.headingWeight);
+        if (legacy !== 'rules' && meta.fileHits > 0) sum += Math.min(keyword.fileCap, meta.fileHits);
+        if (part.namedPath) sum += keyword.namedPathWeight;
+        if (legacy !== 'rules' && meta.inbound > 0) sum += Math.min(keyword.inboundLinkCap, Math.log10(1 + meta.inbound));
+        if (legacy !== 'rules' && meta.replaced) sum += keyword.replacedWeight;
+        if (meta.location > 0) sum += meta.location;
+        return sum;
+      });
+      const ranked = parts.map((_, index) => index)
+        .sort((left, right) => sums[right]! - sums[left]!
+          || (parts[left]!.id < parts[right]!.id ? -1 : parts[left]!.id > parts[right]!.id ? 1 : 0));
+      // A kind lane's lane is its exact-phrase matches, ranked by the
+      // topic's signal sum — never by how often the phrase occurs, so a
+      // direction said once survives a phrase everyone says.
+      const laneRanked = kindLane
+        ? ranked.filter((index) => (parts[index]!.phrased ?? 0) > 0)
+        : ranked;
+      // A keyword read's limit bounds the read itself; a kind lane's
+      // caps what the score curve keeps.
+      const pool = kindLane || limit === undefined ? laneRanked : laneRanked.slice(0, limit);
+      const cut = request.laneCut === true;
+      const bend = cut ? laneBend(pool.map((index) => sums[index]!)) : undefined;
+      const curveKept = bend === undefined ? pool : pool.filter((index) => sums[index]! > bend);
+      const kept = kindLane && limit !== undefined ? curveKept.slice(0, limit) : curveKept;
+      const limitBase = kindLane ? curveKept.length : laneRanked.length;
+
+      // The materializing pass reads back only the files that kept a
+      // part and builds their candidates.
+      const wanted = new Set<number>(kept);
+      const byIndex = new Map<number, MemoryCandidate>();
+      for (const group of groups) {
+        const needed = group.metas.filter((meta) => {
+          for (let index = meta.partStart; index < meta.partStart + meta.partCount; index += 1) {
+            if (wanted.has(index)) return true;
+          }
+          return false;
+        });
+        if (needed.length === 0) continue;
+        let cursor = 0;
+        for await (const { file, text } of fileTexts(group.state, needed.map((meta) => meta.file), context, request.signal)) {
+          const meta = needed[cursor++]!;
+          const note = parseNote(text);
+          let local = 0;
+          for (const part of noteParts(note, file, meta.name, legacy, role === 'rule', partBudget)) {
+            const index = meta.partStart + local;
+            local += 1;
+            if (!wanted.has(index)) continue;
+            const descriptor = parts[index]!;
+            const signals: Record<string, number> = {};
+            if (legacy !== 'rules' && descriptor.headingHits > 0) signals['heading-words'] = Math.min(keyword.headingCap, descriptor.headingHits * keyword.headingWeight);
+            if (legacy !== 'rules' && meta.fileHits > 0) signals['file-words'] = Math.min(keyword.fileCap, meta.fileHits);
+            if (descriptor.namedPath) signals['names-path'] = keyword.namedPathWeight;
+            if (legacy !== 'rules' && meta.inbound > 0) signals['inbound-links'] = Math.min(keyword.inboundLinkCap, Math.log10(1 + meta.inbound));
+            if (legacy !== 'rules' && meta.replaced) signals['replaced'] = keyword.replacedWeight;
+            if (meta.location > 0) signals['instruction-location'] = meta.location;
+            if (scores[index] !== 0) signals['bm25'] = scores[index]!;
+            if (kindLane) signals['phrase'] = descriptor.phrased!;
+            const candidate = emit(meta, part, signals);
+            byIndex.set(index, kindLane ? { ...candidate, laneScore: sums[index]! } : candidate);
+          }
+        }
+      }
+      // A file that shrank mid-read leaves a kept index with no part to
+      // materialize; it simply emits fewer.
+      const emitted = kept.map((index) => byIndex.get(index))
+        .filter((candidate): candidate is MemoryCandidate => candidate !== undefined);
+      const partial: string[] = [];
+      if (limit !== undefined && limitBase > limit) {
+        partial.push(`the limit kept ${limit} of ${limitBase} candidates`);
+      }
+      if (skipped > 0) partial.push(`skipped ${skipped} symbolic-link ${skipped === 1 ? 'entry' : 'entries'}`);
+      return {
+        status: 'read',
+        ...(revision === undefined ? {} : { revision }),
+        candidates: emitted,
+        complete: partial.length === 0 && reasons.length === 0,
+        ...(partial.length === 0 && reasons.length === 0
+          ? {}
+          : { partial: [...reasons, ...partial].join('; ') }),
+        ...(cut ? { laneCutApplied: true as const, matched: kindLane ? laneRanked.length : pool.length } : {}),
+      };
     },
   };
 }

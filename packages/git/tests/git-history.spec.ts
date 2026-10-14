@@ -1,6 +1,6 @@
 import { execFile, execFileSync, type ChildProcess } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
-import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { closeSync, openSync, writeFileSync } from 'node:fs';
+import { appendFile, chmod, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -778,6 +778,80 @@ describe('gitHistory', () => {
     if (result.status !== 'read') throw new Error('read failed');
     expect(result.candidates[0]!.sourceId).toBe('history');
     expect(result.candidates[0]!.repository).toBe('shared-key');
+  });
+
+  it('keeps the heap roughly flat reading a generated history of 75,000 commits', { timeout: 180_000 }, async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'curate-git-'));
+    temporaryDirectories.push(directory);
+    await git(directory, ['init', '-b', 'main']);
+    // 75,000 commits of about 8 KB each: holding every body at once is
+    // over half a gigabyte, so a read that buffers the corpus trips the
+    // 1 GB bar while a read that scores each batch and releases it stays
+    // far under it. fast-import builds the history in seconds.
+    const body = 'padding the commit body with enough routine text to weigh it down '.repeat(120);
+    const input = join(directory, 'import.txt');
+    for (let block = 0; block < 75; block++) {
+      let chunk = '';
+      for (let index = block * 1000; index < block * 1000 + 1000; index++) {
+        const matching = index % 100 === 0;
+        const subject = matching ? `battery backup evidence ${index}` : `routine note ${index}`;
+        const message = `${subject}\n\n${matching ? 'battery backup evidence ' : ''}${body} ${index}`;
+        chunk += `commit refs/heads/main\ncommitter Test <test@example.com> ${1700000000 + index} +0000\ndata ${Buffer.byteLength(message)}\n${message}\n`;
+      }
+      await appendFile(input, chunk);
+    }
+    const fd = openSync(input, 'r');
+    try {
+      execFileSync('git', ['-C', directory, 'fast-import', '--quiet'], { stdio: [fd, 'ignore', 'inherit'] });
+    } finally {
+      closeSync(fd);
+    }
+    await rm(input);
+
+    const embed = async (texts: readonly string[]) =>
+      texts.map((text) => (text.includes('battery backup') ? [1, 0] : [0, 1]));
+    const source = gitHistory(directory);
+    const samples: number[] = [];
+    const timer = setInterval(() => samples.push(process.memoryUsage().heapUsed), 5);
+    let result: Awaited<ReturnType<ReturnType<typeof gitHistory>['read']>>;
+    let kindResult: typeof result;
+    let meaningResult: typeof result;
+    try {
+      result = await read(source, { task: 'battery backup evidence', laneCut: true });
+      // A kind lane matches every body's 'padding the commit' and must
+      // rank the matches by the topic, never buffer all 75,000 bodies;
+      // the meaning lane likewise scores and releases each page.
+      kindResult = await read(source, {
+        task: 'padding the commit', phraseLane: true, topic: 'battery backup evidence', laneCut: true,
+      });
+      meaningResult = await read(source, {
+        task: 'battery backup evidence', laneCut: true, meaningLane: { embed },
+      });
+    } finally {
+      clearInterval(timer);
+    }
+    samples.push(process.memoryUsage().heapUsed);
+
+    for (const lane of [result, kindResult, meaningResult]) {
+      expect(lane.status).toBe('read');
+      if (lane.status !== 'read') return;
+      // Every commit was scored (matched counts the scored set), and the
+      // curve kept the 750 commits carrying the task's terms.
+      expect(lane.matched).toBe(75_000);
+      expect(lane.laneCutApplied).toBe(true);
+    }
+    if (result.status !== 'read' || kindResult.status !== 'read'
+      || meaningResult.status !== 'read') return;
+    expect(result.candidates).toHaveLength(750);
+    expect(result.candidates.every((candidate) => candidate.signals['shared_words'] === 3)).toBe(true);
+    expect(kindResult.candidates).toHaveLength(750);
+    expect(kindResult.candidates.every((candidate) =>
+      (candidate.signals['phrase'] ?? 0) > 0 && candidate.signals['shared_words'] === 3)).toBe(true);
+    expect(meaningResult.meaningLane).toBe(true);
+    expect(meaningResult.candidates).toHaveLength(750);
+    expect(meaningResult.candidates.every((candidate) => candidate.signals['similarity'] === 1)).toBe(true);
+    const peak = Math.max(...samples);
+    expect(peak).toBeLessThan(1024 * 1024 * 1024);
   });
 });
 

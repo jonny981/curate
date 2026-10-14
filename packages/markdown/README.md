@@ -60,8 +60,14 @@ const sources = [
   rules. Candidate, question, and selection records retain the declared kind.
   Without a fitted cascade, core asks a question suited to that kind.
 - **Shared reads:** One `pickFromSources` call reads a file's bytes once across
-  overlapping sources and search lines. Different kinds retain separate
-  candidates. A later call reads the file again.
+  overlapping sources and search lines, up to a 64 MB shared cap; past the
+  cap each pass reads from disk again, so a large corpus is never held
+  whole. Different kinds retain separate candidates. A later call reads
+  the file again.
+- **Passes:** A keyword read parses each file once for keyword
+  statistics, scores the parts on a second read, and builds candidates
+  only for the parts its lane kept. A pinned read fetches blob contents
+  in bounded batches the same way.
 - **Whole text:** The source has no default part-size cap. Set
   `maxQuestionText` on the source or read request to split text into parts that
   preserve every character. A pick text limit takes precedence over the read
@@ -117,6 +123,7 @@ saved-decision sweep's answer-turn losses.
 - **Keyword settings:** `MARKDOWN_KEYWORD_SETTINGS` exports the ranking defaults. Pass a partial `keyword` object to the reader to override them.
 - **Questions:** `MARKDOWN_CASCADE` exports the fitted questions. Pass the cascade to core’s `cascade` or `cascadesByKind` option. The defaults are opt-in.
 - **Search wording:** `MARKDOWN_SEARCH_LINE_REGISTER` describes the wording for host-written extra search lines. Copy or replace this text in your host; the package generates no lines.
+- **Kind phrases:** `MARKDOWN_KIND_PHRASES` exports phrases in the note register for `directions`, `decisions` and `corrections`. Pass one list to core's `kindLanes` option, for example `{ markdown: MARKDOWN_KIND_PHRASES.corrections }`; kind lanes stay off by default.
 
 ```ts
 import { knowledgeBase, MARKDOWN_KEYWORD_SETTINGS, MARKDOWN_CASCADE, MARKDOWN_SEARCH_LINE_REGISTER } from '@curatejs/markdown';

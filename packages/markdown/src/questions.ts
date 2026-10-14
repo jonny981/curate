@@ -1,4 +1,20 @@
-import type { PickCascade } from '@curatejs/core';
+import type { PickCascade, PickTagSet } from '@curatejs/core';
+
+/** Note-kind tag set for `tagsByKind`: decision record, rule or
+ *  how-to. */
+export const MARKDOWN_TAGS: readonly PickTagSet[] = [
+  {
+    key: 'note-kind',
+    questions: [
+      { key: 'decision-record', instructions: 'Does this note record a decision: what was chosen, why and when?',
+        true: 'It records a decision.', false: 'It records no decision.' },
+      { key: 'rule', instructions: 'Does this note state a rule or constraint that work must follow?',
+        true: 'It states a rule.', false: 'It states no rule.' },
+      { key: 'how-to', instructions: 'Does this note explain how to do something: steps, a guide or a procedure?',
+        true: 'It explains how to.', false: 'It is not a how-to.' },
+    ],
+  },
+];
 
 /** Questions and fitted weights for Markdown evidence. */
 export const MARKDOWN_CASCADE: PickCascade = {

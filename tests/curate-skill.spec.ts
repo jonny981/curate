@@ -189,10 +189,11 @@ describe('Codex session folder restrictions', () => {
     await writeFile(allowed, `${JSON.stringify(metadata(child))}\n`);
     await rm(join(nested, 'late-allowed.jsonl'));
     expect(await source.read({ task: 'orchard evidence' })).toEqual(result);
-    expect(vi.mocked(readFile).mock.calls.map((call) => call[0])).toEqual([
-      await realpath(join(snapshot, '2026', '01', 'allowed.jsonl')),
-      await realpath(join(snapshot, '2026', '01', 'allowed.jsonl')),
-    ]);
+    // The read passes over the admitted copy more than once; the set of
+    // opened paths is what proves nothing outside it was touched.
+    expect(new Set(vi.mocked(readFile).mock.calls.map((call) => call[0]))).toEqual(
+      new Set([await realpath(join(snapshot, '2026', '01', 'allowed.jsonl'))]),
+    );
   });
 });
 
@@ -283,20 +284,47 @@ it('sends every matching part to decisions, including short-word corrections bel
   const searches = { chat: { keywords: ['orchard', 'We asked for orchard'], answers: ['fruit trees', 'planted trees'] } };
   const asked: string[] = [];
   const picked = await pickFullSources([searchSource(source, searches, [], directory)], {
-    task: 'We need orchard evidence', searchLines: ['curate-search:0', 'curate-search:1'],
+    task: 'We need orchard evidence', searchLines: ['curate-search:0', 'curate-search:1'], laneCut: false,
   }, { task: 'We need orchard evidence', decide: async (batch: { questions: { key: string; text: string }[] }) => {
     asked.push(...batch.questions.map((question) => question.text));
     return Object.fromEntries(batch.questions.map((question) => [question.key, { status: 'answered', probability: 0.8 }]));
   } });
   expect(asked).toHaveLength(301);
   expect(asked).toContain('We need to keep everything.');
-  expect((await searchSource(source, searches, [], directory).read({ task: 'We need orchard evidence' })).candidates[0].text)
+  expect((await searchSource(source, searches, [], directory).read({ task: 'We need orchard evidence', laneCut: false })).candidates[0].text)
     .toBe('We need to keep everything.');
   expect(asked).not.toContain('Breakfast pancakes.');
   expect(new Set(asked).size).toBe(301);
   expect(picked.selected).toHaveLength(301);
   expect(picked.record.candidates.every((entry: { status: string }) => entry.status === 'selected')).toBe(true);
   expect(picked.record.limits.maxCandidates).toBeUndefined();
+});
+
+it('asks sources to cut search lanes inside the reads it caches, unless the cut is off', async () => {
+  const directory = await folder();
+  const seen: (boolean | undefined)[] = [];
+  const source: CandidateSource = { id: 'notes', kind: 'markdown', role: 'reference',
+    read: async (request) => {
+      seen.push(request.laneCut);
+      return { status: 'read', complete: true, candidates: [{
+        sourceId: 'notes', id: 'one', role: 'reference', title: 'Orchard', text: 'Orchard notes.', signals: { bm25: 1 },
+      }] };
+    } };
+  const searches = { markdown: { keywords: ['orchard'], answers: ['trees'] } };
+  const decide = async (batch: { questions: { key: string }[] }) =>
+    Object.fromEntries(batch.questions.map((question) => [question.key, { status: 'answered', probability: 0.8 }]));
+
+  await pickFullSources([searchSource(source, searches, [], directory)], {
+    task: 'orchard', searchLines: ['curate-search:0'],
+  }, { task: 'orchard', decide });
+  expect(seen.length).toBeGreaterThan(0);
+  expect(seen.every((flag) => flag === true)).toBe(true);
+
+  seen.length = 0;
+  await pickFullSources([searchSource(source, searches, [], directory)], {
+    task: 'orchard', laneCut: false,
+  }, { task: 'orchard', decide });
+  expect(seen.every((flag) => flag === false)).toBe(true);
 });
 
 it('sends the full long commit text rather than cutting it at the default part size', async () => {
@@ -415,7 +443,7 @@ it('labels collection dates for undated evidence without changing weights or ord
   const picked = await pickFromSources([{
     id: 'documents', kind: 'markdown', role: 'reference',
     read: async () => ({ status: 'read', complete: true, candidates: [dated, undated] }),
-  }], { task: 'orchard evidence' }, {
+  }], { task: 'orchard evidence', laneCut: false }, {
     task: 'orchard evidence', decide: async (batch) => Object.fromEntries(batch.questions.map((question) => [
       question.key, { status: 'answered', probability: question.id === 'dated' ? 0.9 : 0.7 },
     ])),

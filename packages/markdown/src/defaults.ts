@@ -24,3 +24,13 @@ export const MARKDOWN_KEYWORD_SETTINGS: MarkdownKeywordSettings = {
 
 /** Wording guidance for host-written extra searches; Curate generates no lines. */
 export const MARKDOWN_SEARCH_LINE_REGISTER = 'A note paragraph.';
+
+/** Kind-lane phrases in the note register, by the kind of message a
+ *  task asks for. Feed the matching list into `kindLanes` on the read
+ *  request (`{ markdown: MARKDOWN_KIND_PHRASES.decisions }`); kind
+ *  lanes stay off by default. */
+export const MARKDOWN_KIND_PHRASES: Readonly<Record<'directions' | 'decisions' | 'corrections', readonly string[]>> = {
+  directions: ['always', 'never', 'must', 'do not', 'required'],
+  decisions: ['decision:', 'decided', 'we chose', 'chosen', 'decision record'],
+  corrections: ['superseded', 'supersedes', 'was wrong', 'corrected', 'no longer'],
+};

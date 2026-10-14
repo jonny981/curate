@@ -6,12 +6,17 @@ it does not drop low scores. Your writer turns the evidence into a dated
 log. Both steps return a record. The host chooses the model route; these
 packages import no model engine.
 
+Before any decision, `pickFromSources` cuts each search lane where its own
+score curve flattens. Pass `laneCut: false` in the read request to decide
+every candidate a source returns.
+
 ## Reference defaults
 
 The reference bar is zero. A saved-decision sweep over 249 LongMemEval
 questions and 445 labelled answer turns found that bars of 0.05/0.5 lost
 50 whole answer turns, 0.2/0.6 lost 70, and a single 0.6 cut lost 183.
-Keeping every fed item added no selection losses. Seven labelled turns
+Keeping every fed item added no selection losses. That sweep decided the
+full feed with no lane cut. Seven labelled turns
 were absent from that feed; this check measures retention before curation,
 not final answer accuracy.
 

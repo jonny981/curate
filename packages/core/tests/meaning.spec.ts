@@ -34,7 +34,13 @@ describe('local meaning search', () => {
       searchLines: ['finance', ' finance ', 'pets', ''],
     });
     expect(calls[0]).toEqual(['pets', 'finance']);
-    expect(ranked.map((candidate) => candidate.searchRanks)).toEqual([[0, 2, 1, 0], [1, 0, 0, 1]]);
+    // The lane cut drops zero-similarity ranks; laneCut: false keeps them.
+    expect(ranked.map((candidate) => candidate.searchRanks)).toEqual([[0, 2, null, 0], [1, 0, 0, null]]);
+    const uncut = await addMeaningRanks([
+      { ...item('bill', 'invoice'), searchRanks: [0, 2] },
+      { ...item('dog', 'puppy'), searchRanks: [1, 0] },
+    ], 'pets', { embed, searchLines: ['finance'], laneCut: false });
+    expect(uncut.map((candidate) => candidate.searchRanks)).toEqual([[0, 2, 1, 0], [1, 0, 0, 1]]);
   });
 
   it('uses cosine similarity, not vector length, and ranks each source separately', async () => {
@@ -62,7 +68,9 @@ describe('local meaning search', () => {
         return { status: 'read', complete: request.limit === undefined, candidates: candidates.slice(0, request.limit) };
       },
     }], { task: 'pets', limit: 1, meaning: { embed, nearest: 1 } }, { task: 'pets', decide });
-    expect(limits).toEqual([1, undefined]);
+    // The middle read asks the source to serve the meaning lane itself;
+    // this source ignores the flag, so the fallback re-reads the pool.
+    expect(limits).toEqual([1, 1, undefined]);
     expect(result.selected.map((candidate) => candidate.id).sort()).toEqual(['bill', 'dog']);
     expect(result.reads[0]).toMatchObject({ complete: false });
   });
@@ -92,7 +100,15 @@ describe('local meaning search', () => {
       asked.push(...batch.questions.map((question) => question.id));
       return decide(batch);
     } });
-    expect(reads).toEqual([{ task: 'pets', limit: 1 }, { task: 'got my' }, { task: 'pets' }]);
+    // The third read asks the source to serve the 'pets' meaning lane
+    // itself; this source ignores the flag and answers a keyword read,
+    // so the fourth is the fallback's full-pool re-read.
+    expect(reads).toEqual([
+      { task: 'pets', limit: 1 },
+      { task: 'got my' },
+      { task: 'pets', limit: 1 },
+      { task: 'pets' },
+    ]);
     expect(queries[0]).toEqual(['pets', 'got my']);
     expect(result.selected.map((candidate) => candidate.id).sort()).toEqual(['bill', 'dog', 'phrase']);
     expect(asked.sort()).toEqual(['bill', 'dog', 'phrase']);
@@ -115,6 +131,78 @@ describe('local meaning search', () => {
     expect(observed).toBe(text);
     expect(result.selected.map((candidate) => candidate.id)).toEqual(['long']);
     expect(result.record.thresholds.reference).toBe(0);
+  });
+
+  it('serves meaning lanes inside a streaming source with no corpus fallback', async () => {
+    const seen: { task: string; meaning: boolean; limit?: number }[] = [];
+    const result = await pickFromSources([{
+      id: 'notes', role: 'reference',
+      read: async (request) => {
+        seen.push({
+          task: request.task,
+          meaning: request.meaningLane !== undefined,
+          ...(request.limit === undefined ? {} : { limit: request.limit }),
+        });
+        if (request.meaningLane === undefined) {
+          return {
+            status: 'read' as const, complete: true,
+            candidates: [item('bill', 'invoice', 9), item('dog', 'puppy')],
+          };
+        }
+        // A streaming reader scored similarity inside the read and
+        // returns only the kept candidates, flagged meaningLane.
+        return {
+          status: 'read' as const, complete: true,
+          meaningLane: true as const, matched: 2,
+          candidates: [{ ...item('dog', 'puppy'), signals: { similarity: 0.9 }, laneScore: 0.9 }],
+        };
+      },
+    }], { task: 'pets', meaning: { embed: async (texts) => texts.map(() => [1, 0]), nearest: 1 } },
+    { task: 'pets', decide });
+    // The keyword read plus one meaning read per query; the source
+    // streamed its lane, so there is no full-pool re-read.
+    expect(seen).toEqual([{ task: 'pets', meaning: false }, { task: 'pets', meaning: true, limit: 1 }]);
+    expect(result.reads[0]).toMatchObject({
+      lanes: [
+        { task: 'pets', lane: 'search', read: 2, kept: 1 },
+        { task: 'pets', lane: 'meaning', read: 2, kept: 1 },
+      ],
+    });
+    expect(result.selected.map((candidate) => candidate.id).sort()).toEqual(['bill', 'dog']);
+    expect(result.selected.find((candidate) => candidate.id === 'bill')?.searchRanks).toEqual([0]);
+    expect(result.selected.find((candidate) => candidate.id === 'dog')?.searchRanks).toEqual([null, 0]);
+  });
+
+  it('keeps meaning reports in query order when a lane is absent', async () => {
+    const result = await pickFromSources([{
+      id: 'notes', role: 'reference',
+      read: async (request) => {
+        if (request.meaningLane !== undefined) {
+          if (request.task === 'gone') return { status: 'absent' as const, reason: 'no index' };
+          return {
+            status: 'read' as const, complete: true,
+            meaningLane: true as const, matched: 2,
+            candidates: [{ ...item('dog', 'puppy'), signals: { similarity: 0.9 }, laneScore: 0.9 }],
+          };
+        }
+        return { status: 'read' as const, complete: true, candidates: [item('bill', 'invoice', 9)] };
+      },
+    }], { task: 'pets', searchLines: ['gone', 'finance'], meaning: { embed } }, { task: 'pets', decide });
+    const read = result.reads[0]!;
+    if (read.status !== 'read') throw new Error('read failed');
+    // The absent lane still holds its position: later lanes' rank
+    // offsets use the query order, not the order reads succeeded in.
+    expect(read.lanes).toEqual([
+      { task: 'pets', lane: 'search', read: 1, kept: 1 },
+      { task: 'gone', lane: 'search', read: 1, kept: 1 },
+      { task: 'finance', lane: 'search', read: 1, kept: 1 },
+      { task: 'pets', lane: 'meaning', read: 2, kept: 1 },
+      { task: 'gone', lane: 'meaning', read: 0, kept: 0 },
+      { task: 'finance', lane: 'meaning', read: 2, kept: 1 },
+    ]);
+    expect(read.complete).toBe(false);
+    const dog = result.selected.find((candidate) => candidate.id === 'dog')!;
+    expect(dog.searchRanks).toEqual([null, null, null, 0, null, 0]);
   });
 
   it('never calls embeddings when the option is omitted', async () => {
