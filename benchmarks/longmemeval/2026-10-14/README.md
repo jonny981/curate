@@ -47,3 +47,22 @@ python3 -c "import json,sys; r=[json.loads(l) for l in open(sys.argv[1])]; print
 - **Dataset:** LongMemEval S (`longmemeval_s_cleaned.json`), SHA-256 `d6f21ea9d60a0d56f34a05b609c79c88a451d2ae03597821ea3d5a9678c3a442`. LongMemEval is MIT-licensed.
 - **Held-out split:** 251 questions chosen before any tuning; the other 249 were used to tune Curate.
 - **Harness:** a separate repository, not public. It records every model call; those request and reply bodies (about 3.3 GB) stay on the machine that ran it.
+
+## LongMemEval's own scorer
+
+`official-scorer/` holds the answers in LongMemEval's hypothesis format and the output of its own scorer:
+
+- `curate-gpt-5.jsonl`, `curate-gpt-5-mini.jsonl`: one `{"question_id", "hypothesis"}` line per question.
+- `*.eval-results-gpt-4o`: the scorer's verdict for every question (`autoeval_label`, judge `gpt-4o-2024-08-06`).
+- `metrics.txt`: the output of LongMemEval's `print_qa_metrics.py`.
+
+Score the answers again with LongMemEval's own code at commit `9e0b455f4ef0e2ab8f2e582289761153549043fc`:
+
+```sh
+python src/evaluation/evaluate_qa.py gpt-4o curate-gpt-5.jsonl longmemeval_s_cleaned.json
+python src/evaluation/print_qa_metrics.py curate-gpt-5.jsonl.eval-results-gpt-4o longmemeval_s_cleaned.json
+```
+
+The GPT-4o judge is not fully deterministic, so a rerun can differ by a question or two.
+
+`SHA256SUMS` lists a checksum for every file in this folder.

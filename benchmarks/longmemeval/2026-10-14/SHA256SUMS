@@ -1,0 +1,8 @@
+21b591f730a69f86d1fc72278352a24303d2a2483d14575a19dfec3d8da32c9a  mastra-gpt-5-mini.jsonl
+6e255cc5a033985fe8508016a790b1bb575ea75e3612ba4a7957476d49011f15  mem0-gpt-5.jsonl
+74337b2eee0075a0a63c55f8e8bf5420915de9b7ce42ed31042c5cfb9c0bfec4  scores.json
+21a5583e66f3599bc19cbacf3402661ec81686ed2d02dab75c746d28b0fea3e6  official-scorer/curate-gpt-5-mini.jsonl
+f33c04bf65d1685a1068592c417f3f789ffdf25e824d3a175a0a9b54cb5db370  official-scorer/curate-gpt-5-mini.jsonl.eval-results-gpt-4o
+2e91bce35cff818add231df132ab6f529d2aefc7647b29bae2cb3278ef006b1f  official-scorer/curate-gpt-5.jsonl
+3843d1acaa81887ed91b53382463cf5bd517b812058457eac8402cd015726a26  official-scorer/curate-gpt-5.jsonl.eval-results-gpt-4o
+54658eb024caabfbe2f8c99164546686a3902a13d54931741a5e5e34a848b441  official-scorer/metrics.txt

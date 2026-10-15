@@ -334,6 +334,17 @@ Every answer, verdict and log is in [the proof files](benchmarks/longmemeval/202
 The held-out 251 are the questions never used to tune Curate.
 The GPT-5-mini row answers the same saved logs; it asks no new decisions and writes no new logs.
 
+### LongMemEval's own scorer
+
+The same answers, judged by LongMemEval's own `evaluate_qa.py` (commit `9e0b455`) with its dated GPT-4o judge, `gpt-4o-2024-08-06`:
+
+| Answering model | Overall | Average of the six types | Abstention questions |
+| --- | --- | --- | --- |
+| **GPT-5** | **93.0** (465/500) | 92.1 | 29/30 |
+| **GPT-5-mini** | **92.2** (461/500) | 91.2 | 22/30 |
+
+The answers are in LongMemEval's own format (`question_id`, `hypothesis`), with the scorer's output for every question, in [`official-scorer/`](benchmarks/longmemeval/2026-10-14/official-scorer/). Anyone with the dataset and an OpenAI key can score them again.
+
 ### Against published systems
 
 | System | Answering model | Score | Answering context | Answering input cost | Full pipeline cost |
@@ -347,7 +358,7 @@ The GPT-5-mini row answers the same saved logs; it asks no new decisions and wri
 
 Costs are per question.
 
-- **On GPT-5, Curate scores above Mem0's committed result file** (94.0 against 93.4). Mem0's README states 94.4; no result file backs that figure.
+- **On GPT-5, Curate scores above Mem0's committed result file** (94.0 against 93.4, both marked by GPT-5). Mem0's README states 94.4; no result file backs that figure. With LongMemEval's own GPT-4o judge, Curate's GPT-5 answers score 93.0.
 - **On GPT-5-mini, Mastra's raw score is higher:** 93.6 against 92.0 per question, and 94.87 against 90.99 as an equal average of the six question types. Its answering model reads about 50 times more context.
 - **Curate has the highest adjusted score** of these systems, because its answering model reads the least context.
 
