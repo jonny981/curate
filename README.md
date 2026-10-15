@@ -308,6 +308,8 @@ No default drops evidence at a fixed count.
 Batch sizes change request size without dropping items.
 Extra searches must be supplied by the host; the packages do not generate them.
 See [core's options](packages/core/README.md) for search lines, local meaning search and user-set limits.
+`observe` is a further option there: it writes a dated observation log once per session, so later tasks select lines from the log instead of curating the whole history again.
+It is off by default and its score is not yet measured.
 
 ## Plain files and git
 

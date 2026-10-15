@@ -1,5 +1,6 @@
 export * from './pick.js';
 export * from './curate.js';
+export * from './observe.js';
 export * from './task.js';
 export * from './source.js';
 export * from './lanes.js';
