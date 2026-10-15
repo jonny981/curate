@@ -7,6 +7,7 @@ Finding a conversation is only the start: the agent needs the decision, why it w
 Curate ranks the sources, asks a small model narrow questions, and asks a writer to turn the evidence into a dated, cited log.
 The agent reads that log before starting work.
 It keeps its own tools and can explore the sources further.
+Curate is a library, not a service: there is no database and nothing to deploy. It keeps plain files and calls the models you give it.
 Curate is a handy assistant.
 
 ## Use it
@@ -376,15 +377,15 @@ The answers are in LongMemEval's own format (`question_id`, `hypothesis`), with 
 
 ### Against published systems
 
-| System | Answering model | Score | Answering context | Answering input cost | Full pipeline cost |
-| --- | --- | --- | --- | --- | --- |
-| **Curate** | GPT-5 | **94.0** | **580** | **$0.0007** | $0.49 at list prices (est.); $0.024 paid |
-| **Curate** | GPT-5-mini | 92.0 | 580 | $0.0001 | $0.48 at list prices (est.) |
-| **Curate, economic setting** | GPT-5-mini | 91.6 | 485 | $0.0001 | **$0.12** at list prices (est.) |
-| [Mem0 platform](https://github.com/mem0ai/memory-benchmarks/blob/4b61c5d31b9c668a12b4f5e78064248a02c82d2b/results/platform/longmemeval_results.json) | GPT-5 | 93.4 | 6,787 mean | $0.0085 | not published |
-| [Mastra observational memory](https://mastra.ai/research/observational-memory) | GPT-5-mini | 93.6 (94.87 by type) | ~30,000 mean | $0.0075 | ~$0.045 (est.) |
-| [Zep](https://getzep.com/research) | GPT-5.4 | 90.2 | 4,408 median | not priced | not published |
-| No memory: GPT-5 reads the whole history | GPT-5 | not run | ~122,000 | $0.153 | $0.153 |
+| System | What you run | Answering model | Score | Answering context | Answering input cost | Full pipeline cost |
+| --- | --- | --- | --- | --- | --- | --- |
+| **Curate** | A TypeScript library: plain files, no database | GPT-5 | **94.0** | **580** | **$0.0007** | $0.49 at list prices (est.); $0.024 paid |
+| **Curate** | A TypeScript library: plain files, no database | GPT-5-mini | 92.0 | 580 | $0.0001 | $0.48 at list prices (est.) |
+| **Curate, economic setting** | A TypeScript library: plain files, no database | GPT-5-mini | 91.6 | 485 | $0.0001 | **$0.12** at list prices (est.) |
+| [Mem0 platform](https://github.com/mem0ai/memory-benchmarks/blob/4b61c5d31b9c668a12b4f5e78064248a02c82d2b/results/platform/longmemeval_results.json) | Mem0's hosted platform | GPT-5 | 93.4 | 6,787 mean | $0.0085 | not published |
+| [Mastra observational memory](https://mastra.ai/research/observational-memory) | A TypeScript framework you run, with a storage provider | GPT-5-mini | 93.6 (94.87 by type) | ~30,000 mean | $0.0075 | ~$0.045 (est.) |
+| [Zep](https://getzep.com/research) | Zep's hosted service is its recommended setup | GPT-5.4 | 90.2 | 4,408 median | not priced | not published |
+| No memory: GPT-5 reads the whole history | Nothing | GPT-5 | not run | ~122,000 | $0.153 | $0.153 |
 
 Costs are per question.
 
@@ -400,6 +401,7 @@ Costs are per question.
   - The GPT-5 answer: $0.014 a question.
   - Curation: about 193,000 input tokens for the first call, 232,050 a question on average with repairs, on a ChatGPT subscription. At gpt-6.1-sol's list price of $2.00 per million input tokens and $10 per million output tokens (third-party price list, 11 October 2026), that is about $0.47 (est.).
 - **Mastra's full pipeline cost is an estimate:** its observer reads each history once with gemini-2.5-flash, at $0.30 per million input tokens (about $0.037), plus the answer. Observer output is not counted.
+- **What you run:** Mem0's result file comes from Mem0 Platform, its hosted service. Zep recommends its hosted service; its research page does not say which setup produced 90.2. Mastra's observational memory runs in its TypeScript framework with a storage provider. Curate needs no database and no server: it is a package that writes plain files and calls the decision model, curator and answering model you choose.
 - **Mem0 and Zep do not publish** their ingestion models or calls.
 - **Marking models differ:** GPT-5 for Curate's first row and for Mem0, GPT-4o for Curate's second row and for Mastra, GPT-5.4 for Zep.
 - **Token counting differs** too, including Zep's median in place of a mean. The rows compare roughly; they are not one controlled run.
