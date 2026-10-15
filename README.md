@@ -322,17 +322,42 @@ Dates let the writer distinguish an old decision from its replacement, even when
 ## Results
 
 LongMemEval tests whether a model can answer questions from a long chat history.
-Curate ran all 500 LongMemEval S questions at its package defaults (commit `aacb042`): every part of each history went to the decision model, every scored part went to the curator, and the curator wrote one log per question.
-The answering model read only that log.
+Curate ran all 500 LongMemEval S questions with its packages at commit `aacb042`, at two settings:
+
+- **Performance, the package default.** Every part of each history went to the decision model, every scored part went to the curator, and the curator wrote one log per question.
+- **Economic.** One option, `thresholds: { reference: 0.0146 }`: only the parts the decision model scored 0.0146 or more went to the curator, about 70 of a history's 851. 0.0146 is the highest cut that lost no answer message in an earlier measurement on the tuning questions.
+
+The answering model read only the log.
 Every answer, verdict and log is in [the proof files](benchmarks/longmemeval/2026-10-14/README.md).
 
-| Answering model and marker | All 500 | Held-out 251 | Context tokens (mean) | Adjusted score |
-| --- | --- | --- | --- | --- |
-| **GPT-5 answers, GPT-5 marks** | **94.0** (470/500) | 94.8 (238/251) | 580 | **99.0** |
-| **GPT-5-mini answers, GPT-4o marks** | **92.0** (460/500) | 93.6 (235/251) | 580 | **97.0** |
+| Setting | Answering model and marker | All 500 | Held-out 251 | Context tokens (mean) | Adjusted score | Cost per question (list, est.) |
+| --- | --- | --- | --- | --- | --- | --- |
+| **Performance** | GPT-5 answers, GPT-5 marks | **94.0** (470/500) | 94.8 (238/251) | 580 | **99.0** | $0.49 |
+| **Performance** | GPT-5-mini answers, GPT-4o marks | **92.0** (460/500) | 93.6 (235/251) | 580 | **97.0** | $0.48 |
+| **Economic** | GPT-5-mini answers, GPT-4o marks | **91.6** (458/500) | 93.6 (235/251) | 485 | **96.9** | **$0.12** |
 
 The held-out 251 are the questions never used to tune Curate.
-The GPT-5-mini row answers the same saved logs; it asks no new decisions and writes no new logs.
+The GPT-5-mini performance row answers the same saved logs as the GPT-5 row; it asks no new decisions and writes no new logs.
+The economic row reuses the performance run's saved decisions and writes new logs from fewer parts.
+Two runs of one setting differ by up to 8 questions on 249, so the two settings score the same within that noise.
+
+### Settings: dials for cost, speed and score
+
+Curate's options let each use set its own balance of cost, speed and score.
+An agent that must never miss a past decision can let the curator read everything; a service answering many questions can let it read less.
+These dials were measured on the 249 tuning questions, with gpt-6.1-sol curating unless named, GPT-5-mini answering and GPT-4o marking:
+
+| Dial | Parts the curator reads | Correct of 249 | Cost per question (list, est.) |
+| --- | --- | --- | --- |
+| Every scored part (performance) | 850 | 225 | $0.51 |
+| Decision score 0.0146 or more (economic) | 70 | 225, then 223 in the all-500 run | $0.13 |
+| Decision score 0.05 or more | 10 | 231, then 223 on a repeat | $0.11 |
+| Scaled top-k: the top 0.68 × N^0.8 of the keyword-and-label ranking | 150 | 229 | $0.18 |
+| gpt-6-luna as the curator, at three of these inputs | 10 to 850 | 217 to 221 | $0.015 to $0.043 |
+
+- **N** is the number of parts in the history.
+- **Speed:** at the performance setting, the median question took 20 seconds to a finished log (ranking 0.1 s, deciding 3.0 s, curating 16.9 s). The economic run did not record its time.
+- **At the economic setting, most of what the curator reads is instructions added to every call,** because the curator ran on a ChatGPT plan through the Codex CLI: the CLI's own instructions and the operator's global Codex instructions file.
 
 ### LongMemEval's own scorer
 
@@ -340,8 +365,12 @@ The same answers, judged by LongMemEval's own `evaluate_qa.py` (commit `9e0b455`
 
 | Answering model | Overall | Average of the six types | Abstention questions |
 | --- | --- | --- | --- |
-| **GPT-5** | **93.0** (465/500) | 92.1 | 29/30 |
-| **GPT-5-mini** | **92.2** (461/500) | 91.2 | 22/30 |
+| **GPT-5**, performance | **93.0** (465/500) | 92.1 | 29/30 |
+| **GPT-5-mini**, performance | **92.2** (461/500) | 91.2 | 22/30 |
+| **GPT-5-mini**, economic | **90.8** (454/500) | 89.3 | 23/30 |
+| **gpt-6.1-sol** through the Codex CLI, with gpt-6-luna curating | **88.2** (441/500) | 89.5 | 29/30 |
+
+The last row uses two models a ChatGPT plan offers: gpt-6-luna writes the log in place of gpt-6.1-sol, and gpt-6.1-sol answers through the Codex CLI in place of GPT-5. It loses most on multi-session questions (78.9 against 87.2 for GPT-5) and temporal ones (85.0 against 94.7), because Luna's logs average 158 tokens and leave out events that counting and date questions need. Its proof is in [`luna-sol/`](benchmarks/longmemeval/2026-10-14/luna-sol/).
 
 The answers are in LongMemEval's own format (`question_id`, `hypothesis`), with the scorer's output for every question, in [`official-scorer/`](benchmarks/longmemeval/2026-10-14/official-scorer/). Anyone with the dataset and an OpenAI key can score them again.
 
@@ -351,14 +380,15 @@ The answers are in LongMemEval's own format (`question_id`, `hypothesis`), with 
 | --- | --- | --- | --- | --- | --- |
 | **Curate** | GPT-5 | **94.0** | **580** | **$0.0007** | $0.49 at list prices (est.); $0.024 paid |
 | **Curate** | GPT-5-mini | 92.0 | 580 | $0.0001 | $0.48 at list prices (est.) |
-| [Mem0 platform](https://github.com/mem0ai/memory-benchmarks) | GPT-5 | 93.4 | 6,787 mean | $0.0085 | not published |
+| **Curate, economic setting** | GPT-5-mini | 91.6 | 485 | $0.0001 | **$0.12** at list prices (est.) |
+| [Mem0 platform](https://github.com/mem0ai/memory-benchmarks/blob/4b61c5d31b9c668a12b4f5e78064248a02c82d2b/results/platform/longmemeval_results.json) | GPT-5 | 93.4 | 6,787 mean | $0.0085 | not published |
 | [Mastra observational memory](https://mastra.ai/research/observational-memory) | GPT-5-mini | 93.6 (94.87 by type) | ~30,000 mean | $0.0075 | ~$0.045 (est.) |
 | [Zep](https://getzep.com/research) | GPT-5.4 | 90.2 | 4,408 median | not priced | not published |
 | No memory: GPT-5 reads the whole history | GPT-5 | not run | ~122,000 | $0.153 | $0.153 |
 
 Costs are per question.
 
-- **On GPT-5, Curate scores above Mem0's committed result file** (94.0 against 93.4, both marked by GPT-5). Mem0's README states 94.4; no result file backs that figure. With LongMemEval's own GPT-4o judge, Curate's GPT-5 answers score 93.0.
+- **On GPT-5, Curate scores above Mem0's committed result file** (94.0 against 93.4, both marked by GPT-5). With LongMemEval's own GPT-4o judge, Curate's GPT-5 answers score 93.0.
 - **On GPT-5-mini, Mastra's raw score is higher:** 93.6 against 92.0 per question, and 94.87 against 90.99 as an equal average of the six question types. Its answering model reads about 50 times more context.
 - **Curate has the highest adjusted score** of these systems, because its answering model reads the least context.
 
@@ -390,7 +420,8 @@ It counts the answering model's context, excluding decisions, curation and inges
 Every memory system reads the whole history with some model. Mem0 and Zep read it once, as messages arrive; Mastra's observer reads it once; Curate reads it for each question.
 Curate reads it twice per question: once with the decision model, at $0.042 per million tokens, and once with the curator.
 At the package defaults the curator reads every decided part, about 193,000 tokens a question.
-That makes the full pipeline the most expensive in the table at list prices, while the answering model, usually the most capable and costly one, reads 580 tokens.
+That makes the default pipeline the most expensive in the table at list prices, while the answering model, usually the most capable and costly one, reads 580 tokens.
+The economic setting cuts the curator's input to about 51,000 tokens a question and the list cost to $0.12, at the same score within run-to-run noise.
 
 ### What worked and what did not
 
@@ -402,23 +433,22 @@ These are measured results. "Tuning" means the 249 questions used to tune Curate
 - **One format repair.** About one question in six needed it; without it, one reply out of the expected format stopped a run.
 - **The curated log carries more than the evidence sessions.** On 98 tuning questions with GPT-4.1 answering and GPT-4o marking, the log alone (median 532 characters) scored 88. The sessions that contain the answer (median 27,797 characters) scored 83.
 - **Labels from the decision model reach answers that share no words with the question.** Keyword search alone reached 439 of the tuning half's 445 answer messages. With each part labelled by the kind of statement it holds, all 445 were reached at 38% of each history. This is not yet a default.
-- **Keeping a share of the ranking that grows with the history's size.** On the tuning half, keeping 0.68 × N^0.8 of the keyword-and-label ranking held 99% of the answer messages at every size from 127 to 8,475 parts. N is the number of parts. The larger sizes were built by adding other tuning questions' sessions. This is not yet a default.
+- **Scaled top-k: a share of the ranking that grows with the history's size.** On the tuning half, keeping 0.68 × N^0.8 of the keyword-and-label ranking held 99% of the answer messages at every size from 127 to 8,475 parts. N is the number of parts. The larger sizes were built by adding other tuning questions' sessions. With gpt-6.1-sol curating it scored 229 of 249. It is a dial, not the default.
+- **A low cut on decision scores.** Keeping parts scored 0.0146 or more scored 458 of 500 against 460 for keeping everything, at a quarter of the cost. It is the economic setting.
 
 **Did not work**
 
 - **Stopping when the decision model's yes rate falls to chance.** The best version lost answers at ranks 311 to 555 that it scored 0.63 to 0.87 once read. Answers are rare, and the rule stopped just before them.
-- **Fixed score cuts on the curator's input.** A cut at 0.05 dropped 8 of 438 answer messages on the tuning half.
+- **A higher cut on decision scores loses answers.** A cut at 0.05 dropped 8 of 438 answer messages on the tuning half; its score held within run-to-run noise (231 and 223 against 225).
+- **Sending left-out items back to the curator.** When the log cited no line for an item weighted 0.6 or more, a second pass sent that item back once. With gpt-6-luna curating it scored 216 and 218 of 249, against 217 without it. The answer messages Luna left out were mostly weighted 0.05 to 0.5, under the 0.6 bar, so the pass reached only 3 of the 12 wrong answers that had one. Sending back every uncited item instead, with no bar, cited 405 of the tuning half's 445 answer messages against 389 and scored 227 against 223 (Luna curating, gpt-6.1-sol answering, LongMemEval's scorer): inside the noise, for a second read of almost the whole history. It also fired on 11 of 249 questions with gpt-6.1-sol, where the items left out repeated facts already in the log.
+- **A cheaper curator.** gpt-6-luna scored below gpt-6.1-sol at every input tried (217 to 221 against 223 to 231 of 249). Its logs were a third as long and left out events the answer needed.
 - **Cutting the curator's input to a fixed number of parts.** The top 10, 15 or 25 parts each scored below all parts on 60 tuning questions.
 - **Decision questions written for each task, and questions about named things.** Neither beat the fitted question sets by more than the run-to-run noise.
 - **A keyword-only lane cut.** It missed 6 of 445 answer messages on the tuning half: three shared no words with the question, and three ranked below their lane's cut.
 
 ### Next
 
-The dials that reduce the curator's 193,000 tokens, to measure against the score on the saved decisions:
-
-- **Keep 0.68 × N^0.8 of the keyword-and-label ranking.** The curator then reads about 18% of the parts.
-- **A cheaper curator model.**
-- **A noise cut-off on decision scores.**
+- **Calling the curator without the Codex CLI's own instructions,** which are most of its input at the economic setting.
 - **Labels stored once per part with a cached decision,** so that the decision model reads each part once rather than for each question.
 
 ## Packages

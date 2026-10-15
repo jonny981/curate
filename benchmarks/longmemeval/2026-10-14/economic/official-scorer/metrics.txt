@@ -1,0 +1,13 @@
+== curate-gpt-5-mini.jsonl exit 0
+
+Evaluation results by task:
+	single-session-user: 0.9857 (70)
+	single-session-preference: 0.6667 (30)
+	single-session-assistant: 1.0 (56)
+	multi-session: 0.8571 (133)
+	temporal-reasoning: 0.9248 (133)
+	knowledge-update: 0.9231 (78)
+
+Task-averaged Accuracy: 0.8929
+Overall Accuracy: 0.908
+Abstention Accuracy: 0.7667 (30)
