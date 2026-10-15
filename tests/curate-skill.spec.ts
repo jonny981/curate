@@ -11,7 +11,7 @@ import { curate, pickFromSources, type CandidateReadRequest, type CandidateSourc
 import { chat } from '@curatejs/chat';
 import { gitHistory } from '@curatejs/git';
 // @ts-expect-error The standalone JavaScript command has no type declarations.
-import { allowedSession, curationEvidence, decisionAnswers, jevRequest, pickFullSources, rankMatches, parseArgs, parseSearches, parseSources, run, searchSource, sessionHeader, snapshotCodex } from '../skills/curate/run.mjs';
+import { allowedSession, curationEvidence, decisionAnswers, instructionsProfile, jevRequest, pickFullSources, rankMatches, parseArgs, parseSearches, parseSources, run, sandboxAvailable, searchSource, sessionHeader, snapshotCodex, subscription } from '../skills/curate/run.mjs';
 
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
@@ -767,5 +767,63 @@ describe('search line repair', () => {
     expect(record.status).toBe('complete');
     expect(record.searchRepairs).toBeUndefined();
     expect(record.searches).toEqual(searches());
+  });
+});
+
+describe('Codex global instructions', () => {
+  // The faked spawn stands in for Codex: it writes the reply file and exits 0.
+  async function call(isolated: boolean) {
+    const directory = await folder();
+    const home = join(directory, 'codex-home');
+    vi.stubEnv('CODEX_HOME', home);
+    vi.mocked(spawn).mockImplementation(((_command: string, args: string[]) => {
+      const child = new EventEmitter() as EventEmitter & {
+        stdout: EventEmitter;
+        stderr: EventEmitter;
+        stdin: { on: () => void; end: () => void };
+      };
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      child.stdin = { on: () => {}, end: () => queueMicrotask(() => {
+        writeFileSync(args[args.indexOf('-o') + 1]!, 'reply');
+        child.emit('close', 0);
+      }) };
+      return child;
+    }) as unknown as typeof spawn);
+    const record = { subscription: [] as { globalInstructions?: string }[] };
+    expect(await subscription('prompt', directory, 'curator', record, async () => {}, isolated)).toBe('reply');
+    const [command, args] = vi.mocked(spawn).mock.calls[0]! as unknown as [string, string[]];
+    return { command, args, record, home };
+  }
+
+  it('runs Codex in a sandbox that cannot read the global instructions, and without the skills list', async () => {
+    const { command, args, record, home } = await call(true);
+    expect(command).toBe('/usr/bin/sandbox-exec');
+    expect(args.slice(0, 3)).toEqual(['-p', instructionsProfile(), 'codex']);
+    expect(args[1]).toContain(`(literal ${JSON.stringify(join(home, 'AGENTS.md'))})`);
+    expect(args[args.indexOf('skills.include_instructions=false') - 1]).toBe('-c');
+    expect(record.subscription[0]?.globalInstructions).toBe('hidden');
+  });
+
+  it('without a working sandbox, still leaves out the skills list and records that the global instructions were sent', async () => {
+    const { command, args, record } = await call(false);
+    expect(command).toBe('codex');
+    expect(args[0]).toBe('exec');
+    expect(args[args.indexOf('skills.include_instructions=false') - 1]).toBe('-c');
+    expect(record.subscription[0]?.globalInstructions).toBe('sent');
+  });
+
+  it.skipIf(!sandboxAvailable())('the sandbox refuses the global instructions, also through a symbolic link, and nothing else', async () => {
+    const directory = await realpath(await folder());
+    const home = join(directory, 'codex-home');
+    await mkdir(home);
+    await writeFile(join(directory, 'shared.md'), 'personal');
+    await symlink(join(directory, 'shared.md'), join(home, 'AGENTS.md'));
+    await writeFile(join(home, 'auth.json'), 'login');
+    const read = (file: string) => execFileSync('/usr/bin/sandbox-exec', ['-p', instructionsProfile(home), 'cat', file],
+      { encoding: 'utf8', stdio: 'pipe' });
+    expect(() => read(join(home, 'AGENTS.md'))).toThrow(/Operation not permitted/);
+    expect(() => read(join(directory, 'shared.md'))).toThrow(/Operation not permitted/);
+    expect(read(join(home, 'auth.json'))).toBe('login');
   });
 });

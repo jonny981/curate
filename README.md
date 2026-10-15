@@ -288,6 +288,10 @@ Without `--sources`, the script reads `~/.curate/sources.json`.
 It prints the log and saves the log, source reads, model usage and timings under `~/.curate/runs/`.
 Jev calls cost money; price the source feed and approve that spend before running the skill.
 Subscription route failures never fall back to an API.
+Codex sends your global Codex instructions (`~/.codex/AGENTS.md`) with every call, and Codex 0.162.1 has no option to leave them out.
+On macOS the skill runs Codex in a sandbox that cannot read that file.
+On other systems, and when the skill itself runs inside another macOS sandbox, your global Codex instructions go into every search and curator call: they cost tokens and can steer the log.
+The run record says which happened for each call.
 
 ## Rank, decide, curate
 

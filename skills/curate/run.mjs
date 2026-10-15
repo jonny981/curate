@@ -1,5 +1,5 @@
-import { spawn } from 'node:child_process';
-import { closeSync, constants, openSync, readSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { closeSync, constants, openSync, readSync, realpathSync } from 'node:fs';
 import { copyFile, mkdir, readFile, readdir, realpath, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -150,7 +150,22 @@ export function decisionAnswers(batch, raw) {
   }));
 }
 
-async function subscription(prompt, folder, label, record, save) {
+// Codex sends the user's global Codex instructions ($CODEX_HOME/AGENTS.md) with every call, and codex-cli
+// 0.162.1 has no flag or setting that leaves them out. Where macOS sandbox-exec works, Codex runs in a sandbox
+// that cannot read them. Elsewhere, including inside another macOS sandbox, where sandbox-exec cannot start,
+// they are sent.
+export function sandboxAvailable() {
+  return process.platform === 'darwin'
+    && spawnSync('/usr/bin/sandbox-exec', ['-p', '(version 1)(allow default)', '/usr/bin/true']).status === 0;
+}
+
+export function instructionsProfile(home = process.env.CODEX_HOME ? resolve(process.env.CODEX_HOME) : join(homedir(), '.codex')) {
+  const paths = new Set(['AGENTS.override.md', 'AGENTS.md'].map((name) => join(home, name))
+    .flatMap((file) => { try { return [file, realpathSync(file)]; } catch { return [file]; } }));
+  return `(version 1)\n(allow default)\n(deny file-read* file-write*${[...paths].map((path) => ` (literal ${JSON.stringify(path)})`).join('')})\n`;
+}
+
+export async function subscription(prompt, folder, label, record, save, isolated = sandboxAvailable()) {
   for (;;) {
     const number = record.subscription.filter((call) => call.label === label).length + 1;
     const output = join(folder, `${label}-${number}.txt`);
@@ -160,9 +175,10 @@ async function subscription(prompt, folder, label, record, save) {
     const args = ['exec', '--ignore-user-config', '--ignore-rules', '--ephemeral', '--skip-git-repo-check',
       '-C', folder, '-s', 'read-only', '-m', 'gpt-6.1-sol', '-c', 'model_reasoning_effort="low"',
       '-c', 'features.memories=false', '-c', 'model_provider="openai"', '-c', 'forced_login_method="chatgpt"',
-      '-c', 'project_doc_max_bytes=0', '--json', '-o', output, '-'];
+      '-c', 'project_doc_max_bytes=0', '-c', 'skills.include_instructions=false', '--json', '-o', output, '-'];
+    const [command, argv] = isolated ? ['/usr/bin/sandbox-exec', ['-p', instructionsProfile(), 'codex', ...args]] : ['codex', args];
     const result = await new Promise((resolveResult, reject) => {
-      const child = spawn('codex', args, { env, stdio: ['pipe', 'pipe', 'pipe'] });
+      const child = spawn(command, argv, { env, stdio: ['pipe', 'pipe', 'pipe'] });
       let stdout = '', stderr = '';
       child.stdout.on('data', (chunk) => { stdout += chunk; });
       child.stderr.on('data', (chunk) => { stderr += chunk; });
@@ -175,7 +191,7 @@ async function subscription(prompt, folder, label, record, save) {
     await writeFile(join(folder, `${label}-${number}.stderr`), result.stderr);
     const events = result.stdout.split('\n').filter(Boolean).map((line) => { try { return JSON.parse(line); } catch { return {}; } });
     record.subscription.push({ label, attempt: number, code: result.code, ms: Date.now() - started,
-      usage: events.filter((event) => event.type === 'turn.completed').map((event) => event.usage) });
+      globalInstructions: isolated ? 'hidden' : 'sent', usage: events.filter((event) => event.type === 'turn.completed').map((event) => event.usage) });
     await save();
     if (result.code === 0) return readFile(output, 'utf8');
     const errors = [result.stderr, ...events.filter((event) => event.type === 'error' || event.type === 'turn.failed').map((event) => JSON.stringify(event))].join('\n');
