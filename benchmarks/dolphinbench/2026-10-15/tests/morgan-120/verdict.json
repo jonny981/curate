@@ -1,0 +1,42 @@
+{
+  "passed": false,
+  "checks": [
+    {
+      "check": 0,
+      "name": "morgan_120_00",
+      "passed": false,
+      "judged": false,
+      "reason": "no distinct call satisfies every check for this action",
+      "judge_messages": null
+    },
+    {
+      "check": 1,
+      "name": "morgan_120_01",
+      "passed": false,
+      "judged": true,
+      "reason": "no distinct call satisfies every check for this action",
+      "judge_messages": [
+        {
+          "role": "system",
+          "content": "You are an impartial grader evaluating whether a completed action satisfies a CRITERION. You will be given:\n  - The VALUE extracted from a tool call or agent output (as JSON)\n  - CONTEXT containing the user's request, the action's arguments, and the date when available\n  - A CRITERION describing what the value must satisfy\n\nDecide binary PASS or FAIL strictly on the criterion. No partial credit. Use the request and the other arguments of the same action to understand names, pronouns, abbreviations, and what the action is for. Accept different wording that communicates the same required meaning. Do not require a message to repeat its recipient's name. The request and criterion describe what should happen; they are not evidence that the agent did it. Do not supply a missing answer from them or from a different action. Fail when the completed action omits, contradicts, or leaves unclear a required meaning. Output ONLY valid JSON in this shape:\n\n{\"passed\": true, \"reason\": \"a concise explanation naming the exact supporting text or the exact missing requirement\"}\n\nNo prose, no markdown fences."
+        },
+        {
+          "role": "user",
+          "content": "VALUE (as JSON):\n\"The Q3 2022 weekend incident should have taught us that a small blast radius and lucky timing do not make a late deploy safe. The underlying risk was the same one that later surfaced in March: people were offline, rollback ownership was unclear, and response time stretched the impact.\\n\\nWe should have documented the lesson immediately: no production pushes after 3pm Friday unless the full on-call roster is online and ready to respond. The gate should block by default; exceptions require Morgan\\u2019s explicit approval. Writing that rule then could have prevented March\\u2019s late-deploy coverage problem from recurring.\"\n\nCONTEXT: {\"user_request\": \"Create a short late-deploy coverage note explaining what the Q3 2022 weekend incident should have taught us before the later March outage.\", \"today\": \"2026-09-14\", \"tool\": \"create_doc\", \"arguments\": {\"title\": \"Late-Deploy Coverage Note\", \"body\": \"The Q3 2022 weekend incident should have taught us that a small blast radius and lucky timing do not make a late deploy safe. The underlying risk was the same one that later surfaced in March: people were offline, rollback ownership was unclear, and response time stretched the impact.\\n\\nWe should have documented the lesson immediately: no production pushes after 3pm Friday unless the full on-call roster is online and ready to respond. The gate should block by default; exceptions require Morgan\\u2019s explicit approval. Writing that rule then could have prevented March\\u2019s late-deploy coverage problem from recurring.\", \"folder\": \"engineering\"}, \"field_being_checked\": \"result.document.body\"}\n\nCRITERION:\nExplains that the earlier incident had a smaller blast radius and lucky timing but exposed the same late-deploy coverage problem as March. The team failed to document it or codify the rule, which should have happened then. Does not invent the rule's exact hours or staffing numbers.\n\nReturn the JSON verdict now."
+        },
+        {
+          "role": "assistant",
+          "content": "{\"passed\":false,\"reason\":\"The note invents a specific cutoff and staffing requirement: “no production pushes after 3pm Friday unless the full on-call roster is online,” violating the requirement not to invent exact hours or staffing numbers.\"}",
+          "duration_ms": 5016.548000043258,
+          "usage": {
+            "input_tokens": 4546,
+            "cached_input_tokens": 0,
+            "cache_write_input_tokens": 0,
+            "output_tokens": 113,
+            "reasoning_output_tokens": 58
+          }
+        }
+      ]
+    }
+  ]
+}

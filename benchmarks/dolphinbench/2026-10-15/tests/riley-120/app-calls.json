@@ -1,0 +1,21 @@
+[
+  {
+    "tool": "create_doc",
+    "args": {
+      "title": "July 2023 analysis ownership card",
+      "body": "# July 2023 analysis ownership card\n\nScope: July 2023 only. These were temporary July work assignments, not a current standing org rule or permanent org chart.\n\n- Helio Start baseline analysis — Default owner: Owen. Owned the first-pass baseline readout shape, including the measurement cut, sample, caveats, and unusable evidence.\n- Retained-mid expansion eligibility analysis — Default owner: Owen. Owned the first-pass eligibility and measurement cuts for Expansion Assist exploration, including sample, caveats, and unusable evidence.\n\nThe lanes were distinct: guarded Helio Start pre-discovery analysis remained separate from retained-mid expansion eligibility analysis. Riley retained decision rules and executive tradeoffs; this card records the July allocation only.",
+      "folder": "Operating Archive"
+    },
+    "result": {
+      "ok": true,
+      "document": {
+        "id": "doc_8d25a400d8074c9c94a84aa3a17925c2",
+        "title": "July 2023 analysis ownership card",
+        "body": "# July 2023 analysis ownership card\n\nScope: July 2023 only. These were temporary July work assignments, not a current standing org rule or permanent org chart.\n\n- Helio Start baseline analysis — Default owner: Owen. Owned the first-pass baseline readout shape, including the measurement cut, sample, caveats, and unusable evidence.\n- Retained-mid expansion eligibility analysis — Default owner: Owen. Owned the first-pass eligibility and measurement cuts for Expansion Assist exploration, including sample, caveats, and unusable evidence.\n\nThe lanes were distinct: guarded Helio Start pre-discovery analysis remained separate from retained-mid expansion eligibility analysis. Riley retained decision rules and executive tradeoffs; this card records the July allocation only.",
+        "folder": "Operating Archive",
+        "created_at": "2026-10-15T20:42:44.091457Z",
+        "url": "https://docs.mock/doc_8d25a400d8074c9c94a84aa3a17925c2"
+      }
+    }
+  }
+]

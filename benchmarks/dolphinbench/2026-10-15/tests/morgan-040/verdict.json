@@ -1,0 +1,58 @@
+{
+  "passed": true,
+  "checks": [
+    {
+      "check": 0,
+      "name": "morgan_040_00",
+      "passed": true,
+      "judged": false,
+      "reason": "comparison passed",
+      "judge_messages": null
+    },
+    {
+      "check": 1,
+      "name": "morgan_040_01",
+      "passed": true,
+      "judged": false,
+      "reason": "comparison passed",
+      "judge_messages": null
+    },
+    {
+      "check": 2,
+      "name": "morgan_040_02",
+      "passed": true,
+      "judged": false,
+      "reason": "comparison passed",
+      "judge_messages": null
+    },
+    {
+      "check": 3,
+      "name": "morgan_040_03",
+      "passed": true,
+      "judged": true,
+      "reason": "The content states “quarterly cohorts only” for the board and says weekly cuts are internal, “directional,” and “not board-facing,” while still allowing weekly operating analysis.",
+      "judge_messages": [
+        {
+          "role": "system",
+          "content": "You are an impartial grader evaluating whether a completed action satisfies a CRITERION. You will be given:\n  - The VALUE extracted from a tool call or agent output (as JSON)\n  - CONTEXT containing the user's request, the action's arguments, and the date when available\n  - A CRITERION describing what the value must satisfy\n\nDecide binary PASS or FAIL strictly on the criterion. No partial credit. Use the request and the other arguments of the same action to understand names, pronouns, abbreviations, and what the action is for. Accept different wording that communicates the same required meaning. Do not require a message to repeat its recipient's name. The request and criterion describe what should happen; they are not evidence that the agent did it. Do not supply a missing answer from them or from a different action. Fail when the completed action omits, contradicts, or leaves unclear a required meaning. Output ONLY valid JSON in this shape:\n\n{\"passed\": true, \"reason\": \"a concise explanation naming the exact supporting text or the exact missing requirement\"}\n\nNo prose, no markdown fences."
+        },
+        {
+          "role": "user",
+          "content": "VALUE (as JSON):\n\"Board cohort-chart cadence: quarterly cohorts only.\\n\\nWeekly operating cuts are reviewed separately for internal operating decisions; they remain directional and are not board-facing.\"\n\nCONTEXT: {\"user_request\": \"Replace slide 6 of Q3_2026_Board_PreRead with the appropriate board cohort-chart cadence and a note on internal weekly cuts. The draft currently proposes weekly cohorts for the board.\", \"today\": \"2026-09-14\", \"tool\": \"update_deck_slide\", \"arguments\": {\"deck\": \"Q3_2026_Board_PreRead\", \"slide\": 6, \"content\": \"Board cohort-chart cadence: quarterly cohorts only.\\n\\nWeekly operating cuts are reviewed separately for internal operating decisions; they remain directional and are not board-facing.\"}, \"field_being_checked\": \"result.slide.content\"}\n\nCRITERION:\nUses quarterly cohorts for the board chart and keeps weekly cuts internal with a clear directional-only caveat. Does not prohibit all internal weekly analysis or permit weekly cohorts as the external board view.\n\nReturn the JSON verdict now."
+        },
+        {
+          "role": "assistant",
+          "content": "{\"passed\":true,\"reason\":\"The content states “quarterly cohorts only” for the board and says weekly cuts are internal, “directional,” and “not board-facing,” while still allowing weekly operating analysis.\"}",
+          "duration_ms": 3892.184958094731,
+          "usage": {
+            "input_tokens": 4358,
+            "cached_input_tokens": 0,
+            "cache_write_input_tokens": 0,
+            "output_tokens": 48,
+            "reasoning_output_tokens": 0
+          }
+        }
+      ]
+    }
+  ]
+}

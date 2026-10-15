@@ -1,0 +1,50 @@
+{
+  "passed": true,
+  "checks": [
+    {
+      "check": 0,
+      "name": "riley_180_00",
+      "passed": true,
+      "judged": false,
+      "reason": "comparison passed",
+      "judge_messages": null
+    },
+    {
+      "check": 1,
+      "name": "riley_180_01",
+      "passed": true,
+      "judged": false,
+      "reason": "comparison passed",
+      "judge_messages": null
+    },
+    {
+      "check": 2,
+      "name": "riley_180_02",
+      "passed": true,
+      "judged": true,
+      "reason": "The comment states: “Riley Tanaka owns the customer-correction and state-change decision,” “Daniela Schultz controls the production release and rollback,” and “Ines Kovac is restricted from executing this correction or release; she does not have engineering release-control access.”",
+      "judge_messages": [
+        {
+          "role": "system",
+          "content": "Evaluate each named criterion independently\nagainst its extracted value and the complete arguments of this SAME tool call.\nReturn one Boolean verdict and a concise evidence-based reason per check_id.\nDo not combine criteria into a holistic score or add requirements.\n\nUse the request and same-call arguments to resolve names, pronouns, abbreviations,\nand intended authorship. Accept equivalent wording that communicates the required\nmeaning. A first-person document written for the requesting user can refer to\nthat user as I; do not demand repetition of a name when authorship is clear.\nThe request and criteria are not evidence that the action included an answer.\nMissing, incomplete, ambiguous, contradictory, or negated REQUIRED meaning fails.\nDo not confuse mentioning a forbidden claim in an explicit denial with making\nthat claim. Do not obtain missing content from another call or criterion.\n\nReturn only JSON: {\"results\": [{\"check_id\": \"supplied ID\", \"passed\": true,\n\"reason\": \"exact supporting text or missing requirement\"}]}.\nInclude every supplied check_id exactly once and no additional IDs.\n"
+        },
+        {
+          "role": "user",
+          "content": "{\"user_request\": \"Review `doc_lifecycle_entitlement_correction_2028` and post a concise comment correcting the decision-rights assignment for this customer correction and its production release. Name the person who owns the decision, the person who controls the production release, and the person who is restricted from executing it. State whether the restricted person has engineering release-control access. Do not edit the document itself.\", \"today\": \"2028-01-01\", \"tool\": \"post_doc_comment\", \"arguments\": {\"doc_id\": \"doc_lifecycle_entitlement_correction_2028\", \"body\": \"Correction: Riley Tanaka owns the customer-correction and state-change decision. Daniela Schultz controls the production release and rollback. Ines Kovac is restricted from executing this correction or release; she does not have engineering release-control access.\"}, \"checks\": [{\"check_id\": \"riley_180_02\", \"path\": \"args\", \"criterion\": \"The comment clearly corrects the proposal by assigning Riley the decision authority for this customer correction and state-changing matter. Missing, ambiguous, or contradictory ownership must fail.\\n\\nThe comment clearly states that Daniela retains engineering control of the production release. Missing, ambiguous, or contradictory release ownership must fail.\\n\\nThe comment clearly states that Ines cannot execute or control the engineering production release because she has no engineering release-control access. Missing or contradicted restriction must fail.\", \"value\": {\"doc_id\": \"doc_lifecycle_entitlement_correction_2028\", \"body\": \"Correction: Riley Tanaka owns the customer-correction and state-change decision. Daniela Schultz controls the production release and rollback. Ines Kovac is restricted from executing this correction or release; she does not have engineering release-control access.\"}}]}"
+        },
+        {
+          "role": "assistant",
+          "content": "{\"results\":[{\"check_id\":\"riley_180_02\",\"passed\":true,\"reason\":\"The comment states: “Riley Tanaka owns the customer-correction and state-change decision,” “Daniela Schultz controls the production release and rollback,” and “Ines Kovac is restricted from executing this correction or release; she does not have engineering release-control access.”\"}]}",
+          "duration_ms": 4060.6442079879344,
+          "usage": {
+            "input_tokens": 4486,
+            "cached_input_tokens": 0,
+            "cache_write_input_tokens": 0,
+            "output_tokens": 80,
+            "reasoning_output_tokens": 0
+          }
+        }
+      ]
+    }
+  ]
+}

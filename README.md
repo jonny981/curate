@@ -423,6 +423,33 @@ Halving the context adds about 1.5 points; doubling it removes about 1.5.
 Adjusted score is a custom measure, not LongMemEval's official score.
 It counts the answering model's context, excluding decisions, curation and ingestion work.
 
+### DolphinBench: Mem0's benchmark, a 30-test slice\*
+
+[DolphinBench](https://dolphinbench.ai/) is Mem0's agent-memory benchmark.
+An agent gets a request and real app tools (email, calendar, Slack, CRM and more), and the benchmark grades what the agent does, using facts from up to five years of one person's messages.
+Curate ran 30 of its 600 tests in performance mode: Jev scored every part of the person's history, about 5,500 parts, the curator wrote a dated log, and the agent read only that log.
+
+| System | Agent | Passed, of these 30 | List cost a test |
+| --- | --- | --- | --- |
+| **Curate, performance mode** | GPT-5.6 Luna, high, through the Codex CLI | **23** | $3.24 (est.) |
+| Honcho | GPT-5.6 Luna, high, in Hermes | 21 | $0.24 |
+| Mem0 | GPT-5.6 Luna, high, in Hermes | 20 | $0.16 |
+| Hindsight | GPT-5.6 Luna, high, in Hermes | 19 | $0.14 |
+| Hermes built-in memory | GPT-5.6 Luna, high, in Hermes | 17 | $0.10 |
+| No memory | GPT-5.6 Luna, high, through the Codex CLI | 0 | |
+| The test's own fact messages, given directly | GPT-5.6 Luna, high, through the Codex CLI | 29 | |
+
+The published systems' results are their own per-test files in the DolphinBench repository; their costs are each published run's total over 600 tests.
+Every Curate log, app call and verdict is in [the proof files](benchmarks/dolphinbench/2026-10-15/README.md).
+
+\* **Small print**
+
+- **Unofficial.** This is not a DolphinBench submission. The model-judged checks ran on gpt-5.6-sol through the Codex CLI, not the benchmark's own judge setup. On Mem0's published tool calls for these 30 tests, this judge agreed with Mem0's published verdicts on all 30.
+- **A slice.** 30 of 600 tests: every 20th test for each of the three people. One test is 3.3 points, and published systems change order on slices this small.
+- **A different agent harness.** The agent ran in the Codex CLI with only the test's app tools, not in Hermes, with the same model and reasoning setting as the published runs.
+- **One run.** On 23 of these tests, two runs of the same logs passed 18 and 16.
+- **Cost.** In performance mode the curator reads the whole history for every test, about 1.3 million tokens, so Curate's list cost is about 20 times Mem0's. Here the curator ran on a ChatGPT plan, and the paid cost was Jev's, about $0.10 a test.
+
 ### Where the cost goes
 
 Every memory system reads the whole history with some model. Mem0 and Zep read it once, as messages arrive; Mastra's observer reads it once; Curate reads it for each question.

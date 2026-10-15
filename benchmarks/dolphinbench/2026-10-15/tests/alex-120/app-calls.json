@@ -1,0 +1,21 @@
+[
+  {
+    "tool": "create_doc",
+    "args": {
+      "title": "Historical Note: Alex’s Informal Responsibility for Older Services",
+      "body": "On May 2, 2023, Alex’s runbook-audit inventory identified two older services he treated as informal responsibility because ownership was incomplete: legacy-aggregator and metric-rollup.\n\nLegacy-aggregator was still involved in migration-era behavior and recurring cardinality and bucket-flush issues, so Alex “kinda owned” it while the migration was unfinished. Metric-rollup was a separate, deprecated service that was effectively unowned in practice. It was not the same as rollup-service, the active downstream service later owned by the Data Platform/Cyrus team. Alex’s later guidance was to leave metric-rollup untouched and name rollup-service explicitly in operational references.",
+      "folder": "historical-notes"
+    },
+    "result": {
+      "ok": true,
+      "document": {
+        "id": "doc_8c28b5db50ac4bd59732fd940daae376",
+        "title": "Historical Note: Alex’s Informal Responsibility for Older Services",
+        "body": "On May 2, 2023, Alex’s runbook-audit inventory identified two older services he treated as informal responsibility because ownership was incomplete: legacy-aggregator and metric-rollup.\n\nLegacy-aggregator was still involved in migration-era behavior and recurring cardinality and bucket-flush issues, so Alex “kinda owned” it while the migration was unfinished. Metric-rollup was a separate, deprecated service that was effectively unowned in practice. It was not the same as rollup-service, the active downstream service later owned by the Data Platform/Cyrus team. Alex’s later guidance was to leave metric-rollup untouched and name rollup-service explicitly in operational references.",
+        "folder": "historical-notes",
+        "created_at": "2026-10-15T20:41:36.700161Z",
+        "url": "https://docs.mock/doc_8c28b5db50ac4bd59732fd940daae376"
+      }
+    }
+  }
+]

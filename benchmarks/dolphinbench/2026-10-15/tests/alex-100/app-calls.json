@@ -1,0 +1,21 @@
+[
+  {
+    "tool": "create_doc",
+    "args": {
+      "title": "Historical note — Mosaic Commerce live-ramp evidence",
+      "body": "On October 6, 2025, Wes operated the scheduled Mosaic Commerce production ramp, which reached 16.0 million data points per minute while queue and health checks remained within the established limits. His independent operation of that live ramp was retained as formal evidence in the later metrics-router ownership review.",
+      "folder": "default"
+    },
+    "result": {
+      "ok": true,
+      "document": {
+        "id": "doc_53909fcae401446887ace0b009b68fb8",
+        "title": "Historical note — Mosaic Commerce live-ramp evidence",
+        "body": "On October 6, 2025, Wes operated the scheduled Mosaic Commerce production ramp, which reached 16.0 million data points per minute while queue and health checks remained within the established limits. His independent operation of that live ramp was retained as formal evidence in the later metrics-router ownership review.",
+        "folder": "default",
+        "created_at": "2026-10-15T20:41:35.541303Z",
+        "url": "https://docs.mock/doc_53909fcae401446887ace0b009b68fb8"
+      }
+    }
+  }
+]

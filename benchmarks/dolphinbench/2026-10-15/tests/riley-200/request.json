@@ -1,0 +1,5 @@
+{
+  "test": "riley/200",
+  "request": "Create a new document titled `Helio Start 2028 bounded proposal worksheet`. Make it a reusable worksheet for a proposed 2028 Helio Start run, with fill-in sections for scope, owner, dates, budget, operating safeguards, and approval/sign-off. Prefill the maximum-admissions field using the Customer Success capacity we established. Set the approval section to Pending, and make clear that neither the staffing capacity nor this worksheet authorizes paid traffic or a launch; those require separate approval.",
+  "asked": "2028-01-01"
+}

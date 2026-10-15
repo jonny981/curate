@@ -1,0 +1,42 @@
+{
+  "passed": true,
+  "checks": [
+    {
+      "check": 0,
+      "name": "morgan_180_00",
+      "passed": true,
+      "judged": false,
+      "reason": "comparison passed",
+      "judge_messages": null
+    },
+    {
+      "check": 1,
+      "name": "morgan_180_01",
+      "passed": true,
+      "judged": true,
+      "reason": "The note says, “The deck was still deferred” and “The team was tightening launch work first rather than reopening the whole story,” which directly satisfies the criterion.",
+      "judge_messages": [
+        {
+          "role": "system",
+          "content": "You are an impartial grader evaluating whether a completed action satisfies a CRITERION. You will be given:\n  - The VALUE extracted from a tool call or agent output (as JSON)\n  - CONTEXT containing the user's request, the action's arguments, and the date when available\n  - A CRITERION describing what the value must satisfy\n\nDecide binary PASS or FAIL strictly on the criterion. No partial credit. Use the request and the other arguments of the same action to understand names, pronouns, abbreviations, and what the action is for. Accept different wording that communicates the same required meaning. Do not require a message to repeat its recipient's name. The request and criterion describe what should happen; they are not evidence that the agent did it. Do not supply a missing answer from them or from a different action. Fail when the completed action omits, contradicts, or leaves unclear a required meaning. Output ONLY valid JSON in this shape:\n\n{\"passed\": true, \"reason\": \"a concise explanation naming the exact supporting text or the exact missing requirement\"}\n\nNo prose, no markdown fences."
+        },
+        {
+          "role": "user",
+          "content": "VALUE (as JSON):\n\"## Investors\\n\\nThe deck was still deferred. The team was tightening launch work first rather than reopening the whole story.\"\n\nCONTEXT: {\"user_request\": \"Create a short standalone archive note reconstructing the Investors section of the May 5, 2023 Friday wrap.\", \"today\": \"2026-09-14\", \"tool\": \"create_doc\", \"arguments\": {\"title\": \"Archive note \\u2014 May 5, 2023 Friday wrap: Investors\", \"body\": \"## Investors\\n\\nThe deck was still deferred. The team was tightening launch work first rather than reopening the whole story.\", \"folder\": \"archive\"}, \"field_being_checked\": \"result.document.body\"}\n\nCRITERION:\nSays the deck remained deferred while launch work was tightened, not that the broader investor story was reopened. No other Friday-wrap sections are required.\n\nReturn the JSON verdict now."
+        },
+        {
+          "role": "assistant",
+          "content": "{\"passed\":true,\"reason\":\"The note says, “The deck was still deferred” and “The team was tightening launch work first rather than reopening the whole story,” which directly satisfies the criterion.\"}",
+          "duration_ms": 3624.044500058517,
+          "usage": {
+            "input_tokens": 4325,
+            "cached_input_tokens": 3712,
+            "cache_write_input_tokens": 0,
+            "output_tokens": 45,
+            "reasoning_output_tokens": 0
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+[
+  {
+    "tool": "create_doc",
+    "args": {
+      "title": "Sep 14 support-triage summary",
+      "body": "- Acme export docs cover resuming after disconnect and long date ranges; no failed export reported.\n- Evergreen needs clarity on active developers versus invited teammates, plus an inactive-invited example; handoff entry duplicates it.\n- Mercury tickets: missing invite email, unexpected role label, and stale teammate list; no shared cause.\n- Atlas has a JWT clock-skew question about timestamps; handoff reports no customer-impacting incident.",
+      "folder": null
+    },
+    "result": {
+      "ok": true,
+      "document": {
+        "id": "doc_fd16526419f64935bb1bb125a2aa9a6d",
+        "title": "Sep 14 support-triage summary",
+        "body": "- Acme export docs cover resuming after disconnect and long date ranges; no failed export reported.\n- Evergreen needs clarity on active developers versus invited teammates, plus an inactive-invited example; handoff entry duplicates it.\n- Mercury tickets: missing invite email, unexpected role label, and stale teammate list; no shared cause.\n- Atlas has a JWT clock-skew question about timestamps; handoff reports no customer-impacting incident.",
+        "folder": "default",
+        "created_at": "2026-10-15T20:40:41.616616Z",
+        "url": "https://docs.mock/doc_fd16526419f64935bb1bb125a2aa9a6d"
+      }
+    }
+  }
+]

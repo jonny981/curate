@@ -1,0 +1,21 @@
+[
+  {
+    "tool": "create_doc",
+    "args": {
+      "title": "June 2023 legacy status cleanup",
+      "body": "# June 2023 legacy status cleanup\n\nHistorical snapshot as of June 3, 2023. This note records project status only; it is not a current plan, approval, launch signal, or decision record.\n\n## Expansion-nudge experiment\n\n- `EXP-2023-05-expansion-nudge` was live, with a still-tiny sample.\n- It targeted retained mid-segment v2 accounts (75–200 seats) through the in-product, PostHog-flagged `expansion_nudge_60d_v1` prompt.\n- The early read was not sufficient for interpretation or rollout decisions.\n\n## Small-business-tier initiative\n\n- Discovery was moving into substantive June work.\n- The initiative was being treated as an internal self-serve operating-model effort, not a public pricing-page launch or Q3 promise.\n\n## Mid-segment churn documentation and related all-hands work\n\n- The churn investigation document and related all-hands work were complete (“done done now”).\n- The work covered the investigation method and reusable documentation framework; it was not an active investigation or launch project.\n\nAll statuses above are historical and should not be inferred as current activity, completion, approval, or decision readiness.",
+      "folder": "default"
+    },
+    "result": {
+      "ok": true,
+      "document": {
+        "id": "doc_4ee07b8c0ec0478387568d70563e1b6a",
+        "title": "June 2023 legacy status cleanup",
+        "body": "# June 2023 legacy status cleanup\n\nHistorical snapshot as of June 3, 2023. This note records project status only; it is not a current plan, approval, launch signal, or decision record.\n\n## Expansion-nudge experiment\n\n- `EXP-2023-05-expansion-nudge` was live, with a still-tiny sample.\n- It targeted retained mid-segment v2 accounts (75–200 seats) through the in-product, PostHog-flagged `expansion_nudge_60d_v1` prompt.\n- The early read was not sufficient for interpretation or rollout decisions.\n\n## Small-business-tier initiative\n\n- Discovery was moving into substantive June work.\n- The initiative was being treated as an internal self-serve operating-model effort, not a public pricing-page launch or Q3 promise.\n\n## Mid-segment churn documentation and related all-hands work\n\n- The churn investigation document and related all-hands work were complete (“done done now”).\n- The work covered the investigation method and reusable documentation framework; it was not an active investigation or launch project.\n\nAll statuses above are historical and should not be inferred as current activity, completion, approval, or decision readiness.",
+        "folder": "default",
+        "created_at": "2026-10-15T20:42:30.155986Z",
+        "url": "https://docs.mock/doc_4ee07b8c0ec0478387568d70563e1b6a"
+      }
+    }
+  }
+]

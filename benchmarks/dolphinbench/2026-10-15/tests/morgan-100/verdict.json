@@ -1,0 +1,29 @@
+{
+  "passed": false,
+  "checks": [
+    {
+      "check": 0,
+      "name": "morgan_100_00",
+      "passed": false,
+      "judged": false,
+      "reason": "no distinct call satisfies every check for this action",
+      "judge_messages": null
+    },
+    {
+      "check": 1,
+      "name": "morgan_100_01",
+      "passed": false,
+      "judged": false,
+      "reason": "no distinct call satisfies every check for this action",
+      "judge_messages": null
+    },
+    {
+      "check": 2,
+      "name": "morgan_100_02",
+      "passed": false,
+      "judged": false,
+      "reason": "no distinct call satisfies every check for this action",
+      "judge_messages": null
+    }
+  ]
+}

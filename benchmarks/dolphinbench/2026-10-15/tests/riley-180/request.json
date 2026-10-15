@@ -1,0 +1,5 @@
+{
+  "test": "riley/180",
+  "request": "Review `doc_lifecycle_entitlement_correction_2028` and post a concise comment correcting the decision-rights assignment for this customer correction and its production release. Name the person who owns the decision, the person who controls the production release, and the person who is restricted from executing it. State whether the restricted person has engineering release-control access. Do not edit the document itself.",
+  "asked": "2028-01-01"
+}

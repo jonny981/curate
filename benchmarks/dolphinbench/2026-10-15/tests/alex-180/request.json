@@ -1,0 +1,5 @@
+{
+  "test": "alex/180",
+  "request": "Inspect otel-schema#590 and review its production deployment.environment behavior across the metrics path. State the allowed and rejected values, missing-input behavior, per-tenant limit, and every production component that must show parity.",
+  "asked": "2028-01-01"
+}

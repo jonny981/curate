@@ -1,0 +1,40 @@
+[
+  {
+    "tool": "list_contacts",
+    "args": {},
+    "result": {
+      "contacts": [
+        {
+          "name": "Ren",
+          "email": "ren@example.com"
+        }
+      ]
+    }
+  },
+  {
+    "tool": "create_calendar_event",
+    "args": {
+      "title": "Bouldering with Ren",
+      "start": "2028-01-06T19:00-05:00",
+      "end": "2028-01-06T21:00-05:00",
+      "attendees": [
+        "ren@example.com"
+      ],
+      "body": "Start with the longer forearm warmup, then do easy open-hand traverses and vertical footwork. Check the repaired right shoe progressively with easy edging before gradually loading into harder attempts. Step back and contact the clinician if pain exceeds 2/10, symptoms last 30 minutes, or any symptoms appear the next morning."
+    },
+    "result": {
+      "ok": true,
+      "id": "evt_7d5d522de4734d2c989c09e8c59e6c5a",
+      "event": {
+        "id": "evt_7d5d522de4734d2c989c09e8c59e6c5a",
+        "attendees": [
+          "ren@example.com"
+        ],
+        "title": "Bouldering with Ren",
+        "start": "2028-01-06T19:00-05:00",
+        "end": "2028-01-06T21:00-05:00",
+        "body": "Start with the longer forearm warmup, then do easy open-hand traverses and vertical footwork. Check the repaired right shoe progressively with easy edging before gradually loading into harder attempts. Step back and contact the clinician if pain exceeds 2/10, symptoms last 30 minutes, or any symptoms appear the next morning."
+      }
+    }
+  }
+]

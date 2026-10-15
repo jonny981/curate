@@ -1,0 +1,5 @@
+{
+  "test": "riley/060",
+  "request": "Create a concise, current operating checklist for the lifecycle team covering routine-send release, audit and stop conditions, state-changing preflight requirements, and escalation. Use each person's name for routine release, preflight exceptions, customer corrections and incident stops, and engineering release controls. Do not use `you`, `the requester`, or a generic role in place of a person's name. Make the checklist usable without case-by-case approval of each low-risk send.",
+  "asked": "2028-01-01"
+}
