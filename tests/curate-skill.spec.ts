@@ -26,9 +26,11 @@ vi.mock('node:child_process', async (importOriginal) => {
   return { ...actual, spawn: vi.fn(actual.spawn) };
 });
 
+const realSpawn = vi.mocked(spawn).getMockImplementation()!;
 const directories: string[] = [];
 afterEach(async () => {
   vi.clearAllMocks();
+  vi.mocked(spawn).mockImplementation(realSpawn);
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
   await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
@@ -578,4 +580,192 @@ it('saves the pick record naming the rejected batch when the decision service fa
   expect(saved.pick?.decideError?.candidates?.length).toBeGreaterThan(0);
   const ids = new Set<string>((saved.pick?.candidates ?? []).map((entry: { id: string }) => entry.id));
   expect(saved.pick?.decideError?.candidates?.every((id: string) => ids.has(id))).toBe(true);
+});
+
+describe('search line repair', () => {
+  const searches = () => Object.fromEntries(['chat', 'git-history', 'markdown'].map((kind) => [
+    kind, { keywords: ['orchard', 'orchard trees'], answers: ['The orchard has trees.', 'Fruit trees grow here.'] },
+  ]));
+  const trailingComma = () => JSON.stringify(searches(), null, 2).replace(/(\n *)\]/, ',$1]');
+  const missingKind = () => {
+    const value: Record<string, unknown> = searches();
+    delete value['git-history'];
+    return JSON.stringify(value);
+  };
+
+  // The subscription model is the injected call; as the helper does, each
+  // reply is saved as <label>-<n>.txt in the run folder and recorded. The
+  // decide fetch is stubbed, so neither Codex nor Jev is contacted.
+  async function harness(replies: string[]) {
+    const directory = await folder();
+    const home = join(directory, 'home');
+    const notes = join(directory, 'notes');
+    await mkdir(home);
+    await mkdir(notes);
+    await writeFile(join(notes, 'orchard.md'), '# Orchard\n\nThe orchard has trees. Fruit trees grow here.\n');
+    const sourcesFile = join(directory, 'sources.json');
+    await writeFile(sourcesFile, JSON.stringify({ sources: [{ type: 'markdown', path: notes }] }));
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
+    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => new Response(JSON.stringify({
+      usage: null,
+      answers: Object.fromEntries(Object.keys(JSON.parse(String(init.body)).questions).map((key) => [key, { noul: 0.8 }])),
+    }))));
+    // A guard for the injection: the real helper would spawn Codex.
+    vi.mocked(spawn).mockImplementation((() => {
+      const child = new EventEmitter() as EventEmitter & {
+        stdout: EventEmitter;
+        stderr: EventEmitter;
+        stdin: { on: () => void; end: () => void };
+      };
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      child.stdin = { on: () => {}, end: () => queueMicrotask(() => child.emit('close', 1)) };
+      return child;
+    }) as unknown as typeof spawn);
+    const calls: { label: string; prompt: string }[] = [];
+    let runFolder = '';
+    const callSubscription = async (prompt: string, folder: string, label: string,
+      record: { subscription: { label: string; attempt: number; code: number }[] }, save: () => Promise<void>) => {
+      calls.push({ label, prompt });
+      runFolder = folder;
+      const number = record.subscription.filter((call) => call.label === label).length + 1;
+      record.subscription.push({ label, attempt: number, code: 0 });
+      const reply = label === 'searches' ? replies.shift()!
+        : [...prompt.matchAll(/^### (.+) \([^)]*\):/gm)]
+          .map((match) => `[2026-01-01] Orchard evidence ${match[1]} (said 2026-01-01; ${match[1]})`)
+          .join('\n');
+      writeFileSync(join(folder, `${label}-${number}.txt`), reply);
+      await save();
+      return reply;
+    };
+    const saved = async () => JSON.parse(await readFile(join(runFolder, 'record.json'), 'utf8'));
+    return { sourcesFile, calls, callSubscription, saved, folder: () => runFolder };
+  }
+
+  it('repairs a trailing-comma reply once and records one repair', async () => {
+    const bad = trailingComma();
+    const { sourcesFile, calls, callSubscription, saved, folder: runFolder } = await harness([bad, JSON.stringify(searches())]);
+    expect(await run(['--sources', sourcesFile, 'orchard'], callSubscription)).toBe(runFolder());
+    expect(calls.map((call) => call.label)).toEqual(['searches', 'searches', 'curator']);
+    expect(calls[1]?.prompt).toContain('TASK: orchard');
+    expect(calls[1]?.prompt).toContain(bad);
+    expect(calls[1]?.prompt).toContain('Unexpected token');
+    expect(calls[1]?.prompt).toContain('corrected and nothing else');
+    const record = await saved();
+    expect(record.status).toBe('complete');
+    expect(record.searchRepairs).toBe(1);
+    expect(record.searches).toEqual(searches());
+    expect(await readFile(join(runFolder(), 'searches-1.txt'), 'utf8')).toBe(bad);
+    expect(JSON.parse(await readFile(join(runFolder(), 'searches-2.txt'), 'utf8'))).toEqual(searches());
+    expect(vi.mocked(spawn)).not.toHaveBeenCalled();
+  });
+
+  it('repairs a reply whose JSON parses but is missing a source kind', async () => {
+    const bad = missingKind();
+    const { sourcesFile, calls, callSubscription, saved } = await harness([bad, JSON.stringify(searches())]);
+    await run(['--sources', sourcesFile, 'orchard'], callSubscription);
+    expect(calls.map((call) => call.label)).toEqual(['searches', 'searches', 'curator']);
+    expect(calls[1]?.prompt).toContain(bad);
+    expect(calls[1]?.prompt).toContain('keyword and hypothetical-answer');
+    const record = await saved();
+    expect(record.status).toBe('complete');
+    expect(record.searchRepairs).toBe(1);
+    expect(record.searches).toEqual(searches());
+  });
+
+  it('stops the run when the repair reply also fails, naming both failures', async () => {
+    const { sourcesFile, callSubscription, saved, folder: runFolder } = await harness([trailingComma(), missingKind()]);
+    const error = await run(['--sources', sourcesFile, 'orchard'], callSubscription).catch((caught: Error) => caught);
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message).toContain('Unexpected token');
+    expect(error.message).toContain('keyword and hypothetical-answer');
+    expect(error.message).toContain('searches-1.txt');
+    expect(error.message).toContain('searches-2.txt');
+    const record = await saved();
+    expect(record.status).toBe('failed');
+    expect(record.searchRepairs).toBe(1);
+    expect(await readFile(join(runFolder(), 'searches-1.txt'), 'utf8')).toBe(trailingComma());
+    expect(await readFile(join(runFolder(), 'searches-2.txt'), 'utf8')).toBe(missingKind());
+  });
+
+  // The real helper under a faked spawn: a capacity close on attempt 1
+  // is retried as attempt 2, so the two rejected replies hold later file
+  // numbers and the error must name those, not searches-1.txt. Only
+  // setTimeout is faked, for the 60-second capacity wait.
+  it('names the reply files a capacity attempt moved off searches-1.txt', async () => {
+    const directory = await folder();
+    const home = join(directory, 'home');
+    const notes = join(directory, 'notes');
+    await mkdir(home);
+    await mkdir(notes);
+    await writeFile(join(notes, 'orchard.md'), '# Orchard\n\nThe orchard has trees. Fruit trees grow here.\n');
+    const sourcesFile = join(directory, 'sources.json');
+    await writeFile(sourcesFile, JSON.stringify({ sources: [{ type: 'markdown', path: notes }] }));
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{}')));
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    let spawned = 0;
+    const replies = [trailingComma(), missingKind()];
+    vi.mocked(spawn).mockImplementation(((_command: string, args: string[]) => {
+      const child = new EventEmitter() as EventEmitter & {
+        stdout: EventEmitter;
+        stderr: EventEmitter;
+        stdin: { on: () => void; end: () => void };
+      };
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      spawned += 1;
+      const call = spawned;
+      child.stdin = { on: () => {}, end: () => queueMicrotask(() => {
+        if (call === 1) {
+          child.stderr.emit('data', 'Codex is at capacity.');
+          child.emit('close', 1);
+        } else {
+          writeFileSync(args[args.indexOf('-o') + 1]!, replies.shift()!);
+          child.emit('close', 0);
+        }
+      }) };
+      return child;
+    }) as unknown as typeof spawn);
+    try {
+      let settled = false;
+      const outcome = run(['--sources', sourcesFile, 'orchard'])
+        .then(() => null, (error: Error) => error)
+        .then((error: Error | null) => { settled = true; return error; });
+      while (!settled && vi.getTimerCount() === 0) await new Promise((resolve) => setImmediate(resolve));
+      await vi.advanceTimersByTimeAsync(60_000);
+      const error = await outcome;
+      expect(error).toBeInstanceOf(Error);
+      expect(error.message).toContain('Unexpected token');
+      expect(error.message).toContain('keyword and hypothetical-answer');
+      expect(error.message).toContain('searches-2.txt');
+      expect(error.message).toContain('searches-3.txt');
+      expect(error.message).not.toContain('searches-1.txt');
+      const runs = join(home, '.curate', 'runs');
+      const runFolder = join(runs, (await readdir(runs))[0]!);
+      expect(await readFile(join(runFolder, 'searches-2.txt'), 'utf8')).toBe(trailingComma());
+      expect(await readFile(join(runFolder, 'searches-3.txt'), 'utf8')).toBe(missingKind());
+      expect(await readdir(runFolder)).not.toContain('searches-1.txt');
+      expect(await readFile(join(runFolder, 'searches-1.stderr'), 'utf8')).toContain('capacity');
+      const record = JSON.parse(await readFile(join(runFolder, 'record.json'), 'utf8'));
+      expect(record.status).toBe('failed');
+      expect(record.searchRepairs).toBe(1);
+      expect(record.subscription.map((call: { label: string; attempt: number; code: number }) =>
+        [call.label, call.attempt, call.code])).toEqual([['searches', 1, 1], ['searches', 2, 0], ['searches', 3, 0]]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('makes no repair call when the first reply is valid', async () => {
+    const { sourcesFile, calls, callSubscription, saved } = await harness([JSON.stringify(searches())]);
+    await run(['--sources', sourcesFile, 'orchard'], callSubscription);
+    expect(calls.map((call) => call.label)).toEqual(['searches', 'curator']);
+    const record = await saved();
+    expect(record.status).toBe('complete');
+    expect(record.searchRepairs).toBeUndefined();
+    expect(record.searches).toEqual(searches());
+  });
 });

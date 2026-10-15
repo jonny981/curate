@@ -259,7 +259,7 @@ export function curationEvidence(picked, collectedDate) {
   }) };
 }
 
-export async function writeLog(task, picked, folder, record, save) {
+export async function writeLog(task, picked, folder, record, save, callSubscription = subscription) {
   const started = Date.now();
   const result = await curate(task, curationEvidence(picked, basenameDate(folder)), { write: async (prompt) => {
     const instructions = prompt.instructions + '\nFor UNDATED SOURCE items, say that the original statement date is unknown unless the source text explicitly dates that statement. Use the collection date for the said date; it dates the collected note, not the person\'s statement. If the event date is also unknown, use collection date with (when not stated). Do not resolve relative event phrases against a collection date; their event date stays unknown unless another cited source supplies the original statement date. Every said date must use YYYY-MM-DD. End each line at its final closing parenthesis, without a trailing period. Copy full source ids exactly from headers.';
@@ -267,7 +267,7 @@ export async function writeLog(task, picked, folder, record, save) {
     const number = record.subscription.filter((call) => call.label === 'curator').length + 1;
     await writeFile(join(folder, `curator-prompt-${number}.txt`), text, { mode: 0o600 });
     await writeFile(join(folder, 'curator-prompt.txt'), text, { mode: 0o600 });
-    return (await subscription(instructions + '\n\n' + prompt.body, folder, 'curator', record, save)).replace(/\)\.(?=\r?\n|$)/g, ')');
+    return (await callSubscription(instructions + '\n\n' + prompt.body, folder, 'curator', record, save)).replace(/\)\.(?=\r?\n|$)/g, ')');
   } });
   record.curate = result.record;
   record.timings.curateMs = Date.now() - started;
@@ -279,7 +279,29 @@ export async function writeLog(task, picked, folder, record, save) {
 
 function basenameDate(folder) { return folder.split(sep).at(-1).slice(0, 10); }
 
-export async function run(args = process.argv.slice(2)) {
+// The search reply gets one repair round, like the curator's log: a reply
+// that fails JSON parsing or the shape check goes back once with the
+// reason and the rejected text; a second failure stops the run.
+async function searchLines(prompt, folder, record, save, callSubscription) {
+  // The helper numbers each reply file by its attempt, which a capacity
+  // retry moves past 1; the record holds the number used for each reply.
+  const replyFile = () => `searches-${record.subscription.filter((call) => call.label === 'searches').at(-1).attempt}.txt`;
+  const first = await callSubscription(prompt, folder, 'searches', record, save);
+  try {
+    return parseSearches(JSON.parse(first));
+  } catch (firstError) {
+    record.searchRepairs = 1;
+    const firstFile = replyFile();
+    const repaired = await callSubscription(`${prompt}\n\nREJECTED REPLY (${firstError.message}):\n${first}\n\nReturn the same search lines corrected and nothing else.`, folder, 'searches', record, save);
+    try {
+      return parseSearches(JSON.parse(repaired));
+    } catch (secondError) {
+      throw new Error(`Search lines failed to parse twice: ${firstError.message}; after one repair: ${secondError.message}. Both replies are in ${folder} (${firstFile}, ${replyFile()}).`);
+    }
+  }
+}
+
+export async function run(args = process.argv.slice(2), callSubscription = subscription) {
   const options = parseArgs(args);
   const settings = parseSources(JSON.parse(await readFile(options.sources, 'utf8')));
   const folder = join(homedir(), '.curate/runs', new Date().toISOString().replace(/[:.]/g, '-'));
@@ -313,7 +335,7 @@ export async function run(args = process.argv.slice(2)) {
     await save();
     const searchPrompt = `TASK: ${options.task}\nWrite search expansions, not a factual answer. For each source kind, give two keyword lines (one naming the subject, one without it) and four plausible hypothetical-answer lines (two naming the subject, two without it). Use varied wording for directions, constraints, tried ideas, rejected ideas and unfinished experiments where the task asks for them. Do not invent evidence.\nRegisters:\nchat: ${CHAT_SEARCH_LINE_REGISTER}\ngit-history: ${GIT_SEARCH_LINE_REGISTER}\nmarkdown: ${MARKDOWN_SEARCH_LINE_REGISTER}\nReturn only JSON with these three keys, each containing {"keywords":[...],"answers":[...]}.`;
     const searchStart = Date.now();
-    record.searches = parseSearches(JSON.parse(await subscription(searchPrompt, folder, 'searches', record, save)));
+    record.searches = await searchLines(searchPrompt, folder, record, save, callSubscription);
     record.timings.searchesMs = Date.now() - searchStart;
     const decide = async (batch, signal) => {
       const call = { questions: batch.questions.length, started: new Date().toISOString() };
@@ -366,7 +388,7 @@ export async function run(args = process.argv.slice(2)) {
     record.timings.rankAndDecideMs = Date.now() - pickStart;
     await save();
     await writeFile(join(folder, 'selection.json'), JSON.stringify({ selected: picked.selected, record: { ...picked.record, candidates: picked.record.candidates.filter((entry) => entry.status === 'selected') } }), { mode: 0o600 });
-    await writeLog(options.task, picked, folder, record, save);
+    await writeLog(options.task, picked, folder, record, save, callSubscription);
   } catch (error) {
     // A PickError carries the pick's record: the failed batch's ids, the
     // unanswered candidates, and the answers that came back. Keep it.
