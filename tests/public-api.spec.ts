@@ -1,7 +1,7 @@
 import { asSourceReadError } from '@curatejs/core/internal';
 import { describe, expect, it } from 'vitest';
 
-import { curate, DEFAULT_MAX_QUESTION_TEXT, observe, OBSERVE_INSTRUCTION_VERSION, observationCandidates, pick, PICK_QUESTION_VERSION, pickFromSources, SourceReadError, type CandidateSource, type CurateOptions, type CurateRecord, type CurateResult, type CurateWrite, type MemoryCandidate, type ObserveOptions, type ObserveResult, type ObserveStore, type PickThresholds } from '@curatejs/core';
+import { curate, DEFAULT_MAX_QUESTION_TEXT, pick, PICK_QUESTION_VERSION, pickFromSources, SourceReadError, type CandidateSource, type CurateOptions, type CurateRecord, type CurateResult, type CurateWrite, type MemoryCandidate, type PickThresholds } from '@curatejs/core';
 import { chat, type ChatOptions, type ChatProvider } from '@curatejs/chat';
 import { gitHistory, type GitHistoryOptions } from '@curatejs/git';
 import { markdown, knowledgeBase, rules, type MarkdownOptions, type KnowledgeBaseOptions } from '@curatejs/markdown';
@@ -77,34 +77,6 @@ describe('package exports', () => {
     expect(new SourceReadError('failed', 'x')).toBeInstanceOf(Error);
     expect(DEFAULT_MAX_QUESTION_TEXT).toBeGreaterThan(0);
     expect(PICK_QUESTION_VERSION).toContain('memory-pick');
-  });
-
-  it('exports the observe step, its store port and its option types', async () => {
-    const values = new Map<string, unknown>();
-    const store: ObserveStore = {
-      get: async (key) => values.get(key),
-      set: async (key, value) => { values.set(key, value); },
-    };
-    const write: CurateWrite = async (prompt) => prompt.body.split('\n')
-      .filter((line) => line.startsWith('SESSION ') || line.startsWith('### '))
-      .map((line) => line.startsWith('SESSION ')
-        ? line
-        : `[2023-05-13] A fact (said 2023-05-20; ${/### (.+?)(?: \(.+\))?: /.exec(line)![1]})`)
-      .join('\n');
-    const options: ObserveOptions = { write, writerId: 'test-writer', store };
-    const result: ObserveResult = await observe([
-      { sourceId: 'notes', role: 'reference', id: 'p1', title: 'p1', text: 'A part.', signals: {}, documentId: 's1' },
-    ], options);
-    expect(result.sessions[0]!.lines).toHaveLength(1);
-    expect(result.record.writerId).toBe('test-writer');
-    expect(result.record.instructionVersion).toBe(OBSERVE_INSTRUCTION_VERSION);
-    const candidates = observationCandidates(result);
-    expect(candidates).toHaveLength(1);
-    expect(candidates[0]!.id).toBe('s1#L1');
-    expect(candidates[0]!.cites).toEqual(['p1']);
-    const again = await observe([{ sourceId: 'notes', role: 'reference', id: 'p1', title: 'p1', text: 'A part.', signals: {}, documentId: 's1' }], options);
-    expect(again.record.calls).toBe(0);
-    expect(again.sessions[0]!.outcome).toBe('reused');
   });
 });
 

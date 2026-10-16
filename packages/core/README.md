@@ -729,67 +729,6 @@ a chained log's line ids, so passing both throws a `TypeError` before
 the writer runs. `batchTokens` must be a positive integer. Nothing is
 cut or dropped; batching only splits the evidence across more calls.
 
-## Optional observations written once per session
-
-`observe(parts, { write, writerId })` asks your writer for a dated
-observation log of each session once, instead of curating the whole
-history for every task. A chat part's session is `chat.sessionId` and
-a host-supplied part's is `documentId`; other parts group as
-`bestPartFirst` does. The writer gets no task, so the instructions ask
-for one line per fact. They never merge two facts and never drop one.
-Lines take the same dated format `curate` returns: the person's own
-statements about what they own, buy, do, plan, like, do regularly and
-decide, plus every specific the assistant gave. Relative dates resolve
-against the part's said date.
-
-```ts
-import { observe, observationCandidates } from '@curatejs/core';
-
-const observed = await observe(parts, {
-  write,
-  writerId: 'my-model-route',
-  directory: 'observations',
-});
-const candidates = observationCandidates(observed);
-const picked = await pick(candidates, { task, decide });
-```
-
-The store is a keyed reuse layer, not a cache of task answers. Each
-session's key is a SHA-256 over the `observation` namespace, the
-instruction version, your `writerId`, and the session's parts in order
-(id, date, text). A changed part rewrites only its own session.
-`directory` names the plain-file store: one JSON file per session,
-written to a temporary file and renamed into place. A missing, corrupt
-or wrong-shaped entry is a miss. Pass `store` for your own async
-`get`/`set` instead, or omit both to always write; only checked lines
-are ever stored.
-
-Every reply passes the dated-line check `curate` uses, plus one rule:
-a line may cite only its own session's item ids. A failing reply goes
-back once with the reason, as `curate` does. A second failure stores
-nothing; that session's raw parts stand in as candidates instead, and
-the record carries a warning. A session that states no fact at all,
-such as small talk only, comes back as the single line `NO FACTS`; it
-is stored as checked with no lines, so it is not asked again.
-
-`observationCandidates(result)` returns one candidate per line:
-`<session>#L<n>` ids, the line as text, the event date as its date,
-`documentId` set to the session, and `cites` holding the part ids the
-line cites so a selected line traces back to its source. `pick` and
-`curate` run on them unchanged.
-
-`batchTokens` packs whole sessions into one writer call within about
-that many estimated tokens of evidence (four characters a token).
-It sets request size only: a session larger than the budget goes
-alone, and no session is split or dropped. Omit it for one call per
-session.
-
-`record` lists each session as `written`, `reused` or `failed` with
-its line count and any warning, plus the writer calls made, repairs,
-the instruction version and the `writerId`. Writer failures propagate.
-The option is off by default: nothing calls `observe` unless the host
-does, and its effect on the final score is not yet measured.
-
 ## Optional evidence limits
 
 The defaults decide every candidate the lane union kept and show its

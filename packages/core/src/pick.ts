@@ -1,5 +1,3 @@
-import { candidateDocument } from './document.js';
-
 export type MemoryCandidateRole = 'reference' | 'rule';
 export type MemoryKind = 'knowledge' | 'docs' | 'rules' | 'instructions';
 export type CandidateSourceKind = 'chat' | 'git-history' | 'markdown';
@@ -15,9 +13,6 @@ export interface MemoryCandidate {
   readonly contentRef?: string;
   /** Optional document identity for hosts that supply parts themselves. */
   readonly documentId?: string;
-  /** Item ids this candidate cites, set by `observationCandidates` so a
-   *  selected observation line can be traced back to its source parts. */
-  readonly cites?: readonly string[];
   /** Zero-based rank within this source for each search line; null means absent. */
   readonly searchRanks?: readonly (number | null)[];
   /** Transcript metadata; separate from the candidate's reference role. */
@@ -792,7 +787,10 @@ export async function pick(
     const groups = new Map<string, MemoryCandidate[]>();
     for (const candidate of feed) {
       if (candidate.role === 'rule') continue;
-      const document = candidateDocument(candidate).document;
+      const document = candidate.documentId !== undefined ? ['document', candidate.documentId]
+        : candidate.chat ? ['chat', candidate.chat.provider, candidate.chat.sessionId]
+          : candidate.contentRef?.includes('#L') ? ['note', candidate.contentRef.split('#L')[0]]
+            : candidate.path ? ['note', candidate.path] : ['item', candidate.id];
       const key = JSON.stringify([candidate.sourceId, candidate.sourceRevision, document]);
       const group = groups.get(key);
       if (group) group.push(candidate);
