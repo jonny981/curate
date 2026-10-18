@@ -189,6 +189,139 @@ describe('pickFromSources', () => {
     expect(result.record.rulesCoverage).toBe('complete');
   });
 
+  it('lets a label match rescue a reference part the keyword lane cut excluded', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'curate-labels-'));
+    try {
+      // The score curve keeps only the strongest part under the default
+      // lane cut; 'late' never reaches the pick without the label gate.
+      const read = async () => ({
+        status: 'read' as const,
+        complete: true,
+        candidates: [
+          candidate({ sourceId: 'notes', id: 'hit', signals: { score: 10 } }),
+          candidate({ sourceId: 'notes', id: 'late', signals: { score: 1 } }),
+          candidate({ sourceId: 'notes', id: 'low1', signals: { score: 1 } }),
+          candidate({ sourceId: 'notes', id: 'low2', signals: { score: 1 } }),
+        ],
+      });
+      const decided: string[] = [];
+      const labelled: string[] = [];
+      const result = await pickFromSources(
+        [source('notes', 'reference', read)],
+        { task: 'the task' },
+        {
+          task: 'the task',
+          labels: { directory, deciderId: 'test-decider' },
+          decide: async (batch) => {
+            for (const question of batch.questions) {
+              if (question.questionKey === undefined) decided.push(question.id);
+              else labelled.push(question.id);
+            }
+            return Object.fromEntries(batch.questions.map((question) => [
+              question.key,
+              {
+                status: 'answered' as const,
+                probability: question.questionKey === undefined ? 0.9
+                  : question.id === 'question' ? (question.questionKey === 'habit' ? 0.9 : 0.1)
+                    : question.questionKey === 'habit' && question.id === 'late' ? 0.9 : 0.1,
+              } satisfies PickAnswer,
+            ]));
+          },
+        },
+      );
+
+      // Every pool part was labelled, but only the keyword survivor and
+      // the label-lane rescue were decided.
+      expect([...new Set(labelled)].sort()).toEqual(['hit', 'late', 'low1', 'low2', 'question']);
+      expect([...new Set(decided)].sort()).toEqual(['hit', 'late']);
+      expect(result.record.labels?.gate).toBe(2);
+      expect(result.selected.map((item) => item.id).sort()).toEqual(['hit', 'late']);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('lets a meaning lane rescue a pool member without the label lane', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'curate-labels-'));
+    try {
+      const read = async () => ({
+        status: 'read' as const,
+        complete: true,
+        candidates: [
+          candidate({ sourceId: 'notes', id: 'hit', signals: { score: 10 } }),
+          candidate({ sourceId: 'notes', id: 'late', signals: { score: 1 } }),
+          candidate({ sourceId: 'notes', id: 'low1', signals: { score: 1 } }),
+        ],
+      });
+      // The embed maps 'late' onto the task and everything else away.
+      const embed = async (texts: readonly string[]) =>
+        texts.map((text) => (text === 'the task' || text === 'text of notes/late' ? [1, 0] : [0, 1]));
+      const decided: string[] = [];
+      const result = await pickFromSources(
+        [source('notes', 'reference', read)],
+        { task: 'the task', meaning: { embed, nearest: 1 } },
+        {
+          task: 'the task',
+          labels: { directory, deciderId: 'test-decider' },
+          decide: async (batch) => {
+            for (const question of batch.questions) {
+              if (question.questionKey === undefined) decided.push(question.id);
+            }
+            return Object.fromEntries(batch.questions.map((question) => [
+              question.key,
+              {
+                status: 'answered' as const,
+                probability: question.questionKey === undefined ? 0.9
+                  : question.id === 'question' && question.questionKey === 'habit' ? 0.9 : 0.1,
+              } satisfies PickAnswer,
+            ]));
+          },
+        },
+      );
+
+      // 'late' scores below the label bar on the task's only needed
+      // kind, so the meaning lane alone puts it in the decide step; the
+      // other pool members stay out.
+      expect([...new Set(decided)].sort()).toEqual(['hit', 'late']);
+      expect(result.record.labels?.gate).toBe(2);
+      expect(result.selected.map((item) => item.id).sort()).toEqual(['hit', 'late']);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('clears noSearchMatch when the label pool hands back what the lane cut dropped', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'curate-labels-'));
+    try {
+      // No candidate scores above zero, so the lane cut keeps nothing
+      // and the keyword read reports a miss; the label pool still
+      // returns every part for the gate to label.
+      const read = async () => ({
+        status: 'read' as const,
+        complete: true,
+        candidates: [
+          candidate({ sourceId: 'notes', id: 'a', signals: { score: 0 } }),
+          candidate({ sourceId: 'notes', id: 'b', signals: { score: 0 } }),
+        ],
+      });
+      const result = await pickFromSources(
+        [source('notes', 'reference', read)],
+        { task: 'the task' },
+        { task: 'the task', labels: { directory, deciderId: 'test-decider' }, decide: sayYes },
+      );
+
+      const merged = result.reads[0]!;
+      expect(merged.status).toBe('read');
+      if (merged.status !== 'read') return;
+      expect(merged.lanes).toEqual([{ task: 'the task', lane: 'search', read: 2, kept: 0 }]);
+      expect(merged.candidates.map((item) => item.id).sort()).toEqual(['a', 'b']);
+      expect(merged.noSearchMatch).toBeUndefined();
+      expect(result.record.labels?.gate).toBe(2);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it('propagates a source read failure', async () => {
     await expect(
       pickFromSources(

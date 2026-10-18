@@ -69,7 +69,8 @@ export async function addMeaningRanks(
     const keywordOrder = [...group].sort((left, right) => signalScore(right) - signalScore(left)
       || unique[left]!.id.localeCompare(unique[right]!.id));
     keywordOrder.forEach((index, rank) => {
-      if (unique[index]!.searchRanks === undefined) ranks[index]![0] = rank;
+      // A pool member is no keyword result: no fallback lane-0 rank.
+      if (unique[index]!.searchRanks === undefined && unique[index]!.poolOnly !== true) ranks[index]![0] = rank;
     });
     scores.forEach((laneScores, lane) => {
       const order = [...group].sort((left, right) => laneScores[right]! - laneScores[left]!
@@ -83,6 +84,13 @@ export async function addMeaningRanks(
       });
     });
   }
-  return unique.flatMap((candidate, index) => ranks[index]!.some((rank) => rank !== null)
-    ? [{ ...candidate, searchRanks: ranks[index]! }] : []);
+  return unique.flatMap((candidate, index) => {
+    if (!ranks[index]!.some((rank) => rank !== null)) {
+      // A pool member no lane ranked stays pool-only for the label lane.
+      return candidate.poolOnly === true ? [candidate] : [];
+    }
+    // A lane rank ends pool-only membership.
+    const { poolOnly: _poolOnly, ...rest } = candidate;
+    return [{ ...rest, searchRanks: ranks[index]! }];
+  });
 }

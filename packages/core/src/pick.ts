@@ -1,3 +1,9 @@
+import {
+  LABEL_KINDS, LABEL_LANE_BAR, LABEL_PARTS_TASK, LABEL_QUESTION_VERSION,
+  fuseLabelLane, labelFileStore, labelKey, labelPartQuestion, labelQuestionTask,
+  labelTaskQuestion, storedLabels, type PartLabels,
+} from './labels.js';
+
 export type MemoryCandidateRole = 'reference' | 'rule';
 export type MemoryKind = 'knowledge' | 'docs' | 'rules' | 'instructions';
 export type CandidateSourceKind = 'chat' | 'git-history' | 'markdown';
@@ -15,6 +21,12 @@ export interface MemoryCandidate {
   readonly documentId?: string;
   /** Zero-based rank within this source for each search line; null means absent. */
   readonly searchRanks?: readonly (number | null)[];
+  /** True when the source supplies this part from its uncut pool only:
+   *  it is not a member of any keyword lane, so lane eligibility skips
+   *  it and only the label lane can admit it to the decide step.
+   *  pickFromSources sets it for parts the lanes or the read limit
+   *  dropped; a direct pick caller may set it the same way. */
+  readonly poolOnly?: boolean;
   /** Transcript metadata; separate from the candidate's reference role. */
   readonly chat?: {
     readonly provider: 'claude-code' | 'codex';
@@ -84,6 +96,24 @@ export type PickDecide = (
   signal: AbortSignal,
 ) => Promise<Record<string, PickAnswer>>;
 
+/** The label gate's settings. Labels are the answers to the seven kind
+ *  questions in `LABEL_KINDS`; a part's set is stored once so a later
+ *  pick over unchanged parts asks nothing. */
+export interface PickLabels {
+  /** The plain-file store: one JSON file per labelled item under this
+   *  directory, each written to a temporary file and renamed into
+   *  place. A missing, corrupt or wrong-shaped entry is a miss. */
+  readonly directory: string;
+  /** The caller's name for its decide route: the model, prompt build
+   *  or plan the labels were answered with. Mixed into every store
+   *  key, so a different deciderId never reuses stored labels. */
+  readonly deciderId: string;
+  /** The kind question-set's version, mixed into every key and
+   *  recorded; defaults to the package's own. A different version
+   *  never reuses stored labels. */
+  readonly questionVersion?: string;
+}
+
 export interface PickLimits {
   /** Request size only; every batch is processed unless an explicit stop is set. */
   readonly maxPerBatch?: number;
@@ -142,7 +172,13 @@ export type PickEntryStatus =
       readonly answer: 'refused' | 'missing' | 'error';
       readonly detail?: string;
     }
-  | { readonly status: 'unassessed'; readonly reason: 'limits' | 'time' | 'cancelled' | 'document' | 'error' };
+  | { readonly status: 'unassessed';
+      /** Why no decide question was asked: a stopping dial ('limits',
+       *  'time', 'cancelled', 'error'), or 'gate' — with the label gate
+       *  on, a reference part the keyword lanes never held whose stored
+       *  or answered labels cleared no needed kind. A part a lane limit
+       *  cut or a stop left unlabelled keeps that reason instead. */
+      readonly reason: 'limits' | 'time' | 'cancelled' | 'document' | 'error' | 'gate' };
 
 export type PickRecordEntry = {
   readonly sourceId: string;
@@ -152,6 +188,9 @@ export type PickRecordEntry = {
   readonly kind?: MemoryKind;
   readonly priority: number;
   readonly searchRanks?: readonly (number | null)[];
+  /** Echoed from the input: the part came from the uncut pool and holds
+   *  no lane membership, so only the label lane could admit it. */
+  readonly poolOnly?: boolean;
   /** Final ordering score; the decision probability remains separate. */
   readonly orderScore?: number;
   /** The first part judged for this document, within this entry's source. */
@@ -240,6 +279,25 @@ export interface PickRecord {
   readonly keepTop?: number;
   readonly rankProtection?: boolean;
   readonly bestPartFirst?: boolean;
+  /** Present when the label gate ran: its question-set version, the
+   *  caller's deciderId, how many items' labels the decide port was
+   *  asked for this pick, how many were reused from the store, and how
+   *  many candidates the gate let through to the decide step.
+   *  `failedWrites` counts label sets the store could not write; this
+   *  pick still used them, and when it is above 0, `warning` says so
+   *  once. A reference part the keyword lanes never held, left out on its
+   *  stored or answered labels, records 'unassessed' with reason
+   *  'gate'; a part a lane limit cut or a stop left unlabelled keeps
+   *  that reason instead. */
+  readonly labels?: {
+    readonly questionVersion: string;
+    readonly deciderId: string;
+    readonly asked: number;
+    readonly reused: number;
+    readonly gate: number;
+    readonly failedWrites: number;
+    readonly warning?: string;
+  };
   /** The tag sets every kept reference answered, when supplied. */
   readonly tags?: readonly PickTagSet[];
   /** Extra tag sets asked only of references from that source kind. */
@@ -287,6 +345,25 @@ export interface PickOptions {
    *  'markdown'. Source kinds come from `sourceKinds`, which
    *  pickFromSources fills from each source's `kind`. */
   readonly tagsByKind?: Readonly<Partial<Record<CandidateSourceKind, readonly PickTagSet[]>>>;
+  /** Gate which reference parts reach the decide step, off by default:
+   *  the union of the keyword lanes and a label lane. The label lane
+   *  holds the parts labelled at the shared bar (0.5) or more on a kind
+   *  of statement the question needs at that bar, ordered by that
+   *  probability, merged with the keyword lanes by rank through
+   *  reciprocal-rank fusion; the bar is a dial to fit, not a measured
+   *  best. The seven kind questions are asked through the decide port
+   *  of every reference part and once of the task, batched as decision
+   *  batches are, and each item's set is stored once in `directory`
+   *  keyed by the question-set version, `deciderId` and the item's
+   *  text. Through `pickFromSources` the gate labels the source's full
+   *  uncut search pool, so a part the keyword lanes dropped can still
+   *  reach the decide step; through `pick` directly it labels every
+   *  reference part supplied. Label batches count against
+   *  `maxBatches` and `maxElapsedMs`, and a stop while labelling leaves
+   *  the decide step unasked. The label lane is not capped by
+   *  `maxCandidates`: every part in it reaches the decide step. With
+   *  `labels` unset the output is identical to a pick without it. */
+  readonly labels?: PickLabels;
   /** False when a source that can supply rule candidates did not finish
    *  enumerating them; its read returned `complete: false`. The combined
    *  coverage can then never report a complete applicable-rule set, even
@@ -299,6 +376,10 @@ export interface PickOptions {
 
 export const PICK_QUESTION_VERSION = 'memory-pick-questions-1';
 
+/** The most label-store files a pick opens at once. Pools can hold
+ *  tens of thousands of parts, and an open per part in one moment can
+ *  pass the process's file limit; reads run in groups of this size. */
+const LABEL_STORE_READ_GROUP = 64;
 const DEFAULT_MAX_PER_BATCH = 150;
 /** Default reader part size, in characters. Readers preserve every part;
  *  pick itself shows full candidate text unless a caller supplies a cut. */
@@ -614,16 +695,22 @@ export async function pick(
 
   const lanes = queue.reduce((count, candidate) => Math.max(count, candidate.searchRanks?.length ?? 1), 1);
   const eligible = new Set<MemoryCandidate>();
+  // With the label gate on, lane members a lane's candidate limit cut
+  // are tracked, so the reason they were never asked stays 'limits'.
+  const laneCut = new Set<MemoryCandidate>();
   for (let lane = 0; lane < lanes; lane += 1) {
-    const present = (candidate: MemoryCandidate) => candidate.searchRanks === undefined
-      || candidate.searchRanks[lane] != null;
-    const laneQueue = lanes === 1 ? queue : [
+    const present = (candidate: MemoryCandidate) => candidate.poolOnly !== true
+      && (candidate.searchRanks === undefined || candidate.searchRanks[lane] != null);
+    const laneQueue = lanes === 1 ? queue.filter(present) : [
       ...rankAndInterleave(rules.filter((c) => c.applies !== 'always' && present(c)), new Map(), lane, options.ranking),
       ...rankAndInterleave(references.filter(present), new Map(), lane, options.ranking),
     ];
     for (const candidate of laneQueue.slice(0, limits.maxCandidates)) eligible.add(candidate);
+    if (options.labels !== undefined) {
+      for (const candidate of laneQueue.slice(limits.maxCandidates)) laneCut.add(candidate);
+    }
   }
-  const feed = queue.filter((candidate) => eligible.has(candidate));
+  let feed = queue.filter((candidate) => eligible.has(candidate));
   const answered = new Map<MemoryCandidate, Map<string, CheckedAnswer>>();
   const specsFor = (candidate: MemoryCandidate) => {
     const cascade = cascadeFor(candidate);
@@ -657,7 +744,7 @@ export async function pick(
   /** Candidates in a rejected decision batch: their verdicts are not
    *  trusted even when an earlier batch answered some questions. */
   const decideFailed = new Set<MemoryCandidate>();
-  const ask = async (asks: Pending[], sink = answered) => {
+  const ask = async (asks: Pending[], sink = answered, task = options.task) => {
     for (let index = 0; index < asks.length;) {
       if (signal.aborted) { stop = 'cancelled'; break; }
       if (batches >= limits.maxBatches) { stop = 'limits'; break; }
@@ -668,7 +755,7 @@ export async function pick(
       // item counts once per batch however many of its questions it holds.
       const slice: Pending[] = [];
       const counted = new Set<MemoryCandidate>();
-      let batchChars = options.task.length;
+      let batchChars = task.length;
       for (const item of asks.slice(index, index + limits.maxPerBatch)) {
         const size = questionChars(item.question)
           + (counted.has(item.candidate) ? 0 : itemChars(item.question));
@@ -685,7 +772,7 @@ export async function pick(
       let timedOut = false;
       try {
         const returned: unknown = await Promise.race([
-          options.decide({ task: options.task, questions },
+          options.decide({ task, questions },
             deadline === undefined ? signal : AbortSignal.any([signal, deadline])),
           new Promise<typeof TIMED_OUT>((resolve) => {
             deadline?.addEventListener('abort', () => resolve(TIMED_OUT), { once: true });
@@ -720,14 +807,161 @@ export async function pick(
         let got = sink.get(candidate);
         if (!got) { got = new Map(); sink.set(candidate, got); }
         got.set(spec.key, answer);
-        truncated.set(candidate, Number.isFinite(limits.maxQuestionText)
-          && takeCharacters(candidate.text, limits.maxQuestionText).truncated);
+        // `truncated` marks a decision item the text cut shortened; a
+        // label ask never sends one, so the flag belongs to the decide
+        // sink only.
+        if (sink === answered) {
+          truncated.set(candidate, Number.isFinite(limits.maxQuestionText)
+            && takeCharacters(candidate.text, limits.maxQuestionText).truncated);
+        }
       }
       batches += 1;
       if (timedOut) { stop = 'time'; break; }
       if (decideFailure !== undefined) break;
     }
   };
+
+  // The label gate, off by default: the seven kind questions label every
+  // reference part and the task itself through the same decide port and
+  // the same batches, each set stored once per item's text. The label
+  // lane — parts at the bar on a kind the question needs — joins the
+  // keyword lanes' set, and reciprocal-rank fusion of the two orders
+  // decides what the decide step sees first.
+  let labelRecord: PickRecord['labels'];
+  // Label sets the store held or the decide port answered this pick.
+  // The lane check below reads them; so does the unassessed reason at
+  // the end, where a part with no entry was never resolved by the gate.
+  const labels = new Map<MemoryCandidate, PartLabels>();
+  if (options.labels !== undefined) {
+    if (typeof options.labels.directory !== 'string' || !options.labels.directory.trim()) {
+      throw new TypeError('labels.directory must be a nonempty path.');
+    }
+    if (typeof options.labels.deciderId !== 'string' || !options.labels.deciderId.trim()) {
+      throw new TypeError('labels.deciderId must be a nonempty string.');
+    }
+    const questionVersion = options.labels.questionVersion ?? LABEL_QUESTION_VERSION;
+    if (!questionVersion.trim()) {
+      throw new TypeError('labels.questionVersion must be a nonempty string.');
+    }
+    const store = labelFileStore(options.labels.directory);
+    const taskItem: MemoryCandidate = {
+      sourceId: 'labels', id: 'question', role: 'reference',
+      title: 'The question asked', text: options.task, signals: {},
+    };
+    // Items sharing a text share one store key and one label set; the
+    // task's key is namespaced so it can never collide with a part's.
+    const itemKeys = new Map<MemoryCandidate, string>();
+    for (const candidate of queue) {
+      if (candidate.role === 'reference') {
+        itemKeys.set(candidate, labelKey(questionVersion, options.labels.deciderId, candidate.text));
+      }
+    }
+    itemKeys.set(taskItem, labelKey(questionVersion, options.labels.deciderId, options.task, 'question'));
+    const byKey = new Map<string, MemoryCandidate[]>();
+    for (const [item, key] of itemKeys) {
+      const group = byKey.get(key);
+      if (group === undefined) byKey.set(key, [item]);
+      else group.push(item);
+    }
+    const misses: { readonly key: string; readonly items: readonly MemoryCandidate[] }[] = [];
+    let reused = 0;
+    // Reads run in bounded groups, in the queue's order, so the asks
+    // below batch the same way for the same candidates.
+    const keyed = [...byKey];
+    const storedEntries: { key: string; items: MemoryCandidate[]; stored: PartLabels | undefined }[] = [];
+    for (let index = 0; index < keyed.length; index += LABEL_STORE_READ_GROUP) {
+      storedEntries.push(...await Promise.all(keyed.slice(index, index + LABEL_STORE_READ_GROUP)
+        .map(async ([key, items]) =>
+          ({ key, items, stored: storedLabels(await store.get(key)) }))));
+    }
+    for (const { key, items, stored } of storedEntries) {
+      if (stored === undefined) misses.push({ key, items });
+      else {
+        reused += 1;
+        for (const item of items) labels.set(item, stored);
+      }
+    }
+    let failedWrites = 0;
+    let writeError: unknown;
+    const labelAnswers = new Map<MemoryCandidate, Map<string, CheckedAnswer>>();
+    const missed = new Map(misses.map(({ items }) => [items[0]!, items] as const));
+    const taskMissed = missed.get(taskItem);
+    if (!stop && taskMissed !== undefined) {
+      await ask(LABEL_KINDS.map((kind) => ({
+        candidate: taskItem,
+        spec: { key: kind.key, ...labelTaskQuestion(kind) },
+        question: {
+          key: JSON.stringify([taskItem.sourceId, taskItem.id, kind.key]),
+          questionKey: kind.key,
+          role: 'reference' as const,
+          ...labelTaskQuestion(kind),
+          sourceId: taskItem.sourceId, id: taskItem.id,
+          title: taskItem.title, text: taskItem.text,
+        },
+      })), labelAnswers, labelQuestionTask(options.task));
+    }
+    const partMisses = misses.filter(({ items }) => items[0] !== taskItem);
+    if (!stop && partMisses.length > 0) {
+      await ask(partMisses.flatMap(({ items }) => LABEL_KINDS.map((kind) => {
+        const item = pending(items[0]!, { key: kind.key, ...labelPartQuestion(kind) });
+        // Labels describe the whole part text, never the decision
+        // text cut's view of it, so a stored set stays valid at any
+        // later limit.
+        return { ...item, question: { ...item.question, text: items[0]!.text } };
+      })), labelAnswers, LABEL_PARTS_TASK);
+    }
+    for (const { key, items } of misses) {
+      const answers = LABEL_KINDS.map((kind) => labelAnswers.get(items[0]!)?.get(kind.key));
+      // A refused, missing or errored answer is never stored: the set
+      // is written whole or not at all, and the item is asked again
+      // next time.
+      if (!answers.every((answer) => answer?.status === 'answered')) continue;
+      const value = Object.fromEntries(LABEL_KINDS.map((kind, index) =>
+        [kind.key, (answers[index] as { readonly probability: number }).probability])) as PartLabels;
+      for (const item of items) labels.set(item, value);
+      try {
+        await store.set(key, { labels: value });
+      } catch (error) {
+        // A failed write keeps the labels for this pick and is counted:
+        // the record carries one warning, and the item is asked again
+        // next time.
+        failedWrites += 1;
+        writeError ??= error;
+      }
+    }
+    const needs = LABEL_KINDS
+      .filter((kind) => (labels.get(taskItem)?.[kind.key] ?? 0) >= LABEL_LANE_BAR)
+      .map((kind) => kind.key);
+    const strength = (candidate: MemoryCandidate) => {
+      const own = labels.get(candidate);
+      return own === undefined || !needs.length
+        ? 0
+        : Math.max(0, ...needs.map((kind) => own[kind]));
+    };
+    const inLane = new Set(queue.filter((candidate) =>
+      candidate.role === 'reference' && strength(candidate) >= LABEL_LANE_BAR));
+    for (const candidate of inLane) eligible.add(candidate);
+    feed = queue.filter((candidate) => eligible.has(candidate));
+    if (needs.length > 0) {
+      feed = fuseLabelLane(feed, queue, inLane, strength);
+    }
+    labelRecord = {
+      questionVersion,
+      deciderId: options.labels.deciderId,
+      // Items whose label questions were actually sent: a stopping dial
+      // can leave misses unasked.
+      asked: misses.filter(({ items }) => labelAnswers.has(items[0]!)).length,
+      reused,
+      gate: feed.length,
+      failedWrites,
+      ...(failedWrites === 0 ? {} : {
+        warning: `${failedWrites} label set(s) could not be stored `
+          + `(${writeError instanceof Error ? writeError.message : String(writeError)}); this pick used them, `
+          + 'and the next pick asks for them again.',
+      }),
+    };
+  }
+
   const combined = new Map<MemoryCandidate, CheckedAnswer>();
   // Candidates a stop left half-assessed inside a cascade.
   const curtailed = new Map<MemoryCandidate, 'limits' | 'time' | 'cancelled' | 'error'>();
@@ -778,7 +1012,7 @@ export async function pick(
   };
 
   const representatives = new Map<MemoryCandidate, MemoryCandidate>();
-  if (options.bestPartFirst) {
+  if (!stop && options.bestPartFirst) {
     const terms = [...new Set(options.task.toLowerCase().split(/[^a-z0-9]+/).filter((word) => word.length > 2))];
     const matches = (candidate: MemoryCandidate) => {
       const words = new Set(`${candidate.title} ${candidate.text}`.toLowerCase().split(/[^a-z0-9]+/));
@@ -809,7 +1043,7 @@ export async function pick(
         return representative !== undefined && representative !== candidate;
       }));
     }
-  } else await evaluate(feed);
+  } else if (!stop) await evaluate(feed);
 
   // The reference bar may rise with the decided set's size, so the
   // selection pass runs once the whole feed has answered.
@@ -843,10 +1077,17 @@ export async function pick(
       } else statuses.set(candidate, { status: 'rejected', probability: answer.probability });
     } else statuses.set(candidate, { status: 'unanswered', answer: answer.status, detail: answer.detail });
   }
+  // A queued part the feed never held was never asked a question. The
+  // 'gate' reason names only the gate's own call: a reference part the
+  // keyword lanes never held — not one a lane's candidate limit cut —
+  // whose stored or answered labels cleared no needed kind. A rule, a
+  // lane-limit cut and a part a stop left unlabelled keep their reason.
   for (const candidate of queue) {
     if (!statuses.has(candidate)) {
+      const gated = candidate.role === 'reference'
+        && !laneCut.has(candidate) && labels.has(candidate);
       statuses.set(candidate, { status: 'unassessed',
-        reason: stop ?? 'limits' });
+        reason: gated ? 'gate' : (stop ?? 'limits') });
     }
   }
 
@@ -949,6 +1190,7 @@ export async function pick(
       priority: priority.get(candidate)!,
       signals: candidate.signals,
       ...(candidate.searchRanks === undefined ? {} : { searchRanks: candidate.searchRanks }),
+      ...(candidate.poolOnly === true ? { poolOnly: true } : {}),
       ...(options.rankProtection && candidate.role === 'reference' && status.status === 'selected'
         ? { orderScore: weight(candidate) } : {}),
       ...(representatives.has(candidate) ? { representative: representatives.get(candidate)!.id } : {}),
@@ -994,6 +1236,7 @@ export async function pick(
     ...(options.keepTop === undefined ? {} : { keepTop }),
     ...(options.rankProtection ? { rankProtection: true } : {}),
     ...(options.bestPartFirst ? { bestPartFirst: true } : {}),
+    ...(labelRecord === undefined ? {} : { labels: labelRecord }),
   };
   if (decideFailure !== undefined) {
     throw new PickError(

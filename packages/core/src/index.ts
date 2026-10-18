@@ -1,4 +1,5 @@
 export * from './pick.js';
+export { LABEL_KINDS, LABEL_LANE_BAR, LABEL_QUESTION_VERSION, type LabelKindKey, type PartLabels } from './labels.js';
 export * from './curate.js';
 export * from './task.js';
 export * from './source.js';

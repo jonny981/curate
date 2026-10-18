@@ -79,6 +79,13 @@ export interface CandidateReadRequest {
    *  ignores it answers a plain keyword read, and the pick then scores
    *  the pool itself. */
   readonly meaningLane?: MeaningSearchOptions;
+  /** Internal to pickFromSources: the pick's label gate is on, so the
+   *  read result also carries the reference source's full uncut primary-
+   *  search pool — every part a lane cut or the read `limit` dropped,
+   *  marked absent from every lane — beside the kept members. The gate
+   *  labels that pool so a part sharing no words with the task can still
+   *  reach the decide step. Leave unset when the gate is off. */
+  readonly labelPool?: boolean;
   /** Remove explicit answer-format and citation clauses from search
    *  text only. Off by default; subject, counting and date needs remain. */
   readonly stripSearchInstructions?: boolean;
@@ -402,10 +409,53 @@ async function readSearches(
   request: CandidateReadRequest,
   context: CandidateReadContext,
 ): Promise<CandidateReadResult> {
-  const read = await readKeywordSearches(source, request, context);
-  if (!request.meaning || read.status !== 'read') return read;
+  const found = await readKeywordSearches(source, request, context);
+  if (found.status !== 'read' || (!request.meaning && request.labelPool !== true)) return found;
   const tasks = searchTasks(request, source.kind);
   const laneCut = request.laneCut !== false && source.role === 'reference';
+  // The uncut, unlimited primary-search pool, fetched at most once and
+  // shared by the label pool merge and the scored meaning path: a lane
+  // cut or a read limit must not hide candidates from either.
+  let poolRead: CandidateReadResult | undefined;
+  const fullPool = async (): Promise<CandidateReadResult> => {
+    if (poolRead === undefined) {
+      poolRead = await source.read({
+        ...request, task: tasks[0]!.task, searchLines: undefined, searchPhrases: undefined,
+        kindLanes: undefined, meaning: undefined, limit: undefined, laneCut: false,
+        meaningLane: undefined, labelPool: undefined,
+        ...(found.revision === undefined ? {} : { revision: found.revision }),
+      }, context);
+    }
+    return poolRead;
+  };
+  let read = found;
+  if (request.labelPool === true && source.role === 'reference'
+    && (laneCut || request.limit !== undefined)) {
+    const full = await fullPool();
+    if (full.status !== 'read') {
+      throw new SourceReadError('failed', `The label pool could not read all candidates: ${full.reason}`);
+    }
+    // Kept members hold their lane ranks; a part the lanes dropped joins
+    // as a pool member, absent from every lane, for the label gate to see.
+    const union = new Map(read.candidates.map((candidate) =>
+      [JSON.stringify([candidate.sourceId, candidate.id]), candidate] as const));
+    for (const candidate of full.candidates) {
+      const key = JSON.stringify([candidate.sourceId, candidate.id]);
+      if (!union.has(key) && candidate.role === 'reference') {
+        union.set(key, { ...candidate, searchRanks: undefined, poolOnly: true });
+      }
+    }
+    const partial = [read.partial, full.partial].filter(Boolean).join('; ');
+    // A pool member is a candidate the read hands over, so the miss
+    // flag reads the merged list: only a merge that kept nothing
+    // reports noSearchMatch.
+    const { noSearchMatch: _miss, ...mergedRead } = read;
+    read = { ...mergedRead, candidates: [...union.values()],
+      complete: read.complete && full.complete,
+      ...(laneCut && union.size === 0 ? { noSearchMatch: true } : {}),
+      ...(partial === '' ? {} : { partial }) };
+  }
+  if (!request.meaning) return read;
   // One meaning lane per distinct non-kind search text: the task and
   // each search line or phrase.
   const queries = [...new Set(
@@ -443,8 +493,9 @@ async function readSearches(
       [JSON.stringify([candidate.sourceId, candidate.id]), candidate] as const));
     // A single-search read leaves its candidates without lane-0 ranks;
     // order them by signal sum per source, the same rank the scored
-    // path below assigns.
-    const unraked = [...union.values()].filter((candidate) => candidate.searchRanks === undefined);
+    // path below assigns. A pool member is no keyword result.
+    const unraked = [...union.values()].filter((candidate) =>
+      candidate.searchRanks === undefined && candidate.poolOnly !== true);
     if (unraked.length > 0) {
       const groups = new Map<string, MemoryCandidate[]>();
       for (const candidate of unraked) {
@@ -510,12 +561,7 @@ async function readSearches(
   let complete = read.complete;
   let partial = read.partial;
   if (request.limit !== undefined || laneCut) {
-    const full = await source.read({
-      ...request, task: tasks[0]!.task, searchLines: undefined, searchPhrases: undefined,
-      kindLanes: undefined, meaning: undefined, limit: undefined, laneCut: false,
-      meaningLane: undefined,
-      ...(read.revision === undefined ? {} : { revision: read.revision }),
-    }, context);
+    const full = await fullPool();
     if (full.status !== 'read') throw new SourceReadError('failed', `Meaning search could not read all candidates: ${full.reason}`);
     const keyword = new Map<string, MemoryCandidate>();
     const ranked = [...candidates].sort((left, right) =>
@@ -525,9 +571,11 @@ async function readSearches(
     for (const candidate of ranked) {
       const rank = counts.get(candidate.sourceId) ?? 0;
       counts.set(candidate.sourceId, rank + 1);
-      keyword.set(JSON.stringify([candidate.sourceId, candidate.id]), {
-        ...candidate, searchRanks: candidate.searchRanks ?? [rank],
-      });
+      // A pool member is no keyword result: it keeps poolOnly and no
+      // lane rank, and stays here only so the pool read below is not
+      // repeated for it.
+      keyword.set(JSON.stringify([candidate.sourceId, candidate.id]),
+        candidate.poolOnly === true ? candidate : { ...candidate, searchRanks: candidate.searchRanks ?? [rank] });
     }
     for (const candidate of full.candidates) {
       const key = JSON.stringify([candidate.sourceId, candidate.id]);
@@ -590,6 +638,7 @@ export async function pickFromSources(
     ...request,
     maxQuestionText: options.limits?.maxQuestionText ?? request.maxQuestionText
       ?? (source.maxQuestionText === Number.POSITIVE_INFINITY ? undefined : source.maxQuestionText ?? DEFAULT_MAX_QUESTION_TEXT),
+    labelPool: options.labels !== undefined,
   }, context)));
   const candidates: MemoryCandidate[] = [];
   const sourceKinds: Record<string, CandidateSourceKind> = Object.assign(Object.create(null), options.sourceKinds);

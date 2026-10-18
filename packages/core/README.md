@@ -523,6 +523,47 @@ time and cancellation limits remain in force. A stopped run reports the
 stop reason for unasked parts. Rules are asked independently. Omit the
 option or pass `false` to judge the whole feed as usual.
 
+### Optional label gate
+
+`labels: { directory, deciderId }` narrows which reference parts reach
+the decide step, off by default. Each reference part answers seven fixed
+kind questions once: a personal fact, something owned or used, a
+purchase or arrival, an event or plan, a preference, a habit, and a
+decision or change. The answers do not depend on the task, so the pick
+stores each part's set in `directory`, one JSON file per part written to
+a temporary file and renamed into place. A later pick over the same
+part text reuses the stored set and asks nothing. A changed part, a
+different `deciderId`, or a different `questionVersion` stores under a
+different key and is labelled again. A missing, corrupt or wrong-shaped
+file is a miss, and a refused, missing or errored answer is never
+stored.
+
+The task answers the same seven questions, and its set is stored the
+same way under the task's own key: a later pick over the same task text
+reuses it too. A kind the task needs at 0.5 or more puts every part
+labelled 0.5 or more on that kind in the label lane, ordered by that
+probability. The decide step then sees the union of the keyword lanes
+and the label lane, ordered by reciprocal-rank fusion of the two
+orders. The 0.5 bar is one shared constant, `LABEL_LANE_BAR`, a dial
+to fit rather than a measured best. Through `pickFromSources` the gate
+labels the source's full uncut search pool, so a part the keyword lanes
+dropped can still reach the decide step through the label lane; through
+`pick` directly it labels every reference part supplied. Label batches
+count against `maxBatches` and `maxElapsedMs`, so a stop while labelling
+leaves the decide step unasked. The label lane is not capped by
+`maxCandidates`: every part in it reaches the decide step.
+
+The record's `labels` field keeps the question-set version, the
+`deciderId`, how many items' labels the decide port was asked, how many
+were reused from the store, the gate's size, and `failedWrites`, how
+many label sets the store could not write. A failed write keeps the
+answers for this pick, adds one `warning` to `labels`, and the next pick
+asks for that set again. A reference part the keyword lanes never
+held, left out on its stored or answered labels, records `unassessed`
+with reason `'gate'`; a part a lane limit cut or a stop left unlabelled
+keeps that reason instead. Omit the option and the pick is identical to
+a pick without it.
+
 ### Markdown candidate kinds
 
 The Markdown package's `markdown({ paths, kind })` source adds a candidate

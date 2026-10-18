@@ -1,7 +1,10 @@
 import { asSourceReadError } from '@curatejs/core/internal';
 import { describe, expect, it } from 'vitest';
 
-import { curate, DEFAULT_MAX_QUESTION_TEXT, pick, PICK_QUESTION_VERSION, pickFromSources, SourceReadError, type CandidateSource, type CurateOptions, type CurateRecord, type CurateResult, type CurateWrite, type MemoryCandidate, type PickThresholds } from '@curatejs/core';
+import { curate, DEFAULT_MAX_QUESTION_TEXT, LABEL_KINDS, LABEL_LANE_BAR, LABEL_QUESTION_VERSION, pick, PICK_QUESTION_VERSION, pickFromSources, SourceReadError, type CandidateSource, type CurateOptions, type CurateRecord, type CurateResult, type CurateWrite, type MemoryCandidate, type PickLabels, type PickThresholds } from '@curatejs/core';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { chat, type ChatOptions, type ChatProvider } from '@curatejs/chat';
 import { gitHistory, type GitHistoryOptions } from '@curatejs/git';
 import { markdown, knowledgeBase, rules, type MarkdownOptions, type KnowledgeBaseOptions } from '@curatejs/markdown';
@@ -77,6 +80,31 @@ describe('package exports', () => {
     expect(new SourceReadError('failed', 'x')).toBeInstanceOf(Error);
     expect(DEFAULT_MAX_QUESTION_TEXT).toBeGreaterThan(0);
     expect(PICK_QUESTION_VERSION).toContain('memory-pick');
+  });
+
+  it('exports the label gate, its kind questions and its option type', async () => {
+    const labels: PickLabels = { directory: mkdtempSync(join(tmpdir(), 'curate-api-')), deciderId: 'api-test' };
+    try {
+      const picked = await pick([{
+        sourceId: 'notes', role: 'reference', id: 'trip', title: 'Trip',
+        text: 'Visited York last Saturday.', signals: {},
+      }], {
+        task: 'Where did I go?', labels,
+        decide: async (batch) => Object.fromEntries(
+          batch.questions.map((q) => [q.key, { status: 'answered', probability: 0.9 }]),
+        ),
+      });
+      expect(LABEL_KINDS.map((kind) => kind.key)).toEqual(
+        ['personal', 'owns', 'acquired', 'event', 'preference', 'habit', 'decision']);
+      expect(LABEL_LANE_BAR).toBe(0.5);
+      expect(LABEL_QUESTION_VERSION).toContain('labels');
+      expect(picked.record.labels).toEqual({
+        questionVersion: LABEL_QUESTION_VERSION, deciderId: 'api-test',
+        asked: 2, reused: 0, gate: 1, failedWrites: 0,
+      });
+    } finally {
+      rmSync(labels.directory, { recursive: true, force: true });
+    }
   });
 });
 
