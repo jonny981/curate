@@ -249,8 +249,118 @@ describe('earlier lines are never deleted', () => {
     expect(instructions).toContain('(replaces L3: the subject it corrects)');
     expect(instructions).toContain('newer correction or decision about the same subject');
     expect(instructions).toContain('at least as important');
-    expect(instructions).toContain('Keep each existing line exactly as it stands');
-    expect(instructions).toContain('Layer in only the facts the log does not already state');
+    expect(instructions).toContain('stays exactly as it stands');
+    expect(instructions).toContain('Return only new observation lines for the facts the log does not already state');
+    expect(instructions).toContain('If this batch adds nothing, return no observation lines');
+    expect(instructions).not.toContain('complete log');
+  });
+});
+
+describe('a layered pass returns only its additions', () => {
+  it('produces the same log as a full re-emit of the same content', async () => {
+    const first = '[2023-01-01] A happened (said 2023-01-01; a)\n[2023-01-02] B happened (said 2023-01-02; b)';
+    const added = '[2023-01-03] C happened (said 2023-01-03; c)';
+    const input = picked([sized('c', 400), sized('a', 400), sized('b', 400)], [0.5, 0.9, 0.7]);
+    const expected = `L1 ${first.split('\n')[0]!}\nL2 ${first.split('\n')[1]!}\nL3 ${added}`;
+    const delta = await curate('task', input, { write: writer([first, added]).write, batchTokens: 220 });
+    const full = await curate('task', input, {
+      write: writer([first, `L1 ${first.split('\n')[0]!}\nL2 ${first.split('\n')[1]!}\n${added}`]).write,
+      batchTokens: 220,
+    });
+    expect(delta.log).toBe(expected);
+    expect(delta.log).toBe(full.log);
+    expect(delta.record.batches?.[1]?.added).toEqual([{ id: 'L3', line: `L3 ${added}` }]);
+  });
+
+  it('keeps the log unchanged when a layered reply is empty', async () => {
+    const first = "[2023-01-01] A happened (said 2023-01-01; a)\nAdvice preferences: Walks (a)\nWorking (the curator's; check it against the log):\n1. One visit.";
+    const { write } = writer([first, '']);
+    const result = await curate('task', picked([candidate('a'), candidate('b')], [0.9, 0.6]), {
+      write, batchTokens: 1, working: true, preferenceAdvice: true,
+    });
+    expect(result.log).toBe(`L1 ${first.split('\n')[0]!}\n${first.split('\n').slice(1).join('\n')}`);
+    expect(result.record.batches?.[1]?.added).toEqual([]);
+    expect(result.record.batches?.[1]?.marks).toEqual([]);
+  });
+
+  it('merges without duplicating when a layered reply repeats an existing line', async () => {
+    const first = [
+      '[2023-01-01] A happened (said 2023-01-01; a)',
+      '[2023-01-02] B happened (said 2023-01-02; a)',
+      '[2023-01-03] C happened (said 2023-01-03; a)',
+    ].join('\n');
+    const reply = `L2 [2023-01-02] B happened (said 2023-01-02; a)\n[2023-01-04] D happened (said 2023-01-04; b)`;
+    const { write } = writer([first, reply]);
+    const result = await curate('task', picked([candidate('a'), candidate('b')], [0.9, 0.6]), {
+      write, batchTokens: 1,
+    });
+    // The repeated line keeps its place among the earlier lines; the
+    // reply's copy of it is dropped and the new line follows them all.
+    expect(result.log).toBe([
+      'L1 [2023-01-01] A happened (said 2023-01-01; a)',
+      'L2 [2023-01-02] B happened (said 2023-01-02; a)',
+      'L3 [2023-01-03] C happened (said 2023-01-03; a)',
+      'L4 [2023-01-04] D happened (said 2023-01-04; b)',
+    ].join('\n'));
+    expect(result.record.batches?.[1]?.added).toEqual([
+      { id: 'L4', line: 'L4 [2023-01-04] D happened (said 2023-01-04; b)' },
+    ]);
+  });
+
+  it('places a later batch\'s line by its event date among the earlier lines', async () => {
+    const first = [
+      '[2023-01-01] A happened (said 2023-01-01; a)',
+      '[2023-03-01] C happened (said 2023-03-01; a)',
+    ].join('\n');
+    const reply = [
+      '[2023-02-01] B happened (said 2023-02-01; b)',
+      '[2023-03-01] D happened (said 2023-03-01; b)',
+      '[2023-04-01] E happened (said 2023-04-01; b)',
+    ].join('\n');
+    const { write } = writer([first, reply]);
+    const result = await curate('task', picked([candidate('a'), candidate('b')], [0.9, 0.6]), {
+      write, batchTokens: 1,
+    });
+    // B goes before the later-dated C; D shares C's date and follows it.
+    expect(result.log).toBe([
+      'L1 [2023-01-01] A happened (said 2023-01-01; a)',
+      'L3 [2023-02-01] B happened (said 2023-02-01; b)',
+      'L2 [2023-03-01] C happened (said 2023-03-01; a)',
+      'L4 [2023-03-01] D happened (said 2023-03-01; b)',
+      'L5 [2023-04-01] E happened (said 2023-04-01; b)',
+    ].join('\n'));
+    expect(result.record.batches?.[1]?.added.map((line) => line.id)).toEqual(['L3', 'L4', 'L5']);
+  });
+
+  it('honours a mark on a new line as today', async () => {
+    const first = '[2023-01-01] The old plan stands (said 2023-01-01; a)';
+    const added = '[2023-02-01] The new plan stands (said 2023-02-01; b) (replaces L1: the plan changed)';
+    const { write } = writer([first, added]);
+    const result = await curate('task', picked(
+      [candidate('a'), candidate('b')], [0.9, 0.6],
+      { a: tags('fact', 'relevant'), b: tags('correction', 'important') },
+    ), { write, batchTokens: 1 });
+    expect(result.log).toBe(`L1 ${first}\nL2 ${added}`);
+    expect(result.record.batches?.[1]?.marks).toEqual([{ id: 'L2', target: 'L1' }]);
+  });
+
+  it('keeps the working section and preference lines through several layered passes', async () => {
+    const head = "Working (the curator's; check it against the log):";
+    const prefs = 'Advice preferences: Walks (a)';
+    const { write } = writer([
+      `[2023-01-01] A happened (said 2023-01-01; a)\n${prefs}\n${head}\n1. One visit.`,
+      `[2023-01-02] B happened (said 2023-01-02; b)\n${prefs}\n${head}\n1. Two visits.`,
+      `[2023-01-03] C happened (said 2023-01-03; c)\n${prefs}\n${head}\n1. Three visits.`,
+    ]);
+    const result = await curate('task', picked(
+      [candidate('a'), candidate('b'), candidate('c')], [0.9, 0.6, 0.5],
+    ), { write, batchTokens: 1, working: true, preferenceAdvice: true });
+    expect(result.log).toBe([
+      'L1 [2023-01-01] A happened (said 2023-01-01; a)',
+      'L2 [2023-01-02] B happened (said 2023-01-02; b)',
+      'L3 [2023-01-03] C happened (said 2023-01-03; c)',
+      prefs, head, '1. Three visits.',
+    ].join('\n'));
   });
 });
 

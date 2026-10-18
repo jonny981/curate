@@ -709,8 +709,9 @@ task's period, computed time gaps or order, and latest values under
 `Working (the curator's; check it against the log):`. It is off by
 default. The reader should check these notes against the log.
 
-An empty log or a malformed observation throws a clear error.
-Each observation must have
+A malformed observation throws a clear error. So does an empty log,
+except from a later pass of a chained write, which may return nothing
+(see below). Each observation must have
 valid calendar dates in its event and `said` fields and full ids of items
 given to the writer. Merged sources can separate ids with commas,
 semicolons, `and`, or `&`. If sources recorded the same fact on different
@@ -744,13 +745,21 @@ const curated = await curate(task, picked, { write, batchTokens: 2000 });
 The strongest batch's references go to the writer alone first. Every
 observation line then gets a stable id (`L1`, `L2`, ...) that stays
 with it for the rest of the run. Each later batch gets the task, the
-log so far with its line ids and its own evidence, with instructions
-to add facts the log does not already state and to keep each existing
-line exactly as it stands.
+log so far with its line ids and its own evidence. The log is shown
+for reference only: the pass is asked to return just the new
+observation lines for facts the log does not already state, plus any
+working section and preference lines in full, and not to repeat an
+existing line. A later pass may return no lines at all when its batch
+holds nothing new, so `write` must pass an empty reply through rather
+than reject it.
 
 Every line an earlier batch wrote stays in the log, id and wording
-unchanged; a later pass only adds lines. A changed line is put back as
-written and a dropped line is restored where it stood. A line a later
+unchanged; a later pass only adds lines. Earlier lines keep their
+order. Each new line goes in front of the first earlier line with a
+later event date, so the log still reads oldest first; on the same
+date the earlier line comes first. A reply line that carries an
+earlier line's id is dropped as a repeat, and an earlier line left out
+of the reply stays anyway. A line a later
 pass adds may end with `(replaces L7: the subject it corrects)` to
 tell the reader it is newer; the marked line stays in the log either
 way. The writer is asked to mark only a newer correction or decision

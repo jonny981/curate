@@ -235,6 +235,7 @@ export async function decideOpenAI(batch, signal) {
 **Chat writer recipe.** This works with providers that accept the [Chat Completions format](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create).
 For other chat models, keep the same function contract and use their request format.
 Set `CHAT_URL`, `CHAT_MODEL` and `CHAT_API_KEY` for your chosen route.
+The recipe passes an empty reply through: with `batchTokens`, a later pass whose batch holds nothing new returns no lines, and Curate itself rejects an empty log everywhere else.
 
 ```js
 export async function write({ instructions, body }, signal) {
@@ -246,7 +247,7 @@ export async function write({ instructions, body }, signal) {
     ],
   }, signal);
   const text = raw.choices?.[0]?.message?.content;
-  if (typeof text !== 'string' || !text.trim()) throw new Error('Writer returned no log.');
+  if (typeof text !== 'string') throw new Error('Writer returned no log.');
   return text;
 }
 ```

@@ -134,14 +134,18 @@ function logPatterns(ids: readonly string[]) {
   };
 }
 
-function checkLog(raw: unknown, working: boolean, ids: readonly string[], preferenceAdvice: boolean, preferenceChange: boolean): string {
+function checkLog(raw: unknown, working: boolean, ids: readonly string[], preferenceAdvice: boolean, preferenceChange: boolean, layered = false): string {
   if (typeof raw !== 'string') throw new TypeError('curate: malformed log; write must return text.');
   const log = raw.trim();
-  if (!log) throw new Error('curate: empty log.');
+  if (!log) {
+    // A layered pass may add nothing: an empty reply is no failure.
+    if (layered) return log;
+    throw new Error('curate: empty log.');
+  }
 
   const lines = log.split('\n').map((line) => line.trim()).filter(Boolean);
   const heading = lines.findIndex((line) => line.replace(/^#{1,6}\s+/, '') === WORKING_HEADING);
-  if (heading !== -1 && (!working || heading === 0 || heading === lines.length - 1)) {
+  if (heading !== -1 && (!working || (!layered && heading === 0) || heading === lines.length - 1)) {
     throw new Error('curate: malformed log; unexpected or empty working section.');
   }
   const { observation, preference } = logPatterns(ids);
@@ -168,26 +172,27 @@ function checkLog(raw: unknown, working: boolean, ids: readonly string[], prefer
       throw new Error('curate: malformed log; each observation needs an event date, a said date, and a full item id.');
     }
   }
-  if (!observations) throw new Error('curate: malformed log; at least one dated observation is required.');
+  if (!observations && !layered) throw new Error('curate: malformed log; at least one dated observation is required.');
   return log;
 }
 
 // A later batch's pass gets the same base rules as the first — event
 // dates, (when not stated), preferences, assistant mentions, working
 // and counting — with only the framing and the replacement rule
-// swapped for the layered form: keep existing lines untouched and a
-// new line may mark an earlier one it corrects.
-const LAYER_FRAME = 'A dated log has already been written from the strongest evidence; you are layering the next batch of evidence into it for the same task. You get the task, the current log and this batch\'s evidence items, each with an id, a date, a weight and any recorded tags.\nEvery line of the current log starts with its own id, like L3. Keep each existing line exactly as it stands, id included; a line you keep carries its id unchanged and its wording untouched. Layer in only the facts the log does not already state, oldest first, in the same dated format with no id of your own:';
+// swapped for the layered form: the log so far is shown for reference
+// and the pass returns only the lines it adds; a new line may mark an
+// earlier one it corrects.
+const LAYER_FRAME = 'A dated log has already been written from the strongest evidence; you are layering the next batch of evidence into it for the same task. You get the task, the current log and this batch\'s evidence items, each with an id, a date, a weight and any recorded tags.\nThe current log is shown for reference only; every line of it starts with its own id, like L3, and stays exactly as it stands without you repeating it. Return only new observation lines for the facts the log does not already state, oldest first, in the same dated format with no id of your own:';
 const LAYER_REPLACES = '- A line you add may end with "(replaces L3: the subject it corrects)" only when it is a newer correction or decision about the same subject as that earlier line and at least as important — each item header shows the date, weight and tags to judge that by. The mark only tells the reader your line is newer; the earlier line stays in the log either way. Ideas, questions and asides only add lines; they never mark one. When it is unclear whether an item corrects the same subject, write no mark and let both lines stand.';
 const layerInstructions = (base: string) => [
   base.replace(FRAME, LAYER_FRAME).replace(REPLACES, LAYER_REPLACES),
-  'Keep or update any working section and any preference lines. Return only the complete log.',
+  'Return any working section and any preference lines in full, kept or updated, after the new observation lines. If this batch adds nothing, return no observation lines. Do not repeat the log\'s observation lines.',
 ].join('\n');
 
 interface ParsedLine {
   readonly line: string;
-  /** Line index inside the log's nonblank lines; kept for restores. */
-  readonly index: number;
+  /** The event date in the line's square brackets. */
+  readonly event: string;
   /** The line's own stable id (`L7`); set once when the line is written. */
   readonly lineId?: string;
   /** The line id a "(replaces L7)" marker names, when present. */
@@ -197,10 +202,10 @@ interface ParsedLine {
 function parseObservations(log: string, patterns: ReturnType<typeof logPatterns>): ParsedLine[] {
   const lines = log.split('\n').map((line) => line.trim()).filter(Boolean);
   const parsed: ParsedLine[] = [];
-  for (const [index, line] of lines.entries()) {
+  for (const line of lines) {
     const match = patterns.observation.exec(line)?.groups;
     if (!match) continue;
-    parsed.push({ line, index,
+    parsed.push({ line, event: match.event!,
       ...(match.lineId === undefined ? {} : { lineId: match.lineId.trim() }),
       ...(match.replacesId === undefined ? {} : { replacesId: match.replacesId }) });
   }
@@ -243,15 +248,19 @@ function stripReplaces(log: string, observation: RegExp): string {
   }).join('\n');
 }
 
-/** Merge a batch pass's log with the log it layered. Lines are matched
- *  by their own ids. Every line an earlier batch wrote stays: a kept
- *  id on changed wording is a reworded line and the original goes
- *  back; a line the pass dropped is restored where it stood. A line
- *  this pass added keeps a "(replaces Ln: ...)" mark only when it
- *  names an earlier line's own id — the mark tells the reader the new
- *  line is newer, and code never removes the line it names. A mark
- *  naming an id the log does not hold, and any "(replaces [date])"
- *  tail, is stripped from the added line. */
+/** Merge a batch pass's reply with the log it layered. The pass is
+ *  asked for only its additions. Every earlier line keeps its order
+ *  and id; each new observation goes in front of the first earlier
+ *  line with a later event date, so the log still reads oldest first,
+ *  and on the same date the earlier line comes first. The reply's
+ *  other lines — preference lines, working notes — follow the
+ *  observations. Lines are matched by their own ids: a reply that
+ *  repeats an earlier line, reworded or not, loses that copy and the
+ *  original stands. A line this pass added keeps a "(replaces Ln:
+ *  ...)" mark only when it names an earlier line's own id — the mark
+ *  tells the reader the new line is newer, and code never removes the
+ *  line it names. A mark naming an id the log does not hold, and any
+ *  "(replaces [date])" tail, is stripped from the added line. */
 function reconcile(
   prev: string,
   next: string,
@@ -260,14 +269,6 @@ function reconcile(
   const before = parseObservations(prev, patterns);
   const after = parseObservations(next, patterns);
   const beforeById = new Map(before.map((line) => [line.lineId!, line]));
-  const reworded = new Map<string, string>();
-  const keptIds = new Set<string>();
-  for (const line of after) {
-    const original = beforeById.get(line.lineId!);
-    if (original === undefined) continue;
-    keptIds.add(line.lineId!);
-    if (original.line !== line.line) reworded.set(line.lineId!, original.line);
-  }
   const fresh = after.filter((line) => !beforeById.has(line.lineId!));
   // A mark on a new line is honoured only when it names an earlier
   // line: a mark naming an id the log does not hold, and any
@@ -282,26 +283,27 @@ function reconcile(
   const added = fresh.map((line) => ({ id: line.lineId!, line: stripped.get(line.lineId!) ?? line.line }));
   const marks = fresh.filter((line) => line.replacesId !== undefined && beforeById.has(line.replacesId))
     .map((line) => ({ id: line.lineId!, target: line.replacesId! }));
-  const swapped = next.split('\n').map((line) => line.trim()).filter(Boolean)
-    .map((text) => {
-      const id = patterns.observation.exec(text)?.groups?.lineId?.trim();
-      return id === undefined ? text : reworded.get(id) ?? stripped.get(id) ?? text;
-    });
-  const heading = swapped.findIndex((line) => line.replace(/^#{1,6}\s+/, '') === WORKING_HEADING);
-  const limit = heading === -1 ? swapped.length : heading;
-  const inserts = new Map<number, string[]>();
-  for (const line of before) {
-    if (keptIds.has(line.lineId!)) continue;
-    const at = Math.min(line.index, limit);
-    inserts.set(at, [...(inserts.get(at) ?? []), line.line]);
+  // A reply line carrying an earlier line's id is that line repeated;
+  // drop it — the original is already going back in its own place.
+  // slots[i] holds the new lines that go in front of earlier line i;
+  // the last slot holds those dated after every earlier line.
+  const slots = Array.from({ length: before.length + 1 }, (): string[] => []);
+  const rest: string[] = [];
+  for (const line of next.split('\n')) {
+    const text = line.trim();
+    if (!text) continue;
+    const match = patterns.observation.exec(text)?.groups;
+    const id = match?.lineId?.trim();
+    if (id !== undefined && beforeById.has(id)) continue;
+    if (match === undefined) {
+      rest.push(text);
+      continue;
+    }
+    const later = before.findIndex((earlier) => earlier.event > match.event!);
+    slots[later === -1 ? before.length : later]!.push(stripped.get(id!) ?? text);
   }
-  const out: string[] = [];
-  for (const [index, text] of swapped.entries()) {
-    for (const insert of inserts.get(index) ?? []) out.push(insert);
-    out.push(text);
-  }
-  for (const insert of inserts.get(swapped.length) ?? []) out.push(insert);
-  return { log: out.join('\n'), added, marks };
+  const observations = before.flatMap((line, index) => [...slots[index]!, line.line]);
+  return { log: [...observations, ...slots[before.length]!, ...rest].join('\n'), added, marks };
 }
 
 /** Write only the dated log. Selected rules remain the caller's instructions. */
@@ -401,11 +403,11 @@ export async function curate(
   // A reply that fails the format check goes back once with the reason
   // and the rejected text; a second failure stops the curation.
   let repairs = 0;
-  const writeChecked = async (prompt: CuratePrompt): Promise<string> => {
+  const writeChecked = async (prompt: CuratePrompt, layered = false): Promise<string> => {
     const raw = await options.write(prompt, signal);
     signal.throwIfAborted();
     try {
-      return checkLog(raw, working, ids, preferenceAdvice, preferenceChange);
+      return checkLog(raw, working, ids, preferenceAdvice, preferenceChange, layered);
     } catch (error) {
       if (!(error instanceof Error) || !error.message.startsWith('curate: malformed log')) throw error;
       repairs += 1;
@@ -415,7 +417,7 @@ export async function curate(
         body: `${prompt.body}\n\nREJECTED LOG (${reason}):\n${String(raw)}`,
       }, signal);
       signal.throwIfAborted();
-      return checkLog(fixed, working, ids, preferenceAdvice, preferenceChange);
+      return checkLog(fixed, working, ids, preferenceAdvice, preferenceChange, layered);
     }
   };
   let recordBatches: CurateBatch[] | undefined;
@@ -427,9 +429,9 @@ export async function curate(
     });
   } else {
     // Chained write: the strongest batch writes the log alone; each
-    // later batch layers over the existing `Ln` line ids. Every
-    // observation line carries a stable id from the pass that wrote
-    // it, and reconcile matches lines by id alone.
+    // later batch returns only the lines it adds over the existing
+    // `Ln` line ids. Every observation line carries a stable id from
+    // the pass that wrote it, and reconcile matches lines by id alone.
     recordBatches = [];
     const patterns = logPatterns(ids);
     log = '';
@@ -455,7 +457,13 @@ export async function curate(
         const checked = await writeChecked({
           instructions: layerInstructions(instructions) + additions,
           body: `TASK:\n${datedTask}\n\nLOG SO FAR:\n${log}\n\nEVIDENCE:\n\n${indexes.map((index) => blocks[index]).join('\n\n')}`,
-        });
+        }, true);
+        // The pass returns only its additions; an empty reply means the
+        // batch held nothing new and the log stands as it is.
+        if (checked === '') {
+          recordBatches.push({ items: indexes.length, added: [], marks: [] });
+          continue;
+        }
         const live = new Set(parseObservations(log, patterns).map((line) => line.lineId!));
         const numbered = numberLines(checked, patterns, live, nextLineId);
         nextLineId = numbered.next;
