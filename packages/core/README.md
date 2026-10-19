@@ -18,12 +18,12 @@ The host supplies its own sources, decision function, and writer. The default en
 
 ## Requirements
 
-Node.js 22.12 or later.
+Node.js 22.20 or later.
 
 ## Source packages
 
-Core supplies no reader. Install [chat](../chat/README.md), [git](../git/README.md)
-or [markdown](../markdown/README.md) for built-in readers. Each depends on core.
+Core supplies no reader. Install [chat](https://github.com/jonny981/curate/blob/main/packages/chat/README.md), [git](https://github.com/jonny981/curate/blob/main/packages/git/README.md)
+or [markdown](https://github.com/jonny981/curate/blob/main/packages/markdown/README.md) for built-in readers. Each depends on core.
 The `@curatejs/core/internal` entry contains shared file, git and keyword helpers
 used by those packages; it supplies no source or ranking defaults.
 

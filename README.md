@@ -49,7 +49,7 @@ await writeFile('agent-prompt.txt', prompt);
 console.log(prompt);
 ```
 
-Use Node.js 22.12 or later.
+Use Node.js 22.20 or later.
 In a new folder, install the packages and create a source note:
 
 ```sh
@@ -149,8 +149,10 @@ A reply that fails this check goes back to the writer once, with the reason and 
 An observation has this form, using an ID from the supplied evidence:
 
 ```text
-[2026-01-12] Invoices preserve the order's recorded currency (said 2026-01-12; billing.md#1)
+[2026-01-12] Invoices preserve the order's recorded currency (said 2026-01-12; /home/sam/docs/billing.md#1)
 ```
+
+With `markdown()`, an item id is the file's full real path plus `#` and its section number, so `docs/billing.md`'s first section cites as `/home/sam/docs/billing.md#1` when `docs` sits under `/home/sam`.
 
 The following recipes use Node's built-in `fetch`; no model SDK is needed.
 Save the shared helpers, one decision recipe, and the writer in `models.mjs`.
@@ -495,6 +497,7 @@ These are measured results. "Tuning" means the 249 questions used to tune Curate
 | [**@curatejs/markdown**](packages/markdown/README.md) | Markdown notes and rules, keyword settings and questions. |
 
 Each source package depends only on core and exports its keyword settings, question set and wording guidance for extra searches.
+See the [changelog](CHANGELOG.md) for what each release contains.
 
 ## Install only what you need
 

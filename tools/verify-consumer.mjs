@@ -84,6 +84,15 @@ assert.ok([CHAT_SEARCH_LINE_REGISTER, GIT_SEARCH_LINE_REGISTER, MARKDOWN_SEARCH_
 console.log('Clean consumer: core, chat, git, notes, rules and Markdown kinds passed.');
 `);
   execFileSync(process.execPath, ['example.mjs'], { cwd: consumer, stdio: 'inherit' });
+  writeFileSync(join(consumer, 'require.cjs'), `
+const assert = require('node:assert/strict');
+for (const name of ['core', 'chat', 'git', 'markdown']) {
+  const mod = require('@curatejs/' + name);
+  assert.ok(Object.keys(mod).length > 0, 'require("@curatejs/' + name + '") returned no exports');
+}
+console.log('Clean consumer: require() loaded all four packages.');
+`);
+  execFileSync(process.execPath, ['require.cjs'], { cwd: consumer, stdio: 'inherit' });
 } finally {
   rmSync(consumer, { recursive: true, force: true });
 }

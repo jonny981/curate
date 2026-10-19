@@ -1,5 +1,4 @@
-// Key shapes and the long-run rule from Obversa's sessions-to-kb reader.
-// Curate owns these patterns and has no runtime dependency on Obversa.
+// Key shapes and the long-run rule for secret scrubbing.
 const SHAPES = [
   /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
   /\b(?:sk|xai|pk|rk)-[A-Za-z0-9_-]{16,}/g,

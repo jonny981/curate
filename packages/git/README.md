@@ -11,7 +11,7 @@ pnpm add @curatejs/core @curatejs/git
 
 ## Requirements
 
-Node.js 22.12 or later. Git must be on `PATH`.
+Node.js 22.20 or later. Git must be on `PATH`.
 
 ## Git history
 
@@ -56,7 +56,7 @@ cut, for example 0.05. The curator receives exact scores. Its `tiers`
 instructions ask for less space for low-scored items.
 Rules also keep every scored item; set `thresholds.rule` for an optional
 applicability cut. See
-[core's measured reason](../core/README.md#defaults-and-evidence) for the
+[core's measured reason](https://github.com/jonny981/curate/blob/main/packages/core/README.md#defaults-and-evidence) for the
 saved-decision sweep's answer-turn losses.
 
 - **Keyword settings:** `GIT_KEYWORD_SETTINGS` exports the ranking defaults. Pass a partial `keyword` object to the reader to override them.
@@ -70,4 +70,4 @@ import { gitHistory, GIT_KEYWORD_SETTINGS, GIT_HISTORY_CASCADE, GIT_SEARCH_LINE_
 const source = gitHistory('.', { keyword: { recencyDays: 90 } });
 ```
 
-See [core](../core/README.md) for selection, search lines, optional cuts and curation.
+See [core](https://github.com/jonny981/curate/blob/main/packages/core/README.md) for selection, search lines, optional cuts and curation.

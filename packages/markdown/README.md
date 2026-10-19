@@ -11,7 +11,7 @@ pnpm add @curatejs/core @curatejs/markdown
 
 ## Requirements
 
-Node.js 22.12 or later. Git on `PATH` enables revision pins and committed change dates. An unpinned read without git skips the repository date tier.
+Node.js 22.20 or later. Git on `PATH` enables revision pins and committed change dates. An unpinned read without git skips the repository date tier.
 
 ## Markdown sources
 
@@ -117,7 +117,7 @@ cut, for example 0.05. The curator receives exact scores. Its `tiers`
 instructions ask for less space for low-scored items.
 Rules also keep every scored item; set `thresholds.rule` for an optional
 applicability cut. See
-[core's measured reason](../core/README.md#defaults-and-evidence) for the
+[core's measured reason](https://github.com/jonny981/curate/blob/main/packages/core/README.md#defaults-and-evidence) for the
 saved-decision sweep's answer-turn losses.
 
 - **Keyword settings:** `MARKDOWN_KEYWORD_SETTINGS` exports the ranking defaults. Pass a partial `keyword` object to the reader to override them.
@@ -133,4 +133,4 @@ const source = knowledgeBase('docs', { keyword: { b: 0 } });
 
 `rules(directory, { keyword })` accepts the same overrides.
 
-See [core](../core/README.md) for selection, search lines, optional cuts and curation.
+See [core](https://github.com/jonny981/curate/blob/main/packages/core/README.md) for selection, search lines, optional cuts and curation.
