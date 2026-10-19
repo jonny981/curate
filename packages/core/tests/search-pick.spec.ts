@@ -145,9 +145,9 @@ describe('rank protection', () => {
     ], { task: 'Find evidence', decide: stub.decide, rankProtection: true });
     const curated = await curate('Find evidence', picked, {
       write: async (prompt) => {
-        expect(prompt.body).toContain('### first (0.600123): first');
-        expect(prompt.body).toContain('### second (0.9): second');
-        return '[2025-01-01] Evidence (said 2025-01-01; first, second)';
+        expect(prompt.body).toContain('### E1 (0.600123): first');
+        expect(prompt.body).toContain('### E2 (0.9): second');
+        return '[2025-01-01] Evidence (said 2025-01-01; E1, E2)';
       },
     });
     expect(curated.record.items.map((entry) => [entry.id, entry.weight]))

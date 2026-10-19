@@ -593,16 +593,19 @@ write the log the task needs, with no fixed character cap.
 `prompt.instructions` contains the v4 dated-log wording and three weight
 tiers: 0.6 or more, 0.1 to below 0.6, and below 0.1. `prompt.body` contains the
 task and selected reference items in their selected order. Each header
-keeps the full item id, the candidate's date value, its source kind when
+shows the item's short id (`E1`, `E2`, and so on in selected order),
+the candidate's date value, its source kind when
 the read recorded one, its decision weight without rounding, and any
-recorded tags: `### notes.md#2 (2023-05-30, markdown, 0.87, intent: correction): title`.
+recorded tags: `### E1 (2023-05-30, markdown, 0.87, intent: correction): title`.
 A missing date stays missing.
 The instructions ask the writer to keep every observation from items at
 0.6 or more, include useful facts from items at 0.1 to below 0.6, and use
 items below 0.1 only when they clearly state a needed fact. The prompt
 asks for less space for low scores; they remain available as evidence.
-When ids clash across sources, their headers use `[sourceId, id]` as a
-JSON string so the writer can tell them apart.
+The writer cites the short ids; the format check knows only them, and
+the returned log and `record.items` carry the full item ids again.
+When ids clash across sources, `record.items` keeps each id as a
+`[sourceId, id]` JSON string so callers can tell them apart.
 
 ```ts
 import { curate, pick, type CurateWrite, type MemoryCandidate, type PickDecide } from '@curatejs/core';
@@ -624,7 +627,7 @@ have this form:
 
 The event date and the date it was said are separate. The prompt asks
 the writer to keep exact names and amounts, merge repeated events with
-both full ids, and mark later observations that replace earlier ones.
+both ids, and mark later observations that replace earlier ones.
 Selected rules stay in `picked.selected` for the host to pass as exact
 instructions; the curator reads only reference items.
 
@@ -659,12 +662,16 @@ with the user's stated tastes, relevant experiences and constraints for
 advice tasks. `preferenceChange: true` asks for optional
 `Changed preference:` lines with stated changes of taste or exclusions.
 Both are off by default. Each added line must have text and cite
-full source item ids in parentheses or square brackets, for example:
+the short `En` source ids in parentheses or square brackets, for
+example:
 
 ```text
-Advice preferences: Likes history and quiet walks (trips.md#2)
-Changed preference: Wants quieter trips [trips.md#2]
+Advice preferences: Likes history and quiet walks (E1)
+Changed preference: Wants quieter trips [E1]
 ```
+
+The returned log restores the full item ids, as it does on
+observation lines.
 
 These lines also count toward `contextLimit`. The same preference
 instructions apply when condensing. Dates and source ids on observation
@@ -675,7 +682,8 @@ lines keep their strict checks when preferences are enabled.
 and `overContextLimit`. It includes `taskDate` when supplied.
 It includes `context` when supplied and `taskKinds` when routing is enabled.
 A chained write adds `batchTokens` and `batches`.
-Each item includes its prompt `id`, the full `candidate`, and
+Each item holds its full `id` (the prompt shows it as `E` plus the
+item's 1-based position), the full `candidate`, and
 the exact decision `weight`.
 
 Set `contextLimit` to the positive integer number of characters the
@@ -690,7 +698,7 @@ exactly once more with the task, the full log, and exact item weights.
 The condense prompt asks the writer to merge or drop observations from
 items below 0.1 first, then those from 0.1 to below 0.6. It asks for
 observations from items weighted 0.6 or more to stay whole, and for
-retained observations to keep their event dates, said dates, full source
+retained observations to keep their event dates, said dates, source
 ids, and replacement dates. The result must pass the same format checks.
 These checks do not prove that the writer followed the tier instructions.
 
@@ -712,10 +720,10 @@ default. The reader should check these notes against the log.
 A malformed observation throws a clear error. So does an empty log,
 except from a later pass of a chained write, which may return nothing
 (see below). Each observation must have
-valid calendar dates in its event and `said` fields and full ids of items
-given to the writer. Merged sources can separate ids with commas,
+valid calendar dates in its event and `said` fields and the short ids of
+items given to the writer. Merged sources can separate ids with commas,
 semicolons, `and`, or `&`. If sources recorded the same fact on different
-days, repeat the dated group: `(said 2023-05-20; notes#1; said 2023-05-21; notes#2)`.
+days, repeat the dated group: `(said 2023-05-20; E1; said 2023-05-21; E2)`.
 Every source date and id is checked. Optional
 suffixes are `(when not stated)`, `(replaces [YYYY-MM-DD])` and
 `(replaces Ln)`; replacement dates must also be valid. In a chained

@@ -11,7 +11,7 @@ import { markdown, knowledgeBase, rules, type MarkdownOptions, type KnowledgeBas
 
 describe('package exports', () => {
   it('exports the curate step and its caller-supplied writer types', async () => {
-    const write: CurateWrite = async () => '[2023-05-13] Visited York (said 2023-05-20; trip)';
+    const write: CurateWrite = async () => '[2023-05-13] Visited York (said 2023-05-20; E1)';
     const options: CurateOptions = { write, working: false };
     const picked = await pick([{
       sourceId: 'notes', role: 'reference', id: 'trip', title: 'Trip',

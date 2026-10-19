@@ -60,7 +60,7 @@ it('combines search options and source questions across real readers', async () 
       expect(prompt.body).toContain('Banana harvest restoration evidence.');
       expect(prompt.body).toContain(', 0.5):');
       expect(prompt.body).not.toContain('Keep source dates.');
-      return `[2026-01-01] Backup evidence (said 2026-01-01; ${result.selected.find((item) => item.role === 'reference')!.id})`;
+      return '[2026-01-01] Backup evidence (said 2026-01-01; E1)';
     } });
     expect(curated.record.items).toHaveLength(5);
     expect(curated.record.items.every((item) => item.weight === 0.5)).toBe(true);

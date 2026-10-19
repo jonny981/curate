@@ -62,10 +62,10 @@ describe('pick', () => {
     expect(picked.selected.map((item) => item.id)).toEqual(['applies', 'does-not-apply', 'strong', 'weak', 'zero']);
     expect(picked.record.thresholds).toEqual({ reference: 0, rule: 0, linkedPathBar: 0.4 });
     const result = await curate('Recall evidence', picked, { write: async (prompt) => {
-      expect(prompt.body).toContain('### weak (0.01): weak');
-      expect(prompt.body).toContain('### zero (0): zero');
+      expect(prompt.body).toContain('### E2 (0.01): weak');
+      expect(prompt.body).toContain('### E3 (0): zero');
       expect(prompt.body).not.toContain('does-not-apply');
-      return '[2026-01-01] Evidence (said 2026-01-01; zero)';
+      return '[2026-01-01] Evidence (said 2026-01-01; E3)';
     } });
     expect(result.record.items.map((item) => [item.id, item.weight])).toEqual([
       ['strong', 0.9], ['weak', 0.01], ['zero', 0],

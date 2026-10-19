@@ -79,7 +79,7 @@ export interface CurateRecord {
   readonly batches?: readonly CurateBatch[];
   /** The reference items given to the writer, in selected order, with exact weights; `batches` records what each chained pass was shown. */
   readonly items: readonly {
-    /** Full item id in the prompt; includes the source when ids would clash. */
+    /** Full item id; includes the source when ids would clash. The prompt shows the item as `En`, one plus its index here. */
     readonly id: string;
     readonly candidate: MemoryCandidate;
     readonly weight: number;
@@ -92,7 +92,7 @@ export interface CurateResult {
 }
 
 const WORKING_HEADING = "Working (the curator's; check it against the log):";
-const REPAIR = 'A log you wrote for this task was rejected for its format; the rejected log and the reason follow the evidence. Return the same log corrected and nothing else: each observation line starts with exactly one event date in square brackets, [YYYY-MM-DD], and ends with (said YYYY-MM-DD; the full item id from its header). For an event known only to a month or a span, put its first date in the brackets and say the span in the text. Change only the format; keep every fact, date and id.';
+const REPAIR = 'A log you wrote for this task was rejected for its format; the rejected log and the reason follow the evidence. Return the same log corrected and nothing else: each observation line starts with exactly one event date in square brackets, [YYYY-MM-DD], and ends with (said YYYY-MM-DD; the item id from its header). For an event known only to a month or a span, put its first date in the brackets and say the span in the text. Change only the format; keep every fact, date and id.';
 const NO_WORKING = '- Do not answer the task, do not count, and do not decide whether an observation falls inside a period the task names: give its dates and leave that to the reader.';
 const CONTEXT = '\nKeep every fact with the context that gives it meaning: each observation names who, where and which item, activity or event it concerns. Carry these links from the same session, including its other evidence items, into that line instead of leaving them on another line. Resolve pronouns only when that session states the link. Do not invent a person, place, item or connection. Preserve these links when merging or condensing logs.';
 const COUNT = '\nThis task needs a count or a list. Write every instance across the supplied sessions as its own line, including small ones and ones mentioned in passing. When two items tell the same instance, write it once with both ids; when you are not sure, write both and end the later observation text with "(may be the same as [the earlier date])".';
@@ -105,7 +105,7 @@ const REPLACES = '- When a later observation replaces an earlier one (a new job,
 const FIRST_REPLACES = '- When a later observation replaces an earlier one (a new job, a changed plan, an updated number, a new habit), keep both with their own dates and write no replacement marker.';
 const INSTRUCTIONS = [
   `You curate memory for a person or an agent about to do a task. ${FRAME}`,
-  '[YYYY-MM-DD the event happened] the observation, with its exact names, numbers and amounts (said YYYY-MM-DD; the full item id from its header)',
+  '[YYYY-MM-DD the event happened] the observation, with its exact names, numbers and amounts (said YYYY-MM-DD; the item id from its header)',
   '- The "said" date is the date in the item header. Work out when the event happened from it: "last Saturday" said on 2023-05-20 happened on 2023-05-13. When the item gives no time for the event, use the said date and write "(when not stated)". Never shift a date that is already absolute.',
   '- One line per distinct event or fact. When two items tell the same event, write it once and give both ids.',
   REPLACES,
@@ -129,7 +129,7 @@ function logPatterns(ids: readonly string[]) {
   const separator = '(?:,\\s*(?:and\\s+)?|;\\s*|\\s+(?:and|&)\\s+)';
   const sourceGroup = `(?:${sources})(?:${separator}(?:${sources}))*`;
   return {
-    observation: new RegExp(`^(?<lineId>L\\d+ )?\\[(?<event>${date})\\] (?<text>.+?) \\((?<citations>said ${date}; ${sourceGroup}(?:;\\s*said ${date}; ${sourceGroup})*)\\)(?: \\(when not stated\\))?(?: \\(replaces (?:\\[(?<replacesDate>${date})\\]|(?<replacesId>L\\d+)(?::\\s*(?<replacesReason>[^()]+?))?)\\))?$`),
+    observation: new RegExp(`^(?<lineId>L\\d+ )?\\[(?<event>${date})\\] (?<text>.+?) \\((?<citations>said ${date}; ${sourceGroup}(?:;\\s*said ${date}; ${sourceGroup})*)\\)(?: \\(when not stated\\))?(?: \\(replaces (?:\\[(?<replacesDate>${date})\\]|(?<replacesId>L\\d+)(?::\\s*(?<replacesReason>[^()]+?))?)\\))?$`, 'd'),
     preference: new RegExp(`(?:\\((?:${sources})(?:${separator}(?:${sources}))*\\)|\\[(?:${sources})(?:${separator}(?:${sources}))*\\])`),
   };
 }
@@ -149,6 +149,14 @@ function checkLog(raw: unknown, working: boolean, ids: readonly string[], prefer
     throw new Error('curate: malformed log; unexpected or empty working section.');
   }
   const { observation, preference } = logPatterns(ids);
+  // A citation on a preference or working line is an `En` inside a
+  // bracket group, and every one must be a given item's id: one the
+  // map does not hold would be returned unresolved. A bare `En`, such
+  // as the E14 in an address, is ordinary text, not a citation.
+  const known = new Set(ids);
+  const unknownId = (text: string) =>
+    [...text.matchAll(/\([^()]*\)|\[[^\[\]]*\]/g)].some(([group]) =>
+      [...group.matchAll(/\bE\d+\b/g)].some(([id]) => !known.has(id)));
   let observations = 0;
   for (const [index, line] of lines.entries()) {
     if (line.startsWith('Advice preferences:') || line.startsWith('Changed preference:')) {
@@ -157,23 +165,60 @@ function checkLog(raw: unknown, working: boolean, ids: readonly string[], prefer
         throw new Error('curate: malformed log; unexpected preference line.');
       }
       const text = line.slice(line.indexOf(':') + 1).trim();
-      if (!preference.test(text) || !text.replace(preference, '').replace(/[.!]/g, '').trim()) {
-        throw new Error('curate: malformed log; preference lines need text and full source item ids in parentheses or brackets.');
+      if (!preference.test(text) || !text.replace(preference, '').replace(/[.!]/g, '').trim()
+        || unknownId(text)) {
+        throw new Error('curate: malformed log; preference lines need text and source item ids in parentheses or brackets.');
       }
       continue;
     }
-    if (heading !== -1 && index >= heading) continue;
+    if (heading !== -1 && index >= heading) {
+      if (unknownId(line)) {
+        throw new Error('curate: malformed log; a working note cites an unknown item id.');
+      }
+      continue;
+    }
     observations += 1;
     const match = observation.exec(line)?.groups;
     const saidDates = match?.citations?.matchAll(/(?:^|;\s*)said (\d{4}-\d{2}-\d{2});/g) ?? [];
     if (!match || !isDate(match.event!) || !match.text!.trim()
       || [...saidDates].some((entry) => !isDate(entry[1]!))
       || (match.replacesDate !== undefined && !isDate(match.replacesDate))) {
-      throw new Error('curate: malformed log; each observation needs an event date, a said date, and a full item id.');
+      throw new Error('curate: malformed log; each observation needs an event date, a said date, and an item id.');
     }
   }
   if (!observations && !layered) throw new Error('curate: malformed log; at least one dated observation is required.');
   return log;
+}
+
+/** Swap the short `En` ids a checked log cites for the items' full
+ *  ids, so the returned log and record read as they did when the
+ *  writer cited full ids. On an observation line only the citation
+ *  group is rewritten, spliced by index so `$`-sequences in the text
+ *  stay literal. On a preference line every `En` inside a bracket
+ *  group is rewritten, whatever else the group holds; one outside
+ *  the brackets stays. Below the working heading every known `En`
+ *  inside a bracket group is rewritten; a bare one stays. An `En`
+ *  left anywhere else, such as one written as ordinary text,
+ *  stays. */
+function restoreIds(log: string, ids: ReadonlyMap<string, string>): string {
+  const swap = (text: string) => text.replace(/\bE\d+\b/g, (id) => ids.get(id) ?? id);
+  const { observation } = logPatterns([...ids.keys()]);
+  const brackets = /\([^()]*\)|\[[^\[\]]*\]/g;
+  let inWorking = false;
+  return log.split('\n').map((line) => {
+    const trimmed = line.trim();
+    const span = observation.exec(trimmed)?.indices?.groups?.citations;
+    if (span !== undefined) {
+      const fixed = trimmed.slice(0, span[0]) + swap(trimmed.slice(span[0], span[1])) + trimmed.slice(span[1]);
+      const at = line.indexOf(trimmed);
+      return line.slice(0, at) + fixed + line.slice(at + trimmed.length);
+    }
+    if (trimmed.startsWith('Advice preferences:') || trimmed.startsWith('Changed preference:')) {
+      return line.replace(brackets, swap);
+    }
+    if (trimmed.replace(/^#{1,6}\s+/, '') === WORKING_HEADING) inWorking = true;
+    return inWorking ? line.replace(brackets, swap) : line;
+  }).join('\n');
 }
 
 // A later batch's pass gets the same base rules as the first — event
@@ -362,16 +407,21 @@ export async function curate(
       .map(([key, tag]) => tag.value === undefined ? '' : `, ${key}: ${tag.value}`)
       .join('');
   };
-  const blocks = items.map(({ id, candidate, weight }) => {
+  const blocks = items.map(({ id, candidate, weight }, index) => {
     const kind = entries.get(id)?.sourceKind;
-    return `### ${id} (${candidate.date ? `${candidate.date.value}, ` : ''}${kind === undefined ? '' : `${kind}, `}${weight}${tagText(id)}): ${candidate.title}\n\n${candidate.text}`.trim();
+    return `### E${index + 1} (${candidate.date ? `${candidate.date.value}, ` : ''}${kind === undefined ? '' : `${kind}, `}${weight}${tagText(id)}): ${candidate.title}\n\n${candidate.text}`.trim();
   });
   const instructionsWorking = !working ? INSTRUCTIONS : INSTRUCTIONS.replace(NO_WORKING,
     '- In the log itself, do not judge: give every observation its dates, including ones near the edge of a period the task names.')
-    + '\nAfter the log, add a short section headed "Working (the curator\'s; check it against the log):". For a count or a list: number each distinct instance that falls inside the period the task names, with its date and id, then name any instance you left out and why (outside the period, or the same as another). For a question about time or order: the dates involved and the computed difference or order. For something that changed: the latest value and its date. Leave out any part the task does not need.';
+    + '\nAfter the log, add a short section headed "Working (the curator\'s; check it against the log):". For a count or a list: number each distinct instance that falls inside the period the task names, with its date and the item ids in brackets, then name any instance you left out and why (outside the period, or the same as another). For a question about time or order: the dates involved and the computed difference or order. For something that changed: the latest value and its date. Leave out any part the task does not need.';
   const instructions = instructionsWorking + (taskKinds?.includes('count') ? COUNT : '');
   const additions = preferences + (context ? CONTEXT : '');
-  const ids = items.map((item) => item.id);
+  // Each item's header shows a short `En` id in selected order, fixed
+  // for the curation so a rerun sees the same ids. The writer cites
+  // them, the format check knows only them, and `fullIds` swaps the
+  // cited ids back for the returned log and record.
+  const shortIds = items.map((_, index) => `E${index + 1}`);
+  const fullIds = new Map(shortIds.map((short, index) => [short, items[index]!.id]));
   // `batchTokens` chains the write: the evidence goes to the writer in
   // decision-score order, strongest first and equal weights newest
   // first, cut into consecutive batches that each hold as many whole
@@ -407,7 +457,7 @@ export async function curate(
     const raw = await options.write(prompt, signal);
     signal.throwIfAborted();
     try {
-      return checkLog(raw, working, ids, preferenceAdvice, preferenceChange, layered);
+      return checkLog(raw, working, shortIds, preferenceAdvice, preferenceChange, layered);
     } catch (error) {
       if (!(error instanceof Error) || !error.message.startsWith('curate: malformed log')) throw error;
       repairs += 1;
@@ -417,7 +467,7 @@ export async function curate(
         body: `${prompt.body}\n\nREJECTED LOG (${reason}):\n${String(raw)}`,
       }, signal);
       signal.throwIfAborted();
-      return checkLog(fixed, working, ids, preferenceAdvice, preferenceChange, layered);
+      return checkLog(fixed, working, shortIds, preferenceAdvice, preferenceChange, layered);
     }
   };
   let recordBatches: CurateBatch[] | undefined;
@@ -433,7 +483,7 @@ export async function curate(
     // `Ln` line ids. Every observation line carries a stable id from
     // the pass that wrote it, and reconcile matches lines by id alone.
     recordBatches = [];
-    const patterns = logPatterns(ids);
+    const patterns = logPatterns(shortIds);
     log = '';
     let nextLineId = 1;
     for (const indexes of batches) {
@@ -451,7 +501,7 @@ export async function curate(
         nextLineId = numbered.next;
         const written = parseObservations(log, patterns);
         recordBatches.push({ items: indexes.length,
-          added: written.map((line) => ({ id: line.lineId!, line: line.line })),
+          added: written.map((line) => ({ id: line.lineId!, line: restoreIds(line.line, fullIds) })),
           marks: [] });
       } else {
         const checked = await writeChecked({
@@ -468,29 +518,40 @@ export async function curate(
         const numbered = numberLines(checked, patterns, live, nextLineId);
         nextLineId = numbered.next;
         const merged = reconcile(log, numbered.log, patterns);
-        log = checkLog(merged.log, working, ids, preferenceAdvice, preferenceChange);
-        recordBatches.push({ items: indexes.length, added: merged.added, marks: merged.marks });
+        log = checkLog(merged.log, working, shortIds, preferenceAdvice, preferenceChange);
+        recordBatches.push({ items: indexes.length, marks: merged.marks,
+          added: merged.added.map((line) => ({ ...line, line: restoreIds(line.line, fullIds) })) });
       }
     }
   }
-  const logLength = log.length;
+  const restoredLog = restoreIds(log, fullIds);
+  const logLength = restoredLog.length;
   const condensed = contextLimit !== undefined && logLength > contextLimit;
   if (condensed) {
+    // The condense writer sees and writes the short-id log, so its
+    // stated budget estimates the caller's character budget in that
+    // form: the limit scaled by the whole log's length ratio between
+    // the two id forms. The reply's own mix of ids and text can
+    // differ, so a reply inside the stated budget can still restore
+    // over `contextLimit`; `overContextLimit` records that.
+    const budget = Math.max(1, Math.floor(contextLimit * log.length / logLength));
     const rawCondensed = await options.write({
       instructions: [
         instructions,
-        `Condense the log for the task to at most ${contextLimit} characters, including any working section, if possible.`,
+        `Condense the log for the task to at most ${budget} characters, including any working section, if possible.`,
         'Reduce the tiers in this order:',
         'First: merge or drop observations from items weighted below 0.1.',
         'Next: merge or drop observations from items weighted from 0.1 to below 0.6.',
         'Keep observations from items weighted 0.6 or more whole; do not shorten or drop them, even if the log must exceed the budget.',
-        'Keep each retained observation\'s event date, said date, full source item ids, and replacement dates. Merge only observations with matching dates and keep all their source ids.',
+        'Keep each retained observation\'s event date, said date, source item ids, and replacement dates. Merge only observations with matching dates and keep all their source ids.',
         'Never truncate text. Return only the dated log and, when requested, working notes checked against the retained observations.',
       ].join('\n') + additions,
-      body: `TASK:\n${datedTask}\n\nITEM WEIGHTS:\n${items.map((item) => `${item.id}: ${item.weight}`).join('\n')}\n\nLOG:\n${log}`,
+      body: `TASK:\n${datedTask}\n\nITEM WEIGHTS:\n${items.map((item, index) => `E${index + 1}: ${item.weight}`).join('\n')}\n\nLOG:\n${log}`,
     }, signal);
     signal.throwIfAborted();
-    log = checkLog(rawCondensed, working, ids, preferenceAdvice, preferenceChange);
+    log = restoreIds(checkLog(rawCondensed, working, shortIds, preferenceAdvice, preferenceChange), fullIds);
+  } else {
+    log = restoredLog;
   }
   return {
     log,

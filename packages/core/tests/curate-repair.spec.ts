@@ -30,32 +30,36 @@ function writer(logs: readonly string[]) {
 }
 
 // The reply a plan curator gave on a LongMemEval question: an event known
-// only to its month, written as a date range.
+// only to its month, written as a date range. The writer cites the item's
+// short `En` id; the returned log carries the full id again.
 const RANGE = '[2023-04-01–2023-04-30] Bought a designer handbag for $800 (said 2023-05-23; a)';
 const FIXED = '[2023-04-01] Bought a designer handbag for $800 sometime in April (said 2023-05-23; a)';
+const WRITTEN_RANGE = RANGE.replace('; a)', '; E1)');
+const WRITTEN_FIXED = FIXED.replace('; a)', '; E1)');
 
 describe('a log that fails the format check', () => {
   it('is sent back once with the reason and the rejected log, and the corrected log is used', async () => {
-    const { calls, write } = writer([RANGE, FIXED]);
+    const { calls, write } = writer([WRITTEN_RANGE, WRITTEN_FIXED]);
     const result = await curate('task', picked([candidate('a')]), { write });
     expect(calls).toHaveLength(2);
     expect(calls[1]!.instructions).toContain('rejected for its format');
-    expect(calls[1]!.body).toContain(RANGE);
+    expect(calls[1]!.body).toContain(WRITTEN_RANGE);
     expect(calls[1]!.body).toContain('each observation needs an event date');
     expect(result.log).toBe(FIXED);
     expect(result.record.repairs).toBe(1);
   });
 
   it('fails when the corrected log is still malformed', async () => {
-    const { calls, write } = writer([RANGE, RANGE]);
+    const { calls, write } = writer([WRITTEN_RANGE, WRITTEN_RANGE]);
     await expect(curate('task', picked([candidate('a')]), { write })).rejects.toThrow('curate: malformed log');
     expect(calls).toHaveLength(2);
   });
 
   it('makes one call and records no repair for a well-formed log', async () => {
-    const { calls, write } = writer([FIXED]);
+    const { calls, write } = writer([WRITTEN_FIXED]);
     const result = await curate('task', picked([candidate('a')]), { write });
     expect(calls).toHaveLength(1);
+    expect(result.log).toBe(FIXED);
     expect(result.record).not.toHaveProperty('repairs');
   });
 });

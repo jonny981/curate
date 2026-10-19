@@ -520,12 +520,14 @@ it('labels collection dates for undated evidence without changing weights or ord
 
   const log = '[2026-01-01] An orchard was planted (said 2026-01-01; dated)\n'
     + '[2026-02-01] The collected note says the person prefers fruit trees; the original statement date is unknown (said 2026-02-01; undated) (when not stated)';
+  const written = '[2026-01-01] An orchard was planted (said 2026-01-01; E1)\n'
+    + '[2026-02-01] The collected note says the person prefers fruit trees; the original statement date is unknown (said 2026-02-01; E2) (when not stated)';
   const result = await curate('orchard evidence', evidence, { write: async (prompt) => {
-    expect(prompt.body).toContain('### dated (2026-01-01, markdown, 0.9):');
-    expect(prompt.body).toContain('### undated (2026-02-01, markdown, 0.7):');
+    expect(prompt.body).toContain('### E1 (2026-01-01, markdown, 0.9):');
+    expect(prompt.body).toContain('### E2 (2026-02-01, markdown, 0.7):');
     expect(prompt.body).toContain('UNDATED SOURCE collected 2026-02-01.');
     expect(prompt.body).toContain('When the text supplies no statement date, the original statement date is unknown.');
-    return log;
+    return written;
   } });
   expect(result.log).toBe(log);
   expect(result.record.items.map((item) => [item.id, item.weight])).toEqual([['dated', 0.9], ['undated', 0.7]]);

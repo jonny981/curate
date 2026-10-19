@@ -146,13 +146,13 @@ Send `instructions` as the model's instructions and `body` as its input.
 Return only the log text, without a Markdown fence.
 Curate checks the dates and cited item IDs; it does not prove the facts are correct.
 A reply that fails this check goes back to the writer once, with the reason and the rejected text. A second failure stops the curation, and the record counts each repair.
-An observation has this form, using an ID from the supplied evidence:
+An observation has this form, citing the item's header ID. Evidence headers show a short ID (`E1`, `E2`, and so on in evidence order):
 
 ```text
-[2026-01-12] Invoices preserve the order's recorded currency (said 2026-01-12; /home/sam/docs/billing.md#1)
+[2026-01-12] Invoices preserve the order's recorded currency (said 2026-01-12; E1)
 ```
 
-With `markdown()`, an item id is the file's full real path plus `#` and its section number, so `docs/billing.md`'s first section cites as `/home/sam/docs/billing.md#1` when `docs` sits under `/home/sam`.
+The log `curate()` returns restores each cited ID to the item's full ID. With `markdown()`, an item id is the file's full real path plus `#` and its section number, so `docs/billing.md`'s first section comes back as `/home/sam/docs/billing.md#1` when `docs` sits under `/home/sam`.
 
 The following recipes use Node's built-in `fetch`; no model SDK is needed.
 Save the shared helpers, one decision recipe, and the writer in `models.mjs`.

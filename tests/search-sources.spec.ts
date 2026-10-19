@@ -227,7 +227,7 @@ describe('extra source searches', () => {
       contextLimit: 1,
       write: async (prompt) => {
         writerTasks.push(prompt.body.split('\n\n')[0]!);
-        return '[2026-01-01] Event recorded (said 2026-01-01; evidence)';
+        return '[2026-01-01] Event recorded (said 2026-01-01; E1)';
       },
     });
     expect(writerTasks).toEqual([`TASK:\n${task}`, `TASK:\n${task}`]);

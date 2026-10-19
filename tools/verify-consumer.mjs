@@ -53,11 +53,11 @@ assert.deepEqual(meaning.map(candidate => candidate.text), candidates.map(candid
 const cut = await pick(candidates, { task: 'Recall backups', decide: weighted, thresholds: { reference: 0.05 } });
 assert.deepEqual(cut.selected.map(candidate => candidate.id), ['host-item-0']);
 let prompt;
-const curated = await curate('Recall backups', picked, { write: async p => { prompt = p; return '[2025-01-01] Backups are encrypted (said 2025-01-01; host-item-0)'; } });
+const curated = await curate('Recall backups', picked, { write: async p => { prompt = p; return '[2025-01-01] Backups are encrypted (said 2025-01-01; E1)'; } });
 assert.equal(curated.log, '[2025-01-01] Backups are encrypted (said 2025-01-01; host-item-0)');
 assert.ok(prompt.body.includes('Recovery uses offline keys.'));
-assert.ok(prompt.body.includes('### host-item-1 (2025-01-01, 0.049):'));
-assert.ok(prompt.body.includes('### host-item-2 (2025-01-01, 0):'));
+assert.ok(prompt.body.includes('### E2 (2025-01-01, 0.049):'));
+assert.ok(prompt.body.includes('### E3 (2025-01-01, 0):'));
 mkdirSync('transcripts');
 writeFileSync('transcripts/session.jsonl', JSON.stringify({ type: 'user', sessionId: 'example', timestamp: '2025-01-01T12:00:00Z', message: { content: 'Backups are encrypted.' } }) + '\\n');
 mkdirSync('notes'); writeFileSync('notes/backup.md', '## Backup\\nBackups are encrypted.\\n');
