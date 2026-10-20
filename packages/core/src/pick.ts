@@ -3,6 +3,9 @@ import {
   fuseLabelLane, labelFileStore, labelKey, labelPartQuestion, labelQuestionTask,
   labelTaskQuestion, storedLabels, type PartLabels,
 } from './labels.js';
+import {
+  decisionKey, storedDecision, type DecisionStore,
+} from './decisions.js';
 
 export type MemoryCandidateRole = 'reference' | 'rule';
 export type MemoryKind = 'knowledge' | 'docs' | 'rules' | 'instructions';
@@ -114,6 +117,37 @@ export interface PickLabels {
   readonly questionVersion?: string;
 }
 
+/** The decision cache's settings, off by default. It stores each
+ *  answered decide response once per part question and reuses it on a
+ *  later pick whose key matches: the key covers the task text, the
+ *  question-set version, the rendered question's wording and criteria
+ *  and its `questionKey` and `tagSet` when it carries them, the
+ *  caller's `deciderId`, and every field of the part the decider
+ *  receives: its source id, id, title, role, kind and date, the
+ *  decision text cut and the part's text, a change past the cut
+ *  included. Because the key names the part, not the batch it rode
+ *  in, an unchanged part's answer is reused across batches — a pick
+ *  with new or changed parts asks the decider only about the parts
+ *  that missed. */
+export interface PickCache {
+  /** The answer store: `get(key)` returns the stored value or throws
+   *  or returns anything else for a miss, `set(key, value)` writes it.
+   *  `decisionFileStore(directory)` supplies the plain-file default. A
+   *  failed read is a miss; a failed write keeps the decider's answer
+   *  and the record warns once. */
+  readonly store: DecisionStore;
+  /** The caller's name for its decide route: the model, prompt build
+   *  or plan the answers came from. Mixed into every key, so a
+   *  different deciderId never reuses a stored answer. Required. */
+  readonly deciderId: string;
+  /** The question-set version mixed into every key; defaults to
+   *  `PICK_QUESTION_VERSION`, the same for every part however the
+   *  candidate list is made up, so an added part can never stale an
+   *  unchanged part's key. A different version never reuses a stored
+   *  answer. */
+  readonly questionVersion?: string;
+}
+
 export interface PickLimits {
   /** Request size only; every batch is processed unless an explicit stop is set. */
   readonly maxPerBatch?: number;
@@ -160,13 +194,22 @@ export type PickEntryStatus =
       readonly status: 'selected';
       readonly asked: boolean;
       readonly probability?: number;
+      /** True when every answer behind the verdict came from the
+       *  decision cache. */
+      readonly reused?: boolean;
       /** Present when the changed-path link, not the threshold, carried
        *  the candidate over: the selected candidate whose changedPaths
        *  named this candidate's path. An entry that passed on threshold
        *  alone carries none. */
       readonly link?: { readonly sourceId: string; readonly id: string };
     }
-  | { readonly status: 'rejected'; readonly probability: number }
+  | {
+      readonly status: 'rejected';
+      readonly probability: number;
+      /** True when every answer behind the verdict came from the
+       *  decision cache. */
+      readonly reused?: boolean;
+    }
   | {
       readonly status: 'unanswered';
       readonly answer: 'refused' | 'missing' | 'error';
@@ -206,8 +249,9 @@ export type PickRecordEntry = {
   /** The candidate's source kind, recorded whenever `sourceKinds` names
    *  one for its source: 'chat', 'git-history' or 'markdown'. */
   readonly sourceKind?: CandidateSourceKind;
-  /** Individual fitted answers, before combining them. */
-  readonly questions?: readonly ({ readonly key: string } & PickAnswer)[];
+  /** Individual fitted answers, before combining them. `reused` marks
+   *  an answer the decision cache supplied instead of a decide call. */
+  readonly questions?: readonly ({ readonly key: string; readonly reused?: boolean } & PickAnswer)[];
   /** Decision tags recorded on a kept reference: each named set's
    *  chosen value plus the answers behind it. A single-question set
    *  values to 'yes' at probability 0.5 or more, otherwise 'no'; a
@@ -219,7 +263,7 @@ export type PickRecordEntry = {
    *  left unasked record 'unassessed' with the stop reason. */
   readonly tags?: Readonly<Record<string, {
     readonly value?: string;
-    readonly answers: readonly ({ readonly key: string } & PickAnswer)[];
+    readonly answers: readonly ({ readonly key: string; readonly reused?: boolean } & PickAnswer)[];
   }>>;
 } & PickEntryStatus;
 
@@ -298,6 +342,24 @@ export interface PickRecord {
     readonly failedWrites: number;
     readonly warning?: string;
   };
+  /** Present when a decision cache ran: the question-set version and
+   *  the caller's deciderId its keys carried, how many decision and
+   *  tag questions the decide port was asked this pick, how many
+   *  answers the store supplied instead, and how many answers the
+   *  store could not write (`failedWrites`; when it is above 0,
+   *  `warning` says so once — the pick still used those answers, and
+   *  the next pick asks for them again). Label questions go through
+   *  the same port but are not counted here: `labels.asked` counts
+   *  each asked item once, and an item asked sends one question per
+   *  label kind. */
+  readonly cache?: {
+    readonly questionVersion: string;
+    readonly deciderId: string;
+    readonly asked: number;
+    readonly reused: number;
+    readonly failedWrites: number;
+    readonly warning?: string;
+  };
   /** The tag sets every kept reference answered, when supplied. */
   readonly tags?: readonly PickTagSet[];
   /** Extra tag sets asked only of references from that source kind. */
@@ -364,6 +426,21 @@ export interface PickOptions {
    *  `maxCandidates`: every part in it reaches the decide step. With
    *  `labels` unset the output is identical to a pick without it. */
   readonly labels?: PickLabels;
+  /** The decision cache, off by default: each answered decide response
+   *  is stored once under a key naming the exact part question it
+   *  answers, and a later pick reuses it instead of asking the decider
+   *  again — across batches, since the key names the part and not the
+   *  batch around it. Decide and tag questions go through it; label
+   *  questions keep their own store. Only an `answered` result with a
+   *  finite probability is stored; a failed read is a miss and a failed
+   *  write keeps the answer with one warning in `record.cache`. The
+   *  reads stand under the same stopping dials as the decide batches:
+   *  a cancelled signal or an elapsed limit ends them, and a stop
+   *  leaves every question not yet resolved unassessed with the
+   *  stop's reason. Pass `false` to bypass a configured cache for one
+   *  call: no reads and no writes. With `cache` unset the output is
+   *  identical to a pick without it. */
+  readonly cache?: PickCache | false;
   /** False when a source that can supply rule candidates did not finish
    *  enumerating them; its read returned `complete: false`. The combined
    *  coverage can then never report a complete applicable-rule set, even
@@ -423,7 +500,7 @@ const KIND_QUESTIONS: Record<MemoryKind, typeof PICK_QUESTIONS.reference> = {
 };
 
 type CheckedAnswer =
-  | { readonly status: 'answered'; readonly probability: number }
+  | { readonly status: 'answered'; readonly probability: number; readonly reused?: boolean }
   | { readonly status: 'refused' | 'missing' | 'error'; readonly detail?: string };
 
 interface ResolvedLimits {
@@ -675,6 +752,31 @@ export async function pick(
   const signal = options.signal ?? new AbortController().signal;
   const started = Date.now();
 
+  const questionVersion = candidates.some((candidate) => candidate.kind !== undefined)
+    ? 'memory-pick-questions-2' : PICK_QUESTION_VERSION;
+  const cache = options.cache || undefined;
+  if (cache !== undefined) {
+    if (typeof cache !== 'object'
+      || typeof cache.store?.get !== 'function' || typeof cache.store?.set !== 'function') {
+      throw new TypeError('cache.store must supply get(key) and set(key, value).');
+    }
+    if (typeof cache.deciderId !== 'string' || !cache.deciderId.trim()) {
+      throw new TypeError('cache.deciderId must be a nonempty string.');
+    }
+    if (cache.questionVersion !== undefined
+      && (typeof cache.questionVersion !== 'string' || !cache.questionVersion.trim())) {
+      throw new TypeError('cache.questionVersion must be a nonempty string.');
+    }
+  }
+  // The store key's version never derives from the candidate list: an
+  // added part cannot stale an unchanged part's stored answer. The pick
+  // records its own question-set version separately on `questionVersion`.
+  const cacheVersion = cache?.questionVersion ?? PICK_QUESTION_VERSION;
+  let cacheAsked = 0;
+  let cacheReused = 0;
+  let cacheFailedWrites = 0;
+  let cacheWriteError: unknown;
+
   const priority = new Map<MemoryCandidate, number>();
   const rules = rankAndInterleave(candidates.filter((c) => c.role === 'rule'), priority, undefined, options.ranking);
   const references = rankAndInterleave(candidates.filter((c) => c.role === 'reference'), priority, undefined, options.ranking);
@@ -712,6 +814,10 @@ export async function pick(
   }
   let feed = queue.filter((candidate) => eligible.has(candidate));
   const answered = new Map<MemoryCandidate, Map<string, CheckedAnswer>>();
+  // Label asks keep their own store: the decision cache never sees
+  // them. Declared beside `answered` so `ask` can tell the two sinks
+  // apart.
+  const labelAnswers = new Map<MemoryCandidate, Map<string, CheckedAnswer>>();
   const specsFor = (candidate: MemoryCandidate) => {
     const cascade = cascadeFor(candidate);
     return candidate.role === 'reference' && cascade
@@ -719,7 +825,12 @@ export async function pick(
       : [{ key: candidate.role, ...(candidate.kind === undefined || (candidate.role === 'rule' && candidate.kind !== 'instructions')
         ? PICK_QUESTIONS[candidate.role] : KIND_QUESTIONS[candidate.kind]) }];
   };
-  type Pending = { candidate: MemoryCandidate; spec: ReturnType<typeof specsFor>[number]; question: PickQuestion };
+  type Pending = {
+    candidate: MemoryCandidate;
+    spec: ReturnType<typeof specsFor>[number];
+    question: PickQuestion;
+    cacheKey?: string;
+  };
   const pending = (candidate: MemoryCandidate, spec: ReturnType<typeof specsFor>[number], tagSet?: string): Pending => {
     const shown = Number.isFinite(limits.maxQuestionText)
       ? takeCharacters(candidate.text, limits.maxQuestionText)
@@ -745,7 +856,55 @@ export async function pick(
    *  trusted even when an earlier batch answered some questions. */
   const decideFailed = new Set<MemoryCandidate>();
   const ask = async (asks: Pending[], sink = answered, task = options.task) => {
-    for (let index = 0; index < asks.length;) {
+    // The decision cache, off by default and never entered by label
+    // asks: a stored answer serves its question, and the decider sees
+    // only the misses. Answers are reused across batches — the key
+    // names the part's question, not the batch around it. Reads run in
+    // bounded groups, as the label store's reads do.
+    const cacheable = cache !== undefined && sink !== labelAnswers;
+    let fresh = asks;
+    if (cacheable) {
+      fresh = [];
+      for (let index = 0; index < asks.length; index += LABEL_STORE_READ_GROUP) {
+        // The stopping dials guard the reads the way they guard a
+        // batch: before each read group and again before its hits
+        // apply, since the signal or the clock can fire while the
+        // reads run. A hit applied past a stop would select parts a
+        // stopped run never resolved; questions left unread stay
+        // unasked and record the stop like any missed batch.
+        if (signal.aborted) { stop = 'cancelled'; break; }
+        if (limits.maxElapsedMs - (Date.now() - started) <= 0) { stop = 'time'; break; }
+        const group = await Promise.all(asks.slice(index, index + LABEL_STORE_READ_GROUP)
+          .map(async (item) => {
+            const key = decisionKey(task, cacheVersion, cache.deciderId,
+              limits.maxQuestionText, item.question, item.candidate.text);
+            let stored: ReturnType<typeof storedDecision>;
+            try {
+              stored = storedDecision(await cache.store.get(key));
+            } catch {
+              // A failed read is a miss, whatever raised it.
+            }
+            return { item, key, stored };
+          }));
+        if (signal.aborted) { stop = 'cancelled'; break; }
+        if (limits.maxElapsedMs - (Date.now() - started) <= 0) { stop = 'time'; break; }
+        for (const { item, key, stored } of group) {
+          if (stored === undefined) {
+            fresh.push({ ...item, cacheKey: key });
+            continue;
+          }
+          let got = sink.get(item.candidate);
+          if (!got) { got = new Map(); sink.set(item.candidate, got); }
+          got.set(item.spec.key, { ...stored, reused: true });
+          cacheReused += 1;
+          if (sink === answered) {
+            truncated.set(item.candidate, Number.isFinite(limits.maxQuestionText)
+              && takeCharacters(item.candidate.text, limits.maxQuestionText).truncated);
+          }
+        }
+      }
+    }
+    for (let index = 0; index < fresh.length;) {
       if (signal.aborted) { stop = 'cancelled'; break; }
       if (batches >= limits.maxBatches) { stop = 'limits'; break; }
       const remaining = limits.maxElapsedMs - (Date.now() - started);
@@ -756,7 +915,7 @@ export async function pick(
       const slice: Pending[] = [];
       const counted = new Set<MemoryCandidate>();
       let batchChars = task.length;
-      for (const item of asks.slice(index, index + limits.maxPerBatch)) {
+      for (const item of fresh.slice(index, index + limits.maxPerBatch)) {
         const size = questionChars(item.question)
           + (counted.has(item.candidate) ? 0 : itemChars(item.question));
         if (slice.length > 0 && batchChars + size > limits.maxBatchChars) break;
@@ -766,6 +925,7 @@ export async function pick(
       }
       index += slice.length;
       const questions = slice.map((item) => item.question);
+      if (cacheable) cacheAsked += slice.length;
       const deadline = Number.isFinite(remaining) ? AbortSignal.timeout(Math.ceil(remaining)) : undefined;
       let answers: Record<string, PickAnswer> | undefined;
       let decideError: unknown;
@@ -797,7 +957,7 @@ export async function pick(
         if (sink === answered) for (const item of slice) decideFailed.add(item.candidate);
         stop = 'error';
       }
-      for (const { candidate, spec, question } of slice) {
+      for (const { candidate, spec, question, cacheKey } of slice) {
         const answer: CheckedAnswer = timedOut
           ? { status: 'error', detail: 'The decide call did not finish before the elapsed limit.' }
           : answers === undefined
@@ -807,6 +967,19 @@ export async function pick(
         let got = sink.get(candidate);
         if (!got) { got = new Map(); sink.set(candidate, got); }
         got.set(spec.key, answer);
+        // Only a fully answered result is stored: a refusal, a missing
+        // answer, an error or a cancelled call is never written, so the
+        // store can never hold one. A failed write keeps the answer and
+        // the record warns once.
+        if (cacheKey !== undefined && answer.status === 'answered') {
+          try {
+            await cache!.store.set(cacheKey,
+              { answer: { status: 'answered', probability: answer.probability } });
+          } catch (error) {
+            cacheFailedWrites += 1;
+            cacheWriteError ??= error;
+          }
+        }
         // `truncated` marks a decision item the text cut shortened; a
         // label ask never sends one, so the flag belongs to the decide
         // sink only.
@@ -883,7 +1056,6 @@ export async function pick(
     }
     let failedWrites = 0;
     let writeError: unknown;
-    const labelAnswers = new Map<MemoryCandidate, Map<string, CheckedAnswer>>();
     const missed = new Map(misses.map(({ items }) => [items[0]!, items] as const));
     const taskMissed = missed.get(taskItem);
     if (!stop && taskMissed !== undefined) {
@@ -988,7 +1160,8 @@ export async function pick(
         const first = cascade.first === undefined ? undefined : got.get(cascade.first);
         if (first?.status === 'answered'
           && (first.probability < cascade.band![0] || first.probability > cascade.band![1])) {
-          answer = { status: 'answered', probability: 1 / (1 + Math.exp(-(cascade.firstOnly!.bias + cascade.firstOnly!.weight * logit(first.probability)))) };
+          answer = { status: 'answered', probability: 1 / (1 + Math.exp(-(cascade.firstOnly!.bias + cascade.firstOnly!.weight * logit(first.probability)))),
+            ...(first.reused === true ? { reused: true } : {}) };
         } else {
           // A returned missing answer contributes nothing, as in the prototype.
           // A question never attempted because a limit stopped us is unassessed.
@@ -1003,7 +1176,12 @@ export async function pick(
               const a = probabilities[i];
               return sum + (a?.status === 'answered' ? q.weight * logit(a.probability) : 0);
             }, 0);
-            answer = { status: 'answered', probability: 1 / (1 + Math.exp(-z)) };
+            answer = { status: 'answered', probability: 1 / (1 + Math.exp(-z)),
+              // The verdict reused the store only when every answer
+              // behind it did: a question this pick asked — even one
+              // that came back unanswered — keeps it fresh.
+              ...(probabilities.every((a) => a === undefined || (a.status === 'answered' && a.reused === true))
+                ? { reused: true } : {}) };
           } else answer = first ?? got.values().next().value ?? { status: 'missing' };
         }
       } else answer = got.values().next().value!;
@@ -1071,10 +1249,11 @@ export async function pick(
     }
     if (answer.status === 'answered') {
       const threshold = candidate.role === 'rule' ? thresholds.rule : referenceBar;
+      const reused = answer.reused === true ? { reused: true } : {};
       if (answer.probability >= threshold) {
         selected.push(candidate);
-        statuses.set(candidate, { status: 'selected', asked: true, probability: answer.probability });
-      } else statuses.set(candidate, { status: 'rejected', probability: answer.probability });
+        statuses.set(candidate, { status: 'selected', asked: true, probability: answer.probability, ...reused });
+      } else statuses.set(candidate, { status: 'rejected', probability: answer.probability, ...reused });
     } else statuses.set(candidate, { status: 'unanswered', answer: answer.status, detail: answer.detail });
   }
   // A queued part the feed never held was never asked a question. The
@@ -1118,6 +1297,7 @@ export async function pick(
       status: 'selected',
       asked: true,
       probability: status.probability,
+      ...(status.reused === true ? { reused: true } : {}),
       link: { sourceId: carrier.sourceId, id: carrier.id },
     });
   }
@@ -1143,9 +1323,9 @@ export async function pick(
     const sets = tagSetsFor(candidate);
     if (!sets.length) return undefined;
     const got = tagAnswers.get(candidate);
-    const tags: Record<string, { value?: string; answers: ({ key: string } & PickAnswer)[] }> = {};
+    const tags: Record<string, { value?: string; answers: ({ key: string; reused?: boolean } & PickAnswer)[] }> = {};
     for (const set of sets) {
-      const answers: ({ key: string } & PickAnswer)[] = set.questions.map((question) => ({ key: question.key,
+      const answers: ({ key: string; reused?: boolean } & PickAnswer)[] = set.questions.map((question) => ({ key: question.key,
         ...(got?.get(`${set.key}.${question.key}`)
           ?? { status: 'unassessed' as const, ...(stop === undefined ? {} : { detail: stop }) }) }));
       // A set's value needs a clear answer: a lone-question set values
@@ -1216,8 +1396,7 @@ export async function pick(
     : 'complete' as const;
 
   const record: PickRecord = {
-    questionVersion: candidates.some((candidate) => candidate.kind !== undefined)
-      ? 'memory-pick-questions-2' : PICK_QUESTION_VERSION,
+    questionVersion,
     limits: recordedLimits,
     thresholds: { ...thresholds,
       ...(appliedReference === undefined ? {} : { appliedReference }) },
@@ -1237,6 +1416,20 @@ export async function pick(
     ...(options.rankProtection ? { rankProtection: true } : {}),
     ...(options.bestPartFirst ? { bestPartFirst: true } : {}),
     ...(labelRecord === undefined ? {} : { labels: labelRecord }),
+    ...(cache === undefined ? {} : {
+      cache: {
+        questionVersion: cacheVersion,
+        deciderId: cache.deciderId,
+        asked: cacheAsked,
+        reused: cacheReused,
+        failedWrites: cacheFailedWrites,
+        ...(cacheFailedWrites === 0 ? {} : {
+          warning: `${cacheFailedWrites} decision(s) could not be stored `
+            + `(${cacheWriteError instanceof Error ? cacheWriteError.message : String(cacheWriteError)}); `
+            + 'this pick used them, and the next pick asks for them again.',
+        }),
+      },
+    }),
   };
   if (decideFailure !== undefined) {
     throw new PickError(

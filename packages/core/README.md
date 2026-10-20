@@ -564,6 +564,52 @@ with reason `'gate'`; a part a lane limit cut or a stop left unlabelled
 keeps that reason instead. Omit the option and the pick is identical to
 a pick without it.
 
+### Optional decision cache
+
+`cache: { store, deciderId }` stores each answered decision, off by
+default. The `store` port is asynchronous `get(key)` and
+`set(key, value)`; `decisionFileStore(directory)` is the supplied one,
+one JSON file per answer under `directory`, each written to a
+temporary file and renamed into place. `deciderId` is required: it
+names the decider behind the stored answers, so two different
+deciders never read each other's files.
+
+Each answer's key is a SHA-256 over the task text, the question-set
+version, the rendered question's wording, true and false criteria
+and fitted name and tag set, the `deciderId`, the text cut applied,
+and every field of the part the decider receives: its source id, id,
+title, role, kind and date, and its text, a change past the cut
+included. A changed task, version, deciderId, wording, part or cut
+asks again; an unchanged part hits. The key names the part and its
+exact question, not the batch around it, so an answer is reused
+across batches: a later pick that adds or changes one part asks only
+that part and reuses the rest. That rests on one assumption: a
+part's answer barely depends on the parts batched beside it. Reuse
+matters for resumed runs and repeated questions, where most parts
+are unchanged. A missing, corrupt, wrong-shaped or unreadable entry
+is a miss, and a refused, missing, errored or never-asked answer is
+never stored, so a stored file always holds one complete answer. The
+signal and elapsed dials guard the reads as they guard the batches:
+a stop leaves every question not yet resolved unassessed. Thresholds and
+link rules apply to cached answers as fresh ones, so a changed
+threshold reselects from stored answers without asking.
+
+A stored answer marks its record entry `reused`: on a selected or
+rejected entry when every decision behind it came from the store,
+on each per-question and tag answer, and never on an
+`applies: 'always'` rule, which is never asked. The record's `cache`
+field keeps the question-set version, the `deciderId`, how many
+decision and tag questions the decide port was asked, how many
+answers were reused, and `failedWrites`. Label questions go through
+the same port but are not counted here: `labels.asked` counts each
+asked item once, and an item asked sends one question per label
+kind. A failed write keeps the answers for this pick, adds one
+`warning` to `cache`, and the next pick asks for them again. Pass
+`cache: false` to bypass a configured cache for one pick, for
+example a held-out benchmark run: nothing is read or written and
+every part is asked. Omit the option and the pick is identical to a
+pick without it.
+
 ### Markdown candidate kinds
 
 The Markdown package's `markdown({ paths, kind })` source adds a candidate

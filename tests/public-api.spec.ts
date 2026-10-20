@@ -1,7 +1,7 @@
 import { asSourceReadError } from '@curatejs/core/internal';
 import { describe, expect, it } from 'vitest';
 
-import { curate, DEFAULT_MAX_QUESTION_TEXT, LABEL_KINDS, LABEL_LANE_BAR, LABEL_QUESTION_VERSION, pick, PICK_QUESTION_VERSION, pickFromSources, SourceReadError, type CandidateSource, type CurateOptions, type CurateRecord, type CurateResult, type CurateWrite, type MemoryCandidate, type PickLabels, type PickThresholds } from '@curatejs/core';
+import { curate, decisionFileStore, DEFAULT_MAX_QUESTION_TEXT, LABEL_KINDS, LABEL_LANE_BAR, LABEL_QUESTION_VERSION, pick, PICK_QUESTION_VERSION, pickFromSources, SourceReadError, type CandidateSource, type CurateOptions, type CurateRecord, type CurateResult, type CurateWrite, type DecisionStore, type MemoryCandidate, type PickCache, type PickLabels, type PickThresholds } from '@curatejs/core';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -53,6 +53,8 @@ describe('package exports', () => {
     };
     const transcripts: CandidateSource = chat(chatOptions);
     const thresholds: PickThresholds = { reference: 0.6, rule: 0.6, linkedPathBar: 0.4 };
+    const decisionStore: DecisionStore = decisionFileStore('/nonexistent');
+    const decisionCache: PickCache = { store: decisionStore, deciderId: 'api-test' };
     const candidate: MemoryCandidate = {
       sourceId: 'history',
       role: 'reference',
@@ -74,6 +76,9 @@ describe('package exports', () => {
     expect(transcripts.role).toBe('reference');
     expect(transcripts.id).toBe('transcripts');
     expect(thresholds.linkedPathBar).toBe(0.4);
+    expect(decisionCache.deciderId).toBe('api-test');
+    expect(typeof decisionStore.get).toBe('function');
+    expect(typeof decisionStore.set).toBe('function');
     expect(candidate.changedPaths).toHaveLength(1);
     expect(typeof pick).toBe('function');
     expect(typeof pickFromSources).toBe('function');

@@ -30,6 +30,7 @@ export const EXPECTED_FILES = {
     'package/dist/chunk-*.js',
     'package/dist/chunk-*.js.map',
     'package/dist/curate.d.ts',
+    'package/dist/decisions.d.ts',
     'package/dist/git.d.ts',
     'package/dist/index.d.ts',
     'package/dist/index.js',
