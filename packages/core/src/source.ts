@@ -79,13 +79,18 @@ export interface CandidateReadRequest {
    *  ignores it answers a plain keyword read, and the pick then scores
    *  the pool itself. */
   readonly meaningLane?: MeaningSearchOptions;
-  /** Internal to pickFromSources: the pick's label gate is on, so the
-   *  read result also carries the reference source's full uncut primary-
-   *  search pool — every part a lane cut or the read `limit` dropped,
-   *  marked absent from every lane — beside the kept members. The gate
-   *  labels that pool so a part sharing no words with the task can still
-   *  reach the decide step. Leave unset when the gate is off. */
-  readonly labelPool?: boolean;
+  /** Internal to pickFromSources: 'gate' when the pick's label gate is
+   *  on, 'count' when only its scaled top-k dial is. The read result
+   *  also carries the reference source's full uncut primary-search
+   *  pool — every part a lane cut or the read `limit` dropped, marked
+   *  absent from every lane — beside the kept members. 'gate' means
+   *  the gate labels that pool, so a part sharing no words with the
+   *  task can still reach the decide step and the merged list carries
+   *  the miss flag; 'count' means the dial only counts the pool toward
+   *  the history's size, its members reach decide only when the
+   *  rare-word round pulls one in, and a keyword miss keeps
+   *  `noSearchMatch`. Leave unset when neither is on. */
+  readonly labelPool?: 'gate' | 'count';
   /** Remove explicit answer-format and citation clauses from search
    *  text only. Off by default; subject, counting and date needs remain. */
   readonly stripSearchInstructions?: boolean;
@@ -410,7 +415,7 @@ async function readSearches(
   context: CandidateReadContext,
 ): Promise<CandidateReadResult> {
   const found = await readKeywordSearches(source, request, context);
-  if (found.status !== 'read' || (!request.meaning && request.labelPool !== true)) return found;
+  if (found.status !== 'read' || (!request.meaning && request.labelPool === undefined)) return found;
   const tasks = searchTasks(request, source.kind);
   const laneCut = request.laneCut !== false && source.role === 'reference';
   // The uncut, unlimited primary-search pool, fetched at most once and
@@ -429,11 +434,11 @@ async function readSearches(
     return poolRead;
   };
   let read = found;
-  if (request.labelPool === true && source.role === 'reference'
+  if (request.labelPool !== undefined && source.role === 'reference'
     && (laneCut || request.limit !== undefined)) {
     const full = await fullPool();
     if (full.status !== 'read') {
-      throw new SourceReadError('failed', `The label pool could not read all candidates: ${full.reason}`);
+      throw new SourceReadError('failed', `The uncut search pool could not be read: ${full.reason}`);
     }
     // Kept members hold their lane ranks; a part the lanes dropped joins
     // as a pool member, absent from every lane, for the label gate to see.
@@ -446,13 +451,16 @@ async function readSearches(
       }
     }
     const partial = [read.partial, full.partial].filter(Boolean).join('; ');
-    // A pool member is a candidate the read hands over, so the miss
-    // flag reads the merged list: only a merge that kept nothing
-    // reports noSearchMatch.
+    // When the gate can label the pool a member can still reach the
+    // decide step, so the miss flag reads the merged list. When the
+    // pool only counts toward the dial's N its members reach decide
+    // only through the rare-word round, so a keyword miss keeps
+    // noSearchMatch.
+    const missed = request.labelPool === 'count' && read.noSearchMatch === true;
     const { noSearchMatch: _miss, ...mergedRead } = read;
     read = { ...mergedRead, candidates: [...union.values()],
       complete: read.complete && full.complete,
-      ...(laneCut && union.size === 0 ? { noSearchMatch: true } : {}),
+      ...(missed || (laneCut && union.size === 0) ? { noSearchMatch: true } : {}),
       ...(partial === '' ? {} : { partial }) };
   }
   if (!request.meaning) return read;
@@ -462,6 +470,16 @@ async function readSearches(
     tasks.filter(({ lane }) => lane !== 'kind').map(({ task }) => task.trim()).filter(Boolean),
   )];
   const lanes = [...(read.lanes ?? [])];
+
+  // The miss reads actual lane membership when the pool only counts
+  // toward the dial's N: a pool member no lane ranked stays poolOnly
+  // and reaches decide only when the rare-word round pulls it in, so a
+  // read that kept only pool members is still a miss. Otherwise any
+  // kept candidate is a match.
+  const matched = (list: readonly MemoryCandidate[]) =>
+    request.labelPool === 'count'
+      ? list.some((candidate) => candidate.searchRanks?.some((rank) => rank !== null) === true)
+      : list.length > 0;
 
   // A streaming reader scores similarity inside the read and returns
   // its kept set flagged `meaningLane`, so the corpus is never held
@@ -549,7 +567,7 @@ async function readSearches(
     const { noSearchMatch: _keywordMiss, ...rest } = read;
     return { ...rest, complete: read.complete && reasons.length === 0,
       candidates: combined, lanes,
-      ...(laneCut && combined.length === 0 ? { noSearchMatch: true } : {}),
+      ...(laneCut && !matched(combined) ? { noSearchMatch: true } : {}),
       ...(partial === '' ? {} : { partial }) };
   }
 
@@ -597,7 +615,7 @@ async function readSearches(
   }
   const { noSearchMatch: _keywordMiss, ...rest } = read;
   return { ...rest, complete, candidates: meaningful, lanes,
-    ...(laneCut && meaningful.length === 0 ? { noSearchMatch: true } : {}),
+    ...(laneCut && !matched(meaningful) ? { noSearchMatch: true } : {}),
     ...(partial === undefined ? {} : { partial }) };
 }
 
@@ -638,7 +656,8 @@ export async function pickFromSources(
     ...request,
     maxQuestionText: options.limits?.maxQuestionText ?? request.maxQuestionText
       ?? (source.maxQuestionText === Number.POSITIVE_INFINITY ? undefined : source.maxQuestionText ?? DEFAULT_MAX_QUESTION_TEXT),
-    labelPool: options.labels !== undefined,
+    labelPool: options.labels !== undefined ? 'gate'
+      : options.pick !== undefined ? 'count' : undefined,
   }, context)));
   const candidates: MemoryCandidate[] = [];
   const sourceKinds: Record<string, CandidateSourceKind> = Object.assign(Object.create(null), options.sourceKinds);

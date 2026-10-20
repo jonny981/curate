@@ -551,7 +551,8 @@ dropped can still reach the decide step through the label lane; through
 `pick` directly it labels every reference part supplied. Label batches
 count against `maxBatches` and `maxElapsedMs`, so a stop while labelling
 leaves the decide step unasked. The label lane is not capped by
-`maxCandidates`: every part in it reaches the decide step.
+`maxCandidates`: every part in it reaches the decide step unless the
+scaled top-k dial caps the merged ranking.
 
 The record's `labels` field keeps the question-set version, the
 `deciderId`, how many items' labels the decide port was asked, how many
@@ -626,6 +627,70 @@ kind. A failed write keeps the answers for this pick, adds one
 example a held-out benchmark run: nothing is read or written and
 every part is asked. Omit the option and the pick is identical to a
 pick without it.
+
+### Optional scaled top-k
+
+`pick: { c }` decides only the top `round(c × N^0.8)` reference parts
+of the ranking the decide step reads, off by default. N is the number
+of reference parts the pick received: the history's size, not the
+ranking's. Through `pickFromSources` the read carries the source's
+full uncut pool, so lane cuts and read limits do not shrink it; a pool
+member only counts toward N, and with the label gate off it reaches
+the feed or the record only when the rare-word round pulls it in. The
+ranking is the gate's fused order
+when the gate fused its lane into the keyword order, the keyword
+order otherwise. Rules pass through uncounted and are never cut. A
+part below the keep count is never asked; it records `unassessed` with
+reason `'pick'`. `c` must be a positive finite number, and an invalid
+`c` throws a `TypeError` before any decide call. The record's `pick`
+field keeps `n`, `c`, `kept` and which ranking was cut (`'fusion'` or
+`'keyword'`).
+
+Measured on the tuning half's saved rankings (249 questions, 445 answer
+messages) with the label gate on and `laneCut` off, over every part of
+each history from 127 to 8,475 parts:
+
+| Keep rule | Answer messages kept, of 445 | Parts kept at 850 parts | Parts kept at 8,475 |
+| --- | --- | ---: | ---: |
+| `2.173 × N^0.8` | 444–445 (99.8–100%) | 479 | 3,017 |
+| `0.68 × N^0.8` | 437–442 (98–99%) | 150 | 944 |
+| `0.471 × N^0.8` | 432–440 (97–99%) | 104 | 654 |
+
+The table replays those saved rankings: they break equal fusion scores
+by item id, where the package's fused order breaks them by keyword
+position. It checks the study's coverage, not identical coverage for
+the package's own ranking.
+
+It is a dial, never the default: the default keeps every part the
+ranking holds because no fixed count is safe everywhere. The dial's
+point is cost: the decide step's work grows sublinearly with the
+history's size instead of with the whole ranking.
+
+### Optional rare-word round
+
+`pick: { rare }`, alone or beside `c`, turns on a second, narrow
+round after the selection pass, off by default. The parts that cleared
+the selection bar are its seeds. A seed word is rare when its document
+frequency over the history is at most `share × N`, where the history
+is every reference part the pick received: the same N the top-k count
+reads. `share` defaults to `5/850`, the count of 5 fitted on an
+850-part LongMemEval history. On a history under 340 parts the default
+share can pull nothing: a shared word appears in at least 2 parts, and
+`5/850 × N` stays below 2. Every unselected part sharing a rare word
+is pulled in, pool members included: one the first pass never asked
+goes through the decide step, one already decided reuses its score,
+and no part is asked twice. A pulled part joins the selection at or
+above `bar`, a second and lower bar than the selection bar, defaulting
+to `0.0146`; the seeds keep the pick's own bar. `share` must be a
+positive finite number and `bar` between 0 and 1, both checked before
+any decide call. The record's `pick.rare` keeps the share and bar
+used, the rare words, the parts pulled in, and how many were asked
+and added.
+
+Measured on the tuning half's saved decisions (249 questions): holding
+the selection bar at 0.05 loses 15 answer messages, and the round at
+its defaults recovers 6 of them while adding 12.9 parts a question,
+matching the fixed-count study's 6 of 15 at about 15.
 
 ### Markdown candidate kinds
 
@@ -881,6 +946,8 @@ every returned candidate.
 | **`maxQuestionText`** | Off | Cuts each decision item to N Unicode characters and records `truncated`. For a 1,000-character item at 700, 300 characters are hidden. Readers can split instead; direct `pick` callers must choose their own cut. |
 | **Source read `limit`** | Off | Chat and Markdown keep ranked candidates; git keeps newest commits before ranking. Readers report partial coverage. A limit of 1 on 2 candidates drops 1. |
 | **Read `laneCut`** | On for reference sources | Cuts each keyword and meaning lane where its own score curve flattens; `false` keeps every returned candidate. The curve reads the lane's own match score (chat: the pre-merge keyword score, not the rank-merge ordering score). A search lane where nothing scored adds nothing; a read that keeps no candidates records `noSearchMatch`, so the caller can ask more broadly; `searchPhrases` lanes are never cut, and kind lanes are never cut on phrase counts: a streaming reader cuts them on each match's task score, and a reader that cannot score returns every match. Kept counts vary with each lane's scores; loss on labelled data is unmeasured. On by default because a ranked read can return every part a source holds, and deciding is the expensive stage. |
+| **`pick: { c }`** | Off | Keeps the top `round(c × N^0.8)` reference parts of the ranking the decide step reads, where N is the number of reference parts the pick received: the history's size, not the admitted count. Rules pass through uncounted and uncut. Measured on the tuning half with the label gate on and `laneCut` off: c = 0.68 kept 437–442 of 445 answer messages at every size from 127 to 8,475 parts. Dropped parts record `unassessed` with reason `'pick'`. |
+| **`pick: { rare }`** | Off | Runs a second, narrow round after the selection pass: unselected parts sharing a rare word with a selected part are pulled in, pool members included, and ones scoring at or above `rare.bar` (default `0.0146`) join the selection. A word is rare when its document frequency over the history is at most `rare.share × N` (default `5/850`, the count of 5 fitted on an 850-part history). On a history under 340 parts the default share can pull nothing: a shared word appears in at least 2 parts, and `5/850 × N` stays below 2. Parts never asked go through the decide step; decided parts reuse their score, and no part is asked twice. `pick.c` is optional when `rare` is set. |
 | **`thresholds.reference`** | 0 | A saved 0.6 cut removed every fed fragment of 183 labelled answer turns. A user cut reduces curation input; the default adds no cut loss. |
 | **`thresholds.rule`** | 0 | A user applicability cut omits rules below its probability. Quality loss on labelled rule tasks is unmeasured; the default adds no cut loss. |
 | **`contextLimit`** | Off | Requests a second writer call to condense the complete log. Format checks do not prove fact retention. No quality loss curve has been established; leave off for full retention. Cannot combine with a chained write. |

@@ -190,6 +190,45 @@ describe('local meaning search', () => {
     expect(read.candidates).toEqual([]);
     expect(read.noSearchMatch).toBe(true);
     expect(result.selected).toEqual([]);
+
+    // With the scaled top-k dial on the read still carries the whole
+    // pool to count the history's size, but pool members are no
+    // lane's: the same miss must still flag, scored here or streamed.
+    const counted = await pickFromSources([{
+      id: 'notes', role: 'reference',
+      read: async () => ({
+        status: 'read' as const, complete: true,
+        candidates: [item('bill', 'invoice'), item('dog', 'puppy')],
+      }),
+    }], { task: 'pets', meaning: { embed: async (texts) =>
+        texts.map((text) => (text === 'pets' ? [1, 0] : [0, 1])) } },
+      { task: 'pets', decide, pick: { c: 0.68 } });
+    const countedRead = counted.reads[0]!;
+    if (countedRead.status !== 'read') throw new Error('read failed');
+    expect(countedRead.candidates).toHaveLength(2);
+    expect(countedRead.candidates.every((candidate) => candidate.poolOnly === true)).toBe(true);
+    expect(countedRead.noSearchMatch).toBe(true);
+    expect(counted.selected).toEqual([]);
+    const streamed = await pickFromSources([{
+      id: 'notes', role: 'reference',
+      read: async (request) => request.meaningLane === undefined
+        ? {
+            status: 'read' as const, complete: true,
+            candidates: [item('bill', 'invoice'), item('dog', 'puppy')],
+          }
+        : {
+            status: 'read' as const, complete: true,
+            meaningLane: true as const, matched: 0, candidates: [],
+          },
+    }], { task: 'pets', meaning: { embed: async (texts) =>
+        texts.map((text) => (text === 'pets' ? [1, 0] : [0, 1])) } },
+      { task: 'pets', decide, pick: { c: 0.68 } });
+    const streamedRead = streamed.reads[0]!;
+    if (streamedRead.status !== 'read') throw new Error('read failed');
+    expect(streamedRead.candidates).toHaveLength(2);
+    expect(streamedRead.candidates.every((candidate) => candidate.poolOnly === true)).toBe(true);
+    expect(streamedRead.noSearchMatch).toBe(true);
+    expect(streamed.selected).toEqual([]);
   });
 
   it('reports no miss when a meaning match rescues a keyword miss, scored here or streamed', async () => {
