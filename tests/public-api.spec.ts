@@ -1,7 +1,7 @@
 import { asSourceReadError } from '@curatejs/core/internal';
 import { describe, expect, it } from 'vitest';
 
-import { curate, decisionFileStore, DEFAULT_MAX_QUESTION_TEXT, LABEL_KINDS, LABEL_LANE_BAR, LABEL_QUESTION_VERSION, pick, PICK_QUESTION_VERSION, pickFromSources, SourceReadError, type CandidateSource, type CurateOptions, type CurateRecord, type CurateResult, type CurateWrite, type DecisionStore, type MemoryCandidate, type PickCache, type PickLabels, type PickThresholds } from '@curatejs/core';
+import { curate, decisionFileStore, DEFAULT_MAX_QUESTION_TEXT, economy, LABEL_KINDS, LABEL_LANE_BAR, LABEL_QUESTION_VERSION, performance, pick, PICK_QUESTION_VERSION, pickFromSources, SourceReadError, type CandidateSource, type CurateOptions, type CurateRecord, type CurateResult, type CurateWrite, type DecisionStore, type LeverStates, type MemoryCandidate, type PickCache, type PickLabels, type PickOptions, type PickThresholds, type Preset } from '@curatejs/core';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -52,7 +52,13 @@ describe('package exports', () => {
       since: '14 days', includeTools: false, maxQuestionText: 700,
     };
     const transcripts: CandidateSource = chat(chatOptions);
-    const thresholds: PickThresholds = { reference: 0.6, rule: 0.6, linkedPathBar: 0.4 };
+    const thresholds: PickThresholds = { rule: 0.6, linkedPathBar: 0.4 };
+    const pickOptions: PickOptions = {
+      task: 'Recall', everyRanked: { c: 0.68 }, everyScored: { bar: 0.05 },
+      rare: { share: 0.5, bar: 0.0146 },
+      decide: async (batch) => Object.fromEntries(
+        batch.questions.map((q) => [q.key, { status: 'answered' as const, probability: 0.9 }])),
+    };
     const decisionStore: DecisionStore = decisionFileStore('/nonexistent');
     const decisionCache: PickCache = { store: decisionStore, deciderId: 'api-test' };
     const candidate: MemoryCandidate = {
@@ -76,6 +82,7 @@ describe('package exports', () => {
     expect(transcripts.role).toBe('reference');
     expect(transcripts.id).toBe('transcripts');
     expect(thresholds.linkedPathBar).toBe(0.4);
+    expect(pickOptions.everyScored).toEqual({ bar: 0.05 });
     expect(decisionCache.deciderId).toBe('api-test');
     expect(typeof decisionStore.get).toBe('function');
     expect(typeof decisionStore.set).toBe('function');
@@ -85,6 +92,21 @@ describe('package exports', () => {
     expect(new SourceReadError('failed', 'x')).toBeInstanceOf(Error);
     expect(DEFAULT_MAX_QUESTION_TEXT).toBeGreaterThan(0);
     expect(PICK_QUESTION_VERSION).toContain('memory-pick');
+  });
+
+  it('exports the performance and economy presets and their types', () => {
+    const modes: Preset[] = [performance, economy];
+    expect(performance.read).toEqual({ wholeLanes: false });
+    expect(performance.pick).toEqual({ everyRanked: true, everyScored: true });
+    expect(performance.curate).toEqual({});
+    expect(economy.read).toEqual({ wholeLanes: false });
+    expect(economy.pick).toEqual({ everyRanked: true, everyScored: { bar: 0.0146 } });
+    expect(economy.curate).toEqual({});
+    const levers: LeverStates = {
+      everyRanked: true, everyScored: true, labels: false, route: false, rare: false,
+    };
+    expect(modes.map((mode) => mode.read.wholeLanes)).toEqual([false, false]);
+    expect(levers.everyRanked).toBe(true);
   });
 
   it('exports the label gate, its kind questions and its option type', async () => {

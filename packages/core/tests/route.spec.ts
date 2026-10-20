@@ -243,8 +243,8 @@ describe('route: jev', () => {
     const routed = await pick(parts, {
       task: 'Recall the plan', route: 'jev', decide: counting(() => 0.9).decide,
     });
-    const { route: _route, ...record } = routed.record;
-    expect(record).toEqual(plain.record);
+    const { route: _route, levers, ...record } = routed.record;
+    expect({ ...record, levers: { ...levers, route: false, preset: 'performance' } }).toEqual(plain.record);
     expect(routed.selected).toEqual(plain.selected);
 
     const result = await curate('Recall the plan', plain, { write: writer().write });

@@ -234,9 +234,9 @@ export function searchSource(source, searches, audit, folder, settings = {}) {
     if (task === undefined) return { status: 'read', candidates: [], complete: true };
     const started = Date.now();
     // The cut narrows each search lane inside the read, so the wrapped
-    // source's result holds only the kept set; an explicit laneCut off
-    // (a meaning full read, an opted-out caller) still wins.
-    const read = await source.read({ laneCut: true, ...request, task });
+    // source's result holds only the kept set; an explicit wholeLanes
+    // on (a meaning full read, an opted-out caller) still wins.
+    const read = await source.read({ wholeLanes: false, ...request, task });
     const terms = new Set(words(task));
     const result = read.status !== 'read' ? read : { ...read, candidates: rankMatches(read.candidates.filter((candidate) =>
       ['keyword', 'shared_words', 'bm25', 'heading-words', 'file-words'].some((key) => candidate.signals[key] > 0)
@@ -258,7 +258,7 @@ export async function pickFullSources(sources, request, options) {
     for (const task of new Set([request.task, ...(request.searchLines ?? [])])) {
       // Lane cuts narrow each task and search line inside the read, so the
       // cached results held for the pick carry only the kept candidates.
-      const read = await source.read({ laneCut: true, ...request, task, ...(revision === undefined ? {} : { revision }) });
+      const read = await source.read({ wholeLanes: false, ...request, task, ...(revision === undefined ? {} : { revision }) });
       if (read.status === 'read' && read.revision !== undefined) revision ??= read.revision;
       reads.set(task, read);
       for (const candidate of read.candidates ?? []) maxQuestionText = Math.max(maxQuestionText, candidate.text.length);
@@ -393,7 +393,7 @@ export async function run(args = process.argv.slice(2), callSubscription = subsc
     const pickOptions = { task: options.task, decide,
       cascadesByKind: { chat: CHAT_CASCADE, 'git-history': GIT_HISTORY_CASCADE, markdown: MARKDOWN_CASCADE },
       limits: { maxBatchChars },
-      ...(settings.threshold === undefined ? {} : { thresholds: { reference: settings.threshold } }) };
+      ...(settings.threshold === undefined ? {} : { everyScored: { bar: settings.threshold } }) };
     const picked = await pickFullSources(sources.map((source) =>
       searchSource(source, record.searches, record.reads, folder, settings)), request, pickOptions);
     record.pick = picked.record;

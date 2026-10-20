@@ -4,6 +4,7 @@ import {
   pick,
   pickFromSources,
   type CandidateSource,
+  type DecisionStore,
   type MemoryCandidate,
   type PickAnswer,
   type PickBatch,
@@ -59,7 +60,7 @@ describe('pick rare-word round', () => {
     const candidates = parts(10, { p0: 'plain zephyr', p7: 'plain zephyr' });
     const result = await pick(candidates, {
       task: 'Recall the plan', decide: counter.decide,
-      thresholds: { reference: 0.5 }, pick: { c: 0.68 },
+      everyScored: { bar: 0.5 }, everyRanked: { c: 0.68 },
     });
 
     expect(decidedIds(counter.calls)).toEqual(parts(4).map((item) => item.id));
@@ -77,8 +78,8 @@ describe('pick rare-word round', () => {
     const candidates = parts(10, { p0: 'plain zephyr', p7: 'plain zephyr' });
     const result = await pick(candidates, {
       task: 'Recall the plan', decide: counter.decide,
-      thresholds: { reference: 0.5 },
-      pick: { c: 0.68, rare: { share: 0.5 } },
+      everyScored: { bar: 0.5 },
+      everyRanked: { c: 0.68 }, rare: { share: 0.5 },
     });
 
     expect(decidedIds(counter.calls)).toEqual(['p0', 'p1', 'p2', 'p3', 'p7']);
@@ -100,8 +101,8 @@ describe('pick rare-word round', () => {
     const candidates = parts(10, {});
     const result = await pick(candidates, {
       task: 'Recall the plan', decide: counter.decide,
-      thresholds: { reference: 0.5 },
-      pick: { c: 0.68, rare: { share: 0.5 } },
+      everyScored: { bar: 0.5 },
+      everyRanked: { c: 0.68 }, rare: { share: 0.5 },
     });
 
     expect(decidedIds(counter.calls)).toEqual(parts(4).map((item) => item.id));
@@ -121,8 +122,8 @@ describe('pick rare-word round', () => {
     });
     const result = await pick(candidates, {
       task: 'Recall the plan', decide: counter.decide,
-      thresholds: { reference: 0.5 },
-      pick: { c: 0.68, rare: { share: 0.5 } },
+      everyScored: { bar: 0.5 },
+      everyRanked: { c: 0.68 }, rare: { share: 0.5 },
     });
 
     // 'zephyr' is in 4 parts — under the bound of 5 — and pulls p3 and
@@ -131,6 +132,39 @@ describe('pick rare-word round', () => {
     expect(timesAsked(counter.calls, 'p3')).toBe(1);
     expect(result.record.pick?.rare).toMatchObject({ asked: 1, added: 2 });
     expect(result.selected.map((item) => item.id)).toEqual(['p0', 'p1', 'p2', 'p7', 'p3']);
+  });
+
+  it('keeps the reused marker on pulled parts when a cached pick repeats', async () => {
+    // p0 selects and shares 'zephyr' (3 of 10 parts, under the 0.5 x 10
+    // bound) with the missed p7 and p8, so the round pulls and asks
+    // both: p7 clears the addition bar, p8 does not. The repeat serves
+    // every answer from the store, and each pulled part's entry must
+    // carry the reused marker the cache supplied — selected or not.
+    const values = new Map<string, unknown>();
+    const store: DecisionStore = {
+      get: async (key) => values.get(key),
+      set: async (key, value) => { values.set(key, value); },
+    };
+    const counter = stubDecide((question) =>
+      answered(question.id === 'p3' || question.id === 'p8' ? 0.01 : 0.9));
+    const candidates = parts(10, { p0: 'plain zephyr', p7: 'plain zephyr', p8: 'plain zephyr' });
+    const options = {
+      task: 'Recall the plan', decide: counter.decide,
+      everyScored: { bar: 0.5 }, everyRanked: { c: 0.68 }, rare: { share: 0.5 },
+      cache: { store, deciderId: 'test-decider' },
+    };
+    const first = await pick(candidates, options);
+    expect(first.record.pick?.rare).toMatchObject({ asked: 2, added: 1 });
+    expect(first.record.cache).toMatchObject({ asked: 6, reused: 0 });
+    counter.calls.length = 0;
+
+    const second = await pick(candidates, options);
+    expect(counter.calls).toHaveLength(0);
+    expect(second.record.cache).toMatchObject({ asked: 0, reused: 6 });
+    expect(second.record.candidates.find((entry) => entry.id === 'p7'))
+      .toMatchObject({ status: 'selected', reused: true });
+    expect(second.record.candidates.find((entry) => entry.id === 'p8'))
+      .toMatchObject({ status: 'rejected', reused: true });
   });
 
   it('pulls a pool-only part the lane cut dropped, through pickFromSources', async () => {
@@ -149,8 +183,8 @@ describe('pick rare-word round', () => {
     };
     const result = await pickFromSources([source], { task: 'Recall the plan' }, {
       task: 'Recall the plan', decide: counter.decide,
-      thresholds: { reference: 0.5 },
-      pick: { rare: { share: 0.5 } },
+      everyScored: { bar: 0.5 },
+      rare: { share: 0.5 },
     });
 
     expect(decidedIds(counter.calls)).toEqual(['w0', 'w1', 'w2', 'w9']);
@@ -181,8 +215,8 @@ describe('pick rare-word round', () => {
     });
     const result = await pick(candidates, {
       task: 'Recall the plan', decide: counter.decide,
-      thresholds: { reference: 0.5 },
-      pick: { rare: { share: 0.02 } },
+      everyScored: { bar: 0.5 },
+      rare: { share: 0.02 },
     });
 
     expect(result.record.pick?.n).toBe(count);
@@ -195,16 +229,20 @@ describe('pick rare-word round', () => {
   it('refuses an invalid pick option before any decide call', async () => {
     const counter = stubDecide(() => answered(0.9));
     const task = { task: 'Recall the plan', decide: counter.decide };
-    await expect(pick(parts(10), { ...task, pick: {} })).rejects.toThrow(TypeError);
-    await expect(pick(parts(10), { ...task, pick: { c: 0 } })).rejects.toThrow(TypeError);
-    await expect(pick(parts(10), { ...task, pick: 0.68 as unknown as { c: number } }))
+    await expect(pick(parts(10), { ...task, everyRanked: {} as never })).rejects.toThrow(TypeError);
+    await expect(pick(parts(10), { ...task, everyRanked: { c: 0 } })).rejects.toThrow(TypeError);
+    await expect(pick(parts(10), { ...task, everyRanked: 0.68 as never }))
       .rejects.toThrow(TypeError);
+    await expect(pick(parts(10), { ...task, everyScored: {} as never })).rejects.toThrow(TypeError);
+    await expect(pick(parts(10), { ...task, everyScored: false as never })).rejects.toThrow(TypeError);
+    await expect(pick(parts(10), { ...task, everyScored: { bar: 2 } })).rejects.toThrow(TypeError);
+    await expect(pick(parts(10), { ...task, rare: 1 as never })).rejects.toThrow(TypeError);
     for (const share of [0, -0.5, Number.NaN, Number.POSITIVE_INFINITY]) {
-      await expect(pick(parts(10), { ...task, pick: { rare: { share } } }))
+      await expect(pick(parts(10), { ...task, rare: { share } }))
         .rejects.toThrow(TypeError);
     }
     for (const bar of [-0.1, 1.5, Number.NaN]) {
-      await expect(pick(parts(10), { ...task, pick: { rare: { bar } } }))
+      await expect(pick(parts(10), { ...task, rare: { bar } }))
         .rejects.toThrow(TypeError);
     }
     expect(counter.calls).toHaveLength(0);

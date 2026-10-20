@@ -277,7 +277,7 @@ export function gitHistory(
         // '.' under `git -C <toplevel>` names the same whole tree.
         const pathspec = named.map((name) => (name === '' ? '.' : name));
         const now = Date.now();
-        const cut = request.laneCut === true;
+        const cut = request.wholeLanes === false;
 
         // With no exclusions the log pages carry bodies: a bare read keeps
         // them for its candidates, a lane-cut read measures each page's

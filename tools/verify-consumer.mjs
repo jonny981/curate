@@ -23,7 +23,7 @@ try {
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { pick, pickFromSources, curate, addMeaningRanks, SourceReadError } from '@curatejs/core';
+import { pick, pickFromSources, curate, addMeaningRanks, SourceReadError, performance, economy } from '@curatejs/core';
 import { asSourceReadError } from '@curatejs/core/internal';
 import { chat, CHAT_CASCADE, CHAT_KEYWORD_SETTINGS, CHAT_SEARCH_LINE_REGISTER } from '@curatejs/chat';
 import { gitHistory, GIT_HISTORY_CASCADE, GIT_KEYWORD_SETTINGS, GIT_SEARCH_LINE_REGISTER } from '@curatejs/git';
@@ -44,13 +44,16 @@ const weighted = async ({ questions }) => {
 const picked = await pick(candidates, { task: 'Recall backups', decide: weighted });
 assert.deepEqual(picked.selected.map(candidate => candidate.id), ['host-item-0', 'host-item-1', 'host-item-2']);
 assert.equal(picked.record.thresholds.reference, 0);
+assert.equal(picked.record.levers.preset, 'performance');
+assert.equal(performance.pick.everyScored, true);
+assert.deepEqual(economy.pick.everyScored, { bar: 0.0146 });
 const meaning = await addMeaningRanks(candidates, 'Recall backups', {
   embed: async texts => texts.map(() => [1, 0]),
 });
 assert.equal(meaning.length, candidates.length);
 assert.ok(meaning.every(candidate => candidate.searchRanks.length === 2));
 assert.deepEqual(meaning.map(candidate => candidate.text), candidates.map(candidate => candidate.text));
-const cut = await pick(candidates, { task: 'Recall backups', decide: weighted, thresholds: { reference: 0.05 } });
+const cut = await pick(candidates, { task: 'Recall backups', decide: weighted, everyScored: { bar: 0.05 } });
 assert.deepEqual(cut.selected.map(candidate => candidate.id), ['host-item-0']);
 let prompt;
 const curated = await curate('Recall backups', picked, { write: async p => { prompt = p; return '[2025-01-01] Backups are encrypted (said 2025-01-01; E1)'; } });

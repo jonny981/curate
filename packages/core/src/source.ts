@@ -1,5 +1,6 @@
 import type { CandidateSourceKind, MemoryCandidate, PickOptions, PickResult } from './pick.js';
 import { DEFAULT_MAX_QUESTION_TEXT, pick } from './pick.js';
+import { presetName } from './levers.js';
 import { phraseCount, stripSearchInstructions } from './search.js';
 import { addMeaningRanks, type MeaningSearchOptions } from './meaning.js';
 import { cutLane, laneScoreOf, type SearchLaneReport } from './lanes.js';
@@ -28,19 +29,20 @@ export interface CandidateReadRequest {
    *  would keep only its most repeated mentions and drop a one-off
    *  direction said once. Instead each matching part is scored against
    *  the task itself (the read request carries `topic`), and with
-   *  `laneCut` on a streaming reader keeps the matches that curve keeps;
-   *  a reader that cannot score the task returns every match and the
-   *  pick keeps them all. */
+   *  `wholeLanes` off a streaming reader keeps the matches that curve
+   *  keeps; a reader that cannot score the task returns every match and
+   *  the pick keeps them all. */
   readonly kindLanes?: Readonly<Partial<Record<CandidateSourceKind, readonly string[]>>>;
-  /** Narrow each lane where its own score curve flattens, from the
-   *  scores themselves rather than a fixed count. On by default inside
-   *  pickFromSources; pass false to keep every returned part. The curve
-   *  measures each candidate's `laneScore` when it carries one — a
-   *  source whose signals hold an ordering or rank-merge score puts the
-   *  lane's own match score there; a phrase lane's match score is the
-   *  phrase's occurrence count. A search lane with no positive score
-   *  matched nothing, so it admits nothing and holds no bodies while
-   *  it waits on its siblings; a read that keeps nothing records
+  /** Read each lane's whole ranked list. Off by default inside
+   *  pickFromSources: every lane is narrowed where its own score curve
+   *  flattens, from the scores themselves rather than a fixed count;
+   *  pass true to keep every returned part. The curve measures each
+   *  candidate's `laneScore` when it carries one — a source whose
+   *  signals hold an ordering or rank-merge score puts the lane's own
+   *  match score there; a phrase lane's match score is the phrase's
+   *  occurrence count. A search lane with no positive score matched
+   *  nothing, so it admits nothing and holds no bodies while it waits
+   *  on its siblings; a read that keeps nothing records
    *  `noSearchMatch`, so the caller sees the miss and can ask more
    *  broadly rather than be handed the whole history. `searchPhrases`
    *  lanes keep every exact match either way, and a source whose role
@@ -50,8 +52,8 @@ export interface CandidateReadRequest {
    *  inside the read; a reader that does not returns every match and
    *  the pick keeps them all. A bare `source.read` call leaves the
    *  option unset: the read returns its full ranked result, and only a
-   *  read that received `laneCut: true` narrows inside the read. */
-  readonly laneCut?: boolean;
+   *  read that received `wholeLanes: false` narrows inside the read. */
+  readonly wholeLanes?: boolean;
   /** In kind lanes on a chat-kind source, keep only the person's own
    *  messages (chat role 'user'); use it when the task asks what a named
    *  person said. Candidates with no chat metadata pass unaffected.
@@ -66,30 +68,30 @@ export interface CandidateReadRequest {
   /** Internal to pickFromSources: set on a kind lane (`phraseLane`
    *  already says `task` is the phrase) — `topic` is the search task
    *  the lane serves. A streaming reader scores each phrase match
-   *  against it and, when `laneCut` is on, keeps the matches the
+   *  against it and, when `wholeLanes` is off, keeps the matches the
    *  topic's own score curve keeps. Leave unset for a plain
    *  `searchPhrases` lookup, which is never cut. */
   readonly topic?: string;
   /** Internal to pickFromSources: the read serves one meaning lane, so
    *  `task` is the query to embed and `embed` supplies the vectors. A
    *  streaming reader scores each part's similarity inside the read —
-   *  keeping what the similarity curve keeps when `laneCut` is on, and
-   *  `limit` carries the caller's `nearest` cap — and returns only the
-   *  kept parts flagged `meaningLane`, never the corpus. A reader that
-   *  ignores it answers a plain keyword read, and the pick then scores
-   *  the pool itself. */
+   *  keeping what the similarity curve keeps when `wholeLanes` is off,
+   *  and `limit` carries the caller's `nearest` cap — and returns only
+   *  the kept parts flagged `meaningLane`, never the corpus. A reader
+   *  that ignores it answers a plain keyword read, and the pick then
+   *  scores the pool itself. */
   readonly meaningLane?: MeaningSearchOptions;
   /** Internal to pickFromSources: 'gate' when the pick's label gate is
-   *  on, 'count' when only its scaled top-k dial is. The read result
-   *  also carries the reference source's full uncut primary-search
-   *  pool — every part a lane cut or the read `limit` dropped, marked
-   *  absent from every lane — beside the kept members. 'gate' means
-   *  the gate labels that pool, so a part sharing no words with the
-   *  task can still reach the decide step and the merged list carries
-   *  the miss flag; 'count' means the dial only counts the pool toward
-   *  the history's size, its members reach decide only when the
-   *  rare-word round pulls one in, and a keyword miss keeps
-   *  `noSearchMatch`. Leave unset when neither is on. */
+   *  on, 'count' when only a decide-feed dial is (`everyRanked: { c }`
+   *  or `rare`). The read result also carries the reference source's
+   *  full uncut primary-search pool — every part a lane cut or the
+   *  read `limit` dropped, marked absent from every lane — beside the
+   *  kept members. 'gate' means the gate labels that pool, so a part
+   *  sharing no words with the task can still reach the decide step
+   *  and the merged list carries the miss flag; 'count' means the dial
+   *  only counts the pool toward the history's size, its members reach
+   *  decide only when the rare-word round pulls one in, and a keyword
+   *  miss keeps `noSearchMatch`. Leave unset when neither is on. */
   readonly labelPool?: 'gate' | 'count';
   /** Remove explicit answer-format and citation clauses from search
    *  text only. Off by default; subject, counting and date needs remain. */
@@ -140,7 +142,7 @@ export type CandidateReadResult =
       /** True when the reader already narrowed this lane at its own
        *  score curve inside the read: the candidates are the kept set,
        *  so pickFromSources does not cut them again. A streaming reader
-       *  sets it when `laneCut` is on; a reader that returns every
+       *  sets it when `wholeLanes` is off; a reader that returns every
        *  matched candidate leaves it unset and the pick cuts as
        *  before. */
       readonly laneCutApplied?: boolean;
@@ -278,9 +280,9 @@ async function readKeywordSearches(
 ): Promise<CandidateReadResult> {
   const tasks = searchTasks(request, source.kind);
   // The cut applies to keyword lanes on reference sources only.
-  const laneCut = request.laneCut !== false && source.role === 'reference';
+  const laneCut = request.wholeLanes !== true && source.role === 'reference';
   if (tasks.length === 1) {
-    const read = await source.read({ ...request, task: tasks[0]!.task, laneCut }, context);
+    const read = await source.read({ ...request, task: tasks[0]!.task, wholeLanes: !laneCut }, context);
     const report = {
       task: tasks[0]!.task, lane: 'search' as const,
       read: read.status === 'read' ? read.matched ?? read.candidates.length : 0,
@@ -323,9 +325,9 @@ async function readKeywordSearches(
     // can rank the matches by it and cut that curve inside the read.
     let read = await source.read({ ...request, task,
       ...(kind === 'search'
-        ? { laneCut }
+        ? { wholeLanes: !laneCut }
         : kind === 'kind'
-          ? { limit: undefined, phraseLane: true, topic: tasks[0]!.task, laneCut }
+          ? { limit: undefined, phraseLane: true, topic: tasks[0]!.task, wholeLanes: !laneCut }
           : { limit: undefined, phraseLane: true }),
       ...(revision === undefined ? {} : { revision }) }, context);
     // `read` on the report counts what the source matched for this
@@ -417,7 +419,7 @@ async function readSearches(
   const found = await readKeywordSearches(source, request, context);
   if (found.status !== 'read' || (!request.meaning && request.labelPool === undefined)) return found;
   const tasks = searchTasks(request, source.kind);
-  const laneCut = request.laneCut !== false && source.role === 'reference';
+  const laneCut = request.wholeLanes !== true && source.role === 'reference';
   // The uncut, unlimited primary-search pool, fetched at most once and
   // shared by the label pool merge and the scored meaning path: a lane
   // cut or a read limit must not hide candidates from either.
@@ -426,7 +428,7 @@ async function readSearches(
     if (poolRead === undefined) {
       poolRead = await source.read({
         ...request, task: tasks[0]!.task, searchLines: undefined, searchPhrases: undefined,
-        kindLanes: undefined, meaning: undefined, limit: undefined, laneCut: false,
+        kindLanes: undefined, meaning: undefined, limit: undefined, wholeLanes: true,
         meaningLane: undefined, labelPool: undefined,
         ...(found.revision === undefined ? {} : { revision: found.revision }),
       }, context);
@@ -494,7 +496,7 @@ async function readSearches(
       searchLines: undefined, searchPhrases: undefined, kindLanes: undefined,
       meaning: undefined, phraseLane: undefined, speakerOnly: undefined,
       limit: request.meaning.nearest,
-      laneCut: request.meaning.laneCut ?? laneCut,
+      wholeLanes: request.meaning.wholeLanes ?? !laneCut,
       meaningLane: request.meaning,
       ...(read.revision === undefined ? {} : { revision: read.revision }) }, context);
     if (laneRead.status === 'absent') {
@@ -604,7 +606,7 @@ async function readSearches(
     if (full.partial) partial = [partial, full.partial].filter(Boolean).join('; ');
   }
   const meaningful = await addMeaningRanks(candidates, tasks[0]!.task, {
-    ...request.meaning, laneCut: request.meaning.laneCut ?? laneCut,
+    ...request.meaning, wholeLanes: request.meaning.wholeLanes ?? !laneCut,
     searchLines: queries.filter((query) => query !== tasks[0]!.task.trim()),
     ...(request.signal === undefined ? {} : { signal: request.signal }),
   });
@@ -645,8 +647,8 @@ export async function pickFromSources(
       }
     }
   }
-  if (request.laneCut !== undefined && typeof request.laneCut !== 'boolean') {
-    throw new TypeError('laneCut must be a boolean.');
+  if (request.wholeLanes !== undefined && typeof request.wholeLanes !== 'boolean') {
+    throw new TypeError('wholeLanes must be a boolean.');
   }
   if (request.speakerOnly !== undefined && typeof request.speakerOnly !== 'boolean') {
     throw new TypeError('speakerOnly must be a boolean.');
@@ -657,7 +659,9 @@ export async function pickFromSources(
     maxQuestionText: options.limits?.maxQuestionText ?? request.maxQuestionText
       ?? (source.maxQuestionText === Number.POSITIVE_INFINITY ? undefined : source.maxQuestionText ?? DEFAULT_MAX_QUESTION_TEXT),
     labelPool: options.labels !== undefined ? 'gate'
-      : options.pick !== undefined ? 'count' : undefined,
+      : (options.everyRanked !== undefined && options.everyRanked !== true)
+        || (options.rare !== undefined && options.rare !== false)
+        ? 'count' : undefined,
   }, context)));
   const candidates: MemoryCandidate[] = [];
   const sourceKinds: Record<string, CandidateSourceKind> = Object.assign(Object.create(null), options.sourceKinds);
@@ -710,5 +714,15 @@ export async function pickFromSources(
   const result = await pick(combined, {
     ...options, rulesEnumerationComplete, sourceKinds,
   });
-  return { ...result, reads };
+  // The read request's lever joins the pick's resolved set, and the
+  // preset names the combination. `meaning.wholeLanes` resolves the
+  // meaning lanes' own state — the keyword lanes' when unset — so an
+  // override that splits the two is recorded as a split.
+  const keywordWhole = request.wholeLanes === true;
+  const meaningWhole = request.meaning?.wholeLanes ?? keywordWhole;
+  const levers = { ...result.record.levers,
+    wholeLanes: keywordWhole === meaningWhole ? keywordWhole
+      : { keyword: keywordWhole, meaning: meaningWhole } };
+  return { ...result, reads,
+    record: { ...result.record, levers: { ...levers, preset: presetName(levers) } } };
 }

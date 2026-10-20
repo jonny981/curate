@@ -197,7 +197,7 @@ describe('knowledgeBase', () => {
     const seen = new Map<string, string>();
     const result = await pickFromSources(
       [knowledgeBase(directory)],
-      { task: 'read it', laneCut: false },
+      { task: 'read it', wholeLanes: true },
       {
         task: 'read it',
         limits: { maxQuestionText: 100 },
@@ -1169,17 +1169,17 @@ describe('knowledgeBase git dates', () => {
     const timer = setInterval(() => samples.push(process.memoryUsage().heapUsed), 10);
     const results: Awaited<ReturnType<typeof read>>[] = [];
     try {
-      results.push(await read(source, { task: 'battery backup evidence', laneCut: true }));
+      results.push(await read(source, { task: 'battery backup evidence', wholeLanes: false }));
       // A kind lane matches every section's 'never' and must rank the
       // matches by the topic, never buffer all 75,000 bodies.
       results.push(await read(source, {
-        task: 'never', phraseLane: true, topic: 'battery backup evidence', laneCut: true,
+        task: 'never', phraseLane: true, topic: 'battery backup evidence', wholeLanes: false,
       }));
       results.push(await read(source, {
-        task: 'battery backup evidence', laneCut: true, meaningLane: { embed },
+        task: 'battery backup evidence', wholeLanes: false, meaningLane: { embed },
       }));
       results.push(await read(source, {
-        task: 'battery backup evidence', laneCut: true, revision: pinned,
+        task: 'battery backup evidence', wholeLanes: false, revision: pinned,
       }));
     } finally {
       clearInterval(timer);

@@ -35,6 +35,7 @@ function picked(
     record: {
       questionVersion: 'test', limits: {},
       thresholds: { reference: 0, rule: 0, linkedPathBar: 0 }, rulesCoverage: 'complete',
+      levers: { preset: 'performance', everyRanked: true, everyScored: true, labels: false, route: false, rare: false },
       candidates: items.map((item, index) => {
         const itemTags = tagMap[`${item.sourceId}/${item.id}`] ?? tagMap[item.id];
         return {

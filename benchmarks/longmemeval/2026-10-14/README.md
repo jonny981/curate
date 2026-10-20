@@ -73,6 +73,8 @@ The GPT-4o judge is not fully deterministic, so a rerun can differ by a question
 pick(candidates, { thresholds: { reference: 0.0146 } })
 ```
 
+The `economy` preset, or `everyScored: { bar: 0.0146 }` on the pick, reproduces the setting.
+
 - **Score:** 458/500 = 91.6% with GPT-5-mini answering and GPT-4o marking (Mastra's marking prompt), against 460/500 = 92.0% when every scored part is kept. On the held-out 251 both score 235. LongMemEval's own scorer gives 90.8% (`economic/official-scorer/metrics.txt`).
 - **Where 0.0146 comes from:** it is the highest cut that lost no answer message on Curate's earlier ranking, chosen on the tuning 249 only.
 - **Selection:** made by Curate's package at commit `aacb042`, the same commit as the run above.

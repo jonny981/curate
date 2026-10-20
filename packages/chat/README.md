@@ -60,18 +60,18 @@ const source = chat({ providers: ['claude-code', 'codex'], since: '14 days' });
 - **Memory:** The read streams the history: one pass over the transcripts
   collects keyword statistics, a second scores each part against them,
   and a third reads back only the transcripts the read keeps. With the
-  lane cut on (the `pickFromSources` default), peak heap stays roughly
+  lane cut on (`wholeLanes` off, the `pickFromSources` default), peak heap stays roughly
   flat as the history grows. A search lane where nothing scores above
   zero keeps only ids, never bodies; a read that keeps nothing
   records `noSearchMatch` so the caller can ask more broadly. A read
-  with `laneCut: false` returns every part. A phrase lane needs only
+  with `wholeLanes: true` returns every part. A phrase lane needs only
   the matching pass.
 
 ## Defaults and overrides
 
 Core keeps every scored reference by default, ordered and weighted by
-decision probability. Set `thresholds.reference` for an optional single
-cut, for example 0.05. The curator receives exact scores. Its `tiers`
+decision probability. Set `everyScored: { bar: 0.05 }` for an optional
+single cut. The curator receives exact scores. Its `tiers`
 instructions ask for less space for low-scored items.
 Rules also keep every scored item; set `thresholds.rule` for an optional
 applicability cut. See

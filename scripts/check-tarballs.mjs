@@ -41,6 +41,7 @@ export const EXPECTED_FILES = {
     'package/dist/keywords.d.ts',
     'package/dist/labels.d.ts',
     'package/dist/lanes.d.ts',
+    'package/dist/levers.d.ts',
     'package/dist/local-embeddings.d.ts',
     'package/dist/local-embeddings.js',
     'package/dist/local-embeddings.js.map',

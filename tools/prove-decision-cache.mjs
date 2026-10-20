@@ -87,7 +87,10 @@ try {
     : probabilities[0] + 0.01;
   const third = await pick(candidates, {
     task, ...options,
-    thresholds: { ...options.thresholds, reference: bar },
+    everyScored: {
+      ...(typeof options.everyScored === 'object' && options.everyScored !== null ? options.everyScored : {}),
+      bar,
+    },
     decide, cache,
   });
   assert.equal(calls, 0, `the pick at reference ${bar} made ${calls} decider calls`);

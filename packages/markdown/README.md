@@ -112,8 +112,8 @@ const picked = await pickFromSources(sources, { task }, { task, decide });
 ## Defaults and overrides
 
 Core keeps every scored reference by default, ordered and weighted by
-decision probability. Set `thresholds.reference` for an optional single
-cut, for example 0.05. The curator receives exact scores. Its `tiers`
+decision probability. Set `everyScored: { bar: 0.05 }` for an optional
+single cut. The curator receives exact scores. Its `tiers`
 instructions ask for less space for low-scored items.
 Rules also keep every scored item; set `thresholds.rule` for an optional
 applicability cut. See

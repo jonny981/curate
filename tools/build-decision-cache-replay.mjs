@@ -100,9 +100,15 @@ const options = {
   ...(picked.ranking === undefined ? {} : { ranking: picked.ranking }),
   ...(picked.thresholds === undefined ? {} : {
     thresholds: Object.fromEntries(
-      ['reference', 'rule', 'linkedPathBar', 'referenceBySize']
+      ['rule', 'linkedPathBar']
         .filter((key) => picked.thresholds[key] !== undefined)
         .map((key) => [key, picked.thresholds[key]])),
+    ...((picked.thresholds.reference ?? 0) !== 0 || picked.thresholds.referenceBySize !== undefined ? {
+      everyScored: {
+        ...((picked.thresholds.reference ?? 0) !== 0 ? { bar: picked.thresholds.reference } : {}),
+        ...(picked.thresholds.referenceBySize === undefined ? {} : { bySize: picked.thresholds.referenceBySize }),
+      },
+    } : {}),
   }),
   ...(picked.limits === undefined ? {} : { limits: picked.limits }),
   ...(picked.keepTop === undefined ? {} : { keepTop: picked.keepTop }),

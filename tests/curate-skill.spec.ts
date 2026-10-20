@@ -293,14 +293,14 @@ it('sends every matching part to decisions, including short-word corrections bel
   const searches = { chat: { keywords: ['orchard', 'We asked for orchard'], answers: ['fruit trees', 'planted trees'] } };
   const asked: string[] = [];
   const picked = await pickFullSources([searchSource(source, searches, [], directory)], {
-    task: 'We need orchard evidence', searchLines: ['curate-search:0', 'curate-search:1'], laneCut: false,
+    task: 'We need orchard evidence', searchLines: ['curate-search:0', 'curate-search:1'], wholeLanes: true,
   }, { task: 'We need orchard evidence', decide: async (batch: { questions: { key: string; text: string }[] }) => {
     asked.push(...batch.questions.map((question) => question.text));
     return Object.fromEntries(batch.questions.map((question) => [question.key, { status: 'answered', probability: 0.8 }]));
   } });
   expect(asked).toHaveLength(301);
   expect(asked).toContain('We need to keep everything.');
-  expect((await searchSource(source, searches, [], directory).read({ task: 'We need orchard evidence', laneCut: false })).candidates[0].text)
+  expect((await searchSource(source, searches, [], directory).read({ task: 'We need orchard evidence', wholeLanes: true })).candidates[0].text)
     .toBe('We need to keep everything.');
   expect(asked).not.toContain('Breakfast pancakes.');
   expect(new Set(asked).size).toBe(301);
@@ -314,7 +314,7 @@ it('asks sources to cut search lanes inside the reads it caches, unless the cut 
   const seen: (boolean | undefined)[] = [];
   const source: CandidateSource = { id: 'notes', kind: 'markdown', role: 'reference',
     read: async (request) => {
-      seen.push(request.laneCut);
+      seen.push(request.wholeLanes);
       return { status: 'read', complete: true, candidates: [{
         sourceId: 'notes', id: 'one', role: 'reference', title: 'Orchard', text: 'Orchard notes.', signals: { bm25: 1 },
       }] };
@@ -327,13 +327,13 @@ it('asks sources to cut search lanes inside the reads it caches, unless the cut 
     task: 'orchard', searchLines: ['curate-search:0'],
   }, { task: 'orchard', decide });
   expect(seen.length).toBeGreaterThan(0);
-  expect(seen.every((flag) => flag === true)).toBe(true);
+  expect(seen.every((flag) => flag === false)).toBe(true);
 
   seen.length = 0;
   await pickFullSources([searchSource(source, searches, [], directory)], {
-    task: 'orchard', laneCut: false,
+    task: 'orchard', wholeLanes: true,
   }, { task: 'orchard', decide });
-  expect(seen.every((flag) => flag === false)).toBe(true);
+  expect(seen.every((flag) => flag === true)).toBe(true);
 });
 
 it('passes caller decision limits such as maxBatchChars through to the pick', async () => {
@@ -500,7 +500,7 @@ it('labels collection dates for undated evidence without changing weights or ord
   const picked = await pickFromSources([{
     id: 'documents', kind: 'markdown', role: 'reference',
     read: async () => ({ status: 'read', complete: true, candidates: [dated, undated] }),
-  }], { task: 'orchard evidence', laneCut: false }, {
+  }], { task: 'orchard evidence', wholeLanes: true }, {
     task: 'orchard evidence', decide: async (batch) => Object.fromEntries(batch.questions.map((question) => [
       question.key, { status: 'answered', probability: question.id === 'dated' ? 0.9 : 0.7 },
     ])),

@@ -29,7 +29,7 @@ describe('fitted decision questions', () => {
       }]));
     };
     const result = await pick(['low', 'high', 'middle', 'edge'].map((id, i) => item(id, 4 - i)), {
-      task: 'Recall', cascade, decide, thresholds: { reference: 0 }, limits: { maxPerBatch: 2 },
+      task: 'Recall', cascade, decide, everyScored: { bar: 0 }, limits: { maxPerBatch: 2 },
     });
     expect(calls).toEqual([
       ['low:relevant', 'high:relevant'], ['middle:relevant', 'edge:relevant'],
@@ -48,7 +48,7 @@ describe('fitted decision questions', () => {
     const decide: PickDecide = async ({ questions }) => Object.fromEntries(questions
       .filter((q) => q.questionKey !== 'needed')
       .map((q) => [q.key, { status: 'answered', probability: q.questionKey === 'own' ? 0.8 : 0.5 }]));
-    const result = await pick([item('a')], { task: 'Recall', cascade, decide, thresholds: { reference: 0 } });
+    const result = await pick([item('a')], { task: 'Recall', cascade, decide, everyScored: { bar: 0 } });
     expect(result.record.candidates[0]).toMatchObject({ probability: sigmoid(-1.7305 + 0.8588 * logit(0.8)) });
     const missing = await pick([item('a')], { task: 'Recall', cascade, decide: async () => ({}) });
     expect(missing.record.candidates[0]).toMatchObject({ status: 'unanswered', answer: 'missing' });
@@ -126,10 +126,10 @@ describe('selection after decisions', () => {
   });
 
   it('promotes selected top keyword hits without admitting rejected ones', async () => {
-    const result = await pick(candidates, { task: 'Recall', decide, keepTop: 2, thresholds: { reference: 0.6 } });
+    const result = await pick(candidates, { task: 'Recall', decide, keepTop: 2, everyScored: { bar: 0.6 } });
     expect(result.selected.map((c) => c.id)).toEqual(['keyword', 'strong']);
     expect(result.record.keepTop).toBe(2);
-    expect((await pick(candidates, { task: 'Recall', decide, keepTop: 0, thresholds: { reference: 0.6 } })).selected.map((c) => c.id))
+    expect((await pick(candidates, { task: 'Recall', decide, keepTop: 0, everyScored: { bar: 0.6 } })).selected.map((c) => c.id))
       .toEqual(['strong', 'keyword']);
   });
 

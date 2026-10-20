@@ -77,8 +77,8 @@ for (const inst of data) {
     decide,
     cascade,
     keepTop: 0,
-    thresholds: { reference: 0.05 },
-    pick: { rare: {} },
+    everyScored: { bar: 0.05 },
+    rare: true,
   });
   const rare = picked.record.pick?.rare;
   if (!rare) throw new Error(`no rare record for ${inst.question_id}`);

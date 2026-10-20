@@ -243,8 +243,8 @@ async function* eachPart(
  * text is scrubbed before it is split, scored or returned. A keyword
  * read streams the history: one pass for the corpus statistics, one to
  * score, and one that reads back only the parts the read keeps — the
- * lane's score-curve cut when `laneCut` is on, every scored part when
- * it is not. A cut read where nothing scores above zero matched
+ * lane's score-curve cut when `wholeLanes` is off, every scored part
+ * when it is on. A cut read where nothing scores above zero matched
  * nothing: it keeps no parts at all, so it never holds a large
  * history's bodies. Every other cut read holds only the parts it
  * keeps, so memory stays flat as the history grows. */
@@ -323,7 +323,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           await flush();
           const order = ids.map((_, index) => index)
             .sort((a, b) => (similarities[b] ?? 0) - (similarities[a] ?? 0) || ids[a]!.localeCompare(ids[b]!));
-          const cut = request.laneCut === true;
+          const cut = request.wholeLanes === false;
           const bend = cut ? laneBend(order.map((index) => similarities[index]!)) : undefined;
           // A cut lane where nothing scored above zero matched nothing:
           // it keeps no parts rather than read back every body.
@@ -421,7 +421,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           const at = new Map(matchedIndexes.map((index, position) => [index, position]));
           const order = matchedIndexes
             .sort((a, b) => base[at.get(b)!]! - base[at.get(a)!]! || ids[a]!.localeCompare(ids[b]!));
-          const cut = request.laneCut === true;
+          const cut = request.wholeLanes === false;
           // The curve sees every match; `limit` slices what it keeps.
           const bend = cut ? laneBend(order.map((index) => base[at.get(index)!]!)) : undefined;
           const curveKept = bend === undefined ? order : order.filter((index) => base[at.get(index)!]! > bend);
@@ -529,10 +529,10 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           .sort((a, b) => scores[b]! - scores[a]! || ids[a]!.localeCompare(ids[b]!));
         const limited = request.limit === undefined ? order : order.slice(0, request.limit);
         // A bare read keeps every scored part; only a lane the pick
-        // resolved with `laneCut: true` narrows inside the read. A cut
-        // lane where nothing scored above zero matched nothing: it
+        // resolved with `wholeLanes: false` narrows inside the read. A
+        // cut lane where nothing scored above zero matched nothing: it
         // keeps no parts rather than read back every body.
-        const cut = request.laneCut === true;
+        const cut = request.wholeLanes === false;
         const bend = cut ? laneBend(limited.map((index) => base[index]!)) : undefined;
         const kept = bend === undefined
           ? (cut && !limited.some((index) => base[index]! > 0) ? [] : limited)

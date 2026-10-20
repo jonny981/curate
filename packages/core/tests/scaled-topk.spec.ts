@@ -73,7 +73,7 @@ describe('pick scaled top-k', () => {
     expect(decidedIds(baseline.calls)).toEqual(candidates.map((item) => item.id));
     expect(plain.selected.map((item) => item.id)).toEqual(candidates.map((item) => item.id));
     expect(plain.record).not.toHaveProperty('pick');
-    const absent = await pick(candidates, { task, decide: allAnswered.decide, pick: undefined });
+    const absent = await pick(candidates, { task, decide: allAnswered.decide, everyRanked: undefined });
     expect(absent.selected).toEqual(plain.selected);
     expect(absent.record).toEqual(plain.record);
   });
@@ -86,7 +86,7 @@ describe('pick scaled top-k', () => {
     [10, 2.17, 10],
   ])('keeps the top round(c × N^0.8) of the keyword ranking: N=%i c=%f keeps %i', async (count, c, kept) => {
     const counter = stubDecide(() => answered(0.9));
-    const result = await pick(parts(count), { task: 'Recall the plan', decide: counter.decide, pick: { c } });
+    const result = await pick(parts(count), { task: 'Recall the plan', decide: counter.decide, everyRanked: { c } });
 
     expect(decidedIds(counter.calls)).toEqual(parts(kept).map((item) => item.id));
     expect(result.record.pick).toEqual({ n: count, c, kept, ranking: 'keyword' });
@@ -105,7 +105,7 @@ describe('pick scaled top-k', () => {
     const pool = Array.from({ length: 450 }, (_, index) =>
       candidate({ sourceId: 'notes', id: `x${index}`, poolOnly: true }));
     const result = await pick([...laneMembers, ...pool], {
-      task: 'Recall the plan', decide: counter.decide, pick: { c: 0.68 },
+      task: 'Recall the plan', decide: counter.decide, everyRanked: { c: 0.68 },
     });
 
     expect(result.record.pick).toEqual({ n: 500, c: 0.68, kept: 50, ranking: 'keyword' });
@@ -142,7 +142,7 @@ describe('pick scaled top-k', () => {
     const counter = stubDecide(() => answered(0.9));
     const rule = candidate({ sourceId: 'notes', id: 'rule-1', role: 'rule' });
     const result = await pick([rule, ...parts(100)], {
-      task: 'Recall the plan', decide: counter.decide, pick: { c: 0.68 },
+      task: 'Recall the plan', decide: counter.decide, everyRanked: { c: 0.68 },
     });
 
     // N counts reference parts only: 100, not 101. The bound keeps 27
@@ -166,7 +166,7 @@ describe('pick scaled top-k', () => {
       read: async () => ({ status: 'read', complete: true, candidates: pool }),
     };
     const result = await pickFromSources([source], { task: 'Recall the plan' },
-      { task: 'Recall the plan', decide: counter.decide, pick: { c: 0.68 } });
+      { task: 'Recall the plan', decide: counter.decide, everyRanked: { c: 0.68 } });
 
     expect(result.record.pick).toEqual({ n: 120, c: 0.68, kept: 3, ranking: 'keyword' });
     // The 117 pool members count toward N but, with the gate off, stay
@@ -191,7 +191,7 @@ describe('pick scaled top-k', () => {
       read: async () => ({ status: 'read', complete: true, candidates: pool }),
     };
     const result = await pickFromSources([source], { task: 'Recall the plan' },
-      { task: 'Recall the plan', decide: counter.decide, pick: { c: 0.68 } });
+      { task: 'Recall the plan', decide: counter.decide, everyRanked: { c: 0.68 } });
 
     const read = result.reads[0]!;
     expect(read).toMatchObject({ status: 'read', noSearchMatch: true });
@@ -218,7 +218,7 @@ describe('pick scaled top-k', () => {
     const result = await pick(candidates, {
       task: 'Recall the plan', decide: counter.decide,
       labels: { directory, deciderId: 'test-decider' },
-      pick: { c: 0.68 },
+      everyRanked: { c: 0.68 },
     });
 
     // 0.68 × 3^0.8 rounds to 2: the fused order's top two are a and p3;
@@ -240,7 +240,7 @@ describe('pick scaled top-k', () => {
     const result = await pick(candidates, {
       task: 'Recall the plan', decide: counter.decide,
       labels: { directory, deciderId: 'test-decider' },
-      pick: { c: 0.68 },
+      everyRanked: { c: 0.68 },
     });
 
     expect(result.record.labels).toBeDefined();
@@ -256,11 +256,11 @@ describe('pick scaled top-k', () => {
     const counter = stubDecide(() => answered(0.9));
     for (const c of [0, -0.5, Number.NaN, Number.POSITIVE_INFINITY, undefined]) {
       await expect(pick(parts(10), {
-        task: 'Recall the plan', decide: counter.decide, pick: { c: c as number },
+        task: 'Recall the plan', decide: counter.decide, everyRanked: { c: c as number },
       })).rejects.toThrow(TypeError);
     }
     await expect(pick(parts(10), {
-      task: 'Recall the plan', decide: counter.decide, pick: 0.68 as unknown as { c: number },
+      task: 'Recall the plan', decide: counter.decide, everyRanked: 0.68 as never,
     })).rejects.toThrow(TypeError);
     expect(counter.calls).toHaveLength(0);
   });

@@ -55,7 +55,7 @@ a kind lane `topic` then carries the task the lane serves, and the
 reader ranks each match by it. `meaningLane` carries the embedding
 function for a meaning read: the reader scores each part's similarity
 inside the read and returns only the kept parts, so the corpus's text
-is never held. `laneCut` arrives already resolved: `true` tells the
+is never held. `wholeLanes` arrives already resolved: `false` tells the
 reader to narrow its own lane at the score curve and emit only the
 kept candidates; `limit` on a kind or meaning read caps that kept set
 after the curve, not the scoring before it. A read that narrowed
@@ -158,10 +158,10 @@ cut on how often its phrase occurs: the count says a match exists, not
 that it is relevant, and a direction said once would lose to a phrase
 everyone repeats. A streaming reader instead ranks each kind-lane
 match by the task's own score and cuts that curve inside the read
-when `laneCut` is on; a reader that cannot score the task returns
+when `wholeLanes` is off; a reader that cannot score the task returns
 every match and the pick keeps them all. Meaning lanes get the same
 curve cut on similarity scores, inside the read when the source
-streams it. Pass `laneCut: false` in the read request to keep every
+streams it. Pass `wholeLanes: true` in the read request to keep every
 candidate each search returned.
 
 `kindLanes` adds phrase lanes in the language of the kind of message a
@@ -272,8 +272,8 @@ try {
   as partial.
 - **Dials:** `meaning.nearest` is an optional positive integer per query
   and source. Each meaning query is cut where its similarity score
-  curve flattens, the same cut keyword lanes get; pass `laneCut: false`
-  on the read request (or `meaning.laneCut: false` for meaning only)
+  curve flattens, the same cut keyword lanes get; pass `wholeLanes: true`
+  on the read request (or `meaning.wholeLanes: true` for meaning only)
   to keep every rank. `nearest` bounds the ranks a query keeps either
   way. An optional `limits.maxCandidates` still applies to each
   interleaved query feed; their union can exceed it.
@@ -334,7 +334,7 @@ a 0.4 continuation gate. No continuation gate is used by the package.
 
 `pick(candidates, { task, decide })` ranks the candidates, asks `decide`
 in bounded batches, and returns the selected candidates with a
-`PickRecord`. The reference threshold defaults to zero, so every reference
+`PickRecord`. `everyScored` is on by default, so every reference
 with a valid decision probability is kept, including zero. The model
 orders and weights these items rather than dropping them. References
 with no valid decision answer remain unanswered; limits can leave items
@@ -351,14 +351,14 @@ For a single cut, set your own bar:
 
 ```ts
 const picked = await pick(candidates, {
-  task, decide, thresholds: { reference: 0.05 },
+  task, decide, everyScored: { bar: 0.05 },
 });
 ```
 
 Rules also keep every scored item by default. Set `thresholds.rule`
 for an optional applicability cut. `applies: always` rules bypass that check.
 
-`thresholds.referenceBySize` replaces the flat reference bar with a
+`everyScored: { bySize }` replaces the flat bar with a
 curve of `[decided count, bar]` points. Below the first point the first
 bar applies; above the last the last bar applies; between two points
 the bar moves linearly. The count is the number of references that
@@ -525,8 +525,8 @@ option or pass `false` to judge the whole feed as usual.
 
 ### Optional label gate
 
-`labels: { directory, deciderId }` narrows which reference parts reach
-the decide step, off by default. Each reference part answers seven fixed
+`labels: { directory, deciderId }` adds the parts the labels find to
+the decide feed, off by default. Each reference part answers seven fixed
 kind questions once: a personal fact, something owned or used, a
 purchase or arrival, an event or plan, a preference, a habit, and a
 decision or change. The answers do not depend on the task, so the pick
@@ -551,8 +551,8 @@ dropped can still reach the decide step through the label lane; through
 `pick` directly it labels every reference part supplied. Label batches
 count against `maxBatches` and `maxElapsedMs`, so a stop while labelling
 leaves the decide step unasked. The label lane is not capped by
-`maxCandidates`: every part in it reaches the decide step unless the
-scaled top-k dial caps the merged ranking.
+`maxCandidates`: every part in it reaches the decide step unless
+`everyRanked` caps the merged ranking.
 
 The record's `labels` field keeps the question-set version, the
 `deciderId`, how many items' labels the decide port was asked, how many
@@ -630,8 +630,9 @@ pick without it.
 
 ### Optional scaled top-k
 
-`pick: { c }` decides only the top `round(c × N^0.8)` reference parts
-of the ranking the decide step reads, off by default. N is the number
+`everyRanked: { c }` decides only the top `round(c × N^0.8)` reference parts
+of the ranking the decide step reads; `everyRanked` is on by default
+and `true` reads them all. N is the number
 of reference parts the pick received: the history's size, not the
 ranking's. Through `pickFromSources` the read carries the source's
 full uncut pool, so lane cuts and read limits do not shrink it; a pool
@@ -647,7 +648,7 @@ field keeps `n`, `c`, `kept` and which ranking was cut (`'fusion'` or
 `'keyword'`).
 
 Measured on the tuning half's saved rankings (249 questions, 445 answer
-messages) with the label gate on and `laneCut` off, over every part of
+messages) with the label gate on and `wholeLanes` on, over every part of
 each history from 127 to 8,475 parts:
 
 | Keep rule | Answer messages kept, of 445 | Parts kept at 850 parts | Parts kept at 8,475 |
@@ -668,8 +669,9 @@ history's size instead of with the whole ranking.
 
 ### Optional rare-word round
 
-`pick: { rare }`, alone or beside `c`, turns on a second, narrow
-round after the selection pass, off by default. The parts that cleared
+`rare`, alone or beside `everyRanked: { c }`, turns on a second, narrow
+round after the selection pass, off by default. `rare: true` runs it
+at its defaults; `{ share, bar }` tunes it. The parts that cleared
 the selection bar are its seeds. A seed word is rare when its document
 frequency over the history is at most `share × N`, where the history
 is every reference part the pick received: the same N the top-k count
@@ -926,6 +928,89 @@ a chained log's line ids, so passing both throws a `TypeError` before
 the writer runs. `batchTokens` must be a positive integer. Nothing is
 cut or dropped; batching only splits the evidence across more calls.
 
+## Levers and modes
+
+Every cost/performance lever follows one rule: turning it on reads more
+evidence or adds more guidance, at the risk of more cost; turning it
+off saves cost and can lose quality. Each lever lives in one of three
+places: the read request `pickFromSources` takes, the options `pick`
+takes, or the options `curate` takes. The pick's record keeps every
+lever's resolved state under `levers`, and `levers.preset` names the
+mode the states match: `performance`, `economy` or `custom`. Its
+`route` records the questions asked. The curate record carries the
+same lever set for the whole mode. Its `route` holds both states,
+`{ asked, applied }`, and its `preset` names the mode they make, so a
+pick that asked and a curator that never applied reads `custom`, not
+`performance`. `meaning.wholeLanes` resolves the meaning lanes on their
+own, so when it disagrees with the read request's `wholeLanes` the
+record holds `levers.wholeLanes: { keyword, meaning }` and the preset
+is `custom`.
+
+| Lever | What "on" does | Cost when on | Measured impact | Where measured |
+| --- | --- | --- | --- | --- |
+| Read `wholeLanes` | Keeps every candidate each keyword and meaning lane returned. Off, each lane cuts where its own score curve flattens (chat: the pre-merge keyword score; `searchPhrases` lanes are never cut, and kind lanes are never cut on phrase counts). | The decide feed grows by the parts the curves would have cut; kept counts vary with each lane's scores, and deciding is the expensive stage. | The cut the off state applies missed 6 of 445 answer messages on the tuning half: three shared no words with the question, three ranked below the cut. Its score and cost impact, and the loss under the label gate, are not yet measured. | Saved tuning-half lanes, 249 questions. |
+| Pick `everyRanked` | Every ranked reference part reaches the decide step. Off as `{ c }`, only the top `round(c × N^0.8)` reach it, where N is the number of reference parts the pick received; rules pass through uncut and dropped parts record `unassessed` with reason `'pick'`. | The decide step reads every ranked part, the whole ranking: all 850 of 850 parts at one measured size and all 8,475 of 8,475 at the largest. The off dial at c = 0.68 read 150 of the 850 and 944 of the 8,475. | On the keyword-and-label ranking the off dial at c = 0.68 kept 437–442 of 445 answer messages (98–99%) at every size from 127 to 8,475 parts (on keeps the whole ranking) and scored 229 of 249 at $0.18 a question; the on state's score and cost under the label gate are not yet measured. | Saved tuning-half rankings replayed, label gate on and `wholeLanes` on; the tuning dials in the root README. |
+| Pick `everyScored` | Every part with a valid decision probability stays selected, including zero. Off as `{ bar }` cuts below the bar; `{ bySize }` cuts below a bar that rises with the decided count. | The curator receives every scored part: about 850 parts at $0.51 a question in the LongMemEval run, against about 70 parts at $0.13 at the 0.0146 bar. | On scored 225 of the 249 tuning questions at $0.51 a question; off at the 0.0146 bar scored the same 225 at $0.13 (223 on the all-500 replay) and 458 of 500 against 460, at a quarter of the cost. A saved 0.6 bar removed every fed fragment of 183 labelled answer turns; a 0.05 bar lost 8 of 438 answer messages. 0.0146 is the highest cut that lost no answer message on the tuning questions. | Saved-decision sweep and the LongMemEval runs in the root README. |
+| Pick `labels` | Labels each reference part and the task with seven kind questions, stores each part's set under `directory`, and adds a label lane fused into the ranking so parts the keyword lanes dropped can reach decide. Needs a caller-supplied store and `deciderId`. | Seven questions per part plus one set for the task, once per part text and `deciderId`; later picks reuse the store. | Keyword alone reached 439 of the tuning half's 445 answer messages; with each part labelled, all 445 were reached at 38% of each history. Its score and cost impact is not yet measured. | Saved label run on the tuning half, in the root README. |
+| Pick `route`, `curate` `route` | `route: 'jev'` on the pick asks the task the four route questions once. `route: 'jev'` on `curate` applies the recorded answers to the curator's guidance: worked notes, the preference lines. | Four questions asked of the task once a pick, sharing the task's label request when that runs and asked in one separate request otherwise; the curator adds the lines the answers chose. | Not yet measured. | Not yet measured. |
+| Pick `rare` | After the selection pass, pulls in every unselected part sharing a rare word with a selected part, pool members included; parts at or above `rare.bar` (default `0.0146`) join the selection. A word is rare at a document frequency of at most `rare.share × N` (default `5/850`). | The parts it pulls are asked or their scores reused: 12.9 parts a question at the defaults on the tuning half. On a history under 340 parts the default share can pull nothing. | Holding the selection bar at 0.05 lost 15 answer messages and the round recovered 6 of them. Its score impact is not yet measured. | Saved tuning-half decisions, 249 questions. |
+
+The decision cache and the short `En` item ids are not levers: they
+lose no quality, so they stay available whenever the caller asks for
+them. The cache is on whenever the caller passes one.
+
+### Two modes
+
+`performance` and `economy` are exported plain objects, each a
+`{ read, pick, curate }` fragment to spread into the matching call:
+
+```ts
+import { curate, economy, pickFromSources } from '@curatejs/core';
+
+const picked = await pickFromSources(sources,
+  { task, ...economy.read },
+  { task, decide, ...economy.pick });
+const curated = await curate(task, picked, { write, ...economy.curate });
+```
+
+| Lever | `performance` (the default) | `economy` |
+| --- | --- | --- |
+| `wholeLanes` | off: lanes are cut | off: lanes are cut |
+| `everyRanked` | on: every ranked part is read | on: every ranked part is read |
+| `everyScored` | on: every scored part is kept | off at `bar` 0.0146 |
+| `labels` | off | off |
+| `route` | off | off |
+| `rare` | off | off |
+
+With no preset the package runs exactly `performance`. `economy`
+reproduces the economic setting the LongMemEval runs used: the only
+lever it flips is `everyScored`, off at the 0.0146 bar, the highest
+cut that lost no answer message on the tuning questions. `labels`
+stays out of both presets because it needs a caller-supplied store
+and `deciderId`; add it to either one:
+
+```ts
+const labelledEconomy = {
+  ...economy,
+  pick: { ...economy.pick, labels: { directory: 'labels', deciderId: 'my-decider' } },
+};
+```
+
+A caller can also build its own mode for a scenario. A very long
+history with a tight budget, for example, keeps the economy bar and
+adds the measured keep count and the rare-word round:
+
+```ts
+const tightBudget = {
+  read: { ...economy.read },
+  pick: { ...economy.pick, everyRanked: { c: 0.68 }, rare: true },
+  curate: { ...economy.curate },
+};
+```
+
+`record.levers.preset` reads `custom` for any mix that matches neither
+preset.
+
 ## Optional evidence limits
 
 The defaults decide every candidate the lane union kept and show its
@@ -933,7 +1018,7 @@ full text. Reader parts are 700 characters by default; every part is
 preserved. `DEFAULT_MAX_QUESTION_TEXT` names that reader size, not a
 decision cut. A source can return more candidates than the union
 keeps, since reference-source keyword and meaning lanes cut at their
-own score curves before any decision. Pass `laneCut: false` to decide
+own score curves before any decision. Pass `wholeLanes: true` to decide
 every returned candidate.
 
 | Dial | Default | Cost and loss |
@@ -945,10 +1030,6 @@ every returned candidate.
 | **`maxElapsedMs`** | Off | Stops questions when the elapsed time is reached. Loss depends on response time; stopped and failed questions remain in the record. |
 | **`maxQuestionText`** | Off | Cuts each decision item to N Unicode characters and records `truncated`. For a 1,000-character item at 700, 300 characters are hidden. Readers can split instead; direct `pick` callers must choose their own cut. |
 | **Source read `limit`** | Off | Chat and Markdown keep ranked candidates; git keeps newest commits before ranking. Readers report partial coverage. A limit of 1 on 2 candidates drops 1. |
-| **Read `laneCut`** | On for reference sources | Cuts each keyword and meaning lane where its own score curve flattens; `false` keeps every returned candidate. The curve reads the lane's own match score (chat: the pre-merge keyword score, not the rank-merge ordering score). A search lane where nothing scored adds nothing; a read that keeps no candidates records `noSearchMatch`, so the caller can ask more broadly; `searchPhrases` lanes are never cut, and kind lanes are never cut on phrase counts: a streaming reader cuts them on each match's task score, and a reader that cannot score returns every match. Kept counts vary with each lane's scores; loss on labelled data is unmeasured. On by default because a ranked read can return every part a source holds, and deciding is the expensive stage. |
-| **`pick: { c }`** | Off | Keeps the top `round(c × N^0.8)` reference parts of the ranking the decide step reads, where N is the number of reference parts the pick received: the history's size, not the admitted count. Rules pass through uncounted and uncut. Measured on the tuning half with the label gate on and `laneCut` off: c = 0.68 kept 437–442 of 445 answer messages at every size from 127 to 8,475 parts. Dropped parts record `unassessed` with reason `'pick'`. |
-| **`pick: { rare }`** | Off | Runs a second, narrow round after the selection pass: unselected parts sharing a rare word with a selected part are pulled in, pool members included, and ones scoring at or above `rare.bar` (default `0.0146`) join the selection. A word is rare when its document frequency over the history is at most `rare.share × N` (default `5/850`, the count of 5 fitted on an 850-part history). On a history under 340 parts the default share can pull nothing: a shared word appears in at least 2 parts, and `5/850 × N` stays below 2. Parts never asked go through the decide step; decided parts reuse their score, and no part is asked twice. `pick.c` is optional when `rare` is set. |
-| **`thresholds.reference`** | 0 | A saved 0.6 cut removed every fed fragment of 183 labelled answer turns. A user cut reduces curation input; the default adds no cut loss. |
 | **`thresholds.rule`** | 0 | A user applicability cut omits rules below its probability. Quality loss on labelled rule tasks is unmeasured; the default adds no cut loss. |
 | **`contextLimit`** | Off | Requests a second writer call to condense the complete log. Format checks do not prove fact retention. No quality loss curve has been established; leave off for full retention. Cannot combine with a chained write. |
 | **`batchTokens`** | Off | Splits a chained write into passes of about N estimated tokens of evidence each, strongest first. Changes only how many calls the writer makes; no evidence is dropped. Cannot combine with `contextLimit`. |

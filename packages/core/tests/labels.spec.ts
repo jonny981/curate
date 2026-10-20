@@ -445,8 +445,8 @@ describe('pick labels', () => {
       decide: counting((question) => question.questionKey === undefined ? 0.8 : 0.1).decide,
       ...labelOptions(store()),
     });
-    const { labels: _labels, ...record } = gated.record;
-    expect(record).toEqual(plain.record);
+    const { labels: _labels, levers, ...record } = gated.record;
+    expect({ ...record, levers: { ...levers, labels: false, preset: 'performance' } }).toEqual(plain.record);
     expect(gated.selected).toEqual(plain.selected);
   });
 });

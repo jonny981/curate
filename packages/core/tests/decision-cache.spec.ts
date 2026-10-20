@@ -562,7 +562,7 @@ describe('pick decision cache', () => {
     );
     const options = (threshold: number) => ({
       task: 'Recall the plan', decide: byId,
-      thresholds: { reference: threshold },
+      everyScored: { bar: threshold },
       cache: { store: decisionFileStore(directory), deciderId: 'test-decider' },
     });
     const first = await pick(parts, options(0.5));

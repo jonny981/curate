@@ -84,7 +84,7 @@ describe('pick', () => {
         answered(question.id === 'low' ? 0.2 : 0.9),
       ])));
 
-    const result = await pick(candidates, { task: 'fix the flaky test', decide, thresholds: { reference: 0.6 } });
+    const result = await pick(candidates, { task: 'fix the flaky test', decide, everyScored: { bar: 0.6 } });
 
     expect(result.selected.map((item) => item.id)).toEqual(['high', 'mid']);
     expect(calls).toHaveLength(1);
@@ -159,7 +159,7 @@ describe('pick', () => {
     const result = await pick(candidates, {
       task: 'triage the bug',
       decide,
-      thresholds: { reference: 0.6 },
+      everyScored: { bar: 0.6 },
       limits: { maxPerBatch: 2 },
     });
 
@@ -631,7 +631,7 @@ describe('the changed-path link', () => {
     const { decide } = stubDecide((batch) =>
       byId({ 'commit a1b2c3d': answered(0.9), ops: answered(0.45), other: answered(0.45) })(batch));
 
-    const result = await pick([commit(), opsNote(), otherNote()], { task: 'fix the ops doc', decide, thresholds: { reference: 0.6 } });
+    const result = await pick([commit(), opsNote(), otherNote()], { task: 'fix the ops doc', decide, everyScored: { bar: 0.6 } });
 
     expect(result.selected.map((item) => item.id).sort()).toEqual(['commit a1b2c3d', 'ops']);
     const byEntry = new Map(result.record.candidates.map((entry) => [entry.id, entry]));
@@ -665,7 +665,7 @@ describe('the changed-path link', () => {
     const { decide } = stubDecide((batch) =>
       byId({ 'commit a1b2c3d': answered(0.9), ops: answered(0.4), low: answered(0.39) })(batch));
 
-    const result = await pick([wide(), opsNote(), low()], { task: 'fix the docs', decide, thresholds: { reference: 0.6 } });
+    const result = await pick([wide(), opsNote(), low()], { task: 'fix the docs', decide, everyScored: { bar: 0.6 } });
 
     expect(result.selected.map((item) => item.id).sort()).toEqual(['commit a1b2c3d', 'ops']);
     expect(result.record.candidates.find((entry) => entry.id === 'low'))
@@ -679,7 +679,7 @@ describe('the changed-path link', () => {
     const result = await pick([commit(), opsNote()], {
       task: 'fix the ops doc',
       decide,
-      thresholds: { reference: 0.6, linkedPathBar: 0.5 },
+      everyScored: { bar: 0.6 }, thresholds: { linkedPathBar: 0.5 },
     });
 
     expect(result.selected.map((item) => item.id)).toEqual(['commit a1b2c3d']);
@@ -696,7 +696,7 @@ describe('the changed-path link', () => {
     const { decide } = stubDecide((batch) =>
       byId({ 'commit a1b2c3d': answered(0.9), foreign: answered(0.45) })(batch));
 
-    const result = await pick([commit(), foreign()], { task: 'fix the ops doc', decide, thresholds: { reference: 0.6 } });
+    const result = await pick([commit(), foreign()], { task: 'fix the ops doc', decide, everyScored: { bar: 0.6 } });
 
     expect(result.record.candidates.find((entry) => entry.id === 'foreign'))
       .toMatchObject({ status: 'rejected', probability: 0.45 });
@@ -723,7 +723,7 @@ describe('the changed-path link', () => {
         deep: answered(0.45),
       })(batch));
 
-    const result = await pick([commit(), mid(), deep()], { task: 'fix the docs', decide, thresholds: { reference: 0.6 } });
+    const result = await pick([commit(), mid(), deep()], { task: 'fix the docs', decide, everyScored: { bar: 0.6 } });
 
     expect(result.selected.map((item) => item.id).sort()).toEqual(['commit a1b2c3d', 'mid']);
     expect(result.record.candidates.find((entry) => entry.id === 'deep'))
@@ -737,7 +737,7 @@ describe('the changed-path link', () => {
     const { decide } = stubDecide((batch) =>
       byId({ 'commit a1b2c3d': answered(0.9), rule: answered(0.45) })(batch));
 
-    const result = await pick([commit(), rule()], { task: 'fix the ops doc', decide, thresholds: { reference: 0.6, rule: 0.6 } });
+    const result = await pick([commit(), rule()], { task: 'fix the ops doc', decide, everyScored: { bar: 0.6 }, thresholds: { rule: 0.6 } });
 
     expect(result.record.candidates.find((entry) => entry.id === 'rule'))
       .toMatchObject({ status: 'rejected', probability: 0.45 });
@@ -751,7 +751,7 @@ describe('the changed-path link', () => {
       const { decide } = stubDecide((batch) =>
         byId({ 'commit a1b2c3d': answered(0.9), ops: answer })(batch));
 
-      const result = await pick([commit(), opsNote()], { task: 'fix the ops doc', decide, thresholds: { reference: 0.6 } });
+      const result = await pick([commit(), opsNote()], { task: 'fix the ops doc', decide, everyScored: { bar: 0.6 } });
 
       const entry = result.record.candidates.find((item) => item.id === 'ops');
       expect(entry!.status).toBe('unanswered');
@@ -780,7 +780,7 @@ describe('the changed-path link', () => {
   it('leaves an ordinary above-threshold selection without a link field', async () => {
     const { decide } = stubDecide((batch) => allAnswered(batch, 0.9));
 
-    const result = await pick([commit(), opsNote()], { task: 'fix the ops doc', decide, thresholds: { reference: 0.6 } });
+    const result = await pick([commit(), opsNote()], { task: 'fix the ops doc', decide, everyScored: { bar: 0.6 } });
 
     const entry = result.record.candidates.find((item) => item.id === 'ops');
     expect(entry).toMatchObject({ status: 'selected' });

@@ -240,7 +240,7 @@ describe('chat source contract', () => {
     const text = 'hello world\n'.repeat(20);
     const directory = await transcript('codex', [message('codex', 'user', text)]);
     const seen: string[] = [];
-    const result = await pickFromSources([chat({ paths: [directory], providers: ['codex'] })], { task: 'hello', laneCut: false }, {
+    const result = await pickFromSources([chat({ paths: [directory], providers: ['codex'] })], { task: 'hello', wholeLanes: true }, {
       task: 'hello', limits: { maxQuestionText: 50 },
       decide: async (batch) => {
         seen.push(...batch.questions.map((question) => question.text));
@@ -430,7 +430,7 @@ describe('streaming read', () => {
     }
   });
 
-  it('narrows inside the read only when the pick resolves laneCut on', async () => {
+  it('narrows inside the read only when the pick resolves wholeLanes off', async () => {
     const directory = await transcript('codex', [
       message('codex', 'user', 'battery backup schedule decided'),
       message('codex', 'assistant', 'unrelated breakfast'),
@@ -440,7 +440,7 @@ describe('streaming read', () => {
     const uncut = await read('codex', directory, {}, { task: 'battery' });
     expect(uncut.laneCutApplied).toBeUndefined();
     expect(uncut.candidates).toHaveLength(4);
-    const cut = await read('codex', directory, {}, { task: 'battery', laneCut: true });
+    const cut = await read('codex', directory, {}, { task: 'battery', wholeLanes: false });
     expect(cut.laneCutApplied).toBe(true);
     expect(cut.matched).toBe(4);
     // Two parts carry the task term and score above the bend; the two
@@ -503,15 +503,15 @@ describe('streaming read', () => {
     let kindResult: typeof result;
     let meaningResult: typeof result;
     try {
-      result = await source.read({ task: 'battery backup', laneCut: true });
+      result = await source.read({ task: 'battery backup', wholeLanes: false });
       // A kind lane matches 'filler words' in every part and must rank
       // the matches by the topic, never buffer every matched body; the
       // meaning lane likewise scores and releases each batch.
       kindResult = await source.read({
-        task: 'filler words', phraseLane: true, topic: 'battery backup', laneCut: true,
+        task: 'filler words', phraseLane: true, topic: 'battery backup', wholeLanes: false,
       });
       meaningResult = await source.read({
-        task: 'battery backup', laneCut: true, meaningLane: { embed },
+        task: 'battery backup', wholeLanes: false, meaningLane: { embed },
       });
     } finally {
       clearInterval(timer);
@@ -544,7 +544,7 @@ describe('streaming read', () => {
       message('codex', 'user', 'S3 backup recovery steps'),
       message('codex', 'assistant', 'unrelated breakfast chatter'),
     ]);
-    const cut = await read('codex', directory, {}, { task: 'zxq unmatched words', laneCut: true });
+    const cut = await read('codex', directory, {}, { task: 'zxq unmatched words', wholeLanes: false });
     // A zero-score lane keeps no candidates at all: no part's body is
     // read back or held.
     expect(cut.candidates).toEqual([]);

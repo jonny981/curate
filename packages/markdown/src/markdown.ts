@@ -1139,7 +1139,7 @@ function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 'rules'
         const order = parts.map((_, index) => index)
           .sort((left, right) => (simOf.get(right) ?? 0) - (simOf.get(left) ?? 0)
             || (parts[left]!.id < parts[right]!.id ? -1 : parts[left]!.id > parts[right]!.id ? 1 : 0));
-        const cut = request.laneCut === true;
+        const cut = request.wholeLanes === false;
         const bend = cut ? laneBend(order.map((index) => simOf.get(index) ?? 0)) : undefined;
         // A cut lane where nothing scored above zero matched nothing:
         // it keeps no parts rather than read back every body.
@@ -1301,7 +1301,7 @@ function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 'rules'
       // A keyword read's limit bounds the read itself; a kind lane's
       // caps what the score curve keeps.
       const pool = kindLane || limit === undefined ? laneRanked : laneRanked.slice(0, limit);
-      const cut = request.laneCut === true;
+      const cut = request.wholeLanes === false;
       const bend = cut ? laneBend(pool.map((index) => sums[index]!)) : undefined;
       // A cut keyword lane where nothing scored above zero matched
       // nothing: it keeps no parts rather than read back every body. A

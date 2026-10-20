@@ -8,3 +8,4 @@ export * from './lanes.js';
 export * from './tags.js';
 export { stripSearchInstructions } from './search.js';
 export * from './meaning.js';
+export * from './levers.js';

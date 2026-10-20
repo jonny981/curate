@@ -817,15 +817,15 @@ describe('gitHistory', () => {
     let kindResult: typeof result;
     let meaningResult: typeof result;
     try {
-      result = await read(source, { task: 'battery backup evidence', laneCut: true });
+      result = await read(source, { task: 'battery backup evidence', wholeLanes: false });
       // A kind lane matches every body's 'padding the commit' and must
       // rank the matches by the topic, never buffer all 75,000 bodies;
       // the meaning lane likewise scores and releases each page.
       kindResult = await read(source, {
-        task: 'padding the commit', phraseLane: true, topic: 'battery backup evidence', laneCut: true,
+        task: 'padding the commit', phraseLane: true, topic: 'battery backup evidence', wholeLanes: false,
       });
       meaningResult = await read(source, {
-        task: 'battery backup evidence', laneCut: true, meaningLane: { embed },
+        task: 'battery backup evidence', wholeLanes: false, meaningLane: { embed },
       });
     } finally {
       clearInterval(timer);

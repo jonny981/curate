@@ -54,9 +54,9 @@ describe('lane cuts', () => {
     expect(result.selected.map((item) => item.id)).toEqual(['s0', 's1', 's2']);
   });
 
-  it('keeps every part when laneCut is false', async () => {
+  it('keeps every part when wholeLanes is on', async () => {
     const scored = [10, 9, 8, 1, 1, 1].map((score, index) => candidate(`s${index}`, score));
-    const result = await pickFromSources([reader(scored)], { task: 'task', laneCut: false }, { task: 'task', decide: yes });
+    const result = await pickFromSources([reader(scored)], { task: 'task', wholeLanes: true }, { task: 'task', decide: yes });
     expect(result.selected).toHaveLength(6);
     expect(result.reads[0]).toMatchObject({ lanes: [{ task: 'task', lane: 'search', read: 6, kept: 6 }] });
   });
@@ -272,7 +272,7 @@ describe('kind lanes', () => {
     const chatSource: CandidateSource = {
       id: 'chat-reader', kind: 'chat', role: 'reference',
       read: async (request) => {
-        requests.push({ task: request.task, phrase: request.phraseLane, topic: request.topic, cut: request.laneCut });
+        requests.push({ task: request.task, phrase: request.phraseLane, topic: request.topic, cut: request.wholeLanes });
         return request.phraseLane === true
           ? {
               status: 'read' as const, complete: true, laneCutApplied: true as const, matched: 9,
@@ -288,8 +288,8 @@ describe('kind lanes', () => {
       task: 'the shipping task', kindLanes: { chat: ['never'] },
     }, { task: 'the shipping task', decide: yes });
     expect(requests).toEqual([
-      { task: 'the shipping task', phrase: undefined, topic: undefined, cut: true },
-      { task: 'never', phrase: true, topic: 'the shipping task', cut: true },
+      { task: 'the shipping task', phrase: undefined, topic: undefined, cut: false },
+      { task: 'never', phrase: true, topic: 'the shipping task', cut: false },
     ]);
     const read = result.reads[0]!;
     if (read.status !== 'read') throw new Error('read failed');
@@ -301,7 +301,7 @@ describe('kind lanes', () => {
     expect(result.selected.find((item) => item.id === 'also-relevant')?.searchRanks).toEqual([null, 1]);
   });
 
-  it('keeps every kind match when laneCut is false', async () => {
+  it('keeps every kind match when wholeLanes is on', async () => {
     const chatSource: CandidateSource = {
       id: 'chat-reader', kind: 'chat', role: 'reference',
       read: async (request) => ({
@@ -316,7 +316,7 @@ describe('kind lanes', () => {
       }),
     };
     const result = await pickFromSources([chatSource], {
-      task: 'task', kindLanes: { chat: ['never'] }, laneCut: false,
+      task: 'task', kindLanes: { chat: ['never'] }, wholeLanes: true,
     }, { task: 'task', decide: yes });
     const read = result.reads[0]!;
     if (read.status !== 'read') throw new Error('read failed');
@@ -352,8 +352,8 @@ describe('kind lanes', () => {
       .rejects.toThrow('kindLanes');
     await expect(pickFromSources([source], { task: 't', kindLanes: { chat: ['  '] } }, { task: 't', decide: yes }))
       .rejects.toThrow('kindLanes');
-    await expect(pickFromSources([source], { task: 't', laneCut: 1 as never }, { task: 't', decide: yes }))
-      .rejects.toThrow('laneCut');
+    await expect(pickFromSources([source], { task: 't', wholeLanes: 1 as never }, { task: 't', decide: yes }))
+      .rejects.toThrow('wholeLanes');
     await expect(pickFromSources([source], { task: 't', speakerOnly: 'yes' as never }, { task: 't', decide: yes }))
       .rejects.toThrow('speakerOnly');
   });
@@ -387,7 +387,7 @@ describe('decision tags', () => {
               : q.tagSet === 'corrects' ? 0.7 : 0.2,
         }]));
       },
-      thresholds: { reference: 0.5 },
+      everyScored: { bar: 0.5 },
     });
     expect(asked.filter(([, tag]) => tag !== undefined).map(([id]) => id)).toEqual(['kept', 'kept', 'kept']);
     const entry = result.record.candidates.find((item) => item.id === 'kept')!;
@@ -545,7 +545,7 @@ describe('size-dependent reference bar', () => {
   it('interpolates the bar between points and records the applied value', async () => {
     const scores = [0.9, 0.5, 0.29, 0.2];
     const result = await pick(scores.map((p, index) => candidate(`c${index}`, 4 - index)), {
-      task: 'task', thresholds: { referenceBySize: [[2, 0.1], [6, 0.5]] },
+      task: 'task', everyScored: { bySize: [[2, 0.1], [6, 0.5]] },
       decide: async (batch) => Object.fromEntries(batch.questions.map((q, index) => [
         q.key, { status: 'answered' as const, probability: scores[index]! }])),
     });
@@ -558,13 +558,13 @@ describe('size-dependent reference bar', () => {
 
   it('holds the flat bars outside the points and counts only decided references', async () => {
     const flat = await pick([candidate('a', 3), candidate('b', 1)], {
-      task: 'task', thresholds: { referenceBySize: [[10, 0], [100, 0.9]] },
+      task: 'task', everyScored: { bySize: [[10, 0], [100, 0.9]] },
       decide: async (batch) => Object.fromEntries(batch.questions.map((q) => [q.key, { status: 'answered' as const, probability: 0.4 }])),
     });
     expect(flat.record.thresholds.appliedReference).toBe(0);
     expect(flat.selected).toHaveLength(2);
     const oneMissing = await pick([candidate('a', 3), { ...candidate('b', 1), role: 'rule' as const }], {
-      task: 'task', thresholds: { referenceBySize: [[0, 0], [2, 0.5]] },
+      task: 'task', everyScored: { bySize: [[0, 0], [2, 0.5]] },
       decide: async (batch) => Object.fromEntries(batch.questions.map((q) => [q.key,
         q.id === 'b' ? { status: 'missing' as const } : { status: 'answered' as const, probability: 0.4 }])),
     });
@@ -578,8 +578,8 @@ describe('size-dependent reference bar', () => {
       [], [[1, 0], [1, 0.5]], [[-1, 0]], [[1.5, 0]], [[1, -0.1]], [[1, 2]], [[1, Number.NaN]],
     ] as const) {
       await expect(pick([candidate('a')], {
-        task: 'task', thresholds: { referenceBySize: points }, decide: yes,
-      })).rejects.toThrow('referenceBySize');
+        task: 'task', everyScored: { bySize: points }, decide: yes,
+      })).rejects.toThrow('bySize');
     }
   });
 });

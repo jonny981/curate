@@ -34,12 +34,12 @@ describe('local meaning search', () => {
       searchLines: ['finance', ' finance ', 'pets', ''],
     });
     expect(calls[0]).toEqual(['pets', 'finance']);
-    // The lane cut drops zero-similarity ranks; laneCut: false keeps them.
+    // The lane cut drops zero-similarity ranks; wholeLanes: true keeps them.
     expect(ranked.map((candidate) => candidate.searchRanks)).toEqual([[0, 2, null, 0], [1, 0, 0, null]]);
     const uncut = await addMeaningRanks([
       { ...item('bill', 'invoice'), searchRanks: [0, 2] },
       { ...item('dog', 'puppy'), searchRanks: [1, 0] },
-    ], 'pets', { embed, searchLines: ['finance'], laneCut: false });
+    ], 'pets', { embed, searchLines: ['finance'], wholeLanes: true });
     expect(uncut.map((candidate) => candidate.searchRanks)).toEqual([[0, 2, 1, 0], [1, 0, 0, 1]]);
   });
 
@@ -202,7 +202,7 @@ describe('local meaning search', () => {
       }),
     }], { task: 'pets', meaning: { embed: async (texts) =>
         texts.map((text) => (text === 'pets' ? [1, 0] : [0, 1])) } },
-      { task: 'pets', decide, pick: { c: 0.68 } });
+      { task: 'pets', decide, everyRanked: { c: 0.68 } });
     const countedRead = counted.reads[0]!;
     if (countedRead.status !== 'read') throw new Error('read failed');
     expect(countedRead.candidates).toHaveLength(2);
@@ -222,7 +222,7 @@ describe('local meaning search', () => {
           },
     }], { task: 'pets', meaning: { embed: async (texts) =>
         texts.map((text) => (text === 'pets' ? [1, 0] : [0, 1])) } },
-      { task: 'pets', decide, pick: { c: 0.68 } });
+      { task: 'pets', decide, everyRanked: { c: 0.68 } });
     const streamedRead = streamed.reads[0]!;
     if (streamedRead.status !== 'read') throw new Error('read failed');
     expect(streamedRead.candidates).toHaveLength(2);

@@ -12,11 +12,12 @@ export interface MeaningSearchOptions {
   readonly embed: EmbeddingFunction;
   /** Optional user dial per query and source. Omit to keep every rank. */
   readonly nearest?: number;
-  /** Cut each query's similarity ranks where its own score curve
-   *  flattens, from the scores themselves; a query with no positive
-   *  similarity admits nothing. On by default; pass false to keep
-   *  every rank (still subject to `nearest`). */
-  readonly laneCut?: boolean;
+  /** Keep each query's whole ranked similarity list. Off by default:
+   *  the ranks are cut where the query's own score curve flattens,
+   *  from the scores themselves, and a query with no positive
+   *  similarity admits nothing; pass true to keep every rank (still
+   *  subject to `nearest`). */
+  readonly wholeLanes?: boolean;
 }
 
 /** Add local meaning ranks without changing keyword ranks or signals.
@@ -78,7 +79,7 @@ export async function addMeaningRanks(
       const curve = cutScoreCurve(order.map((index) => laneScores[index]!));
       // A query with no positive similarity matched nothing, so the
       // cut admits nothing rather than the whole group.
-      const kept = options.laneCut === false ? order.length : curve;
+      const kept = options.wholeLanes === true ? order.length : curve;
       order.slice(0, Math.min(options.nearest ?? kept, kept)).forEach((index, rank) => {
         ranks[index]![keywordLanes + lane] = rank;
       });
