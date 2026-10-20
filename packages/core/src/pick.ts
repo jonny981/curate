@@ -6,6 +6,7 @@ import {
 import {
   decisionKey, storedDecision, type DecisionStore,
 } from './decisions.js';
+import { ROUTE_QUESTIONS, routeOptions, type RouteKey, type RouteOption } from './task.js';
 
 export type MemoryCandidateRole = 'reference' | 'rule';
 export type MemoryKind = 'knowledge' | 'docs' | 'rules' | 'instructions';
@@ -91,7 +92,7 @@ export type PickAnswer =
   | { readonly status: 'answered'; readonly probability: number }
   | { readonly status: 'refused' | 'missing' | 'error'; readonly detail?: string }
   /** The question was never asked: a stopping dial ended the run first.
-   *  Only recorded for tag questions; a decide reply cannot produce it. */
+   *  Recorded for tag and route questions; a decide reply cannot produce it. */
   | { readonly status: 'unassessed'; readonly detail?: string };
 
 export type PickDecide = (
@@ -360,6 +361,17 @@ export interface PickRecord {
     readonly failedWrites: number;
     readonly warning?: string;
   };
+  /** Present when `route: 'jev'` asked the four route questions of the
+   *  task: the answers, and the curator options they switch on at the
+   *  shared label bar — 'taste' switches on 'preferenceAdvice' and
+   *  'preferenceChange', and 'count', 'date' and 'latest' switch on
+   *  'working'. curate's own `route: 'jev'` applies them; a route
+   *  question a stop left unasked records 'unassessed' with the stop
+   *  reason. */
+  readonly route?: {
+    readonly answers: readonly ({ readonly key: RouteKey } & PickAnswer)[];
+    readonly on: readonly RouteOption[];
+  };
   /** The tag sets every kept reference answered, when supplied. */
   readonly tags?: readonly PickTagSet[];
   /** Extra tag sets asked only of references from that source kind. */
@@ -415,7 +427,8 @@ export interface PickOptions {
    *  reciprocal-rank fusion; the bar is a dial to fit, not a measured
    *  best. The seven kind questions are asked through the decide port
    *  of every reference part and once of the task, batched as decision
-   *  batches are, and each item's set is stored once in `directory`
+   *  batches are — the task's own ask packs into one request instead
+   *  when `route` is on — and each item's set is stored once in `directory`
    *  keyed by the question-set version, `deciderId` and the item's
    *  text. Through `pickFromSources` the gate labels the source's full
    *  uncut search pool, so a part the keyword lanes dropped can still
@@ -441,6 +454,14 @@ export interface PickOptions {
    *  call: no reads and no writes. With `cache` unset the output is
    *  identical to a pick without it. */
   readonly cache?: PickCache | false;
+  /** Ask the four route questions in `ROUTE_QUESTIONS` of the task once
+   *  per pick, through the decide port — in the same request as the
+   *  task's kind labels when the label gate asks them, alone otherwise,
+   *  and always as one request whatever the request-size dials allow.
+   *  `record.route` carries the answers and the curator options each
+   *  'yes' at the shared label bar switches on; `curate`'s own
+   *  `route: 'jev'` applies them. Off by default. */
+  readonly route?: 'jev';
   /** False when a source that can supply rule candidates did not finish
    *  enumerating them; its read returned `complete: false`. The combined
    *  coverage can then never report a complete applicable-rule set, even
@@ -703,6 +724,9 @@ export async function pick(
   }
   checkCascade(options.cascade);
   for (const set of Object.values(options.cascadesByKind ?? {})) checkCascade(set);
+  if (options.route !== undefined && options.route !== 'jev') {
+    throw new TypeError(`route must be 'jev'.`);
+  }
   checkSizeCurve(options.thresholds?.referenceBySize);
   for (const set of options.tags ?? []) checkTagSet(set);
   for (const sets of Object.values(options.tagsByKind ?? {})) for (const set of sets ?? []) checkTagSet(set);
@@ -855,7 +879,7 @@ export async function pick(
   /** Candidates in a rejected decision batch: their verdicts are not
    *  trusted even when an earlier batch answered some questions. */
   const decideFailed = new Set<MemoryCandidate>();
-  const ask = async (asks: Pending[], sink = answered, task = options.task) => {
+  const ask = async (asks: Pending[], sink = answered, task = options.task, whole = false) => {
     // The decision cache, off by default and never entered by label
     // asks: a stored answer serves its question, and the decider sees
     // only the misses. Answers are reused across batches — the key
@@ -912,13 +936,15 @@ export async function pick(
       // A batch packs whole items until the character bound; the first
       // item always goes, so a single oversized item is sent alone. An
       // item counts once per batch however many of its questions it holds.
+      // A `whole` call packs every ask into its one request instead: the
+      // task's own label and route questions always ride together.
       const slice: Pending[] = [];
       const counted = new Set<MemoryCandidate>();
       let batchChars = task.length;
-      for (const item of fresh.slice(index, index + limits.maxPerBatch)) {
+      for (const item of fresh.slice(index, index + (whole ? fresh.length : limits.maxPerBatch))) {
         const size = questionChars(item.question)
           + (counted.has(item.candidate) ? 0 : itemChars(item.question));
-        if (slice.length > 0 && batchChars + size > limits.maxBatchChars) break;
+        if (slice.length > 0 && !whole && batchChars + size > limits.maxBatchChars) break;
         batchChars += size;
         counted.add(item.candidate);
         slice.push(item);
@@ -1001,10 +1027,38 @@ export async function pick(
   // keyword lanes' set, and reciprocal-rank fusion of the two orders
   // decides what the decide step sees first.
   let labelRecord: PickRecord['labels'];
+  let routeRecord: PickRecord['route'];
   // Label sets the store held or the decide port answered this pick.
   // The lane check below reads them; so does the unassessed reason at
   // the end, where a part with no entry was never resolved by the gate.
   const labels = new Map<MemoryCandidate, PartLabels>();
+  // The task item the kind questions — and, with `route: 'jev'`, the
+  // four route questions — describe. Route questions ride the task's
+  // own ask: the kind-label batch when that runs, a standalone one
+  // otherwise, so the route costs one request per pick either way.
+  const taskItem: MemoryCandidate = {
+    sourceId: 'labels', id: 'question', role: 'reference',
+    title: 'The question asked', text: options.task, signals: {},
+  };
+  const routePending = (route: (typeof ROUTE_QUESTIONS)[number]): Pending => ({
+    candidate: taskItem,
+    spec: {
+      key: route.key, question: route.question,
+      trueCriterion: route.trueCriterion, falseCriterion: route.falseCriterion,
+    },
+    question: {
+      key: JSON.stringify([taskItem.sourceId, taskItem.id, route.key]),
+      questionKey: route.key,
+      role: 'reference' as const,
+      question: route.question,
+      trueCriterion: route.trueCriterion, falseCriterion: route.falseCriterion,
+      sourceId: taskItem.sourceId, id: taskItem.id,
+      title: taskItem.title, text: taskItem.text,
+    },
+  });
+  // Whether the task's own label set was a store miss, so its ask —
+  // which the route questions ride — ran (or would run) this pick.
+  let taskLabelsMissed = false;
   if (options.labels !== undefined) {
     if (typeof options.labels.directory !== 'string' || !options.labels.directory.trim()) {
       throw new TypeError('labels.directory must be a nonempty path.');
@@ -1017,10 +1071,6 @@ export async function pick(
       throw new TypeError('labels.questionVersion must be a nonempty string.');
     }
     const store = labelFileStore(options.labels.directory);
-    const taskItem: MemoryCandidate = {
-      sourceId: 'labels', id: 'question', role: 'reference',
-      title: 'The question asked', text: options.task, signals: {},
-    };
     // Items sharing a text share one store key and one label set; the
     // task's key is namespaced so it can never collide with a part's.
     const itemKeys = new Map<MemoryCandidate, string>();
@@ -1058,19 +1108,24 @@ export async function pick(
     let writeError: unknown;
     const missed = new Map(misses.map(({ items }) => [items[0]!, items] as const));
     const taskMissed = missed.get(taskItem);
+    taskLabelsMissed = taskMissed !== undefined;
     if (!stop && taskMissed !== undefined) {
-      await ask(LABEL_KINDS.map((kind) => ({
-        candidate: taskItem,
-        spec: { key: kind.key, ...labelTaskQuestion(kind) },
-        question: {
-          key: JSON.stringify([taskItem.sourceId, taskItem.id, kind.key]),
-          questionKey: kind.key,
-          role: 'reference' as const,
-          ...labelTaskQuestion(kind),
-          sourceId: taskItem.sourceId, id: taskItem.id,
-          title: taskItem.title, text: taskItem.text,
-        },
-      })), labelAnswers, labelQuestionTask(options.task));
+      await ask([
+        ...LABEL_KINDS.map((kind) => ({
+          candidate: taskItem,
+          spec: { key: kind.key, ...labelTaskQuestion(kind) },
+          question: {
+            key: JSON.stringify([taskItem.sourceId, taskItem.id, kind.key]),
+            questionKey: kind.key,
+            role: 'reference' as const,
+            ...labelTaskQuestion(kind),
+            sourceId: taskItem.sourceId, id: taskItem.id,
+            title: taskItem.title, text: taskItem.text,
+          },
+        })),
+        // The route questions share the task's label request.
+        ...(options.route === 'jev' ? ROUTE_QUESTIONS.map(routePending) : []),
+      ], labelAnswers, labelQuestionTask(options.task), options.route === 'jev');
     }
     const partMisses = misses.filter(({ items }) => items[0] !== taskItem);
     if (!stop && partMisses.length > 0) {
@@ -1131,6 +1186,25 @@ export async function pick(
           + `(${writeError instanceof Error ? writeError.message : String(writeError)}); this pick used them, `
           + 'and the next pick asks for them again.',
       }),
+    };
+  }
+
+  // The route questions, alone when the task's label ask did not run —
+  // labels unset, or the task's set reused from the store.
+  if (options.route === 'jev') {
+    if (!stop && !taskLabelsMissed) {
+      await ask(ROUTE_QUESTIONS.map(routePending), labelAnswers, labelQuestionTask(options.task), true);
+    }
+    const got = labelAnswers.get(taskItem);
+    const answers: ({ readonly key: RouteKey } & PickAnswer)[] = ROUTE_QUESTIONS.map((route) => ({
+      key: route.key,
+      ...(got?.get(route.key)
+        ?? { status: 'unassessed' as const, ...(stop === undefined ? {} : { detail: stop }) }),
+    }));
+    routeRecord = {
+      answers,
+      on: routeOptions(Object.fromEntries(answers.flatMap((answer) =>
+        answer.status === 'answered' ? [[answer.key, answer.probability] as const] : []))),
     };
   }
 
@@ -1430,6 +1504,7 @@ export async function pick(
         }),
       },
     }),
+    ...(routeRecord === undefined ? {} : { route: routeRecord }),
   };
   if (decideFailure !== undefined) {
     throw new PickError(

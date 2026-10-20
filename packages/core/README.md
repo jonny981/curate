@@ -564,6 +564,23 @@ with reason `'gate'`; a part a lane limit cut or a stop left unlabelled
 keeps that reason instead. Omit the option and the pick is identical to
 a pick without it.
 
+`route: 'jev'` asks the task itself what kind of answer it needs, off
+by default. The four route questions in `ROUTE_QUESTIONS` ask whether
+the task needs a count or a complete list across sessions, a date, a
+duration or an order, the user's stated tastes, or the latest value of
+something. They go through the decide port once per pick: in the same
+request as the task's kind labels when the label gate asks them, alone
+otherwise, and always as one request whatever the request-size dials
+allow. An answer at `LABEL_LANE_BAR` or more switches on the
+curator options its route maps to: `taste` switches on
+`preferenceAdvice` and `preferenceChange`, and `count`, `date` and
+`latest` switch on `working`. `latest` routes to worked notes because
+a worked note carries each fact's date, so the curator can order the
+changes and pick the newest. The record's `route` field keeps the
+answers and the options they switched on; `curate`'s own `route: 'jev'`
+applies them. Omit the option and the pick is identical to a pick
+without it.
+
 ### Optional decision cache
 
 `cache: { store, deciderId }` stores each answered decision, off by
@@ -702,6 +719,17 @@ values override the route's choices. `context` stays independently configurable.
 `classifyTask(task)` exposes the same code-only classification. It can return
 several kinds for one task. It uses common English phrases, capitals and
 quoted names; it does not infer unstated changes or consult evidence.
+
+`route: 'jev'` chooses guidance from the route answers the pick
+recorded, off by default. A `taste` answer at the bar turns on both
+preference lines; a `count`, `date` or `latest` answer turns on worked
+notes, which carry each fact's date so the curator can order the
+changes and pick the newest. It cannot combine with `routeByTask`, and
+it needs `route` on
+the pick's record, so it must run on a pick made with `route: 'jev'`.
+Explicit `working`, `preferenceAdvice` and `preferenceChange` values
+override the route's choices. The record includes `route` when it is
+on.
 
 `preferenceAdvice: true` asks for optional `Advice preferences:` lines
 with the user's stated tastes, relevant experiences and constraints for

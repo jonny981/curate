@@ -28,6 +28,14 @@ export interface CurateOptions {
   readonly context?: boolean;
   /** Choose working and advice guidance from task words. Explicit options win. */
   readonly routeByTask?: boolean;
+  /** Route the curator options from the route answers the pick recorded
+   *  (`route: 'jev'` on pick): a 'taste' switches on both preference
+   *  lines and a 'count', 'date' or 'latest' switches on worked notes.
+   *  Cannot combine with `routeByTask`; needs `record.route` on the
+   *  pick's record. Explicit `working`, `preferenceAdvice` and
+   *  `preferenceChange` values override the route's choices. Off by
+   *  default. */
+  readonly route?: 'jev';
   /** Gather stated tastes, experiences and constraints for advice tasks. */
   readonly preferenceAdvice?: boolean;
   /** Gather stated changes of taste and exclusions. */
@@ -60,6 +68,9 @@ export interface CurateRecord {
   readonly working: boolean;
   readonly context?: boolean;
   readonly taskKinds?: readonly TaskKind[];
+  /** Present when `route: 'jev'` routed the curator options from the
+   *  pick's recorded route answers. */
+  readonly route?: 'jev';
   readonly preferenceAdvice?: boolean;
   readonly preferenceChange?: boolean;
   readonly taskDate?: string;
@@ -367,11 +378,23 @@ export async function curate(
   if (batchTokens !== undefined && (!Number.isInteger(batchTokens) || batchTokens <= 0)) {
     throw new TypeError('curate: batchTokens must be a positive integer of estimated tokens.');
   }
+  if (options.route !== undefined && options.route !== 'jev') {
+    throw new TypeError("curate: route must be 'jev'.");
+  }
+  if (options.route === 'jev' && options.routeByTask) {
+    throw new TypeError("curate: route: 'jev' and routeByTask cannot both be on.");
+  }
+  const routed = options.route === 'jev' ? picked.record.route : undefined;
+  if (options.route === 'jev' && routed === undefined) {
+    throw new TypeError("curate: route: 'jev' needs the route answers a pick records when it runs with route: 'jev'.");
+  }
   const taskKinds = options.routeByTask ? classifyTask(task) : undefined;
-  const working = options.working ?? (taskKinds?.some((kind) => kind === 'count' || kind === 'date') ?? false);
+  const working = options.working
+    ?? (routed?.on.includes('working') ?? (taskKinds?.some((kind) => kind === 'count' || kind === 'date') ?? false));
   const context = options.context ?? false;
-  const preferenceAdvice = options.preferenceAdvice ?? (taskKinds?.includes('advice') ?? false);
-  const preferenceChange = options.preferenceChange ?? false;
+  const preferenceAdvice = options.preferenceAdvice
+    ?? (routed?.on.includes('preferenceAdvice') ?? (taskKinds?.includes('advice') ?? false));
+  const preferenceChange = options.preferenceChange ?? (routed?.on.includes('preferenceChange') ?? false);
   const taskDate = options.taskDate;
   if (taskDate !== undefined && !taskDate.trim()) {
     throw new TypeError('curate: taskDate must be a nonempty date label.');
@@ -559,6 +582,7 @@ export async function curate(
       promptVersion: 'v4', weights: 'tiers', working, preferenceAdvice, preferenceChange,
       ...(options.context === undefined ? {} : { context }),
       ...(taskKinds === undefined ? {} : { taskKinds }),
+      ...(options.route === undefined ? {} : { route: options.route }),
       ...(taskDate === undefined ? {} : { taskDate }), items, logLength, condensed,
       ...(batchTokens === undefined ? {} : { batchTokens }),
       ...(recordBatches === undefined ? {} : { batches: recordBatches }),
