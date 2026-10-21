@@ -30,7 +30,8 @@ describe('prototype curator prompt parity', () => {
           .replace('At most 3500 characters.\n', '')
           .replace(' Keep the log and the working together within 3500 characters.', '')
           .replaceAll('the full item id from its header', 'the item id from its header')
-          .replace('with its date and id', 'with its date and the item ids in brackets'));
+          .replace('with its date and id', 'with its date and the item ids in brackets')
+          .replace('- Include what the assistant said only when the task asks about it.\n', '- Include what the assistant said only when the task asks about it.\n- If no evidence bears on the task, return an empty reply: no lines, and no note that nothing was found.\n'));
         let body = prompt.body;
         for (const [index, item] of result.record.items.entries()) {
           const entry = input.picked.record.candidates.find((candidate) => candidate.sourceId === item.candidate.sourceId && candidate.id === item.candidate.id)!;

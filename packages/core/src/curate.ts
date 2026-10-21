@@ -93,6 +93,9 @@ export interface CurateRecord {
   readonly contextLimit?: number;
   /** The returned log still exceeds the caller's budget. */
   readonly overContextLimit: boolean;
+  /** Present when the writer returned an empty reply: no evidence bore
+   *  on the task, and the log is empty. */
+  readonly empty?: true;
   /** How many writer replies failed the format check and were sent back once with the reason. */
   readonly repairs?: number;
   /** The estimated token budget a chained write cut the evidence into. */
@@ -114,7 +117,7 @@ export interface CurateResult {
 }
 
 const WORKING_HEADING = "Working (the curator's; check it against the log):";
-const REPAIR = 'A log you wrote for this task was rejected for its format; the rejected log and the reason follow the evidence. Return the same log corrected and nothing else: each observation line starts with exactly one event date in square brackets, [YYYY-MM-DD], and ends with (said YYYY-MM-DD; the item id from its header). For an event known only to a month or a span, put its first date in the brackets and say the span in the text. Change only the format; keep every fact, date and id.';
+const REPAIR = 'A log you wrote for this task was rejected for its format; the rejected log and the reason follow the evidence. Return the same log corrected and nothing else: each observation line starts with exactly one event date in square brackets, [YYYY-MM-DD], and ends with (said YYYY-MM-DD; the item id from its header). For an event known only to a month or a span, put its first date in the brackets and say the span in the text. Change only the format; keep every fact, date and id. If no evidence bears on the task, return an empty reply instead.';
 const NO_WORKING = '- Do not answer the task, do not count, and do not decide whether an observation falls inside a period the task names: give its dates and leave that to the reader.';
 const CONTEXT = '\nKeep every fact with the context that gives it meaning: each observation names who, where and which item, activity or event it concerns. Carry these links from the same session, including its other evidence items, into that line instead of leaving them on another line. Resolve pronouns only when that session states the link. Do not invent a person, place, item or connection. Preserve these links when merging or condensing logs.';
 const COUNT = '\nThis task needs a count or a list. Write every instance across the supplied sessions as its own line, including small ones and ones mentioned in passing. When two items tell the same instance, write it once with both ids; when you are not sure, write both and end the later observation text with "(may be the same as [the earlier date])".';
@@ -133,6 +136,7 @@ const INSTRUCTIONS = [
   REPLACES,
   '- Include preferences, habits, opinions, interests and limits the person states, dated.',
   '- Include what the assistant said only when the task asks about it.',
+  '- If no evidence bears on the task, return an empty reply: no lines, and no note that nothing was found.',
   NO_WORKING,
   'Each item header shows, in brackets after its date, a weight from 0 to 1: how strongly a decision model judged the item relevant to this task. The weight is graded, not a yes or no, and every item already passed a search for this task. Make sure every observation from items weighted 0.6 or more is in the log. Items weighted from 0.1 to 0.6 are less direct but often hold part of what the task needs, such as one instance of several or an earlier value: include their facts when they bear on the task. Items weighted below 0.1 rarely matter: use one only when it clearly states a fact the task needs.',
 ].join('\n');
@@ -150,8 +154,11 @@ function logPatterns(ids: readonly string[]) {
   const date = '\\d{4}-\\d{2}-\\d{2}';
   const separator = '(?:,\\s*(?:and\\s+)?|;\\s*|\\s+(?:and|&)\\s+)';
   const sourceGroup = `(?:${sources})(?:${separator}(?:${sources}))*`;
+  // One event told by several items may give each item's said date in
+  // one group: "said 2023-05-26 and 2023-05-29; E3, E4".
+  const said = `said ${date}(?:(?:,\\s*(?:and\\s+)?|\\s+and\\s+)${date})*`;
   return {
-    observation: new RegExp(`^(?<lineId>L\\d+ )?\\[(?<event>${date})\\] (?<text>.+?) \\((?<citations>said ${date}; ${sourceGroup}(?:;\\s*said ${date}; ${sourceGroup})*)\\)(?: \\(when not stated\\))?(?: \\(replaces (?:\\[(?<replacesDate>${date})\\]|(?<replacesId>L\\d+)(?::\\s*(?<replacesReason>[^()]+?))?)\\))?$`, 'd'),
+    observation: new RegExp(`^(?<lineId>L\\d+ )?\\[(?<event>${date})\\] (?<text>.+?) \\((?<citations>${said}; ${sourceGroup}(?:;\\s*${said}; ${sourceGroup})*)\\)(?: \\(when not stated\\))?(?: \\(replaces (?:\\[(?<replacesDate>${date})\\]|(?<replacesId>L\\d+)(?::\\s*(?<replacesReason>[^()]+?))?)\\))?$`, 'd'),
     preference: new RegExp(`(?:\\((?:${sources})(?:${separator}(?:${sources}))*\\)|\\[(?:${sources})(?:${separator}(?:${sources}))*\\])`),
   };
 }
@@ -201,11 +208,11 @@ function checkLog(raw: unknown, working: boolean, ids: readonly string[], prefer
     }
     observations += 1;
     const match = observation.exec(line)?.groups;
-    const saidDates = match?.citations?.matchAll(/(?:^|;\s*)said (\d{4}-\d{2}-\d{2});/g) ?? [];
+    const saidDates = match?.citations?.match(/\d{4}-\d{2}-\d{2}/g) ?? [];
     if (!match || !isDate(match.event!) || !match.text!.trim()
-      || [...saidDates].some((entry) => !isDate(entry[1]!))
+      || saidDates.some((value) => !isDate(value))
       || (match.replacesDate !== undefined && !isDate(match.replacesDate))) {
-      throw new Error('curate: malformed log; each observation needs an event date, a said date, and an item id.');
+      throw new Error(`curate: malformed log; each observation needs an event date, a said date, and an item id; line: ${line}`);
     }
   }
   if (!observations && !layered) throw new Error('curate: malformed log; at least one dated observation is required.');
@@ -486,13 +493,17 @@ export async function curate(
     }
   }
   // A reply that fails the format check goes back once with the reason
-  // and the rejected text; a second failure stops the curation.
+  // and the rejected text; a second failure stops the curation. An
+  // empty reply passes: the writer found no evidence that bears on the
+  // task, and the record marks the empty log.
   let repairs = 0;
+  const check = (raw: unknown, layered: boolean) => typeof raw === 'string' && !raw.trim()
+    ? '' : checkLog(raw, working, shortIds, preferenceAdvice, preferenceChange, layered);
   const writeChecked = async (prompt: CuratePrompt, layered = false): Promise<string> => {
     const raw = await options.write(prompt, signal);
     signal.throwIfAborted();
     try {
-      return checkLog(raw, working, shortIds, preferenceAdvice, preferenceChange, layered);
+      return check(raw, layered);
     } catch (error) {
       if (!(error instanceof Error) || !error.message.startsWith('curate: malformed log')) throw error;
       repairs += 1;
@@ -502,7 +513,7 @@ export async function curate(
         body: `${prompt.body}\n\nREJECTED LOG (${reason}):\n${String(raw)}`,
       }, signal);
       signal.throwIfAborted();
-      return checkLog(fixed, working, shortIds, preferenceAdvice, preferenceChange, layered);
+      return check(fixed, layered);
     }
   };
   let recordBatches: CurateBatch[] | undefined;
@@ -609,6 +620,7 @@ export async function curate(
       ...(condensed ? { condensedLength: log.length } : {}),
       ...(contextLimit === undefined ? {} : { contextLimit }),
       overContextLimit: contextLimit !== undefined && log.length > contextLimit,
+      ...(log === '' ? { empty: true as const } : {}),
       ...(repairs ? { repairs } : {}),
     },
   };

@@ -253,10 +253,18 @@ describe('curate', () => {
     ]);
   });
 
-  it.each(['', ' \n\t '])('rejects empty output %j', async (text) => {
+  it.each(['', ' \n\t '])('returns an empty log, marked in the record, for empty output %j', async (text) => {
     const { write, calls } = writer(text);
-    await expect(curate('Recall', picked(), { write })).rejects.toThrow('curate: empty log');
+    const result = await curate('Recall', picked(), { write });
     expect(calls).toHaveLength(1);
+    expect(result.log).toBe('');
+    expect(result.record).toMatchObject({ empty: true, logLength: 0, condensed: false });
+    expect(result.record).not.toHaveProperty('repairs');
+  });
+
+  it('leaves the empty mark off a log with observations', async () => {
+    const result = await curate('Recall', picked(), { write: writer('[2023-05-13] Visited York (said 2023-05-20; E1)').write });
+    expect(result.record).not.toHaveProperty('empty');
   });
 
   it('returns a long log unchanged with one write call when no context limit is given', async () => {

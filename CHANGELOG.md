@@ -37,6 +37,11 @@ Four packages:
   a resumed run, a rerun or a repeated question asks only for what changed.
 - **Short item ids in curator prompts.** The curator sees and cites short
   ids; the returned log carries full ids, so callers see no change.
+- **An empty log when nothing bears on the task.** The writer returns an
+  empty reply, and the record marks the log with `empty: true`. A format
+  error quotes the line that failed, and the one repair shows that line to
+  the writer. One citation may list several said dates, as in
+  `(said 2023-05-26 and 2023-05-29; E3, E4)`.
 - **`@curatejs/chat`** reads local Claude Code and Codex transcripts. It
   scrubs likely secrets before ranking.
 - **`@curatejs/git`** reads commit history, with optional blame and co-change

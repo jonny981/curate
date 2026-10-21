@@ -821,6 +821,8 @@ lines keep their strict checks when preferences are enabled.
 `record` holds `promptVersion: 'v4'`, `weights: 'tiers'`, `working`,
 `preferenceAdvice`, `preferenceChange`, `items`, `logLength`, `condensed`,
 and `overContextLimit`. It includes `taskDate` when supplied.
+It includes `empty: true` when the writer returned an empty reply, and
+`repairs` when a reply was sent back for its format.
 It includes `context` when supplied and `taskKinds` when routing is enabled.
 A chained write adds `batchTokens` and `batches`.
 Each item holds its full `id` (the prompt shows it as `E` plus the
@@ -858,13 +860,17 @@ task's period, computed time gaps or order, and latest values under
 `Working (the curator's; check it against the log):`. It is off by
 default. The reader should check these notes against the log.
 
-A malformed observation throws a clear error. So does an empty log,
-except from a later pass of a chained write, which may return nothing
-(see below). Each observation must have
+A malformed observation throws a clear error that quotes the line.
+An empty reply is not an error: the prompt asks the writer for one when
+no evidence bears on the task, so `write` must pass an empty reply
+through rather than reject it. Curate then returns an empty log and the
+record carries `empty: true`. A sentence that says nothing was found
+fails the check like any other line that is not an observation. Each observation must have
 valid calendar dates in its event and `said` fields and the short ids of
 items given to the writer. Merged sources can separate ids with commas,
 semicolons, `and`, or `&`. If sources recorded the same fact on different
-days, repeat the dated group: `(said 2023-05-20; E1; said 2023-05-21; E2)`.
+days, repeat the dated group: `(said 2023-05-20; E1; said 2023-05-21; E2)`,
+or list the dates in one group: `(said 2023-05-20 and 2023-05-21; E1, E2)`.
 Every source date and id is checked. Optional
 suffixes are `(when not stated)`, `(replaces [YYYY-MM-DD])` and
 `(replaces Ln)`; replacement dates must also be valid. In a chained
@@ -873,7 +879,11 @@ date marker is checked but never honoured there (see below). These
 checks verify the format and source ids;
 they do not prove the writer's
 facts or date calculations. Worked notes count toward `contextLimit`.
-There is no retry, truncation, or fallback to raw items. Missing selected
+A reply that fails these checks goes back to the writer once, with the
+reason, the failing line and the rejected text, and `repairs` in the
+record counts it. A second failure throws. The condensing call gets no
+repair, and an empty condensed log throws. There is no truncation or
+fallback to raw items. Missing selected
 weights and a selection with no reference items fail before `write`.
 Writer failures propagate to the caller. `signal` reaches the writer;
 the host must make its model call honour cancellation.

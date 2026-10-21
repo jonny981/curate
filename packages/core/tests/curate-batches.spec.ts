@@ -279,6 +279,22 @@ describe('a layered pass returns only its additions', () => {
     expect(delta.record.batches?.[1]?.added).toEqual([{ id: 'L3', line: `L3 ${added}` }]);
   });
 
+  it('returns an empty log, marked in the record, when every batch is empty', async () => {
+    const { calls, write } = writer(['', '']);
+    const result = await curate('task', picked([sized('a', 400), sized('b', 400)], [0.9, 0.7]), { write, batchTokens: 120 });
+    expect(calls).toHaveLength(2);
+    expect(result.log).toBe('');
+    expect(result.record).toMatchObject({ empty: true, batches: [{ added: [] }, { added: [] }] });
+  });
+
+  it('layers a later batch over an empty first batch', async () => {
+    const { calls, write } = writer(['', '[2023-01-02] B happened (said 2023-01-02; E2)']);
+    const result = await curate('task', picked([sized('a', 400), sized('b', 400)], [0.9, 0.7]), { write, batchTokens: 120 });
+    expect(calls).toHaveLength(2);
+    expect(result.log).toBe('L1 [2023-01-02] B happened (said 2023-01-02; b)');
+    expect(result.record).not.toHaveProperty('empty');
+  });
+
   it('keeps the log unchanged when a layered reply is empty', async () => {
     const first = "[2023-01-01] A happened (said 2023-01-01; a)\nAdvice preferences: Walks (a)\nWorking (the curator's; check it against the log):\n1. One visit.";
     const written = "[2023-01-01] A happened (said 2023-01-01; E1)\nAdvice preferences: Walks (E1)\nWorking (the curator's; check it against the log):\n1. One visit.";
