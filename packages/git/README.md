@@ -60,7 +60,7 @@ applicability cut. See
 saved-decision sweep's answer-turn losses.
 
 - **Keyword settings:** `GIT_KEYWORD_SETTINGS` exports the ranking defaults. Pass a partial `keyword` object to the reader to override them.
-- **Questions:** `GIT_HISTORY_CASCADE` exports the fitted questions. Pass the cascade to core’s `cascade` or `cascadesByKind` option. The defaults are opt-in.
+- **Questions:** `gitHistory()` carries `GIT_HISTORY_CASCADE`, its fitted question set. Core's `memory()` uses it automatically; override it with `pick.cascadesByKind['git-history']`. With `pickFromSources()` or `pick()`, pass it through `cascade` or `cascadesByKind` explicitly.
 - **Search wording:** `GIT_SEARCH_LINE_REGISTER` describes the wording for host-written extra search lines. Copy or replace this text in your host; the package generates no lines.
 - **Kind phrases:** `GIT_HISTORY_KIND_PHRASES` exports phrases in the commit register for `directions`, `decisions` and `corrections`. Pass one list to core's `kindLanes` option, for example `{ 'git-history': GIT_HISTORY_KIND_PHRASES.decisions }`; kind lanes stay off by default.
 

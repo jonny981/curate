@@ -1,4 +1,4 @@
-import type { CandidateSourceKind, MemoryCandidate, PickOptions, PickResult } from './pick.js';
+import type { CandidateSourceKind, MemoryCandidate, PickCascade, PickOptions, PickResult } from './pick.js';
 import { DEFAULT_MAX_QUESTION_TEXT, pick } from './pick.js';
 import { presetName } from './levers.js';
 import { phraseCount, stripSearchInstructions } from './search.js';
@@ -184,6 +184,8 @@ export interface CandidateSource {
   readonly id: string;
   /** Optional content kind for per-kind question sets. */
   readonly kind?: CandidateSourceKind;
+  /** Questions memory() uses for this source's kind unless the caller overrides them. */
+  readonly cascade?: PickCascade;
   /** 'reference' | 'rule' | 'mixed'; declared so the caller knows
    *  whether this source can feed the applicable-rule set. */
   readonly role: 'reference' | 'rule' | 'mixed';

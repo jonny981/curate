@@ -20,6 +20,64 @@ The host supplies its own sources, decision function, and writer. The default en
 
 Node.js 22.20 or later.
 
+## Recall context
+
+`memory()` reads sources, selects evidence and writes a dated, cited log in one call.
+Supply the readers and your two model functions:
+
+```ts
+import { memory } from '@curatejs/core';
+
+const mem = memory({ sources, decide, write });
+const { log, rules, picked, result } = await mem.recall('What billing constraint must this change preserve?');
+```
+
+- **Log:** `log` is the writer's checked text. `result` is the full `CurateResult`, including its record.
+- **Rules:** `rules` joins selected rules with blank lines and preserves each rule's text. Rules do not go to the writer.
+- **Selection:** `picked` is the full `PickSourcesResult`, including source reads and decision records.
+- **Questions:** Each built-in reader carries its question set in `source.cascade`. `memory()` uses it for that source kind. Set `pick.cascadesByKind` to override a kind's questions. Custom sources without a set use core's ordinary question or your `pick.cascade` fallback.
+- **Incomplete collection:** Absent or incomplete reads, unanswered candidates and unassessed candidates throw before the writer runs. The error's `cause` holds `picked` for inspection. Source read errors propagate. A limit that leaves candidates unassessed also throws; use `pickFromSources()` directly if you need to accept a partial selection.
+- **Cancellation:** `mem.recall(task, { signal })` passes the signal to the readers and both model functions.
+
+Choose `preset: 'economy'` to keep only references at or above its decision bar.
+The default is `'performance'`.
+Explicit `read`, `pick` and `curate` options override the preset:
+
+```ts
+const mem = memory({
+  sources,
+  decide,
+  write,
+  preset: 'economy',
+  read: { wholeLanes: true },
+  pick: { everyScored: { bar: 0.05 } },
+  curate: { context: true },
+});
+```
+
+`pickFromSources()` and `curate()` remain separate public calls for hosts that manage each step themselves.
+Calling them directly does not apply a reader's question set automatically.
+See the [runnable example](https://github.com/jonny981/curate#use-it) for installation and source setup.
+
+## Model helpers
+
+The optional `@curatejs/core/models` entry supplies three factories using Node's built-in `fetch`:
+
+```ts
+import { jev, chatWriter } from '@curatejs/core/models';
+
+const decide = jev({ apiKey: process.env.TYPESAFE_API_KEY });
+const write = chatWriter({ apiKey: process.env.CHAT_API_KEY, model: 'gpt-5-mini' });
+```
+
+- **Jev:** `jev({ apiKey, model? })` returns a `PickDecide` function for TypeSafe's System One endpoint. The model defaults to `'jev-latest'`. Missing or invalid probabilities become missing answers.
+- **OpenAI Decisions:** `openAIDecisions({ apiKey, model? })` returns a `PickDecide` function for the [Decisions API](https://developers.openai.com/api/docs/guides/decisions). The model defaults to `'gpt-6-luna'`. Predicate answers become probabilities; refusals become `{ status: 'refused' }`. Missing or invalid probabilities become missing answers.
+- **Chat writer:** `chatWriter({ apiKey, model, url? })` returns a `CurateWrite` function. The URL defaults to OpenAI's Chat Completions endpoint. Set `url` for another provider using that format. Empty text passes through for later batches that add no observations; Curate checks the log itself.
+- **Errors:** All factories reject a missing API key. HTTP failures and missing writer text throw. Cancellation reaches `fetch`.
+
+> [!NOTE]
+> These helpers make paid model calls. You can instead supply plain `decide` and `write` functions using any model route.
+
 ## Source packages
 
 Core supplies no reader. Install [chat](https://github.com/jonny981/curate/blob/main/packages/chat/README.md), [git](https://github.com/jonny981/curate/blob/main/packages/git/README.md)

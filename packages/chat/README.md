@@ -79,7 +79,7 @@ applicability cut. See
 saved-decision sweep's answer-turn losses.
 
 - **Keyword settings:** `CHAT_KEYWORD_SETTINGS` exports the ranking defaults. Pass a partial `keyword` object to the reader to override them.
-- **Questions:** `CHAT_CASCADE` exports the fitted questions. Pass the cascade to core’s `cascade` or `cascadesByKind` option. The defaults are opt-in.
+- **Questions:** `chat()` carries `CHAT_CASCADE`, its fitted question set. Core's `memory()` uses it automatically; override it with `pick.cascadesByKind.chat`. With `pickFromSources()` or `pick()`, pass it through `cascade` or `cascadesByKind` explicitly.
 - **Search wording:** `CHAT_SEARCH_LINE_REGISTER` describes the wording for host-written extra search lines. Copy or replace this text in your host; the package generates no lines.
 - **Kind phrases:** `CHAT_KIND_PHRASES` exports phrases in the chat register for `directions`, `decisions` and `corrections`. Pass one list to core's `kindLanes` option, for example `{ chat: CHAT_KIND_PHRASES.directions }`; kind lanes stay off by default.
 

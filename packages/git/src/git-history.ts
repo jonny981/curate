@@ -1,4 +1,5 @@
 import { GIT_KEYWORD_SETTINGS, type GitKeywordSettings } from './defaults.js';
+import { GIT_HISTORY_CASCADE } from './questions.js';
 import { realpath, stat } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -194,6 +195,7 @@ export function gitHistory(
   return {
     id,
     kind: 'git-history',
+    cascade: GIT_HISTORY_CASCADE,
     role: 'reference',
     async read(request) {
       const signal = request.signal;

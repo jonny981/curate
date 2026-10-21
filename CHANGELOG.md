@@ -19,6 +19,14 @@ Four packages:
   directory you choose, and adds the parts whose labels match a kind the task
   needs to the parts keyword search already found for the decide step. It is
   off by default.
+- **Task memory.** Recall a dated, cited log and exact rule text with
+  `memory({ sources, decide, write }).recall(task)`. The entry point uses each
+  reader's question set and rejects incomplete reads and unanswered or
+  unassessed candidates before writing. Presets and explicit read, selection
+  and writer options pass through to the existing APIs. Use `jev()`,
+  `openAIDecisions()` and `chatWriter()` from `@curatejs/core/models` to
+  connect models with Node's built-in `fetch`. Plain `decide` and `write`
+  functions remain supported.
 - **Levers and presets.** Every cost and quality setting is a lever that
   turns on for more quality at more cost: `wholeLanes` (read each source's
   whole ranked list), `everyRanked` (decide every ranked part, or only the

@@ -1,4 +1,5 @@
 import { MARKDOWN_KEYWORD_SETTINGS, type MarkdownKeywordSettings } from './defaults.js';
+import { MARKDOWN_CASCADE } from './questions.js';
 import {
   hits,
   taskTerms,
@@ -855,7 +856,7 @@ function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 'rules'
   const keyword = { ...MARKDOWN_KEYWORD_SETTINGS, ...options.keyword };
   const role = options.kind === 'rules' || options.kind === 'instructions' ? 'rule' : 'reference';
   return {
-    id, role, kind: 'markdown',
+    id, role, kind: 'markdown', cascade: MARKDOWN_CASCADE,
     ...(legacy === undefined ? { maxQuestionText: options.maxQuestionText ?? Number.POSITIVE_INFINITY } : {}),
     async read(request, context = { files: new Map() }) {
       if (request.maxQuestionText !== undefined

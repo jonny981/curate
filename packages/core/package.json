@@ -20,6 +20,11 @@
       "import": "./dist/index.js",
       "default": "./dist/index.js"
     },
+    "./models": {
+      "types": "./dist/models.d.ts",
+      "import": "./dist/models.js",
+      "default": "./dist/models.js"
+    },
     "./internal": {
       "types": "./dist/internal.d.ts",
       "import": "./dist/internal.js",

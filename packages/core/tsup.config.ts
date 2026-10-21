@@ -3,6 +3,7 @@ import { defineConfig } from 'tsup';
 export default defineConfig({
   entry: {
     index: 'src/index.ts',
+    models: 'src/models.ts',
     internal: 'src/internal.ts',
     'local-embeddings': 'src/local-embeddings.ts',
   },
