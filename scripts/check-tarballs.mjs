@@ -46,6 +46,7 @@ export const EXPECTED_FILES = {
     'package/dist/local-embeddings.js',
     'package/dist/local-embeddings.js.map',
     'package/dist/meaning.d.ts',
+    'package/dist/options.d.ts',
     'package/dist/pick.d.ts',
     'package/dist/search.d.ts',
     'package/dist/source.d.ts',

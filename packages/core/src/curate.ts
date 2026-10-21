@@ -1,6 +1,7 @@
 import type { MemoryCandidate, PickRecordEntry, PickResult } from './pick.js';
 import { presetName, type CurateLeverStates, type PresetName } from './levers.js';
 import { classifyTask, type TaskKind } from './task.js';
+import { checkCurateOptions } from './options.js';
 
 export interface CuratePrompt {
   readonly instructions: string;
@@ -378,6 +379,7 @@ export async function curate(
   picked: PickResult,
   options: CurateOptions,
 ): Promise<CurateResult> {
+  checkCurateOptions(options);
   const signal = options.signal ?? new AbortController().signal;
   signal.throwIfAborted();
   const contextLimit = options.contextLimit;

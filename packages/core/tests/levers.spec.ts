@@ -352,4 +352,138 @@ describe('levers and presets', () => {
       expect(result.record.levers.rare).toEqual({ share: 0.5, bar: 0.0146 });
     });
   });
+
+  describe('unknown option keys', () => {
+    const part = candidate({ sourceId: 'notes', id: 'p0' });
+    const decide = () => stubDecide(() => answered(0.9)).decide;
+
+    it('rejects each renamed key with a pointer to its new name', async () => {
+      await expect(pick([part], { task: 'task', decide: decide(),
+        thresholds: { reference: 0.5 } as never }))
+        .rejects.toThrow('`thresholds.reference` is not an option; use `everyScored` (see the README\'s Levers section)');
+      await expect(pick([part], { task: 'task', decide: decide(),
+        thresholds: { referenceBySize: [[10, 0.5]] } as never }))
+        .rejects.toThrow('`thresholds.referenceBySize` is not an option; use `everyScored.bySize`');
+      await expect(pick([part], { task: 'task', decide: decide(), pick: { c: 2 } } as never))
+        .rejects.toThrow('`pick` is not an option; use `everyRanked`');
+      await expect(pickFromSources([laneSource()], { task: 'task', laneCut: true } as never,
+        { task: 'task', decide: decide() }))
+        .rejects.toThrow('`laneCut` is not an option; use `wholeLanes`');
+      const embed = async (texts: readonly string[]) => texts.map(() => [1, 0]);
+      await expect(pickFromSources([laneSource()],
+        { task: 'task', meaning: { embed, laneCut: true } as never },
+        { task: 'task', decide: decide() }))
+        .rejects.toThrow('`meaning.laneCut` is not an option; use `meaning.wholeLanes`');
+    });
+
+    it('rejects an unknown nested key, naming its path and the keys that level allows', async () => {
+      await expect(pick([part], { task: 'task', decide: decide(),
+        limits: { maxWidth: 10 } as never }))
+        .rejects.toThrow('`limits.maxWidth` is not an option; allowed keys are `maxPerBatch`');
+      await expect(pick([part], { task: 'task', decide: decide(),
+        everyScored: { braz: 0.5 } as never }))
+        .rejects.toThrow('`everyScored.braz` is not an option; allowed keys are `bar`, `bySize`');
+      await expect(pickFromSources([laneSource()], { task: 'task', wideLanes: true } as never,
+        { task: 'task', decide: decide() }))
+        .rejects.toThrow('`wideLanes` is not an option');
+      const picked = await pick([part], { task: 'task', decide: decide() });
+      await expect(curate('task', picked, { write: writer().write, batching: 4 } as never))
+        .rejects.toThrow('`batching` is not an option; allowed keys are `write`');
+    });
+
+    it('rejects an unknown key in a kind-keyed map or its settings, before any decide call', async () => {
+      const counter = stubDecide(() => answered(0.9));
+      const fitted = { bias: 0, questions: [{ key: 'q', instructions: 'i', true: 't', false: 'f', weight: 1 }] };
+      await expect(pick([part], { task: 'task', decide: counter.decide,
+        cascadesByKind: { markdwon: fitted } as never }))
+        .rejects.toThrow('`cascadesByKind.markdwon` is not an option; allowed keys are `chat`, `git-history`, `markdown`');
+      await expect(pick([part], { task: 'task', decide: counter.decide,
+        tagsByKind: { markdwn: [] } as never }))
+        .rejects.toThrow('`tagsByKind.markdwn` is not an option; allowed keys are `chat`, `git-history`, `markdown`');
+      await expect(pick([part], { task: 'task', decide: counter.decide,
+        ranking: { knwledge: { score: 2 } } as never }))
+        .rejects.toThrow('`ranking.knwledge` is not an option; allowed keys are `knowledge`, `docs`, `rules`, `instructions`');
+      await expect(pick([part], { task: 'task', decide: counter.decide,
+        cascadesByKind: { markdown: { ...fitted, firstonly: { bias: 0, weight: 1 } } } as never }))
+        .rejects.toThrow('`cascadesByKind.markdown.firstonly` is not an option; allowed keys are `bias`, `questions`, `first`, `band`, `firstOnly`');
+      await expect(pick([part], { task: 'task', decide: counter.decide,
+        sourceKinds: { notes: 'markdwon' } as never }))
+        .rejects.toThrow("`sourceKinds.notes` names a kind that is not 'chat', 'git-history' or 'markdown'.");
+      expect(counter.calls).toHaveLength(0);
+    });
+
+    it('rejects an unknown key inside a cascade or tag-set question, before any read or decide call', async () => {
+      const counter = stubDecide(() => answered(0.9));
+      const fitted = { bias: 0, questions: [{ key: 'q', instructions: 'i', true: 't', false: 'f', weight: 1 }] };
+      const tagSet = { key: 'importance', questions: [{ key: 'high', instructions: 'i', true: 't', false: 'f' }] };
+      const reads: string[] = [];
+      const source: CandidateSource = {
+        id: 'notes', role: 'reference', kind: 'markdown',
+        read: async (request) => {
+          reads.push(request.task);
+          return { status: 'read' as const, complete: true, candidates: [part] };
+        },
+      };
+      await expect(pick([part], { task: 'task', decide: counter.decide,
+        cascade: { ...fitted, questions: [{ ...fitted.questions[0]!, wieght: 2 }] } } as never))
+        .rejects.toThrow('`cascade.questions[0].wieght` is not an option; allowed keys are `key`, `instructions`, `true`, `false`, `weight`');
+      await expect(pick([part], { task: 'task', decide: counter.decide,
+        cascade: { ...fitted, first: 'q', band: [0.4, 0.6], firstOnly: { bias: 0, wieght: 1 } } } as never))
+        .rejects.toThrow('`cascade.firstOnly.wieght` is not an option; allowed keys are `bias`, `weight`');
+      await expect(pickFromSources([source], { task: 'task' },
+        { task: 'task', decide: counter.decide,
+          cascadesByKind: { markdown: { ...fitted, questions: [{ ...fitted.questions[0]!, wieght: 2 }] } } } as never))
+        .rejects.toThrow('`cascadesByKind.markdown.questions[0].wieght` is not an option');
+      await expect(pick([part], { task: 'task', decide: counter.decide,
+        tags: [{ ...tagSet, questions: [{ ...tagSet.questions[0]!, wieght: 2 }] }] } as never))
+        .rejects.toThrow('`tags[0].questions[0].wieght` is not an option; allowed keys are `key`, `instructions`, `true`, `false`');
+      await expect(pick([part], { task: 'task', decide: counter.decide,
+        tagsByKind: { markdown: [{ ...tagSet, questions: [{ ...tagSet.questions[0]!, wieght: 2 }] }] } } as never))
+        .rejects.toThrow('`tagsByKind.markdown[0].questions[0].wieght` is not an option');
+      expect(reads).toHaveLength(0);
+      expect(counter.calls).toHaveLength(0);
+    });
+
+    it('lets a preset spread take added known keys', async () => {
+      const counter = stubDecide(() => answered(0.9));
+      const picked = await pick([part], { task: 'task', decide: counter.decide,
+        ...economy.pick, keepTop: 1 });
+      expect(picked.record.levers.everyScored).toEqual({ bar: 0.0146 });
+      const read = await pickFromSources([laneSource()],
+        { task: 'task', ...economy.read, limit: 5 },
+        { task: 'task', decide: counter.decide, ...economy.pick });
+      expect(read.reads[0]?.status).toBe('read');
+      const written = writer();
+      const result = await curate('task', picked,
+        { write: written.write, ...economy.curate, working: true });
+      expect(result.record.working).toBe(true);
+    });
+
+    it('throws before any source read, decide call or write', async () => {
+      const counter = stubDecide(() => answered(0.9));
+      const reads: string[] = [];
+      const source: CandidateSource = {
+        id: 'notes', role: 'reference',
+        read: async (request) => {
+          reads.push(request.task);
+          return { status: 'read' as const, complete: true, candidates: [part] };
+        },
+      };
+      await expect(pick([part], { task: 'task', decide: counter.decide, bogus: 1 } as never))
+        .rejects.toThrow(TypeError);
+      await expect(pickFromSources([source], { task: 'task', bogus: 1 } as never,
+        { task: 'task', decide: counter.decide }))
+        .rejects.toThrow(TypeError);
+      await expect(pickFromSources([source], { task: 'task' },
+        { task: 'task', decide: counter.decide, bogus: 1 } as never))
+        .rejects.toThrow(TypeError);
+      const picked = await pick([part], { task: 'task', decide: stubDecide(() => answered(0.9)).decide });
+      const written = writer();
+      await expect(curate('task', picked, { write: written.write, bogus: 1 } as never))
+        .rejects.toThrow(TypeError);
+      expect(reads).toHaveLength(0);
+      expect(counter.calls).toHaveLength(0);
+      expect(written.calls).toHaveLength(0);
+    });
+  });
 });

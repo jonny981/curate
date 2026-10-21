@@ -28,6 +28,11 @@ Four packages:
   to parts the first pass missed). `performance`, the default, and `economy`
   are exported presets; spread one and flip any lever for your own mode. The
   README's Levers section lists each lever's purpose and measured impact.
+- **Unknown options are rejected.** `pick`, `pickFromSources` and `curate`
+  throw a `TypeError` before any model call when an options object, or a
+  nested one such as `thresholds` or `everyRanked`, holds a key Curate does
+  not know. The error names the key's path and the keys allowed there, and a
+  key from an earlier draft of the levers names the option that replaced it.
 - **An optional decision cache** stores each answered decision per part, so
   a resumed run, a rerun or a repeated question asks only for what changed.
 - **Short item ids in curator prompts.** The curator sees and cites short

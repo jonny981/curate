@@ -4,6 +4,7 @@ import { presetName } from './levers.js';
 import { phraseCount, stripSearchInstructions } from './search.js';
 import { addMeaningRanks, type MeaningSearchOptions } from './meaning.js';
 import { cutLane, laneScoreOf, type SearchLaneReport } from './lanes.js';
+import { checkPickOptions, checkReadRequest } from './options.js';
 
 /** What a source is asked for, once per search. */
 export interface CandidateReadRequest {
@@ -635,6 +636,8 @@ export async function pickFromSources(
   request: CandidateReadRequest,
   options: PickOptions,
 ): Promise<PickSourcesResult> {
+  checkReadRequest(request);
+  checkPickOptions(options);
   if (request.kindLanes !== undefined) {
     if (typeof request.kindLanes !== 'object' || request.kindLanes === null || Array.isArray(request.kindLanes)) {
       throw new TypeError('kindLanes maps source kinds to phrase lists.');

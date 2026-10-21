@@ -8,6 +8,7 @@ import {
 } from './decisions.js';
 import { ROUTE_QUESTIONS, routeOptions, type RouteKey, type RouteOption } from './task.js';
 import { presetName, type LeverStates, type PresetName } from './levers.js';
+import { checkPickOptions } from './options.js';
 
 export type MemoryCandidateRole = 'reference' | 'rule';
 export type MemoryKind = 'knowledge' | 'docs' | 'rules' | 'instructions';
@@ -808,6 +809,7 @@ export async function pick(
   candidates: readonly MemoryCandidate[],
   options: PickOptions,
 ): Promise<PickResult> {
+  checkPickOptions(options);
   for (const weights of Object.values(options.ranking ?? {})) {
     if (Object.values(weights).some((weight) => !Number.isFinite(weight))) {
       throw new TypeError('ranking weights must be finite numbers.');
