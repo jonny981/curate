@@ -64,6 +64,9 @@ Four packages:
 - **`@curatejs/markdown`** reads Markdown folders, files and globs as
   knowledge, docs, rules or instructions, including scoped rule files and
   git-pinned revisions.
+- **Git reads have no time or size limit.** Each `git` call the git and
+  Markdown readers make runs until it finishes or the request's `signal`
+  cancels it, so a long history read on a large repository is not cut off.
 
 Every package runs on Node.js 22.20 or later and loads through `import` or
 `require`.

@@ -20,8 +20,9 @@ non-merge commit, newest first, with the subject as `title`, the body as
 `text`, the commit date with meaning `recorded`, and `changedPaths`
 holding every file the commit changed relative to the repository root.
 `contentRef` keeps the full commit SHA and `id` shows the short one.
-Git runs with no shell, a scrubbed environment, a time limit and an
-output cap. Missing git, a path that is not a directory, or a directory
+Git runs with no shell and a scrubbed environment. A git call has no
+time or size limit: it runs until it finishes or the request's `signal`
+cancels it. Missing git, a path that is not a directory, or a directory
 outside a work tree reports `absent`; a pin the repository does not have
 throws.
 

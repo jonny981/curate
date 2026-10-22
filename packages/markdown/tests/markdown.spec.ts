@@ -1143,11 +1143,10 @@ describe('knowledgeBase git dates', () => {
     await mkdir(docs, { recursive: true });
     await git(repo, ['init', '-b', 'main']);
     // 3,000 notes of 25 `## ` sections apiece — 75,000 parts over about
-    // 600 MB, with each file small enough that a pinned read's batched
-    // blob fetch stays inside the git output limit. Every section says
-    // 'never', so a kind lane matches the whole corpus; a read that
-    // buffers matched text or embeds held bodies would sit near a
-    // gigabyte while the streaming passes stay far under it.
+    // 600 MB. Every section says 'never', so a kind lane matches the
+    // whole corpus; a read that buffers matched text or embeds held
+    // bodies would sit near a gigabyte while the streaming passes stay
+    // far under it.
     const filler = 'routine words pad the section body so it weighs a few kilobytes '.repeat(125);
     const files = 3_000;
     const sectionsPerFile = 25;

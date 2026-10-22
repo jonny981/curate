@@ -84,8 +84,7 @@ const scored = (commit: Omit<LogCommit, 'body'>, extra: { shared?: number; body?
 const FULL_FORMAT = '%x1e%H%x1f%h%x1f%cI%x1f%s%x1f%b%x1f';
 const META_FORMAT = '%x1e%H%x1f%h%x1f%cI%x1f%s';
 /** Commits per `git log` call. A long history is enumerated in pages so
- *  one call's output stays far under the process output cap and the
- *  parsed page's memory is released before the next. */
+ *  the parsed page's memory is released before the next. */
 const LOG_PAGE = 4096;
 /** Commits per batched body fetch, bounding one `--stdin` call's output. */
 const BODY_PAGE = 2048;
@@ -171,7 +170,7 @@ const NO_COMMIT = /Needed a single revision|does not have any commits|unknown re
  * A repository's commit history: one candidate per non-merge commit,
  * newest first, carrying its subject, body, commit date and the files it
  * changed. Git runs through core's shared helper: `execFile` with no
- * shell, a scrubbed environment, a time limit, an output limit, and the
+ * shell, a scrubbed environment, no time or size limit, and the
  * request's abort signal reaching the process.
  *
  * With no exclusions, `git log` pages enumerate commits and paths, and

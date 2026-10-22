@@ -4,13 +4,8 @@ import { basename, dirname, join, resolve } from 'node:path';
 
 import { SourceReadError } from './source.js';
 
-/** How long one git call may run before the process is killed. */
-const GIT_TIMEOUT_MS = 30_000;
-/** Cap on each output stream (stdout, stderr) of one git call; beyond it the read fails. */
-const GIT_MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
-
 /** Why a git invocation did not produce output. */
-export type GitFailureKind = 'spawn' | 'exit' | 'timeout' | 'output' | 'cancelled';
+export type GitFailureKind = 'spawn' | 'exit' | 'cancelled';
 
 export class GitFailure extends Error {
   readonly kind: GitFailureKind;
@@ -59,9 +54,9 @@ function exec(repo: string, args: readonly string[], options: GitOptions): Promi
       {
         encoding: 'buffer',
         env: gitEnvironment(),
-        timeout: GIT_TIMEOUT_MS,
-        killSignal: 'SIGKILL',
-        maxBuffer: GIT_MAX_OUTPUT_BYTES,
+        // No size cap. Leaving the option out is not the same: execFile
+        // then stops at 1 MiB.
+        maxBuffer: Infinity,
         signal: options.signal,
       },
       (error, stdout, stderr) => {
@@ -74,10 +69,6 @@ function exec(repo: string, args: readonly string[], options: GitOptions): Promi
           reject(new GitFailure('cancelled', 'The read was cancelled.'));
         } else if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
           reject(new GitFailure('spawn', 'git could not start'));
-        } else if ((error as NodeJS.ErrnoException).code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') {
-          reject(new GitFailure('output', 'git output exceeded the read limit'));
-        } else if (error.killed) {
-          reject(new GitFailure('timeout', `git did not finish within ${GIT_TIMEOUT_MS} ms`));
         } else {
           reject(new GitFailure(
             'exit',
@@ -97,9 +88,10 @@ function exec(repo: string, args: readonly string[], options: GitOptions): Promi
   });
 }
 
-/** One git call inside `repo`: no shell, the scrubbed environment, the
- *  timeout, the output cap, and the request's abort signal reaching the
- *  process. Rejects with GitFailure; callers map its kind onto their own
+/** One git call inside `repo`: no shell, the scrubbed environment, and
+ *  the request's abort signal reaching the process. There is no time or
+ *  size limit; the call runs until git finishes or the signal cancels it.
+ *  Rejects with GitFailure; callers map its kind onto their own
  *  absent/throw contract. */
 export async function runGit(
   repo: string,
