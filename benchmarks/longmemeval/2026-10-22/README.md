@@ -4,8 +4,8 @@ Curate's `conversation-recall` mode: decide every ranked part, keep references t
 
 | File | Answering model | Marker | Score |
 | --- | --- | --- | --- |
-| `mem0-gpt-5.jsonl` | GPT-5 | GPT-5, Mem0's marking prompt | 466/500 = 93.2% |
-| `official-scorer/curate-gpt-5.jsonl` | GPT-5 | GPT-4o, LongMemEval's own scorer | 458/500 = 91.6% |
+| `mem0-gpt-5.jsonl` | GPT-5 | GPT-5, Mem0's marking prompt | 467/500 = 93.4% |
+| `official-scorer/curate-gpt-5.jsonl` | GPT-5 | GPT-4o, LongMemEval's own scorer | 459/500 = 91.8% |
 
 `scores.json` holds the combined scores for all 500, the held-out 251 and the tuning 249, by question type, with context tokens, curator input tokens and the adjusted score.
 
@@ -23,6 +23,14 @@ Curate's `conversation-recall` mode: decide every ranked part, keep references t
 
 - 499 logs were written with Curate at commit `6796c72`. The release build gives the curator a byte-identical prompt and the same selection for all 500 questions.
 - One log (question `d905b33f`) was written with the release build. At `6796c72` the curator wrote an observation that cited two messages, the format check rejected it, and the log came out empty. The release build accepts that observation.
+
+## Two answers re-run with no output limit
+
+- **Which:** `88432d0a` and `gpt4_2f91af09`. GPT-5 answered them again from the same logs, with the same prompt and no output limit. GPT-5 marked them again, and LongMemEval's scorer scored them again. Their lines in every file here come from that re-run.
+- **Why:** the run sent `max_completion_tokens: 4096` with every answer. That is the default of Mem0's benchmark client, not a rule of LongMemEval's scoring. On these two questions GPT-5 spent all 4,096 tokens reasoning and returned an empty answer.
+- **With no limit:** `88432d0a` used 4,502 output tokens and answered "6 times.", still wrong against the gold answer of 4. `gpt4_2f91af09` used 3,734 and answered 23 (adding that it is 22 if one titled piece is among the stories), now right.
+- **The other 498:** no other answer reached the limit; the longest used 3,581 output tokens. No mark reached it either; the longest used 1,598. The limit cut off no other result, so the merged file holds no answer the limit shaped.
+- **Other runs:** Mem0's published run has no empty answers, and neither does the every-part run in [`../2026-10-14/`](../2026-10-14/README.md), whose longest GPT-5 answer used 3,696 tokens. Both stand as they are.
 
 ## Fields
 

@@ -2,12 +2,12 @@
   "mem0.all_500": {
     "questions": 500,
     "marked": 500,
-    "correct": 466,
-    "accuracy": 93.2,
-    "six_type_average": 94.91,
+    "correct": 467,
+    "accuracy": 93.4,
+    "six_type_average": 95.03,
     "by_type": {
       "knowledge-update": "76/78",
-      "multi-session": "113/133",
+      "multi-session": "114/133",
       "single-session-assistant": "56/56",
       "single-session-preference": "29/30",
       "single-session-user": "68/70",
@@ -15,7 +15,7 @@
     },
     "context_tokens_mean": 449,
     "context_tokens_median": 380.0,
-    "adjusted": 98.7,
+    "adjusted": 98.9,
     "curator_input_tokens_mean": 34361
   },
   "mem0.held_out_251": {
@@ -40,12 +40,12 @@
   "mem0.tune_249": {
     "questions": 249,
     "marked": 249,
-    "correct": 231,
-    "accuracy": 92.77,
-    "six_type_average": 94.2,
+    "correct": 232,
+    "accuracy": 93.17,
+    "six_type_average": 94.45,
     "by_type": {
       "knowledge-update": "38/39",
-      "multi-session": "54/66",
+      "multi-session": "55/66",
       "single-session-assistant": "28/28",
       "single-session-preference": "14/15",
       "single-session-user": "34/35",
@@ -53,7 +53,7 @@
     },
     "context_tokens_mean": 452,
     "context_tokens_median": 395,
-    "adjusted": 98.3,
+    "adjusted": 98.7,
     "curator_input_tokens_mean": 35297
   }
 }

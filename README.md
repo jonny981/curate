@@ -12,7 +12,7 @@ Top tier benchmark scores with up to 50 times fewer tokens
 | Benchmark | System | Task model | Score | Task model tokens |
 | --- | --- | --- | --- | --- |
 | **LongMemEval S** | **Curate, every part kept** | **GPT-5** | **94.0** | **580** |
-| **LongMemEval S** | **Curate, conversation-recall** | **GPT-5** | **93.2** | **449** |
+| **LongMemEval S** | **Curate, conversation-recall** | **GPT-5** | **93.4** | **449** |
 | LongMemEval S | [Mem0 platform](https://github.com/mem0ai/memory-benchmarks/blob/4b61c5d31b9c668a12b4f5e78064248a02c82d2b/results/platform/longmemeval_results.json) | GPT-5 | 93.4 | 6,787 mean (12x more) |
 | **LongMemEval S** | **Curate, every part kept** | **GPT-5-mini** | **92.0** | **580** |
 | **LongMemEval S** | **Curate, default** | **GPT-5-mini** | **91.6** | **485** |
@@ -387,12 +387,13 @@ Curate ran all 500 LongMemEval S questions with its packages at commit `aacb042`
 A second run used `conversation-recall`, the 0.0146 cut plus chat labels. Its answers, verdicts and build details are in [its proof files](benchmarks/longmemeval/2026-10-22/README.md).
 
 The answering model read only the log.
+No answer was cut short by an output limit: two `conversation-recall` answers that ran into the 4,096-token cap of Mem0's client were answered again with no cap, and no other answer reached it.
 Every answer, verdict and log is in [the proof files](benchmarks/longmemeval/2026-10-14/README.md).
 
 | Setting | Answering model and marker | All 500 | Context tokens (mean) | [Adjusted score](#adjusted-score) | Cost per question (list, est.) |
 | --- | --- | --- | --- | --- | --- |
 | **Every part decided and kept** | GPT-5 answers, GPT-5 marks | **94.0** (470/500) | 580 | **99.0** | $0.49 |
-| **`conversation-recall`** | GPT-5 answers, GPT-5 marks | **93.2** (466/500) | 449 | **98.7** | $0.16 |
+| **`conversation-recall`** | GPT-5 answers, GPT-5 marks | **93.4** (467/500) | 449 | **98.9** | $0.16 |
 | **Every part decided and kept** | GPT-5-mini answers, GPT-4o marks | **92.0** (460/500) | 580 | **97.0** | $0.48 |
 | **References scored 0.0146 or more** | GPT-5-mini answers, GPT-4o marks | **91.6** (458/500) | 485 | **96.9** | **$0.12** |
 
@@ -425,7 +426,7 @@ The same answers, judged by LongMemEval's own `evaluate_qa.py` (commit `9e0b455`
 | Answering model | Overall | Average of the six types | Abstention questions |
 | --- | --- | --- | --- |
 | **GPT-5**, every part kept | **93.0** (465/500) | 92.1 | 29/30 |
-| **GPT-5**, `conversation-recall` | **91.6** (458/500) | 92.6 | 26/30 |
+| **GPT-5**, `conversation-recall` | **91.8** (459/500) | 92.8 | 26/30 |
 | **GPT-5-mini**, every part kept | **92.2** (461/500) | 91.2 | 22/30 |
 | **GPT-5-mini**, scores 0.0146 or more | **90.8** (454/500) | 89.3 | 23/30 |
 | **gpt-6.1-sol** through the Codex CLI, with gpt-6-luna curating | **88.2** (441/500) | 89.5 | 29/30 |
@@ -441,7 +442,7 @@ The answers are in LongMemEval's own format (`question_id`, `hypothesis`), with 
 | **Curate** | A TypeScript library: plain files, no database | GPT-5 | **94.0** | **580** | **$0.0007** | $0.49 at list prices (est.); $0.024 paid |
 | **Curate** | A TypeScript library: plain files, no database | GPT-5-mini | 92.0 | 580 | $0.0001 | $0.48 at list prices (est.) |
 | **Curate, scores 0.0146 or more** | A TypeScript library: plain files, no database | GPT-5-mini | 91.6 | 485 | $0.0001 | **$0.12** at list prices (est.) |
-| **Curate, `conversation-recall`** | A TypeScript library: plain files, no database | GPT-5 | 93.2 | **449** | **$0.0006** | $0.16 at list prices (est.) |
+| **Curate, `conversation-recall`** | A TypeScript library: plain files, no database | GPT-5 | 93.4 | **449** | **$0.0006** | $0.16 at list prices (est.) |
 | [Mem0 platform](https://github.com/mem0ai/memory-benchmarks/blob/4b61c5d31b9c668a12b4f5e78064248a02c82d2b/results/platform/longmemeval_results.json) | Mem0's hosted platform | GPT-5 | 93.4 | 6,787 mean | $0.0085 | not published |
 | [Mastra observational memory](https://mastra.ai/research/observational-memory) | A TypeScript framework you run, with a storage provider | GPT-5-mini | 93.6 (94.87 by type) | ~30,000 mean | $0.0075 | ~$0.045 (est.) |
 | [Zep](https://getzep.com/research) | Zep's hosted service is its recommended setup | GPT-5.4 | 90.2 | 4,408 median | not priced | not published |
@@ -450,7 +451,7 @@ The answers are in LongMemEval's own format (`question_id`, `hypothesis`), with 
 Costs are per question.
 
 - **On GPT-5, Curate scores above Mem0's committed result file** (94.0 against 93.4, both marked by GPT-5). With LongMemEval's own GPT-4o judge, Curate's GPT-5 answers score 93.0.
-- **With `conversation-recall`, Curate matches Mem0 with 15 times less context** (93.2 against 93.4, 449 tokens against 6,787).
+- **With `conversation-recall`, Curate matches Mem0 with 15 times less context** (93.4 against 93.4, 449 tokens against 6,787).
 - **On GPT-5-mini, Mastra's raw score is higher:** 93.6 against 92.0 per question, and 94.87 against 90.99 as an equal average of the six question types. Its answering model reads about 50 times more context.
 - **Curate has the highest adjusted score** of these systems, because its answering model reads the least context.
 
