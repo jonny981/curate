@@ -11,6 +11,8 @@ import {
   type PickDecide,
 } from '../src/index.js';
 
+const uncutPick = { everyRanked: true, everyScored: true, labels: false, rare: false } as const;
+
 function candidate(overrides: Partial<MemoryCandidate> & Pick<MemoryCandidate, 'sourceId' | 'id'>): MemoryCandidate {
   return {
     role: 'reference',
@@ -58,7 +60,7 @@ describe('pick rare-word round', () => {
     // with a selected one, but with `rare` unset nobody reaches for it.
     const counter = stubDecide((question) => answered(question.id === 'p3' ? 0.1 : 0.9));
     const candidates = parts(10, { p0: 'plain zephyr', p7: 'plain zephyr' });
-    const result = await pick(candidates, {
+    const result = await pick(candidates, { ...uncutPick,
       task: 'Recall the plan', decide: counter.decide,
       everyScored: { bar: 0.5 }, everyRanked: { c: 0.68 },
     });
@@ -76,7 +78,7 @@ describe('pick rare-word round', () => {
     // 0.5 it clears the 0.0146 addition bar and is selected.
     const counter = stubDecide((question) => answered(question.id === 'p3' ? 0.1 : 0.9));
     const candidates = parts(10, { p0: 'plain zephyr', p7: 'plain zephyr' });
-    const result = await pick(candidates, {
+    const result = await pick(candidates, { ...uncutPick,
       task: 'Recall the plan', decide: counter.decide,
       everyScored: { bar: 0.5 },
       everyRanked: { c: 0.68 }, rare: { share: 0.5 },
@@ -99,7 +101,7 @@ describe('pick rare-word round', () => {
     // not rare and p7 is never pulled in.
     const counter = stubDecide((question) => answered(question.id === 'p3' ? 0.1 : 0.9));
     const candidates = parts(10, {});
-    const result = await pick(candidates, {
+    const result = await pick(candidates, { ...uncutPick,
       task: 'Recall the plan', decide: counter.decide,
       everyScored: { bar: 0.5 },
       everyRanked: { c: 0.68 }, rare: { share: 0.5 },
@@ -120,7 +122,7 @@ describe('pick rare-word round', () => {
     const candidates = parts(10, {
       p0: 'plain zephyr', p1: 'plain zephyr', p3: 'plain zephyr', p7: 'plain zephyr',
     });
-    const result = await pick(candidates, {
+    const result = await pick(candidates, { ...uncutPick,
       task: 'Recall the plan', decide: counter.decide,
       everyScored: { bar: 0.5 },
       everyRanked: { c: 0.68 }, rare: { share: 0.5 },
@@ -148,7 +150,7 @@ describe('pick rare-word round', () => {
     const counter = stubDecide((question) =>
       answered(question.id === 'p3' || question.id === 'p8' ? 0.01 : 0.9));
     const candidates = parts(10, { p0: 'plain zephyr', p7: 'plain zephyr', p8: 'plain zephyr' });
-    const options = {
+    const options = { ...uncutPick,
       task: 'Recall the plan', decide: counter.decide,
       everyScored: { bar: 0.5 }, everyRanked: { c: 0.68 }, rare: { share: 0.5 },
       cache: { store, deciderId: 'test-decider' },
@@ -181,7 +183,7 @@ describe('pick rare-word round', () => {
       id: 'notes', role: 'reference',
       read: async () => ({ status: 'read', complete: true, candidates: pool }),
     };
-    const result = await pickFromSources([source], { task: 'Recall the plan' }, {
+    const result = await pickFromSources([source], { task: 'Recall the plan' }, { ...uncutPick,
       task: 'Recall the plan', decide: counter.decide,
       everyScored: { bar: 0.5 },
       rare: { share: 0.5 },
@@ -213,7 +215,7 @@ describe('pick rare-word round', () => {
       ...Object.fromEntries(Array.from({ length: 14 }, (_, index) =>
         [`p${index + 1}`, 'plain zephyr filler'])),
     });
-    const result = await pick(candidates, {
+    const result = await pick(candidates, { ...uncutPick,
       task: 'Recall the plan', decide: counter.decide,
       everyScored: { bar: 0.5 },
       rare: { share: 0.02 },
@@ -228,7 +230,7 @@ describe('pick rare-word round', () => {
 
   it('refuses an invalid pick option before any decide call', async () => {
     const counter = stubDecide(() => answered(0.9));
-    const task = { task: 'Recall the plan', decide: counter.decide };
+    const task = { ...uncutPick, task: 'Recall the plan', decide: counter.decide };
     await expect(pick(parts(10), { ...task, everyRanked: {} as never })).rejects.toThrow(TypeError);
     await expect(pick(parts(10), { ...task, everyRanked: { c: 0 } })).rejects.toThrow(TypeError);
     await expect(pick(parts(10), { ...task, everyRanked: 0.68 as never }))

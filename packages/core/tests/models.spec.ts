@@ -27,6 +27,31 @@ const batch: PickBatch = {
   }],
 };
 
+describe('decider identity', () => {
+  it.each([
+    { name: 'Jev', create: jev, model: 'jev-latest', id: 'typesafe:jev-latest' },
+    { name: 'OpenAI Decisions', create: openAIDecisions, model: 'gpt-6-luna', id: 'openai:gpt-6-luna' },
+  ])('keeps $name identity across API keys and changes it with the model', ({ create, model, id }) => {
+    const fetch = reply({});
+    const first = create({ apiKey: 'first-secret' });
+    const second = create({ apiKey: 'second-secret', model });
+    const otherModel = create({ apiKey: 'first-secret', model: 'other-model' });
+
+    expect(first.deciderId).toBe(id);
+    expect(second.deciderId).toBe(id);
+    expect(otherModel.deciderId).not.toBe(id);
+    expect(otherModel.deciderId).toContain('other-model');
+    expect([first.deciderId, second.deciderId, otherModel.deciderId].join(' ')).not.toContain('secret');
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('keeps different providers separate even with the same model name', () => {
+    const typesafe = jev({ apiKey: 'test-key', model: 'same-model' });
+    const openai = openAIDecisions({ apiKey: 'test-key', model: 'same-model' });
+    expect(typesafe.deciderId).not.toBe(openai.deciderId);
+  });
+});
+
 describe('jev', () => {
   it('sends evidence and criteria under safe question names and restores the caller keys', async () => {
     const fetch = reply({ model: 'jev-latest', answers: { q0: { type: 'noul', noul: 0.8 } } });

@@ -11,6 +11,8 @@ import { gitHistory } from '@curatejs/git';
 import { knowledgeBase, rules } from '@curatejs/markdown';
 import { DEFAULT_MAX_QUESTION_TEXT } from '@curatejs/core';
 
+const uncutPick = { everyRanked: true, everyScored: true, labels: false, rare: false } as const;
+
 const directories: string[] = [];
 afterEach(async () => {
   await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
@@ -33,7 +35,7 @@ function source(read: CandidateSource['read'], extra: Partial<CandidateSource> =
   return { id: 'reader', role: 'reference', read, ...extra };
 }
 function pickSource(reader: CandidateSource, request: CandidateReadRequest, decide = yes) {
-  return pickFromSources([reader], request, { task: request.task, decide });
+  return pickFromSources([reader], request, { ...uncutPick, task: request.task, decide });
 }
 
 describe('extra source searches', () => {
@@ -79,7 +81,7 @@ describe('extra source searches', () => {
     const reader = source(async ({ task }) => task === 'original'
       ? readResult([candidate('first', 50), { ...candidate('shared', 40), text: 'Original data' }])
       : readResult([{ ...candidate('shared', 2), text: 'Extra data' }, candidate('new', 1)]));
-    const result = await pickFromSources([reader], { task: 'original', searchLines: ['extra'] }, {
+    const result = await pickFromSources([reader], { task: 'original', searchLines: ['extra'] }, { ...uncutPick,
       task: 'original', decide: yes, limits: { maxCandidates: 1 },
     });
     expect(result.selected.map((item) => item.id).sort()).toEqual(['first', 'shared']);
@@ -110,7 +112,7 @@ describe('extra source searches', () => {
         : [candidate('another', 3), { ...candidate('shared', 2), text: 'Second reader extra data' }, always])),
     ];
     const asked: string[] = [];
-    const result = await pickFromSources(readers, { task: 'original', searchLines: ['extra'] }, {
+    const result = await pickFromSources(readers, { task: 'original', searchLines: ['extra'] }, { ...uncutPick,
       task: 'original', decide: async (batch, signal) => {
         asked.push(...batch.questions.map((question) => question.id));
         return yes(batch, signal);
@@ -129,13 +131,13 @@ describe('extra source searches', () => {
 
   it('keeps duplicate readers unchanged without active extras', async () => {
     const reader = source(async () => readResult([candidate('same')]));
-    const baseline = await pickFromSources([reader, reader], { task: 'original' }, { task: 'original', decide: yes });
-    const disabled = await pickFromSources([reader, reader], { task: 'original', searchLines: [] }, { task: 'original', decide: yes });
+    const baseline = await pickFromSources([reader, reader], { task: 'original' }, { ...uncutPick, task: 'original', decide: yes });
+    const disabled = await pickFromSources([reader, reader], { task: 'original', searchLines: [] }, { ...uncutPick, task: 'original', decide: yes });
     expect(disabled).toEqual(baseline);
     expect(disabled.selected).toHaveLength(2);
     expect(disabled.record.candidates).toHaveLength(2);
     const asked: string[] = [];
-    const expanded = await pickFromSources([reader, reader], { task: 'original', searchLines: ['extra'] }, {
+    const expanded = await pickFromSources([reader, reader], { task: 'original', searchLines: ['extra'] }, { ...uncutPick,
       task: 'original', decide: async (batch, signal) => {
         asked.push(...batch.questions.map((question) => question.id));
         return yes(batch, signal);
@@ -300,7 +302,7 @@ describe('extra searches with built-in readers', () => {
     expect(original.selected[0]?.text).toContain('Apple');
     expect(expanded.selected).toHaveLength(2);
     expect(expanded.selected.some((item) => item.text.includes('Banana') && item.searchRanks?.[1] === 0)).toBe(true);
-    const fed = await pickFromSources([reader], { task: 'apple orchard', searchLines: ['banana harvest'] }, {
+    const fed = await pickFromSources([reader], { task: 'apple orchard', searchLines: ['banana harvest'] }, { ...uncutPick,
       task: 'apple orchard', decide: yes, limits: { maxCandidates: 1 },
     });
     expect(fed.selected).toHaveLength(2);
@@ -322,7 +324,7 @@ describe('extra searches with built-in readers', () => {
     expect(original.selected[0]?.text).toContain('Apple');
     expect(expanded.selected).toHaveLength(2);
     expect(expanded.selected.some((item) => item.text.includes('Banana') && item.searchRanks?.[1] === 0)).toBe(true);
-    const fed = await pickFromSources([reader], { task: 'apple orchard', searchLines: ['banana harvest'] }, {
+    const fed = await pickFromSources([reader], { task: 'apple orchard', searchLines: ['banana harvest'] }, { ...uncutPick,
       task: 'apple orchard', decide: yes, limits: { maxCandidates: 1 },
     });
     expect(fed.selected).toHaveLength(2);
@@ -345,7 +347,7 @@ describe('extra searches with built-in readers', () => {
     git(['add', '.']);
     git(['commit', '-m', 'Banana harvest', '-m', 'Banana harvest evidence.']);
     const reader = gitHistory(directory);
-    const expanded = await pickFromSources([reader], { task: 'apple orchard', searchLines: ['banana harvest'] }, {
+    const expanded = await pickFromSources([reader], { task: 'apple orchard', searchLines: ['banana harvest'] }, { ...uncutPick,
       task: 'apple orchard', decide: yes, limits: { maxCandidates: 1 },
     });
     expect(expanded.selected.map((item) => item.title).sort()).toEqual(['Apple orchard', 'Banana harvest']);
@@ -378,12 +380,12 @@ describe('phrase searches with built-in readers', () => {
     const reader = kind === 'chat' ? chat({ paths: [directory], providers: ['codex'] })
       : kind === 'markdown' ? knowledgeBase(directory) : gitHistory(directory);
     const task = 'How many albums did I buy?';
-    const baseline = await pickFromSources([reader], { task }, { task, decide: yes, limits: { maxCandidates: 1 } });
-    const expanded = await pickFromSources([reader], { task, searchPhrases: ['got my'], limit: 1 }, { task, decide: yes, limits: { maxCandidates: 1 } });
+    const baseline = await pickFromSources([reader], { task }, { ...uncutPick, task, decide: yes, limits: { maxCandidates: 1 } });
+    const expanded = await pickFromSources([reader], { task, searchPhrases: ['got my'], limit: 1 }, { ...uncutPick, task, decide: yes, limits: { maxCandidates: 1 } });
     expect(baseline.selected.some((item) => `${item.title} ${item.text}`.includes('got my vinyl signed'))).toBe(false);
     expect(expanded.selected.some((item) => `${item.title} ${item.text}`.includes('got my vinyl signed'))).toBe(true);
     expect(expanded.selected).toHaveLength(2);
-    const excluded = await pickFromSources([reader], { task, searchPhrases: ['got my'], exclude: ['b.md', 'session.jsonl'] }, { task, decide: yes });
+    const excluded = await pickFromSources([reader], { task, searchPhrases: ['got my'], exclude: ['b.md', 'session.jsonl'] }, { ...uncutPick, task, decide: yes });
     if (kind !== 'git') expect(excluded.selected.some((item) => `${item.title} ${item.text}`.includes('got my vinyl signed'))).toBe(false);
   });
 });

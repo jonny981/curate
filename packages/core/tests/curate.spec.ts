@@ -9,6 +9,8 @@ import {
   type PickResult,
 } from '../src/index.js';
 
+const uncutPick = { everyRanked: true, everyScored: true, labels: false, rare: false } as const;
+
 const LOG = '[2023-05-13] Visited York (said 2023-05-20; notes#2)';
 const LONG_LOG = `[2023-05-13] ${'Travel notes. '.repeat(400)} (said 2023-05-20; notes#2)`;
 // The writer sees and cites each item's short `En` id; the returned
@@ -30,7 +32,7 @@ function picked(items = [candidate('notes#2', '2023-05-20')], weights = [0.9]): 
     record: {
       questionVersion: 'test', limits: {},
       thresholds: { reference: 0, rule: 0, linkedPathBar: 0 }, rulesCoverage: 'complete',
-      levers: { preset: 'performance', everyRanked: true, everyScored: true, labels: false, route: false, rare: false },
+      levers: { preset: 'custom', everyRanked: true, everyScored: true, labels: false, route: false, rare: false },
       candidates: items.map((item, index) => ({
         sourceId: item.sourceId, id: item.id, role: item.role, priority: index,
         signals: item.signals, status: 'selected', asked: true, probability: weights[index]!,
@@ -109,10 +111,15 @@ describe('curate', () => {
     expect((await curate('Recall', picked(), { write: writer(text).write, preferenceAdvice: true })).log).toBe(expected);
   });
 
-  it('checks preference source ids even below the working section', async () => {
-    const text = SHORT_LOG + "\nWorking (the curator's; check it against the log):\n1. York.\nAdvice preferences: Walks (E9)";
-    await expect(curate('Recall', picked(), { write: writer(text).write, working: true, preferenceAdvice: true }))
-      .rejects.toThrow('preference lines need text and source');
+  it('repairs and drops an unsupported preference below the working section without losing the log', async () => {
+    const working = "\nWorking (the curator's; check it against the log):\n1. York.";
+    const line = 'Advice preferences: Walks (E9)';
+    const { write, calls } = writer(SHORT_LOG + working + '\n' + line);
+    const result = await curate('Recall', picked(), { write, working: true, preferenceAdvice: true });
+    expect(calls).toHaveLength(2);
+    expect(calls[1]!.body).toContain('preference lines need text and source');
+    expect(result.log).toBe(LOG + working);
+    expect(result.record).toMatchObject({ repairs: 1, formatRecovery: { keptAsWritten: [], dropped: [line] } });
   });
 
   it.each(['', '  '])('rejects empty task date %j before writing', async (taskDate) => {
@@ -141,29 +148,50 @@ describe('curate', () => {
 
   it.each([
     'Advice preferences: Likes history (E9)',
-    'Advice preferences: Likes history (E1, E9)',
     'Advice preferences: Likes history',
     'Changed preference: Wants quiet trips [E9]',
+  ])('drops a preference with no supplied source after repair: %j', async (line) => {
+    const { write, calls } = writer(SHORT_LOG + '\n' + line);
+    const result = await curate('Advice', picked(), { write, preferenceAdvice: true, preferenceChange: true });
+    expect(calls).toHaveLength(2);
+    expect(calls[1]!.body).toContain('preference lines need text and source');
+    expect(result.log).toBe(LOG);
+    expect(result.record).toMatchObject({ repairs: 1, formatRecovery: { keptAsWritten: [], dropped: [line] } });
+  });
+
+  it.each([
+    'Advice preferences: Likes history (E1, E9)',
     'Changed preference: (E1)',
-  ])('rejects missing or invalid preference sources %j', async (line) => {
-    await expect(curate('Advice', picked(), {
-      write: writer(SHORT_LOG + '\n' + line).write, preferenceAdvice: true, preferenceChange: true,
-    })).rejects.toThrow('curate: malformed log');
+  ])('keeps a malformed preference naming a supplied source after repair: %j', async (line) => {
+    const { write, calls } = writer(SHORT_LOG + '\n' + line);
+    const result = await curate('Advice', picked(), { write, preferenceAdvice: true, preferenceChange: true });
+    expect(calls).toHaveLength(2);
+    expect(calls[1]!.body).toContain('preference lines need text and source');
+    expect(result.log).toBe(LOG + '\n' + line.replace('E1', 'notes#2'));
+    expect(result.record).toMatchObject({ repairs: 1, formatRecovery: { keptAsWritten: [line], dropped: [] } });
   });
 
-  it('requires a dated log even when optional preference lines are valid', async () => {
-    await expect(curate('Advice', picked(), {
-      write: writer('Advice preferences: Likes history (E1)').write, preferenceAdvice: true,
-    })).rejects.toThrow('at least one dated observation');
+  it('asks for a dated observation before recovering a cited preference alone', async () => {
+    const { write, calls } = writer('Advice preferences: Likes history (E1)');
+    const result = await curate('Advice', picked(), { write, preferenceAdvice: true });
+    expect(calls).toHaveLength(2);
+    expect(calls[1]!.body).toContain('at least one dated observation');
+    expect(result.log).toBe('Advice preferences: Likes history (notes#2)');
+    expect(result.record.repairs).toBe(1);
+    expect(result.record.formatRecovery).toEqual({ keptAsWritten: [], dropped: [] });
   });
 
-  it('keeps date checks strict with preferences enabled and rejects disabled preference kinds', async () => {
-    await expect(curate('Advice', picked(), {
-      write: writer(SHORT_LOG.replace('2023-05-13', '2023-02-30')).write, preferenceAdvice: true,
-    })).rejects.toThrow('curate: malformed log');
-    await expect(curate('Advice', picked(), {
-      write: writer(SHORT_LOG + '\nChanged preference: Wants quiet trips (E1)').write, preferenceAdvice: true,
-    })).rejects.toThrow('curate: malformed log');
+  it.each([
+    [SHORT_LOG.replace('2023-05-13', '2023-02-30'), 'each observation needs an event date'],
+    [SHORT_LOG + '\nChanged preference: Wants quiet trips (E1)', 'unexpected preference line'],
+  ])('keeps format checks active with preferences enabled: %j', async (text, reason) => {
+    const { write, calls } = writer([text, SHORT_LOG]);
+    const result = await curate('Advice', picked(), { write, preferenceAdvice: true });
+    expect(calls).toHaveLength(2);
+    expect(calls[1]!.body).toContain(reason);
+    expect(result.log).toBe(LOG);
+    expect(result.record.repairs).toBe(1);
+    expect(result.record).not.toHaveProperty('formatRecovery');
   });
 
   it('sends v4 instructions and all three weight tiers in one write call', async () => {
@@ -182,6 +210,7 @@ describe('curate', () => {
     expect(instructions).not.toContain('Working (the curator');
     expect(result.log).toBe(LOG);
     expect(result.record).toMatchObject({ promptVersion: 'v4', weights: 'tiers', working: false });
+    expect(result.record).not.toHaveProperty('formatRecovery');
     expect(result).not.toHaveProperty('blocks');
   });
 
@@ -221,16 +250,23 @@ describe('curate', () => {
     expect(result.record.working).toBe(true);
   });
 
-  it.each([1, 2, 3, 4, 5, 6])('accepts a Markdown working heading at level %i only with working enabled', async (level) => {
-    const text = `${SHORT_LOG}\n\n${'#'.repeat(level)} Working (the curator's; check it against the log):\n1. One visit.`;
+  it.each([1, 2, 3, 4, 5, 6])('accepts a level %i Markdown working heading and repairs it when working is disabled', async (level) => {
+    const heading = `${'#'.repeat(level)} Working (the curator's; check it against the log):`;
+    const text = `${SHORT_LOG}\n\n${heading}\n1. One visit.`;
     expect((await curate('How many visits?', picked(), { write: writer(text).write, working: true })).log)
       .toBe(text.replace(SHORT_LOG, LOG));
-    await expect(curate('Recall', picked(), { write: writer(text).write })).rejects.toThrow('unexpected or empty working section');
+    const { write, calls } = writer(text);
+    const result = await curate('Recall', picked(), { write });
+    expect(calls).toHaveLength(2);
+    expect(calls[1]!.body).toContain('unexpected or empty working section');
+    expect(result.log).toBe(LOG);
+    expect(result.record).toMatchObject({ repairs: 1,
+      formatRecovery: { keptAsWritten: [], dropped: [heading, '1. One visit.'] } });
   });
 
   it('keeps selected rules outside the writer and retains their picker record', async () => {
     const rule: MemoryCandidate = { ...candidate('rule'), role: 'rule', applies: 'always', text: 'Follow this rule exactly' };
-    const input = await pick([rule, candidate('notes#2')], {
+    const input = await pick([rule, candidate('notes#2')], { ...uncutPick,
       task: 'Recall', decide: async (batch) => Object.fromEntries(batch.questions.map((q) =>
         [q.key, { status: 'answered', probability: 0.9 }])),
     });
@@ -256,9 +292,9 @@ describe('curate', () => {
   it.each(['', ' \n\t '])('returns an empty log, marked in the record, for empty output %j', async (text) => {
     const { write, calls } = writer(text);
     const result = await curate('Recall', picked(), { write });
-    expect(calls).toHaveLength(1);
+    expect(calls).toHaveLength(2);
     expect(result.log).toBe('');
-    expect(result.record).toMatchObject({ empty: true, logLength: 0, condensed: false });
+    expect(result.record).toMatchObject({ empty: true, emptyRetries: 1, logLength: 0, condensed: false });
     expect(result.record).not.toHaveProperty('repairs');
   });
 
@@ -328,11 +364,14 @@ describe('curate', () => {
     });
   });
 
-  it.each(['', 'undated summary', '[2023-05-13] Visited York (said 2023-05-20; E9)'])('rejects invalid condensed output %j', async (text) => {
+  it.each(['', 'undated summary', '[2023-05-13] Visited York (said 2023-05-20; E9)'])('keeps the original log when condensed output has no usable evidence: %j', async (text) => {
     const { write, calls } = writer([LONG_SHORT_LOG, text]);
-    await expect(curate('Recall', picked(), { write, contextLimit: 100 }))
-      .rejects.toThrow(text === '' ? 'curate: empty log' : 'curate: malformed log');
+    const result = await curate('Recall', picked(), { write, contextLimit: 100 });
     expect(calls).toHaveLength(2);
+    expect(result.log).toBe(LONG_LOG);
+    expect(result.record).toMatchObject({ condensed: true, condensedLength: LONG_LOG.length, overContextLimit: true,
+      formatRecovery: { keptAsWritten: [], dropped: text === '' ? [] : [text] } });
+    expect(result.record).not.toHaveProperty('repairs');
   });
 
   it('rejects a malformed first log after one format repair, before attempting to condense', async () => {
@@ -351,21 +390,43 @@ describe('curate', () => {
 
   it.each([
     'Here is the answer: York.',
+    '[2023-05-13] Visited York (said 2023-05-20; )',
+    '[2023-05-13] Visited York (said 2023-05-20; ) (when not stated)',
+    '[2023-05-13] Visited York (said 2023-05-20; E9)',
+  ])('rejects output with no supplied source after repair: %j', async (text) => {
+    const { write, calls } = writer(text);
+    await expect(curate('Recall', picked(), { write })).rejects.toThrow('curate: malformed log');
+    expect(calls).toHaveLength(2);
+    expect(calls[1]!.body).toContain(text);
+  });
+
+  it.each([
     '[2023-05-13] Visited York (E1)',
     '[2023-05-13 the event happened] Visited York (said 2023-05-20; E1)',
     '[2023-02-30] Visited York (said 2023-05-20; E1)',
     '[2023-05-13] Visited York (said 2023-13-20; E1)',
-    '[2023-05-13] Visited York (said 2023-05-20; )',
     '[2023-05-13]   (said 2023-05-20; E1)',
-    '[2023-05-13] Visited York (said 2023-05-20; ) (when not stated)',
     '[2023-05-13] Visited York (said 2023-05-20; E1) trailing prose',
     '[2023-05-13] Visited York (said 2023-05-20; E1) (replaces [not-a-date])',
     '[2023-05-13] Visited York (said 2023-05-20; E1) (replaces [2023-02-30])',
-    '[2023-05-13] Visited York (said 2023-05-20; E9)',
-    `${SHORT_LOG}\nA line without dates`,
-    `${SHORT_LOG}\nWorking (the curator's; check it against the log):\n1. A visit.`,
-  ])('rejects malformed output %j', async (text) => {
-    await expect(curate('Recall', picked(), { write: writer(text).write })).rejects.toThrow('curate: malformed log');
+  ])('keeps a malformed observation naming a supplied source after repair: %j', async (text) => {
+    const { write, calls } = writer(text);
+    const result = await curate('Recall', picked(), { write });
+    expect(calls).toHaveLength(2);
+    expect(calls[1]!.body).toContain(text);
+    expect(result.log).toBe(text.replace('E1', 'notes#2'));
+    expect(result.record).toMatchObject({ repairs: 1, formatRecovery: { keptAsWritten: [text], dropped: [] } });
+  });
+
+  it.each([
+    ['A line without dates'],
+    ["Working (the curator's; check it against the log):", '1. A visit.'],
+  ])('keeps valid observations and drops unsupported extra lines after repair: %j', async (...lines) => {
+    const { write, calls } = writer([SHORT_LOG, ...lines].join('\n'));
+    const result = await curate('Recall', picked(), { write });
+    expect(calls).toHaveLength(2);
+    expect(result.log).toBe(LOG);
+    expect(result.record).toMatchObject({ repairs: 1, formatRecovery: { keptAsWritten: [], dropped: lines } });
   });
 
   it('rejects non-text output at the caller boundary', async () => {
@@ -373,12 +434,21 @@ describe('curate', () => {
     await expect(curate('Recall', picked(), { write })).rejects.toThrow('write must return text');
   });
 
-  it.each([
-    "Working (the curator's; check it against the log):\n1. A visit.",
-    `${SHORT_LOG}\nWorking (the curator's; check it against the log):`,
-  ])('rejects an empty log or working section with working enabled %j', async (text) => {
-    await expect(curate('Recall', picked(), { write: writer(text).write, working: true }))
+  it('rejects a working section with no cited evidence after repair', async () => {
+    const { write, calls } = writer("Working (the curator's; check it against the log):\n1. A visit.");
+    await expect(curate('Recall', picked(), { write, working: true }))
       .rejects.toThrow('curate: malformed log');
+    expect(calls).toHaveLength(2);
+  });
+
+  it('drops an empty working heading after repair without losing observations', async () => {
+    const heading = "Working (the curator's; check it against the log):";
+    const { write, calls } = writer(`${SHORT_LOG}\n${heading}`);
+    const result = await curate('Recall', picked(), { write, working: true });
+    expect(calls).toHaveLength(2);
+    expect(calls[1]!.body).toContain('unexpected or empty working section');
+    expect(result.log).toBe(LOG);
+    expect(result.record).toMatchObject({ repairs: 1, formatRecovery: { keptAsWritten: [], dropped: [heading] } });
   });
 
   it('accepts merged observations and replacements without dropping either date', async () => {
@@ -407,16 +477,26 @@ describe('curate', () => {
     'said 2023-13-01; E2',
     'said not-a-date; E2',
     'said 2023-05-21; E2; said 2023-02-30; E3',
-  ])('rejects an invalid date in a later citation group: %j', async (citation) => {
+  ])('repairs an invalid later citation date and retains the cited line if repair fails: %j', async (citation) => {
     const input = picked(['notes#2', 'notes#3', 'notes#4'].map((id) => candidate(id)), [0.9, 0.8, 0.7]);
     const text = `[2023-05-13] Planted an orchard (said 2023-05-20; E1; ${citation})`;
-    await expect(curate('Recall', input, { write: writer(text).write })).rejects.toThrow('curate: malformed log');
+    const { write, calls } = writer(text);
+    const result = await curate('Recall', input, { write });
+    expect(calls).toHaveLength(2);
+    expect(calls[1]!.body).toContain(text);
+    expect(result.log).toBe(text.replace(/E([1-3])/g, (_, id: string) => `notes#${Number(id) + 1}`));
+    expect(result.record).toMatchObject({ repairs: 1, formatRecovery: { keptAsWritten: [text], dropped: [] } });
   });
 
-  it.each(['E9', 'E2, E9'])('rejects unknown sources under a later date: %j', async (sources) => {
+  it.each(['E9', 'E2, E9'])('repairs an unknown later source without losing the supplied source if repair fails: %j', async (sources) => {
     const input = picked([candidate('notes#2'), candidate('notes#3')], [0.9, 0.8]);
     const text = `[2023-05-13] Planted an orchard (said 2023-05-20; E1; said 2023-05-21; ${sources})`;
-    await expect(curate('Recall', input, { write: writer(text).write })).rejects.toThrow('curate: malformed log');
+    const { write, calls } = writer(text);
+    const result = await curate('Recall', input, { write });
+    expect(calls).toHaveLength(2);
+    expect(calls[1]!.body).toContain(text);
+    expect(result.log).toBe(text.replace('E1', 'notes#2').replace('E2', 'notes#3'));
+    expect(result.record).toMatchObject({ repairs: 1, formatRecovery: { keptAsWritten: [text], dropped: [] } });
   });
 
   it('accepts a date that was not stated and full ids containing punctuation', async () => {

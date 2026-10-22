@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { phraseCount } from '../src/search.js';
 import { pickFromSources, type CandidateSource, type MemoryCandidate } from '../src/index.js';
 
+const uncutPick = { everyRanked: true, everyScored: true, labels: false, rare: false } as const;
+
 const candidate = (id: string, text: string): MemoryCandidate => ({ id, text, sourceId: 'chat', title: id, role: 'reference', signals: { keyword: 1 } });
 const yes = async ({ questions }: { questions: readonly { key: string }[] }) => Object.fromEntries(
   questions.map(({ key }) => [key, { status: 'answered' as const, probability: 1 }]),
@@ -32,7 +34,7 @@ describe('phrase searches', () => {
           candidate('repeated', 'I got my record and got my LP')] };
     } };
     const asked: string[] = [];
-    const result = await pickFromSources([reader], { task: 'albums', searchPhrases: [' got my ', 'got my', ''], limit: 1 }, {
+    const result = await pickFromSources([reader], { task: 'albums', searchPhrases: [' got my ', 'got my', ''], limit: 1 }, { ...uncutPick,
       task: 'albums', limits: { maxCandidates: 1 }, decide: async (batch) => {
         asked.push(...batch.questions.map((question) => question.id));
         return yes(batch);
@@ -48,7 +50,7 @@ describe('phrase searches', () => {
     const reader: CandidateSource = { id: 'chat', role: 'reference', read: async () => ({
       status: 'read', complete: true, candidates: [candidate('signed', 'I got my vinyl signed'), candidate('other', 'my got')],
     }) };
-    const result = await pickFromSources([reader], { task: 'got my', searchLines: ['got my'], searchPhrases: ['got my'] }, { task: 'got my', decide: yes });
+    const result = await pickFromSources([reader], { task: 'got my', searchLines: ['got my'], searchPhrases: ['got my'] }, { ...uncutPick, task: 'got my', decide: yes });
     expect(result.selected.find((item) => item.id === 'signed')?.searchRanks).toEqual([1, 0]);
     expect(result.selected.find((item) => item.id === 'other')?.searchRanks).toEqual([0, null]);
   });
@@ -60,7 +62,7 @@ describe('phrase searches', () => {
         { ...candidate('split', 'my vinyl signed'), title: 'I got' },
       ],
     }) };
-    const result = await pickFromSources([reader], { task: 'albums', searchPhrases: ['got my'] }, { task: 'albums', decide: yes });
+    const result = await pickFromSources([reader], { task: 'albums', searchPhrases: ['got my'] }, { ...uncutPick, task: 'albums', decide: yes });
     expect(result.selected.find((item) => item.id === 'title')?.searchRanks?.[1]).toBe(0);
     expect(result.selected.find((item) => item.id === 'split')?.searchRanks?.[1]).toBe(null);
   });
@@ -68,8 +70,8 @@ describe('phrase searches', () => {
   it('preserves the single-read result when phrase searches are empty', async () => {
     const read = { status: 'read' as const, complete: true, candidates: [candidate('a', 'Text')] };
     const reader: CandidateSource = { id: 'chat', role: 'reference', read: async () => read };
-    const base = await pickFromSources([reader], { task: 'albums' }, { task: 'albums', decide: yes });
-    const empty = await pickFromSources([reader], { task: 'albums', searchPhrases: ['', ' '] }, { task: 'albums', decide: yes });
+    const base = await pickFromSources([reader], { task: 'albums' }, { ...uncutPick, task: 'albums', decide: yes });
+    const empty = await pickFromSources([reader], { task: 'albums', searchPhrases: ['', ' '] }, { ...uncutPick, task: 'albums', decide: yes });
     expect(empty).toEqual(base);
     expect(empty.reads[0]).toEqual({ ...read,
       lanes: [{ task: 'albums', lane: 'search', read: 1, kept: 1 }] });

@@ -196,6 +196,7 @@ export function gitHistory(
     id,
     kind: 'git-history',
     cascade: GIT_HISTORY_CASCADE,
+    rare: true,
     role: 'reference',
     async read(request) {
       const signal = request.signal;

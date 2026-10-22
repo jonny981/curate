@@ -9,6 +9,8 @@ import { chat } from '@curatejs/chat';
 import { gitHistory } from '@curatejs/git';
 import { knowledgeBase, rules } from '@curatejs/markdown';
 
+const uncutPick = { everyRanked: true, everyScored: true, labels: false, rare: false } as const;
+
 it('combines search options and source questions across real readers', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'curate-search-integration-'));
   try {
@@ -37,7 +39,7 @@ it('combines search options and source questions across real readers', async () 
     }] });
     const task = 'Apple orchard. Answer in one line. Cite both.';
     const calls: string[][] = [];
-    const result = await pickFromSources(readers, { task, searchLines: ['Banana harvest'], stripSearchInstructions: true }, {
+    const result = await pickFromSources(readers, { task, searchLines: ['Banana harvest'], stripSearchInstructions: true }, { ...uncutPick,
       task, bestPartFirst: true, rankProtection: true, limits: { maxCandidates: 3 },
       cascadesByKind: { chat: fitted('chat'), 'git-history': fitted('history'), markdown: fitted('note') },
       decide: async (batch) => {

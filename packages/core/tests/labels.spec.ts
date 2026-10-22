@@ -13,6 +13,8 @@ import {
   type PickLabels,
 } from '../src/index.js';
 
+const uncutPick = { everyRanked: true, everyScored: true, labels: false, rare: false } as const;
+
 const KIND_KEYS = new Set<string>(LABEL_KINDS.map((kind) => kind.key));
 
 /** Counts label-store file reads open at once: the store's files are
@@ -88,7 +90,9 @@ function counting(
 }
 
 const labelOptions = (directory: string, extra: Partial<PickLabels> = {}) => ({
+  everyScored: true as const,
   labels: { directory, deciderId: 'test-decider', ...extra },
+  labelKindsBySource: { notes: LABEL_KINDS },
 });
 
 function threeParts(): MemoryCandidate[] {
@@ -431,10 +435,10 @@ describe('pick labels', () => {
     expect(result.selected.map((item) => item.id)).toEqual(['p1', 'p2']);
   });
 
-  it('leaves the pick identical when the label option is unset', async () => {
+  it('keeps selection unchanged when labels add no evidence', async () => {
     const counter = counting(() => 0.8);
     const parts = threeParts();
-    const plain = await pick(parts, { task: 'Recall the plan', decide: counter.decide });
+    const plain = await pick(parts, { ...uncutPick, task: 'Recall the plan', decide: counter.decide });
     expect(plain.record.labels).toBeUndefined();
     expect(counter.labelQuestions).toHaveLength(0);
 
@@ -446,7 +450,8 @@ describe('pick labels', () => {
       ...labelOptions(store()),
     });
     const { labels: _labels, levers, ...record } = gated.record;
-    expect({ ...record, levers: { ...levers, labels: false, preset: 'performance' } }).toEqual(plain.record);
+    expect({ ...record, labelKindsBySource: plain.record.labelKindsBySource,
+      levers: { ...levers, labels: false, preset: 'custom' } }).toEqual(plain.record);
     expect(gated.selected).toEqual(plain.selected);
   });
 });

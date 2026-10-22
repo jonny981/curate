@@ -10,6 +10,8 @@ import { pick, pickFromSources, SourceReadError, type CandidateSource, type Pick
 import { gitHistory } from '@curatejs/git';
 import { knowledgeBase, rules } from '../src/index.js';
 
+const uncutPick = { everyRanked: true, everyScored: true, labels: false, rare: false } as const;
+
 // knowledgeBase's own git invocations carry `-c core.hooksPath=…`; only
 // those calls have their child environment recorded, so the fixture's own
 // commits stay out of the locale assertions. The child is also handed to
@@ -185,7 +187,7 @@ describe('knowledgeBase', () => {
     for (const part of parts) expect(part.text.length).toBeLessThanOrEqual(700);
     expect(parts.map((part) => part.text).join('')).toBe(section);
 
-    const picked = await pick(result.candidates, { task: 'read it', decide: allAnswered(0.9) });
+    const picked = await pick(result.candidates, { ...uncutPick, task: 'read it', decide: allAnswered(0.9) });
     expect(picked.record.candidates.every((entry) => entry.truncated !== true)).toBe(true);
   });
 
@@ -198,7 +200,7 @@ describe('knowledgeBase', () => {
     const result = await pickFromSources(
       [knowledgeBase(directory)],
       { task: 'read it', wholeLanes: true },
-      {
+      { ...uncutPick,
         task: 'read it',
         limits: { maxQuestionText: 100 },
         decide: async (batch) => {
@@ -282,7 +284,7 @@ describe('knowledgeBase', () => {
     if (result.status !== 'read') return;
 
     const seen: string[] = [];
-    await pick(result.candidates, {
+    await pick(result.candidates, { ...uncutPick,
       task: 'read it',
       decide: async (batch) => {
         seen.push(...batch.questions.map((question) => question.text));
@@ -603,7 +605,7 @@ describe('rules', () => {
     expect(sometimes?.applies).toBeUndefined();
 
     const asked: string[] = [];
-    const picked = await pick(result.candidates, {
+    const picked = await pick(result.candidates, { ...uncutPick,
       task: 'any task',
       decide: async (batch) => {
         asked.push(...batch.questions.map((question) => question.id));
@@ -647,7 +649,7 @@ describe('rules', () => {
 
     // Every supplied rule is answered; the truncated enumeration alone must
     // hold the coverage at incomplete.
-    const picked = await pick(result.candidates, {
+    const picked = await pick(result.candidates, { ...uncutPick,
       task: 'any task',
       decide: allAnswered(0.9),
       rulesEnumerationComplete: result.complete,

@@ -14,7 +14,13 @@ export const LABEL_QUESTION_VERSION = 'memory-kind-labels-1';
  *  measured best. */
 export const LABEL_LANE_BAR = 0.5;
 
-/** The seven fixed kinds of statement the label gate asks of every part
+export interface LabelKind {
+  readonly key: string;
+  readonly name: string;
+  readonly part: { readonly true: string; readonly false: string };
+}
+
+/** The seven kinds of statement the chat label lane asks of every part
  *  and every question. Matching is by kind, not by shared words, so a
  *  part labelled once serves questions it shares no words with. The
  *  wording is the question set's own: `question` asks it of an item the
@@ -48,7 +54,7 @@ export type LabelKindKey = (typeof LABEL_KINDS)[number]['key'];
 /** The question a part answers for one kind. The item the excerpt is
  *  is the batch's own item, named the way the caller's decide call
  *  names its items. */
-export function labelPartQuestion(kind: (typeof LABEL_KINDS)[number]) {
+export function labelPartQuestion(kind: LabelKind) {
   return {
     question: `Does this excerpt contain ${kind.name}?`,
     trueCriterion: kind.part.true,
@@ -57,11 +63,11 @@ export function labelPartQuestion(kind: (typeof LABEL_KINDS)[number]) {
 }
 
 /** The question the pick's task answers for one kind. */
-export function labelTaskQuestion(kind: (typeof LABEL_KINDS)[number]) {
+export function labelTaskQuestion(kind: LabelKind, chat = true) {
   const name = kind.name[0]!.toUpperCase() + kind.name.slice(1);
   return {
     question: `Would a statement that contains ${kind.name} help answer this question?`,
-    trueCriterion: `Knowing ${kind.name} from the user's past conversations could supply part of the answer.`,
+    trueCriterion: `Knowing ${kind.name} from ${chat ? "the user's past conversations" : 'the source material'} could supply part of the answer.`,
     falseCriterion: `${name} would not help answer this question.`,
   };
 }
@@ -77,12 +83,19 @@ export function labelQuestionTask(task: string): string {
 }
 
 /** A part's store key, and a question's: SHA-256 over the labels
- *  namespace, the question-set version, the caller's deciderId and the
- *  text the labels describe. The question's key adds its own namespace
+ *  namespace, the question-set version, the caller's deciderId, the
+ *  kind definitions and the text. The question's key adds its own namespace
  *  so a task that equals a part's text can never share its entry. */
-export function labelKey(version: string, deciderId: string, text: string, of: 'part' | 'question' = 'part'): string {
+export function labelKindsKey(kinds: readonly LabelKind[]): string {
+  return createHash('sha256').update(JSON.stringify([...kinds]
+    .sort((left, right) => left.key.localeCompare(right.key))
+    .map((kind) => [kind.key, kind.name, kind.part.true, kind.part.false]))).digest('hex');
+}
+
+export function labelKey(version: string, deciderId: string, text: string,
+  of: 'part' | 'question', kindsKey: string): string {
   return createHash('sha256')
-    .update(JSON.stringify([of === 'part' ? 'labels' : 'labels-question', version, deciderId, text]))
+    .update(JSON.stringify([of === 'part' ? 'labels' : 'labels-question', version, deciderId, kindsKey, text]))
     .digest('hex');
 }
 
@@ -124,23 +137,23 @@ export function labelFileStore(directory: string): LabelStore {
   };
 }
 
-export type PartLabels = Readonly<Record<LabelKindKey, number>>;
+export type PartLabels = Readonly<Record<string, number>>;
 
 /** A stored entry is `{ labels: { <kind>: probability } }` with a
  *  finite 0-to-1 probability for every kind — a refused, missing or
  *  errored answer is never stored, so a file holding one is corrupt.
  *  A missing, corrupt or wrong-shaped entry is a miss. */
-export function storedLabels(value: unknown): PartLabels | undefined {
+export function storedLabels(value: unknown, kinds: readonly LabelKind[]): PartLabels | undefined {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
   const labels = (value as { readonly labels?: unknown }).labels;
   if (typeof labels !== 'object' || labels === null || Array.isArray(labels)) return undefined;
   const entries = labels as Record<string, unknown>;
-  if (!LABEL_KINDS.every((kind) => {
+  if (!kinds.every((kind) => {
     const probability = entries[kind.key];
     return typeof probability === 'number' && Number.isFinite(probability)
       && probability >= 0 && probability <= 1;
   })) return undefined;
-  return Object.fromEntries(LABEL_KINDS.map((kind) => [kind.key, entries[kind.key]])) as PartLabels;
+  return Object.fromEntries(kinds.map((kind) => [kind.key, entries[kind.key]])) as PartLabels;
 }
 
 /** Reciprocal-rank fusion of the keyword order and the label order, as

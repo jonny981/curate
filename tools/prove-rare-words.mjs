@@ -77,6 +77,8 @@ for (const inst of data) {
     decide,
     cascade,
     keepTop: 0,
+    labels: false,
+    everyRanked: true,
     everyScored: { bar: 0.05 },
     rare: true,
   });

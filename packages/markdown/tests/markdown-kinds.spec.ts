@@ -6,6 +6,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { curate, pick, pickFromSources, type CandidateReadRequest, type MemoryCandidate, type PickDecide } from '@curatejs/core';
 import { markdown, rules } from '../src/index.js';
 
+const uncutPick = { everyRanked: true, everyScored: true, labels: false, rare: false } as const;
+
 const { fileReads } = vi.hoisted(() => ({ fileReads: [] as string[] }));
 vi.mock('node:fs/promises', async (original) => {
   const actual = await original<typeof import('node:fs/promises')>();
@@ -57,10 +59,10 @@ describe('Markdown paths and shared reads', () => {
     const result = await pickFromSources([
       markdown({ paths: [directory, join(directory, '*.md')], kind: 'knowledge' }),
       markdown({ paths: [join(directory, 'guide.md')], kind: 'docs' }),
-    ], { task: 'battery', searchLines: ['facts'] }, { task: 'battery', decide: yes });
+    ], { task: 'battery', searchLines: ['facts'] }, { ...uncutPick, task: 'battery', decide: yes });
     expect(fileReads.filter((file) => file === join(directory, 'guide.md'))).toHaveLength(1);
     expect(result.selected.map((c) => c.kind).sort()).toEqual(['docs', 'knowledge']);
-    const next = await pickFromSources([markdown({ paths: [directory], kind: 'docs' })], { task: 'battery' }, { task: 'battery', decide: yes });
+    const next = await pickFromSources([markdown({ paths: [directory], kind: 'docs' })], { task: 'battery' }, { ...uncutPick, task: 'battery', decide: yes });
     expect(next.selected).toHaveLength(1);
     expect(fileReads.filter((file) => file === join(directory, 'guide.md'))).toHaveLength(2);
   });
@@ -73,7 +75,7 @@ describe('Markdown paths and shared reads', () => {
       markdown({ paths: [directory], kind: 'docs' }),
     ], { task: 'battery', searchPhrases: ['battery'], limit: 1,
       meaning: { nearest: 1, embed: async (texts) => texts.map(() => [1, 0]) },
-    }, { task: 'battery', decide: async (batch, signal) => {
+    }, { ...uncutPick, task: 'battery', decide: async (batch, signal) => {
       expect(batch.questions.every((question) => question.text === text)).toBe(true);
       return yes(batch, signal);
     } });
@@ -85,7 +87,7 @@ describe('Markdown paths and shared reads', () => {
   it('keeps same-named files from separate roots distinct', async () => {
     const left = await tree({ 'note.md': 'Left.' });
     const right = await tree({ 'note.md': 'Right.' });
-    const result = await pickFromSources([markdown({ paths: [left, right], kind: 'knowledge' })], { task: 'notes', searchLines: ['facts'], wholeLanes: true }, { task: 'notes', decide: yes });
+    const result = await pickFromSources([markdown({ paths: [left, right], kind: 'knowledge' })], { task: 'notes', searchLines: ['facts'], wholeLanes: true }, { ...uncutPick, task: 'notes', decide: yes });
     expect(result.selected).toHaveLength(2);
     expect(new Set(result.selected.map((c) => c.id)).size).toBe(2);
   });
@@ -94,7 +96,7 @@ describe('Markdown paths and shared reads', () => {
     const text = `## Battery\n${'Battery facts.\n'.repeat(150)}`;
     const directory = await tree({ 'guide.md': text });
     const source = markdown({ paths: [directory], kind: 'docs' });
-    const whole = await pickFromSources([source], { task: 'battery' }, { task: 'battery', decide: async ({ questions }) => {
+    const whole = await pickFromSources([source], { task: 'battery' }, { ...uncutPick, task: 'battery', decide: async ({ questions }) => {
       expect(questions).toHaveLength(1);
       expect(questions[0]!.text).toBe(text);
       return yes({ task: 'battery', questions }, new AbortController().signal);
@@ -110,7 +112,7 @@ describe('Markdown rules and instructions', () => {
   it('keeps the existing rules reader full file text, ids, and exact signal set beyond 700 characters', async () => {
     const text = `# Battery\nSuperseded\nguide.ts\n${'one '.repeat(400)}`;
     const directory = await tree({ 'battery.md': text, 'README.md': 'Excluded.' });
-    const result = await pickFromSources([rules(directory)], { task: 'battery', paths: ['guide.ts'] }, {
+    const result = await pickFromSources([rules(directory)], { task: 'battery', paths: ['guide.ts'] }, { ...uncutPick,
       task: 'battery', decide: async ({ questions }, signal) => {
         expect(questions).toHaveLength(1);
         expect(questions[0]).toMatchObject({ id: 'battery.md', title: 'battery.md', text });
@@ -143,7 +145,7 @@ describe('Markdown rules and instructions', () => {
     const directory = await tree({ 'typescript.mdc': '---\nglobs: ["**/*.{ts,tsx}"]\n---\nUse types.',
       'python.mdc': '---\nglobs:\n  - "**/*.py"\n---\nUse Python.',
       'always.mdc': '---\nglobs: "**/*.py"\nalwaysApply: true\n---\nKeep secrets private.' });
-    const picked = await pickFromSources([markdown({ paths: [directory], kind: 'rules' })], { task: 'battery', paths: ['src/battery.ts'] }, {
+    const picked = await pickFromSources([markdown({ paths: [directory], kind: 'rules' })], { task: 'battery', paths: ['src/battery.ts'] }, { ...uncutPick,
       task: 'battery', decide: async ({ questions }, signal) => { expect(questions).toHaveLength(1); expect(questions[0]!.text).toBe('Use types.'); return yes({ task: 'battery', questions }, signal); },
     });
     expect(picked.selected).toHaveLength(2);
@@ -154,7 +156,7 @@ describe('Markdown rules and instructions', () => {
   it('honors Copilot applyTo before any model call', async () => {
     const directory = await tree({ 'python.instructions.md': '---\napplyTo: "**/*.py"\n---\nUse Python.' });
     const decide = vi.fn(yes);
-    const result = await pickFromSources([markdown({ paths: [directory], kind: 'instructions' })], { task: 'battery', paths: ['src/battery.ts'] }, { task: 'battery', decide });
+    const result = await pickFromSources([markdown({ paths: [directory], kind: 'instructions' })], { task: 'battery', paths: ['src/battery.ts'] }, { ...uncutPick, task: 'battery', decide });
     expect(result.selected).toEqual([]);
     expect(decide).not.toHaveBeenCalled();
     expect((await read([directory], 'instructions', { paths: ['src/battery.py'] })).candidates).toHaveLength(1);
@@ -197,7 +199,7 @@ describe('Markdown dates, pins, and decisions', () => {
 
   it('uses kind-specific questions and records kinds while retaining low-score evidence and full curator text', async () => {
     const directory = await tree({ 'guide.md': 'Battery facts.' });
-    const picked = await pickFromSources(['knowledge', 'docs', 'rules', 'instructions'].map((kind) => markdown({ paths: [directory], kind: kind as 'knowledge' | 'docs' | 'rules' | 'instructions' })), { task: 'battery' }, {
+    const picked = await pickFromSources(['knowledge', 'docs', 'rules', 'instructions'].map((kind) => markdown({ paths: [directory], kind: kind as 'knowledge' | 'docs' | 'rules' | 'instructions' })), { task: 'battery' }, { ...uncutPick,
       task: 'battery', decide: async ({ questions }, signal) => {
         expect(questions.map((q) => q.kind).sort()).toEqual(['docs', 'instructions', 'knowledge', 'rules']);
         expect(new Set(questions.map((q) => q.question)).size).toBe(4);
@@ -214,11 +216,11 @@ describe('Markdown dates, pins, and decisions', () => {
   it('weights signals by kind, records those weights, and keeps host rules on rule questions', async () => {
     const candidates: MemoryCandidate[] = ['low', 'high'].map((id) => ({ sourceId: 'docs', id, title: id, text: id, kind: 'docs', role: 'reference', signals: { words: id === 'low' ? 1 : 3 } }));
     const ranking = { docs: { words: -1 } };
-    const result = await pick(candidates, { task: 'battery', decide: yes, ranking, limits: { maxCandidates: 1 } });
+    const result = await pick(candidates, { ...uncutPick, task: 'battery', decide: yes, ranking, limits: { maxCandidates: 1 } });
     expect(result.selected.map((c) => c.id)).toEqual(['low']);
     expect(result.record.ranking).toEqual(ranking);
     const rule = { ...candidates[0]!, role: 'rule' as const };
-    await pick([rule], { task: 'battery', decide: async ({ questions }, signal) => { expect(questions[0]!.question).toBe('Does this rule apply to this task?'); return yes({ task: 'battery', questions }, signal); } });
-    await expect(pick(candidates, { task: 'battery', decide: yes, ranking: { docs: { words: NaN } } })).rejects.toThrow('finite');
+    await pick([rule], { ...uncutPick, task: 'battery', decide: async ({ questions }, signal) => { expect(questions[0]!.question).toBe('Does this rule apply to this task?'); return yes({ task: 'battery', questions }, signal); } });
+    await expect(pick(candidates, { ...uncutPick, task: 'battery', decide: yes, ranking: { docs: { words: NaN } } })).rejects.toThrow('finite');
   });
 });

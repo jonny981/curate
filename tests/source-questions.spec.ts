@@ -8,6 +8,8 @@ import { chat } from '@curatejs/chat';
 import { gitHistory } from '@curatejs/git';
 import { knowledgeBase, rules } from '@curatejs/markdown';
 
+const uncutPick = { everyRanked: true, everyScored: true, labels: false, rare: false } as const;
+
 const criterion = (key: string): PickCriterion => ({
   key, instructions: `Check ${key}?`, true: `${key} applies.`, false: `${key} does not apply.`,
 });
@@ -40,7 +42,7 @@ describe('questions chosen by source kind', () => {
       candidate('same', { sourceId: 'conversation' }),
       candidate('same', { sourceId: 'commits' }),
       candidate('same', { sourceId: 'notes' }),
-    ], {
+    ], { ...uncutPick,
       task: 'Choose evidence',
       sourceKinds: { conversation: 'chat', commits: 'git-history', notes: 'markdown' },
       cascadesByKind: { chat, 'git-history': history, markdown: fitted('note-evidence') },
@@ -70,7 +72,7 @@ describe('questions chosen by source kind', () => {
       candidate('a', { sourceId: 'conversation' }),
       candidate('b', { sourceId: 'notes' }),
       candidate('c', { sourceId: 'unknown' }),
-    ], {
+    ], { ...uncutPick,
       task: 'Choose evidence', cascade: fitted('shared'), cascadesByKind: { chat: fitted('chat') },
       sourceKinds: { conversation: 'chat', notes: 'markdown' },
       decide: async (batch, signal) => {
@@ -87,7 +89,7 @@ describe('questions chosen by source kind', () => {
 
   it('uses the ordinary question when neither a kind set nor a fallback exists', async () => {
     const asked: (string | undefined)[] = [];
-    const result = await pick([candidate('a', { sourceId: 'conversation' }), candidate('b')], {
+    const result = await pick([candidate('a', { sourceId: 'conversation' }), candidate('b')], { ...uncutPick,
       task: 'Choose evidence', cascadesByKind: { chat: fitted('chat') },
       sourceKinds: { conversation: 'chat', notes: 'markdown' },
       decide: async (batch, signal) => {
@@ -104,7 +106,7 @@ describe('questions chosen by source kind', () => {
     const calls: string[][] = [];
     const result = await pickFromSources([
       source('conversation', 'chat'), source('commits', 'git-history'), source('notes', 'markdown'), source('custom'),
-    ], { task: 'Choose evidence', wholeLanes: true }, {
+    ], { task: 'Choose evidence', wholeLanes: true }, { ...uncutPick,
       task: 'Choose evidence', cascade: fitted('fallback'),
       cascadesByKind: { chat: fitted('chat'), 'git-history': fitted('history'), markdown: fitted('note') },
       sourceKinds: { custom: 'markdown', conversation: 'markdown' },
@@ -122,7 +124,7 @@ describe('questions chosen by source kind', () => {
 
   it('routes source identities that also name built-in object properties', async () => {
     const asked: (string | undefined)[] = [];
-    const result = await pickFromSources([source('__proto__', 'chat'), source('constructor')], { task: 'Choose evidence', wholeLanes: true }, {
+    const result = await pickFromSources([source('__proto__', 'chat'), source('constructor')], { task: 'Choose evidence', wholeLanes: true }, { ...uncutPick,
       task: 'Choose evidence', cascadesByKind: { chat: fitted('chat') },
       decide: async (batch, signal) => {
         asked.push(...batch.questions.map((q) => q.questionKey));
@@ -136,8 +138,8 @@ describe('questions chosen by source kind', () => {
 
   it('keeps shared questions and still records kinds when optional routing is absent', async () => {
     const candidates = [candidate('a'), candidate('b')];
-    const original = await pick(candidates, { task: 'Choose evidence', cascade: fitted('shared'), decide: answers(0.9) });
-    const disabled = await pick(candidates, {
+    const original = await pick(candidates, { ...uncutPick, task: 'Choose evidence', cascade: fitted('shared'), decide: answers(0.9) });
+    const disabled = await pick(candidates, { ...uncutPick,
       task: 'Choose evidence', cascade: fitted('shared'), decide: answers(0.9),
       sourceKinds: { notes: 'chat' }, cascadesByKind: undefined,
     });
@@ -147,7 +149,7 @@ describe('questions chosen by source kind', () => {
     expect(disabled.record.candidates[0]?.sourceKind).toBe('chat');
     expect(disabled.record).not.toHaveProperty('sourceKinds');
     expect(disabled.record).not.toHaveProperty('cascadesByKind');
-    const read = await pickFromSources([source('notes', 'chat')], { task: 'Choose evidence', wholeLanes: true }, {
+    const read = await pickFromSources([source('notes', 'chat')], { task: 'Choose evidence', wholeLanes: true }, { ...uncutPick,
       task: 'Choose evidence', cascade: fitted('shared'), decide: answers(0.9),
     });
     expect(read.record).not.toHaveProperty('sourceKinds');
@@ -162,7 +164,7 @@ describe('rule questions', () => {
     const result = await pick([
       candidate('always', { role: 'rule', applies: 'always' }),
       candidate('applies', { role: 'rule' }), candidate('irrelevant', { role: 'rule' }), candidate('reference'),
-    ], {
+    ], { ...uncutPick,
       task: 'Choose evidence', sourceKinds: { notes: 'markdown' },
       cascadesByKind: { markdown: fitted('evidence') }, thresholds: { rule: 0.8 },
       decide: async ({ questions }) => {
@@ -216,7 +218,7 @@ describe('built-in source routing', () => {
       ];
       const kindFor = new Map(readers.map((reader) => [reader.id, reader.kind]));
       const asked: string[] = [];
-      const result = await pickFromSources(readers, { task: 'Validate inputs' }, {
+      const result = await pickFromSources(readers, { task: 'Validate inputs' }, { ...uncutPick,
         task: 'Validate inputs',
         cascadesByKind: { chat: fitted('chat'), 'git-history': fitted('history'), markdown: fitted('note') },
         decide: async ({ questions }) => Object.fromEntries(questions.map((q) => {
@@ -246,7 +248,7 @@ describe('built-in source routing', () => {
 describe('limits across source questions', () => {
   it('shares candidate and batch limits across fitted assessment calls', async () => {
     const calls: number[] = [];
-    const result = await pick([candidate('a'), candidate('b'), candidate('c')], {
+    const result = await pick([candidate('a'), candidate('b'), candidate('c')], { ...uncutPick,
       task: 'Choose evidence', cascade: { bias: 0, questions: [{ ...criterion('one'), weight: 1 }, { ...criterion('two'), weight: 1 }] }, limits: { maxCandidates: 2, maxPerBatch: 1, maxBatches: 3 },
       decide: async (batch, signal) => { calls.push(batch.questions.length); return answers(0.5)(batch, signal); },
     });
@@ -258,7 +260,7 @@ describe('limits across source questions', () => {
 
   it('leaves incomplete fitted assessments unassessed when later questions cannot run', async () => {
     let calls = 0;
-    const result = await pick([candidate('a')], {
+    const result = await pick([candidate('a')], { ...uncutPick,
       task: 'Choose evidence',
       sourceKinds: { notes: 'markdown' }, cascadesByKind: {
         markdown: { bias: 0, questions: [{ ...criterion('one'), weight: 1 }, { ...criterion('two'), weight: 1 }] },
@@ -273,7 +275,7 @@ describe('limits across source questions', () => {
   it('leaves fitted assessment unassessed if cancellation arrives after its first question', async () => {
     const controller = new AbortController();
     let calls = 0;
-    const result = await pick([candidate('a')], {
+    const result = await pick([candidate('a')], { ...uncutPick,
       task: 'Choose evidence', cascade: { bias: 0, first: 'one', band: [0.1, 0.9], firstOnly: { bias: 0, weight: 1 }, questions: [{ ...criterion('one'), weight: 1 }, { ...criterion('two'), weight: 1 }] }, signal: controller.signal,
       decide: async (batch, signal) => { calls++; controller.abort(); return answers(0.5)(batch, signal); },
     });
@@ -287,7 +289,7 @@ describe('limits across source questions', () => {
     const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
     try {
       let calls = 0;
-      const result = await pick([candidate('a')], {
+      const result = await pick([candidate('a')], { ...uncutPick,
         task: 'Choose evidence', cascade: { bias: 0, first: 'one', band: [0.1, 0.9], firstOnly: { bias: 0, weight: 1 }, questions: [{ ...criterion('one'), weight: 1 }, { ...criterion('two'), weight: 1 }] }, limits: { maxElapsedMs: 10 },
         decide: async (batch, signal) => { calls++; now += 10; return answers(0.5)(batch, signal); },
       });
@@ -297,7 +299,7 @@ describe('limits across source questions', () => {
   });
 
   it('records a fitted question that never finishes before the time limit', async () => {
-    const result = await pick([candidate('a')], {
+    const result = await pick([candidate('a')], { ...uncutPick,
       task: 'Choose evidence', cascade: { bias: 0, first: 'one', band: [0.1, 0.9], firstOnly: { bias: 0, weight: 1 }, questions: [{ ...criterion('one'), weight: 1 }, { ...criterion('two'), weight: 1 }] }, limits: { maxElapsedMs: 20 },
       decide: async (batch, signal) => batch.questions[0]?.questionKey === 'two'
         ? new Promise(() => {}) : answers(0.5)(batch, signal),
@@ -315,7 +317,7 @@ describe('limits across source questions', () => {
 describe('configuration validation', () => {
   it('validates per-kind sets even when no candidate uses the kind', async () => {
     let calls = 0;
-    await expect(pick([candidate('a')], {
+    await expect(pick([candidate('a')], { ...uncutPick,
       task: 'Choose evidence', cascadesByKind: { chat: { bias: 0, questions: [] } },
       decide: async () => { calls++; return {}; },
     })).rejects.toThrow('cascade');

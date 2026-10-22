@@ -94,6 +94,10 @@ const replayed = picked.candidates.map((entry, index) => {
 // stored answers, so `appliedReference` (an output, not an input) is
 // dropped.
 const options = {
+  everyRanked: true,
+  everyScored: true,
+  rare: false,
+  labels: false,
   ...(picked.cascade === undefined ? {} : { cascade: picked.cascade }),
   ...(picked.cascadesByKind === undefined ? {} : { cascadesByKind: picked.cascadesByKind }),
   ...(picked.sourceKinds === undefined ? {} : { sourceKinds: picked.sourceKinds }),

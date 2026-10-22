@@ -14,6 +14,8 @@ import {
   type PickDecide,
 } from '../src/index.js';
 
+const uncutPick = { everyRanked: true, everyScored: true, labels: false, rare: false } as const;
+
 const KIND_KEYS = new Set<string>(LABEL_KINDS.map((kind) => kind.key));
 
 function candidate(overrides: Partial<MemoryCandidate> & Pick<MemoryCandidate, 'sourceId' | 'id'>): MemoryCandidate {
@@ -68,12 +70,12 @@ describe('pick scaled top-k', () => {
     const candidates = parts(20);
     const task = 'Recall the plan';
     const baseline = stubDecide(() => answered(0.9));
-    const plain = await pick(candidates, { task, decide: baseline.decide });
+    const plain = await pick(candidates, { ...uncutPick, task, decide: baseline.decide });
     // The known baseline: every candidate is decided and selected.
     expect(decidedIds(baseline.calls)).toEqual(candidates.map((item) => item.id));
     expect(plain.selected.map((item) => item.id)).toEqual(candidates.map((item) => item.id));
     expect(plain.record).not.toHaveProperty('pick');
-    const absent = await pick(candidates, { task, decide: allAnswered.decide, everyRanked: undefined });
+    const absent = await pick(candidates, { ...uncutPick, task, decide: allAnswered.decide, everyRanked: undefined });
     expect(absent.selected).toEqual(plain.selected);
     expect(absent.record).toEqual(plain.record);
   });
@@ -86,7 +88,7 @@ describe('pick scaled top-k', () => {
     [10, 2.17, 10],
   ])('keeps the top round(c × N^0.8) of the keyword ranking: N=%i c=%f keeps %i', async (count, c, kept) => {
     const counter = stubDecide(() => answered(0.9));
-    const result = await pick(parts(count), { task: 'Recall the plan', decide: counter.decide, everyRanked: { c } });
+    const result = await pick(parts(count), { ...uncutPick, task: 'Recall the plan', decide: counter.decide, everyRanked: { c } });
 
     expect(decidedIds(counter.calls)).toEqual(parts(kept).map((item) => item.id));
     expect(result.record.pick).toEqual({ n: count, c, kept, ranking: 'keyword' });
@@ -104,7 +106,7 @@ describe('pick scaled top-k', () => {
     const laneMembers = parts(50);
     const pool = Array.from({ length: 450 }, (_, index) =>
       candidate({ sourceId: 'notes', id: `x${index}`, poolOnly: true }));
-    const result = await pick([...laneMembers, ...pool], {
+    const result = await pick([...laneMembers, ...pool], { ...uncutPick,
       task: 'Recall the plan', decide: counter.decide, everyRanked: { c: 0.68 },
     });
 
@@ -127,7 +129,7 @@ describe('pick scaled top-k', () => {
     const laneMembers = parts(3);
     const pool = [0, 1].map((index) =>
       candidate({ sourceId: 'notes', id: `x${index}`, poolOnly: true }));
-    const result = await pick([...laneMembers, ...pool], {
+    const result = await pick([...laneMembers, ...pool], { ...uncutPick,
       task: 'Recall the plan', decide: counter.decide,
     });
 
@@ -141,7 +143,7 @@ describe('pick scaled top-k', () => {
   it('passes rules through uncounted and uncut', async () => {
     const counter = stubDecide(() => answered(0.9));
     const rule = candidate({ sourceId: 'notes', id: 'rule-1', role: 'rule' });
-    const result = await pick([rule, ...parts(100)], {
+    const result = await pick([rule, ...parts(100)], { ...uncutPick,
       task: 'Recall the plan', decide: counter.decide, everyRanked: { c: 0.68 },
     });
 
@@ -166,7 +168,7 @@ describe('pick scaled top-k', () => {
       read: async () => ({ status: 'read', complete: true, candidates: pool }),
     };
     const result = await pickFromSources([source], { task: 'Recall the plan' },
-      { task: 'Recall the plan', decide: counter.decide, everyRanked: { c: 0.68 } });
+      { ...uncutPick, task: 'Recall the plan', decide: counter.decide, everyRanked: { c: 0.68 } });
 
     expect(result.record.pick).toEqual({ n: 120, c: 0.68, kept: 3, ranking: 'keyword' });
     // The 117 pool members count toward N but, with the gate off, stay
@@ -191,7 +193,7 @@ describe('pick scaled top-k', () => {
       read: async () => ({ status: 'read', complete: true, candidates: pool }),
     };
     const result = await pickFromSources([source], { task: 'Recall the plan' },
-      { task: 'Recall the plan', decide: counter.decide, everyRanked: { c: 0.68 } });
+      { ...uncutPick, task: 'Recall the plan', decide: counter.decide, everyRanked: { c: 0.68 } });
 
     const read = result.reads[0]!;
     expect(read).toMatchObject({ status: 'read', noSearchMatch: true });
@@ -215,9 +217,10 @@ describe('pick scaled top-k', () => {
     });
     const candidates = ['a', 'b', 'p3'].map((id, index) =>
       candidate({ sourceId: 'notes', id, searchRanks: [index] }));
-    const result = await pick(candidates, {
+    const result = await pick(candidates, { ...uncutPick,
       task: 'Recall the plan', decide: counter.decide,
       labels: { directory, deciderId: 'test-decider' },
+      labelKindsBySource: { notes: LABEL_KINDS },
       everyRanked: { c: 0.68 },
     });
 
@@ -237,9 +240,10 @@ describe('pick scaled top-k', () => {
     const counter = stubDecide((question) => answered(question.id === 'question' ? 0.1 : 0.9));
     const candidates = ['a', 'b', 'p3'].map((id, index) =>
       candidate({ sourceId: 'notes', id, searchRanks: [index] }));
-    const result = await pick(candidates, {
+    const result = await pick(candidates, { ...uncutPick,
       task: 'Recall the plan', decide: counter.decide,
       labels: { directory, deciderId: 'test-decider' },
+      labelKindsBySource: { notes: LABEL_KINDS },
       everyRanked: { c: 0.68 },
     });
 
@@ -255,11 +259,11 @@ describe('pick scaled top-k', () => {
   it('refuses an invalid c before any decide call', async () => {
     const counter = stubDecide(() => answered(0.9));
     for (const c of [0, -0.5, Number.NaN, Number.POSITIVE_INFINITY, undefined]) {
-      await expect(pick(parts(10), {
+      await expect(pick(parts(10), { ...uncutPick,
         task: 'Recall the plan', decide: counter.decide, everyRanked: { c: c as number },
       })).rejects.toThrow(TypeError);
     }
-    await expect(pick(parts(10), {
+    await expect(pick(parts(10), { ...uncutPick,
       task: 'Recall the plan', decide: counter.decide, everyRanked: 0.68 as never,
     })).rejects.toThrow(TypeError);
     expect(counter.calls).toHaveLength(0);

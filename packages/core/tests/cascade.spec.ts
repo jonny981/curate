@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { pick, type MemoryCandidate, type PickCascade, type PickDecide } from '../src/index.js';
 
+const uncutPick = { everyRanked: true, everyScored: true, labels: false, rare: false } as const;
+
 const cascade: PickCascade = {
   bias: -1.7305, first: 'relevant', band: [0.1, 0.9],
   firstOnly: { bias: -0.6674, weight: 1.2882 },
@@ -28,7 +30,7 @@ describe('fitted decision questions', () => {
         status: 'answered', probability: q.questionKey === 'relevant' ? values[q.id]! : 0.8,
       }]));
     };
-    const result = await pick(['low', 'high', 'middle', 'edge'].map((id, i) => item(id, 4 - i)), {
+    const result = await pick(['low', 'high', 'middle', 'edge'].map((id, i) => item(id, 4 - i)), { ...uncutPick,
       task: 'Recall', cascade, decide, everyScored: { bar: 0 }, limits: { maxPerBatch: 2 },
     });
     expect(calls).toEqual([
@@ -48,9 +50,9 @@ describe('fitted decision questions', () => {
     const decide: PickDecide = async ({ questions }) => Object.fromEntries(questions
       .filter((q) => q.questionKey !== 'needed')
       .map((q) => [q.key, { status: 'answered', probability: q.questionKey === 'own' ? 0.8 : 0.5 }]));
-    const result = await pick([item('a')], { task: 'Recall', cascade, decide, everyScored: { bar: 0 } });
+    const result = await pick([item('a')], { ...uncutPick, task: 'Recall', cascade, decide, everyScored: { bar: 0 } });
     expect(result.record.candidates[0]).toMatchObject({ probability: sigmoid(-1.7305 + 0.8588 * logit(0.8)) });
-    const missing = await pick([item('a')], { task: 'Recall', cascade, decide: async () => ({}) });
+    const missing = await pick([item('a')], { ...uncutPick, task: 'Recall', cascade, decide: async () => ({}) });
     expect(missing.record.candidates[0]).toMatchObject({ status: 'unanswered', answer: 'missing' });
   });
 
@@ -63,7 +65,7 @@ describe('fitted decision questions', () => {
       }
       return Object.fromEntries(questions.map((q) => [q.key, { status: 'answered', probability: 0.8 }]));
     };
-    await pick([item('same'), { ...item('same'), sourceId: 'other' }, { ...item('r'), role: 'rule' }], {
+    await pick([item('same'), { ...item('same'), sourceId: 'other' }, { ...item('r'), role: 'rule' }], { ...uncutPick,
       task: 'Recall', cascade, decide,
     });
     expect(new Set(keys).size).toBe(7);
@@ -76,7 +78,7 @@ describe('fitted decision questions', () => {
       sizes.push(questions.length);
       return Object.fromEntries(questions.map((q) => [q.key, { status: 'answered', probability: 0.5 }]));
     };
-    const result = await pick([item('a', 3), item('b', 2), item('c', 1)], {
+    const result = await pick([item('a', 3), item('b', 2), item('c', 1)], { ...uncutPick,
       task: 'Recall', cascade, decide, limits: { maxPerBatch: 2, maxCandidates: 2 },
     });
     expect(sizes).toEqual([2, 2, 2]);
@@ -86,14 +88,14 @@ describe('fitted decision questions', () => {
   it('leaves in-band candidates unassessed when the batch limit stops their narrow questions', async () => {
     const decide: PickDecide = async ({ questions }) => Object.fromEntries(questions.map((q) =>
       [q.key, { status: 'answered', probability: q.id === 'outside' ? 1 : 0.8 }]));
-    const result = await pick([item('inside', 2), item('outside', 1)], {
+    const result = await pick([item('inside', 2), item('outside', 1)], { ...uncutPick,
       task: 'Recall', cascade, decide, limits: { maxPerBatch: 2, maxBatches: 1 },
     });
     expect(result.record.candidates[0]).toMatchObject({ status: 'unassessed', reason: 'limits' });
     expect(result.record.candidates[1]).toMatchObject({ status: 'selected' });
-    const full = await pick([item('inside')], { task: 'Recall', cascade, decide });
+    const full = await pick([item('inside')], { ...uncutPick, task: 'Recall', cascade, decide });
     expect(full.record.candidates[0]).toMatchObject({ status: 'selected' });
-    const unstaged = await pick([item('inside')], {
+    const unstaged = await pick([item('inside')], { ...uncutPick,
       task: 'Recall', cascade: { bias: cascade.bias, questions: cascade.questions }, decide,
       limits: { maxPerBatch: 1, maxBatches: 1 },
     });
@@ -106,7 +108,7 @@ describe('fitted decision questions', () => {
     { ...cascade, questions: [cascade.questions[0], cascade.questions[0]] },
   ])('rejects invalid fitted configuration before calling decide', async (invalid) => {
     let calls = 0;
-    await expect(pick([item('a')], {
+    await expect(pick([item('a')], { ...uncutPick,
       task: 'Recall', cascade: invalid as PickCascade, decide: async () => { calls++; return {}; },
     })).rejects.toThrow('cascade');
     expect(calls).toBe(0);
@@ -120,20 +122,20 @@ describe('selection after decisions', () => {
   const candidates = [item('keyword', 9), item('strong', 5), item('weak', 10)];
 
   it('orders by decision weight and keeps all passing items without a size cap', async () => {
-    const result = await pick(candidates.map((c) => ({ ...c, text: 'x'.repeat(30_000) })), { task: 'Recall', decide });
+    const result = await pick(candidates.map((c) => ({ ...c, text: 'x'.repeat(30_000) })), { ...uncutPick, task: 'Recall', decide });
     expect(result.selected.map((c) => c.id)).toEqual(['strong', 'keyword', 'weak']);
     expect(result.selected.every((c) => c.text.length === 30_000)).toBe(true);
   });
 
   it('promotes selected top keyword hits without admitting rejected ones', async () => {
-    const result = await pick(candidates, { task: 'Recall', decide, keepTop: 2, everyScored: { bar: 0.6 } });
+    const result = await pick(candidates, { ...uncutPick, task: 'Recall', decide, keepTop: 2, everyScored: { bar: 0.6 } });
     expect(result.selected.map((c) => c.id)).toEqual(['keyword', 'strong']);
     expect(result.record.keepTop).toBe(2);
-    expect((await pick(candidates, { task: 'Recall', decide, keepTop: 0, everyScored: { bar: 0.6 } })).selected.map((c) => c.id))
+    expect((await pick(candidates, { ...uncutPick, task: 'Recall', decide, keepTop: 0, everyScored: { bar: 0.6 } })).selected.map((c) => c.id))
       .toEqual(['strong', 'keyword']);
   });
 
   it.each([-1, 0.5, Infinity])('rejects keepTop=%s', async (keepTop) => {
-    await expect(pick(candidates, { task: 'Recall', decide, keepTop })).rejects.toThrow('keepTop');
+    await expect(pick(candidates, { ...uncutPick, task: 'Recall', decide, keepTop })).rejects.toThrow('keepTop');
   });
 });

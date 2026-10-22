@@ -9,6 +9,8 @@ import { chat, type ChatProvider } from '../src/index.js';
 import { CHAT_KEYWORD_SETTINGS, rankChat } from '../src/chat-rank.js';
 import { porterStem } from '../src/porter.js';
 
+const uncutPick = { everyRanked: true, everyScored: true, labels: false, rare: false } as const;
+
 const directories: string[] = [];
 afterEach(async () => {
   vi.useRealTimers();
@@ -241,6 +243,7 @@ describe('chat source contract', () => {
     const directory = await transcript('codex', [message('codex', 'user', text)]);
     const seen: string[] = [];
     const result = await pickFromSources([chat({ paths: [directory], providers: ['codex'] })], { task: 'hello', wholeLanes: true }, {
+      ...uncutPick,
       task: 'hello', limits: { maxQuestionText: 50 },
       decide: async (batch) => {
         seen.push(...batch.questions.map((question) => question.text));
@@ -260,6 +263,7 @@ describe('chat source contract', () => {
     ]);
     const seen: string[] = [];
     const result = await pickFromSources([chat({ paths: [directory], providers: ['codex'] })], { task: "What's my dog's name?" }, {
+      ...uncutPick,
       task: "What's my dog's name?",
       decide: async (batch) => {
         seen.push(...batch.questions.map((question) => question.text));
@@ -555,7 +559,7 @@ describe('streaming read', () => {
       batch.questions.map((q) => [q.key, { status: 'answered' as const, probability: 0.9 }]));
     const picked = await pickFromSources([chat({ paths: [directory], providers: ['codex'] })], {
       task: 'S3 backup recovery', searchLines: ['zxq unmatched words'],
-    }, { task: 'S3 backup recovery', decide });
+    }, { ...uncutPick, task: 'S3 backup recovery', decide });
     const laneRead = picked.reads[0]!;
     if (laneRead.status !== 'read') throw new Error('read failed');
     expect(laneRead.lanes).toEqual([
@@ -590,7 +594,7 @@ describe('streaming read', () => {
     try {
       result = await pickFromSources([chat({ providers: ['codex'], paths: [directory] })],
         { task: 'qxzwv no such terms anywhere' },
-        { task: 'qxzwv no such terms anywhere', decide });
+        { ...uncutPick, task: 'qxzwv no such terms anywhere', decide });
     } finally {
       clearInterval(timer);
     }

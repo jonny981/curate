@@ -239,7 +239,8 @@ export function searchSource(source, searches, audit, folder, settings = {}) {
     const read = await source.read({ wholeLanes: false, ...request, task });
     const terms = new Set(words(task));
     const result = read.status !== 'read' ? read : { ...read, candidates: rankMatches(read.candidates.filter((candidate) =>
-      ['keyword', 'shared_words', 'bm25', 'heading-words', 'file-words'].some((key) => candidate.signals[key] > 0)
+      request.wholeLanes === true
+      || ['keyword', 'shared_words', 'bm25', 'heading-words', 'file-words'].some((key) => candidate.signals[key] > 0)
       || words(`${candidate.title} ${candidate.text}`).some((word) => terms.has(word))), settings) };
     const file = `read-${audit.length + 1}.json`;
     audit.push({ source: source.id, task, ms: Date.now() - started, status: result.status,
@@ -249,7 +250,7 @@ export function searchSource(source, searches, audit, folder, settings = {}) {
   } };
 }
 
-// Read once, then set the text budget from the evidence rather than cutting it.
+// Cache each lane and the label pool, then size the text budget from them.
 export async function pickFullSources(sources, request, options) {
   let maxQuestionText = 1;
   const cached = await Promise.all(sources.map(async (source) => {
@@ -263,7 +264,16 @@ export async function pickFullSources(sources, request, options) {
       reads.set(task, read);
       for (const candidate of read.candidates ?? []) maxQuestionText = Math.max(maxQuestionText, candidate.text.length);
     }
-    return { ...source, read: async ({ task }) => reads.get(task) };
+    let pool;
+    if (source.role === 'reference' && ((options.labels && source.labelKinds?.length)
+      || (options.everyRanked !== undefined && options.everyRanked !== true)
+      || (options.rare ?? source.rare ?? false) !== false)) {
+      pool = await source.read({ ...request, task: request.task, wholeLanes: true, limit: undefined,
+        ...(revision === undefined ? {} : { revision }) });
+      for (const candidate of pool.candidates ?? []) maxQuestionText = Math.max(maxQuestionText, candidate.text.length);
+    }
+    return { ...source, read: async ({ task, wholeLanes, limit }) =>
+      wholeLanes && limit === undefined && pool ? pool : reads.get(task) };
   }));
   return pickFromSources(cached, request, { ...options, limits: { ...options.limits, maxQuestionText } });
 }
@@ -377,6 +387,7 @@ export async function run(args = process.argv.slice(2), callSubscription = subsc
         throw error;
       } finally { call.ms = Date.now() - then; await save(); }
     };
+    decide.deciderId = 'curate-skill:typesafe:jev-latest';
     // Jev documents 32,000 tokens for a request's state plus its longest
     // question; three characters per token is a conservative estimate for
     // English text and JSON. Subtracting the longest question's characters

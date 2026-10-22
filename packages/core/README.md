@@ -5,7 +5,7 @@ Curate selects the memory an agent needs for a task from typed sources. Its RDC 
 ## RDC process
 
 - **Rank:** Order memory candidates by their signals.
-- **Decide:** Keep every scored reference by default; use decision probability to order and weight it. Check rules against their separate applicability bar.
+- **Decide:** Judge ranked evidence with narrow questions. Keep references scored 0.0146 or more, ordered and weighted by decision probability. Check rules against their separate applicability bar.
 - **Curate:** Call `curate(task, picked, { write })` to write the dated log the working model reads.
 
 ## Install
@@ -32,15 +32,19 @@ const mem = memory({ sources, decide, write });
 const { log, rules, picked, result } = await mem.recall('What billing constraint must this change preserve?');
 ```
 
-- **Log:** `log` is the writer's checked text. `result` is the full `CurateResult`, including its record.
+- **Log:** `log` is the writer's text after format checks and any recovery. `result` is the full `CurateResult`, including its record.
 - **Rules:** `rules` joins selected rules with blank lines and preserves each rule's text. Rules do not go to the writer.
 - **Selection:** `picked` is the full `PickSourcesResult`, including source reads and decision records.
 - **Questions:** Each built-in reader carries its question set in `source.cascade`. `memory()` uses it for that source kind. Set `pick.cascadesByKind` to override a kind's questions. Custom sources without a set use core's ordinary question or your `pick.cascade` fallback.
-- **Incomplete collection:** Absent or incomplete reads, unanswered candidates and unassessed candidates throw before the writer runs. The error's `cause` holds `picked` for inspection. Source read errors propagate. A limit that leaves candidates unassessed also throws; use `pickFromSources()` directly if you need to accept a partial selection.
+- **Incomplete collection:** Absent or incomplete reads, unanswered candidates and interrupted decisions throw before the writer runs. Parts intentionally excluded by the label questions are allowed. The error's `cause` holds `picked` for inspection. Source read errors propagate. A limit that leaves candidates unassessed also throws; use `pickFromSources()` directly if you need to accept a partial selection.
 - **Cancellation:** `mem.recall(task, { signal })` passes the signal to the readers and both model functions.
 
-Choose `preset: 'economy'` to keep only references at or above its decision bar.
-The default is `'performance'`.
+Use the default for agents working from any mix of chat, git and docs.
+It decides every ranked part and keeps references scored 0.0146 or more, with labels and routing off.
+Git and Markdown sources enable the rare-word round; chat leaves it off.
+Choose `preset: 'conversation-recall'` for questions about past conversations.
+It adds labels using each source's kinds: seven for chat, none for git or Markdown.
+Set `preset: 'default'` to choose the default explicitly.
 Explicit `read`, `pick` and `curate` options override the preset:
 
 ```ts
@@ -48,7 +52,7 @@ const mem = memory({
   sources,
   decide,
   write,
-  preset: 'economy',
+  preset: 'conversation-recall',
   read: { wholeLanes: true },
   pick: { everyScored: { bar: 0.05 } },
   curate: { context: true },
@@ -70,8 +74,8 @@ const decide = jev({ apiKey: process.env.TYPESAFE_API_KEY });
 const write = chatWriter({ apiKey: process.env.CHAT_API_KEY, model: 'gpt-5-mini' });
 ```
 
-- **Jev:** `jev({ apiKey, model? })` returns a `PickDecide` function for TypeSafe's System One endpoint. The model defaults to `'jev-latest'`. Missing or invalid probabilities become missing answers.
-- **OpenAI Decisions:** `openAIDecisions({ apiKey, model? })` returns a `PickDecide` function for the [Decisions API](https://developers.openai.com/api/docs/guides/decisions). The model defaults to `'gpt-6-luna'`. Predicate answers become probabilities; refusals become `{ status: 'refused' }`. Missing or invalid probabilities become missing answers.
+- **Jev:** `jev({ apiKey, model? })` returns a `PickDecide` function for TypeSafe's System One endpoint, with `deciderId: typesafe:${model}`. The model defaults to `'jev-latest'`. Missing or invalid probabilities become missing answers.
+- **OpenAI Decisions:** `openAIDecisions({ apiKey, model? })` returns a `PickDecide` function for the [Decisions API](https://developers.openai.com/api/docs/guides/decisions), with `deciderId: openai:${model}`. The model defaults to `'gpt-6-luna'`. Predicate answers become probabilities; refusals become `{ status: 'refused' }`. Missing or invalid probabilities become missing answers.
 - **Chat writer:** `chatWriter({ apiKey, model, url? })` returns a `CurateWrite` function. The URL defaults to OpenAI's Chat Completions endpoint. Set `url` for another provider using that format. Empty text passes through for later batches that add no observations; Curate checks the log itself.
 - **Errors:** All factories reject a missing API key. HTTP failures and missing writer text throw. Cancellation reaches `fetch`.
 
@@ -356,7 +360,7 @@ answer accuracy. The union comparisons use a budget per search.
 
 | Option | Default | Measured reason |
 | --- | --- | --- |
-| **Reference selection** | Keep every scored item; bar 0 | In the saved-decision sweep, 0.05/0.5 removed every fed fragment of 50 answer turns; 0.2/0.6 removed 70; a single 0.6 cut removed 183. Keeping everything added no selection losses. Seven of 445 labelled turns were absent from the feed. This measures retention before curation, not final answer accuracy. |
+| **Reference selection** | Keep references scored 0.0146 or more | In the saved-decision sweep, 0.05/0.5 removed every fed fragment of 50 answer turns; 0.2/0.6 removed 70; a single 0.6 cut removed 183. Keeping everything added no selection losses. Seven of 445 labelled turns were absent from the feed. This measures retention before curation, not final answer accuracy. |
 | **Extra search lines** | Run when supplied | Using the chat package, five subject lines plus five alternate-name lines at 100 parts reach 440/445 turns and add 207.3 decisions per question. At 200, five subject lines reach 442/445 and add 214.2. At 600, task-only search reaches all 445; extra lines add no labelled evidence. |
 | **Phrase searches** | Off unless supplied | One event phrase recovers one extra labelled turn at 100 parts for 0.9 extra decisions per question on average. Keyword lines also recover that turn. On its sports-event order question, the phrase adds two parts, compared with 58 for one subject line. At 200 and 600 it adds no labelled turns. |
 | **Local meaning search** | Off | In 249 tuning questions, 200 keyword parts plus 48 nearest task-meaning matches reaches all 445 labelled turn starts and all their surviving parts, adding 19.5 decisions per question. Keyword-only retrieval at 600 parts reaches the same evidence. The 48-part depth is measured for that tuning setup, not a cutoff for other histories. Final-answer accuracy is unmeasured. |
@@ -392,9 +396,10 @@ a 0.4 continuation gate. No continuation gate is used by the package.
 
 `pick(candidates, { task, decide })` ranks the candidates, asks `decide`
 in bounded batches, and returns the selected candidates with a
-`PickRecord`. `everyScored` is on by default, so every reference
-with a valid decision probability is kept, including zero. The model
-orders and weights these items rather than dropping them. References
+`PickRecord`. By default, labels are off, and
+`everyScored: { bar: 0.0146 }` keeps references at or above that score.
+Set `everyScored: true` to keep every valid score, including zero.
+The model orders and weights selected references. References
 with no valid decision answer remain unanswered; limits can leave items
 unassessed. A `decide` call that throws fails the pick with a `PickError`,
 unless the elapsed limit stopped the call or the caller's signal aborted
@@ -405,7 +410,7 @@ batch answered some of their questions; a failed tag batch leaves a
 decided selection standing and records the error on the tag answers.
 There is no retry and no fallback.
 
-For a single cut, set your own bar:
+To change the score cut, set your own bar:
 
 ```ts
 const picked = await pick(candidates, {
@@ -437,7 +442,7 @@ the same way.
 
 Each candidate's `changedPaths` names the repository paths it changed;
 `gitHistory` fills it from the commit's diff, never from paths the text
-mentions. With an optional reference cut enabled, a reference answered
+mentions. When a reference score cut applies, a reference answered
 at or above `linkedPathBar` (0.4 by default) still passes when a selected
 commit from the same `repository` names its `path` in
 `changedPaths`. The record entry names the commit that carried it over
@@ -541,11 +546,12 @@ are partial. A set's `value` is the first of its questions, in list
 order, answered at 0.5 or more; earlier keys win, and the value stays
 unset when none reach 0.5. A single-question set values to `yes` at
 probability 0.5 or more, otherwise `no`. A set whose answers all
-failed records its answers and no value. The record keeps the supplied sets. Omit both options to keep
-the decision pass to relevance questions only.
+failed records its answers and no value. The record keeps the supplied sets.
+Omit both options to skip decision tags.
 
-By default, all scored reference items are kept and ordered by decision
-probability, strongest first, with ranked order breaking ties. There is no fixed character cap.
+Selected references are ordered by decision probability, strongest first,
+with ranked order breaking ties. The default score cut is 0.0146.
+There is no fixed character cap.
 `keepTop: N` marks the first N ranked keyword hits. Those that pass
 the threshold move to the front; rejected items stay rejected. N must be a
 nonnegative safe integer. Fitted sets and top-hit promotion are opt-in.
@@ -558,7 +564,7 @@ with extra searches it is the best rank across them. The weight `w` is
 0.75 at ranks 1–3, 0.60 at 4–10, and 0.40 below that. Rules stay first,
 and `keepTop` retains its explicit promotion.
 
-This affects order only. Optional reference cuts still apply; rules keep
+This affects order only. Reference score cuts still apply; rules keep
 their separate applicability bar. The record stores `orderScore`
 separately; curator weights remain the original decision probabilities. Omit the option or pass
 `false` to retain the default order and record format.
@@ -574,44 +580,91 @@ for their own parts; candidates without document metadata stay separate.
 
 Curate applies the representative's question set before asking about all
 its other fed parts. A low score on the first part never skips the rest
-of the document. Optional cuts apply to each part's own decision score.
+of the document. Score cuts apply to each part's own decision score.
 
 Each fed reference records its `representative` item id. Batch, candidate,
 time and cancellation limits remain in force. A stopped run reports the
 stop reason for unasked parts. Rules are asked independently. Omit the
 option or pass `false` to judge the whole feed as usual.
 
-### Optional label gate
+### Label gate
 
-`labels: { directory, deciderId }` adds the parts the labels find to
-the decide feed, off by default. Each reference part answers seven fixed
-kind questions once: a personal fact, something owned or used, a
-purchase or arrival, an event or plan, a preference, a habit, and a
-decision or change. The answers do not depend on the task, so the pick
+Labels are off by default. `conversation-recall` enables them.
+`labels: {}` turns them on with default options; `labels: false` turns them off. `directory` and `deciderId` are optional.
+The default directory is `$XDG_CACHE_HOME/curate/labels`, or `~/.cache/curate/labels` when `XDG_CACHE_HOME` is unset.
+
+Each source supplies its label questions through `labelKinds`.
+`chat()` carries `LABEL_KINDS`: personal facts, things owned or used,
+purchases or arrivals, events or plans, preferences, habits, and decisions.
+Git, Markdown, knowledge notes and rules carry no kinds by default.
+A source with no kinds receives no label questions; its other search lanes still apply.
+
+Replace a source's kinds by spreading it and setting `labelKinds`:
+
+```ts
+import type { LabelKind } from '@curatejs/core';
+import { markdown } from '@curatejs/markdown';
+
+const labelKinds: readonly LabelKind[] = [{
+  key: 'constraint',
+  name: 'a constraint',
+  part: {
+    true: 'The excerpt states a constraint.',
+    false: 'The excerpt states no constraint.',
+  },
+}];
+const source = { ...markdown({ paths: ['docs'], kind: 'docs' }), labelKinds };
+```
+
+When labels are enabled, `memory()` and `pickFromSources()` use the source's kinds automatically.
+Set `labelKinds: []` to leave that source out of labelling.
+For a direct `pick()`, pass `labelKindsBySource`, keyed by each candidate's
+`sourceId`; an absent or empty set means no label work:
+
+```ts
+const picked = await pick(candidates, {
+  task,
+  decide,
+  labelKindsBySource: { [source.id]: labelKinds },
+});
+```
+
+`PickDecide` accepts an optional `deciderId` property.
+The built-in helpers use `typesafe:${model}` and `openai:${model}`.
+An explicit `labels.deciderId` overrides the function's ID.
+A handwritten function without an ID uses `'custom'`.
+Different handwritten decision functions must supply different IDs to keep their saved labels apart.
+
+Labels add the parts they find to the decide feed.
+Each reference part answers its source's kind questions once.
+The answers do not depend on the task, so the pick
 stores each part's set in `directory`, one JSON file per part written to
 a temporary file and renamed into place. A later pick over the same
-part text reuses the stored set and asks nothing. A changed part, a
-different `deciderId`, or a different `questionVersion` stores under a
-different key and is labelled again. A missing, corrupt or wrong-shaped
+part text reuses the stored set and asks nothing. A changed part,
+`deciderId`, kind set or `questionVersion` uses a different key and is
+labelled again. A missing, corrupt or wrong-shaped
 file is a miss, and a refused, missing or errored answer is never
 stored.
 
-The task answers the same seven questions, and its set is stored the
-same way under the task's own key: a later pick over the same task text
-reuses it too. A kind the task needs at 0.5 or more puts every part
-labelled 0.5 or more on that kind in the label lane, ordered by that
+The task answers each distinct kind set once, and its sets are stored the
+same way under the task's own keys: a later pick over the same task text
+reuses it too. A kind the task needs at 0.5 or more puts every part in
+that kind set labelled 0.5 or more in the label lane, ordered by that
 probability. The decide step then sees the union of the keyword lanes
 and the label lane, ordered by reciprocal-rank fusion of the two
 orders. The 0.5 bar is one shared constant, `LABEL_LANE_BAR`, a dial
 to fit rather than a measured best. Through `pickFromSources` the gate
 labels the source's full uncut search pool, so a part the keyword lanes
 dropped can still reach the decide step through the label lane; through
-`pick` directly it labels every reference part supplied. Label batches
+`pick` directly it labels reference parts with kinds in `labelKindsBySource`.
+Label batches
 count against `maxBatches` and `maxElapsedMs`, so a stop while labelling
 leaves the decide step unasked. The label lane is not capped by
 `maxCandidates`: every part in it reaches the decide step unless
 `everyRanked` caps the merged ranking.
 
+The record's `labelKindsBySource` lists the full kind definitions applied
+to each source, or `[]` when none apply or labels are off.
 The record's `labels` field keeps the question-set version, the
 `deciderId`, how many items' labels the decide port was asked, how many
 were reused from the store, the gate's size, and `failedWrites`, how
@@ -620,8 +673,8 @@ answers for this pick, adds one `warning` to `labels`, and the next pick
 asks for that set again. A reference part the keyword lanes never
 held, left out on its stored or answered labels, records `unassessed`
 with reason `'gate'`; a part a lane limit cut or a stop left unlabelled
-keeps that reason instead. Omit the option and the pick is identical to
-a pick without it.
+keeps that reason instead. `memory()` accepts the intentional `'gate'`
+exclusions, but rejects interrupted or unanswered work.
 
 `route: 'jev'` asks the task itself what kind of answer it needs, off
 by default. The four route questions in `ROUTE_QUESTIONS` ask whether
@@ -727,25 +780,37 @@ history's size instead of with the whole ranking.
 
 ### Optional rare-word round
 
-`rare`, alone or beside `everyRanked: { c }`, turns on a second, narrow
-round after the selection pass, off by default. `rare: true` runs it
-at its defaults; `{ share, bar }` tunes it. The parts that cleared
-the selection bar are its seeds. A seed word is rare when its document
-frequency over the history is at most `share × N`, where the history
-is every reference part the pick received: the same N the top-k count
-reads. `share` defaults to `5/850`, the count of 5 fitted on an
-850-part LongMemEval history. On a history under 340 parts the default
-share can pull nothing: a shared word appears in at least 2 parts, and
-`5/850 × N` stays below 2. Every unselected part sharing a rare word
-is pulled in, pool members included: one the first pass never asked
-goes through the decide step, one already decided reuses its score,
-and no part is asked twice. A pulled part joins the selection at or
-above `bar`, a second and lower bar than the selection bar, defaulting
-to `0.0146`; the seeds keep the pick's own bar. `share` must be a
-positive finite number and `bar` between 0 and 1, both checked before
+Git and Markdown sources enable a second, narrow round after selection.
+Chat leaves it off. Each source declares its default through `rare`.
+To disable it for one source, spread that source and set `rare: false`:
+
+```ts
+const source = { ...gitHistory('.'), rare: false };
+```
+
+`memory()` and `pickFromSources()` use these source defaults.
+For direct `pick()` calls, pass `rareBySource`, keyed by each candidate's `sourceId`.
+An omitted or false entry leaves that source's round off.
+Explicit `rare: true`, `rare: false` or `rare: { share, bar }` overrides the source defaults for the whole pick.
+The round only adds reference evidence. Rules keep their exact text and separate applicability check.
+`rare: true` uses the round's default settings; `{ share, bar }` tunes them.
+Only reference parts from enabled sources supply seed words, count toward word frequency, or get pulled in.
+The parts that cleared the selection bar supply the seed words.
+A seed word is rare when it appears in at most `share × N` reference parts from enabled sources.
+N includes those sources' pool members that the search lanes left out.
+It can differ from `pick.n`, which counts references across every source for the top-k limit.
+`share` defaults to `5/850`, the count of 5 fitted on an 850-part LongMemEval history.
+With fewer than 340 enabled reference parts, the default share can pull nothing:
+a shared word appears in at least 2 parts, and `5/850 × N` stays below 2.
+Every unselected reference from enabled sources that shares a rare word is pulled in, pool members included.
+One the first pass never asked goes through the decide step; one already decided reuses its score.
+No part is asked twice. A pulled part joins the selection at or
+above `bar`, a separate bar defaulting to `0.0146`; the seeds keep the
+pick's own bar. `share` must be a positive finite number and `bar` between 0 and 1, both checked before
 any decide call. The record's `pick.rare` keeps the share and bar
 used, the rare words, the parts pulled in, and how many were asked
-and added.
+and added. For picks with per-source settings, `pick.rare.n` records the enabled reference count.
+The outer `pick.n` still counts references across every source.
 
 Measured on the tuning half's saved decisions (249 questions): holding
 the selection bar at 0.05 loses 15 answer messages, and the round at
@@ -765,7 +830,7 @@ question. Decision questions and records keep the candidate kind.
 candidate feed is chosen when candidates have no search ranks. Search ranks
 retain their lane order. Omitted signal weights are 1. Weights must be finite;
 negative weights are allowed. The record includes `ranking` when supplied.
-Selection retains the score-order and keep-all defaults.
+Selection retains the default score order and 0.0146 score cut.
 
 Sources can declare `maxQuestionText` as their preferred reader part size.
 Infinity requests whole items by default. Explicit pick and read text budgets
@@ -873,14 +938,20 @@ The returned log restores the full item ids, as it does on
 observation lines.
 
 These lines also count toward `contextLimit`. The same preference
-instructions apply when condensing. Dates and source ids on observation
-lines keep their strict checks when preferences are enabled.
+instructions apply when condensing. Observation dates and source ids
+are checked with preferences enabled too; failed repairs use the recovery
+described below.
 
 `record` holds `promptVersion: 'v4'`, `weights: 'tiers'`, `working`,
 `preferenceAdvice`, `preferenceChange`, `items`, `logLength`, `condensed`,
 and `overContextLimit`. It includes `taskDate` when supplied.
-It includes `empty: true` when the writer returned an empty reply, and
-`repairs` when a reply was sent back for its format.
+It includes `empty: true` when the log is empty, `emptyRetries` when an
+empty reply was asked once more, and `repairs` when a reply was sent back
+for its format.
+When format recovery runs, `formatRecovery.keptAsWritten` lists malformed
+lines retained and `formatRecovery.dropped` lists discarded lines.
+These arrays hold the writer's raw lines, with short `En` ids mapped by
+their positions in `record.items`; the returned log restores full item ids.
 It includes `context` when supplied and `taskKinds` when routing is enabled.
 A chained write adds `batchTokens` and `batches`.
 Each item holds its full `id` (the prompt shows it as `E` plus the
@@ -894,35 +965,42 @@ caller's working model can accept:
 const curated = await curate(task, picked, { write, contextLimit: 12000 });
 ```
 
-If the first validated log exceeds that limit, Curate calls `write`
+If the first checked or recovered log exceeds that limit, Curate calls `write`
 exactly once more with the task, the full log, and exact item weights.
 The condense prompt asks the writer to merge or drop observations from
 items below 0.1 first, then those from 0.1 to below 0.6. It asks for
 observations from items weighted 0.6 or more to stay whole, and for
 retained observations to keep their event dates, said dates, source
-ids, and replacement dates. The result must pass the same format checks.
+ids, and replacement dates. The result goes through the same format checks.
+If it fails, Curate keeps its usable lines, or the original log when none
+remain, without another writer call.
 These checks do not prove that the writer followed the tier instructions.
 
 `contextLimit` cannot combine with `batchTokens`; see below.
 The record
 includes `contextLimit` when supplied. `logLength` is the
-first validated log's length after trimming. `condensed` says whether
+first checked or recovered log's length after trimming. `condensed` says whether
 the second call ran; `condensedLength` is present only when it ran.
 `overContextLimit: true` says that the returned log still exceeds the
 budget. Such a log is returned whole without another call or a length
-error. Without `contextLimit`, Curate makes one call and returns the
-validated log without condensing.
+error. Without `contextLimit`, Curate returns the checked or recovered log
+without condensing; only a format repair or an empty reply can add
+another writer call.
 
 `working: true` asks the writer to add numbered instances inside the
 task's period, computed time gaps or order, and latest values under
 `Working (the curator's; check it against the log):`. It is off by
 default. The reader should check these notes against the log.
 
-A malformed observation throws a clear error that quotes the line.
-An empty reply is not an error: the prompt asks the writer for one when
+A malformed observation fails a format check that quotes the line.
+An empty first reply is not an error: the prompt asks the writer for one when
 no evidence bears on the task, so `write` must pass an empty reply
-through rather than reject it. Curate then returns an empty log and the
-record carries `empty: true`. A sentence that says nothing was found
+through rather than reject it. Curate asks once more, with one added line
+that says the reply held no observation lines and asks the writer to check
+the items again; `emptyRetries` in the record counts it. If the second reply
+is empty too, or has no line naming a supplied item, Curate returns an empty
+log and the record carries `empty: true`. A malformed second reply gets no
+repair call; its usable lines are kept as described below. A sentence that says nothing was found
 fails the check like any other line that is not an observation. Each observation must have
 valid calendar dates in its event and `said` fields and the short ids of
 items given to the writer. Merged sources can separate ids with commas,
@@ -931,7 +1009,8 @@ days, repeat the dated group: `(said 2023-05-20; E1; said 2023-05-21; E2)`,
 or list the dates in one group: `(said 2023-05-20 and 2023-05-21; E1, E2)`.
 Every source date and id is checked. Optional
 suffixes are `(when not stated)`, `(replaces [YYYY-MM-DD])` and
-`(replaces Ln)`; replacement dates must also be valid. In a chained
+`(replaces Ln)`; replacement dates must also be valid. A terminal period
+is accepted after the citation or suffix. In a chained
 write each observation line also starts with a stable `Ln` id, and a
 date marker is checked but never honoured there (see below). These
 checks verify the format and source ids;
@@ -939,9 +1018,16 @@ they do not prove the writer's
 facts or date calculations. Worked notes count toward `contextLimit`.
 A reply that fails these checks goes back to the writer once, with the
 reason, the failing line and the rejected text, and `repairs` in the
-record counts it. A second failure throws. The condensing call gets no
-repair, and an empty condensed log throws. There is no truncation or
-fallback to raw items. Missing selected
+record counts it. If repair also fails, Curate recovers the original reply:
+it keeps valid lines and malformed lines naming at least one supplied item
+id, and drops malformed lines naming none. If the original has no usable
+lines, Curate tries the repaired reply. An empty repair cannot erase a
+cited original. Recovery restores full item ids without correcting dates
+or other malformed text; inspect `record.formatRecovery` for those lines.
+A format error throws only when no usable evidence remains. The condensing
+call gets no repair; malformed condensed output uses the same line recovery,
+and an empty or unusable result keeps the original log. There is no
+truncation or fallback to raw items. Missing selected
 weights and a selection with no reference items fail before `write`.
 Writer failures propagate to the caller. `signal` reaches the writer;
 the host must make its model call honour cancellation.
@@ -968,7 +1054,7 @@ observation lines for facts the log does not already state, plus any
 working section and preference lines in full, and not to repeat an
 existing line. A later pass may return no lines at all when its batch
 holds nothing new, so `write` must pass an empty reply through rather
-than reject it.
+than reject it. Only an empty first pass is asked once more.
 
 Every line an earlier batch wrote stays in the log, id and wording
 unchanged; a later pass only adds lines. Earlier lines keep their
@@ -998,19 +1084,18 @@ cut or dropped; batching only splits the evidence across more calls.
 
 ## Levers and modes
 
-Every cost/performance lever follows one rule: turning it on reads more
+Every cost and selection lever follows one rule: turning it on reads more
 evidence or adds more guidance, at the risk of more cost; turning it
 off saves cost and can lose quality. Each lever lives in one of three
 places: the read request `pickFromSources` takes, the options `pick`
 takes, or the options `curate` takes. The pick's record keeps every
 lever's resolved state under `levers`, and `levers.preset` names the
-mode the states match: `performance`, `economy` or `custom`. Its
+mode the states match: `default`, `conversation-recall` or `custom`. Its
 `route` records the questions asked. The curate record carries the
 same lever set for the whole mode. Its `route` holds both states,
 `{ asked, applied }`, and its `preset` names the mode they make, so a
-pick that asked and a curator that never applied reads `custom`, not
-`performance`. `meaning.wholeLanes` resolves the meaning lanes on their
-own, so when it disagrees with the read request's `wholeLanes` the
+pick that asked and a curator that never applied reads `custom`.
+`meaning.wholeLanes` resolves the meaning lanes on their own, so when it disagrees with the read request's `wholeLanes` the
 record holds `levers.wholeLanes: { keyword, meaning }` and the preset
 is `custom`.
 
@@ -1019,75 +1104,65 @@ is `custom`.
 | Read `wholeLanes` | Keeps every candidate each keyword and meaning lane returned. Off, each lane cuts where its own score curve flattens (chat: the pre-merge keyword score; `searchPhrases` lanes are never cut, and kind lanes are never cut on phrase counts). | The decide feed grows by the parts the curves would have cut; kept counts vary with each lane's scores, and deciding is the expensive stage. | The cut the off state applies missed 6 of 445 answer messages on the tuning half: three shared no words with the question, three ranked below the cut. Its score and cost impact, and the loss under the label gate, are not yet measured. | Saved tuning-half lanes, 249 questions. |
 | Pick `everyRanked` | Every ranked reference part reaches the decide step. Off as `{ c }`, only the top `round(c × N^0.8)` reach it, where N is the number of reference parts the pick received; rules pass through uncut and dropped parts record `unassessed` with reason `'pick'`. | The decide step reads every ranked part, the whole ranking: all 850 of 850 parts at one measured size and all 8,475 of 8,475 at the largest. The off dial at c = 0.68 read 150 of the 850 and 944 of the 8,475. | On the keyword-and-label ranking the off dial at c = 0.68 kept 437–442 of 445 answer messages (98–99%) at every size from 127 to 8,475 parts (on keeps the whole ranking) and scored 229 of 249 at $0.18 a question; the on state's score and cost under the label gate are not yet measured. | Saved tuning-half rankings replayed, label gate on and `wholeLanes` on; the tuning dials in the root README. |
 | Pick `everyScored` | Every part with a valid decision probability stays selected, including zero. Off as `{ bar }` cuts below the bar; `{ bySize }` cuts below a bar that rises with the decided count. | The curator receives every scored part: about 850 parts at $0.51 a question in the LongMemEval run, against about 70 parts at $0.13 at the 0.0146 bar. | On scored 225 of the 249 tuning questions at $0.51 a question; off at the 0.0146 bar scored the same 225 at $0.13 (223 on the all-500 replay) and 458 of 500 against 460, at a quarter of the cost. A saved 0.6 bar removed every fed fragment of 183 labelled answer turns; a 0.05 bar lost 8 of 438 answer messages. 0.0146 is the highest cut that lost no answer message on the tuning questions. | Saved-decision sweep and the LongMemEval runs in the root README. |
-| Pick `labels` | Labels each reference part and the task with seven kind questions, stores each part's set under `directory`, and adds a label lane fused into the ranking so parts the keyword lanes dropped can reach decide. Needs a caller-supplied store and `deciderId`. | Seven questions per part plus one set for the task, once per part text and `deciderId`; later picks reuse the store. | Keyword alone reached 439 of the tuning half's 445 answer messages; with each part labelled, all 445 were reached at 38% of each history. Its score and cost impact is not yet measured. | Saved label run on the tuning half, in the root README. |
+| Pick `labels` | Labels reference parts with their source's kind questions and asks the task once per distinct kind set. Sources with no kinds receive no label questions. Stores each set under `directory` and adds a label lane so parts the keyword lanes dropped can reach decide. Uses a default cache directory and decision-function ID; both can be overridden. | One question per kind for each part and task, once per text, kind set and `deciderId`; later picks reuse the store. | Keyword alone reached 439 of the tuning half's 445 answer messages; with each part labelled, all 445 were reached at 38% of each history. Its score and cost impact is not yet measured. | Saved label run on the tuning half, in the root README. |
 | Pick `route`, `curate` `route` | `route: 'jev'` on the pick asks the task the four route questions once. `route: 'jev'` on `curate` applies the recorded answers to the curator's guidance: worked notes, the preference lines. | Four questions asked of the task once a pick, sharing the task's label request when that runs and asked in one separate request otherwise; the curator adds the lines the answers chose. | Not yet measured. | Not yet measured. |
-| Pick `rare` | After the selection pass, pulls in every unselected part sharing a rare word with a selected part, pool members included; parts at or above `rare.bar` (default `0.0146`) join the selection. A word is rare at a document frequency of at most `rare.share × N` (default `5/850`). | The parts it pulls are asked or their scores reused: 12.9 parts a question at the defaults on the tuning half. On a history under 340 parts the default share can pull nothing. | Holding the selection bar at 0.05 lost 15 answer messages and the round recovered 6 of them. Its score impact is not yet measured. | Saved tuning-half decisions, 249 questions. |
+| Pick `rare` | After the selection pass, pulls in unselected references sharing a rare word with a selected reference. Only enabled sources supply seed words, count toward word frequency, or get pulled in, pool members included; parts at or above `rare.bar` (default `0.0146`) join the selection. A word is rare at a document frequency of at most `rare.share × N` (default `5/850`), where N counts references from enabled sources. | The parts it pulls are asked or their scores reused: 12.9 parts a question at the defaults on the tuning half. On a history under 340 parts the default share can pull nothing. | Holding the selection bar at 0.05 lost 15 answer messages and the round recovered 6 of them. Its score impact is not yet measured. | Saved tuning-half decisions, 249 questions. |
 
 The decision cache and the short `En` item ids are not levers: they
 lose no quality, so they stay available whenever the caller asks for
 them. The cache is on whenever the caller passes one.
 
-### Two modes
+### Modes by use case
 
-`performance` and `economy` are exported plain objects, each a
-`{ read, pick, curate }` fragment to spread into the matching call:
+`defaultMode` suits agents working from any mix of chat, git and docs.
+`conversationRecall` adds labels for questions about past conversations.
+Both are exported plain objects with `{ read, pick, curate }` fragments:
 
 ```ts
-import { curate, economy, pickFromSources } from '@curatejs/core';
+import { curate, conversationRecall, pickFromSources } from '@curatejs/core';
 
 const picked = await pickFromSources(sources,
-  { task, ...economy.read },
-  { task, decide, ...economy.pick });
-const curated = await curate(task, picked, { write, ...economy.curate });
+  { task, ...conversationRecall.read },
+  { task, decide, ...conversationRecall.pick });
+const curated = await curate(task, picked, { write, ...conversationRecall.curate });
 ```
 
-| Lever | `performance` (the default) | `economy` |
+| Lever | `defaultMode` | `conversationRecall` |
 | --- | --- | --- |
-| `wholeLanes` | off: lanes are cut | off: lanes are cut |
-| `everyRanked` | on: every ranked part is read | on: every ranked part is read |
-| `everyScored` | on: every scored part is kept | off at `bar` 0.0146 |
-| `labels` | off | off |
-| `route` | off | off |
-| `rare` | off | off |
+| `wholeLanes` | Off: cut each search lane | Off: cut each search lane |
+| `everyRanked` | On: decide every ranked part | On: decide every ranked part |
+| `everyScored` | Keep scores 0.0146 or more | Keep scores 0.0146 or more |
+| `labels` | Off | On: use each source's kinds |
+| `route` | Off | Off |
+| `rare` | Use source defaults: git and Markdown on, chat off | Use source defaults: git and Markdown on, chat off |
 
-With no preset the package runs exactly `performance`. `economy`
-reproduces the economic setting the LongMemEval runs used: the only
-lever it flips is `everyScored`, off at the 0.0146 bar, the highest
-cut that lost no answer message on the tuning questions. `labels`
-stays out of both presets because it needs a caller-supplied store
-and `deciderId`; add it to either one:
+Omitting the settings runs the default mode and records `preset: 'default'`.
+`memory()` accepts `preset: 'default'` or `preset: 'conversation-recall'`.
+The 0.0146 bar is the highest cut that lost no answer message on the tuning questions.
+
+Build your own mode by changing any lever:
 
 ```ts
-const labelledEconomy = {
-  ...economy,
-  pick: { ...economy.pick, labels: { directory: 'labels', deciderId: 'my-decider' } },
+const ownLabels = {
+  ...conversationRecall,
+  pick: { ...conversationRecall.pick, labels: { directory: 'labels', deciderId: 'my-decider' } },
 };
 ```
 
-A caller can also build its own mode for a scenario. A very long
-history with a tight budget, for example, keeps the economy bar and
-adds the measured keep count and the rare-word round:
-
-```ts
-const tightBudget = {
-  read: { ...economy.read },
-  pick: { ...economy.pick, everyRanked: { c: 0.68 }, rare: true },
-  curate: { ...economy.curate },
-};
-```
-
-`record.levers.preset` reads `custom` for any mix that matches neither
-preset.
+`record.levers.preset` reads `custom` when the resolved settings match neither mode.
+Source defaults are part of the match: git and Markdown can enable the rare-word round while chat leaves it off without making the mode custom.
+The record's `levers.rare` is `false` or `{ share, bar }`.
+When a source map is supplied and the round is on, `levers.rare.sources` lists the enabled source IDs.
 
 ## Optional evidence limits
 
-The defaults decide every candidate the lane union kept and show its
-full text. Reader parts are 700 characters by default; every part is
-preserved. `DEFAULT_MAX_QUESTION_TEXT` names that reader size, not a
+The defaults decide every candidate admitted by keyword matches and show its full text.
+Enabled labels can add more candidates. Reader parts are 700 characters by default;
+every part is preserved. `DEFAULT_MAX_QUESTION_TEXT` names that reader size, not a
 decision cut. A source can return more candidates than the union
 keeps, since reference-source keyword and meaning lanes cut at their
-own score curves before any decision. Pass `wholeLanes: true` to decide
-every returned candidate.
+own score curves before any decision. Labels can add parts those curves
+left out. Pass `wholeLanes: true` to keep every returned candidate in its lane.
 
 | Dial | Default | Cost and loss |
 | --- | --- | --- |

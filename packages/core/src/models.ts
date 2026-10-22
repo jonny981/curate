@@ -33,7 +33,7 @@ export function jev({ apiKey, model = 'jev-latest' }: {
   readonly model?: string;
 }): PickDecide {
   if (!apiKey) throw new Error('Jev requires an API key.');
-  return async (batch, signal) => {
+  const decide: PickDecide = async (batch, signal) => {
     const raw = await post('https://api.typesafe.ai/v1/systemone', apiKey, {
       model,
       state: batch.task,
@@ -47,6 +47,7 @@ export function jev({ apiKey, model = 'jev-latest' }: {
     return Object.fromEntries(batch.questions.map((q, index): [string, PickAnswer] =>
       [q.key, probabilityAnswer(record(answers[`q${index}`]).noul)]));
   };
+  return Object.assign(decide, { deciderId: `typesafe:${model}` });
 }
 
 /** Create a decision function using OpenAI's named predicate answers. */
@@ -55,7 +56,7 @@ export function openAIDecisions({ apiKey, model = 'gpt-6-luna' }: {
   readonly model?: string;
 }): PickDecide {
   if (!apiKey) throw new Error('OpenAI Decisions requires an API key.');
-  return async (batch, signal) => {
+  const decide: PickDecide = async (batch, signal) => {
     const raw = await post('https://api.openai.com/v1/decisions', apiKey, {
       model,
       input: batch.task,
@@ -76,6 +77,7 @@ export function openAIDecisions({ apiKey, model = 'gpt-6-luna' }: {
         : probabilityAnswer(answer?.type === 'predicate' ? answer.probability : undefined)];
     }));
   };
+  return Object.assign(decide, { deciderId: `openai:${model}` });
 }
 
 /** Create a writer using an OpenAI-compatible Chat Completions endpoint. */

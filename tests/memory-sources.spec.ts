@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 
 import { memory, type PickQuestion } from '@curatejs/core';
 import { chat, CHAT_CASCADE } from '@curatejs/chat';
@@ -12,6 +12,7 @@ import { markdown, MARKDOWN_CASCADE } from '@curatejs/markdown';
 it('uses each real reader question set without a cascadesByKind map', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'curate-memory-'));
   try {
+    vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
     for (const name of ['docs', 'policy', 'transcripts']) await mkdir(join(directory, name));
     await writeFile(join(directory, 'docs/billing.md'), '---\ndate: 2026-01-12\n---\n# Billing\nKeep the order currency.\n');
     await writeFile(join(directory, 'policy/rules.md'), '---\napplies: always\n---\nNever round an order twice.\n');
@@ -54,12 +55,17 @@ it('uses each real reader question set without a cascadesByKind map', async () =
         expect(q.question).toBe(cascade.questions.find((item) => item.key === q.questionKey)!.instructions);
       }
     }
+    expect(picked.record.levers.preset).toBe('default');
+    expect(picked.record.levers.labels).toBe(false);
+    expect(picked.record.thresholds.reference).toBe(0.0146);
+    expect(picked.record.labels).toBeUndefined();
     expect(picked.selected.filter((item) => item.role === 'reference')).toHaveLength(3);
     expect(result.record.items).toHaveLength(3);
     expect(rules).toContain('Never round an order twice.');
     expect(log).toContain('Keep the order currency');
     expect(log).not.toContain('; E1)');
   } finally {
+    vi.unstubAllEnvs();
     await rm(directory, { recursive: true, force: true });
   }
 });

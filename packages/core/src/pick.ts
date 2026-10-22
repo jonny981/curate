@@ -1,13 +1,16 @@
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+
 import {
   LABEL_KINDS, LABEL_LANE_BAR, LABEL_PARTS_TASK, LABEL_QUESTION_VERSION,
-  fuseLabelLane, labelFileStore, labelKey, labelPartQuestion, labelQuestionTask,
-  labelTaskQuestion, storedLabels, type PartLabels,
+  fuseLabelLane, labelFileStore, labelKey, labelKindsKey, labelPartQuestion, labelQuestionTask,
+  labelTaskQuestion, storedLabels, type LabelKind, type PartLabels,
 } from './labels.js';
 import {
   decisionKey, storedDecision, type DecisionStore,
 } from './decisions.js';
 import { ROUTE_QUESTIONS, routeOptions, type RouteKey, type RouteOption } from './task.js';
-import { presetName, type LeverStates, type PresetName } from './levers.js';
+import { defaultMode, presetName, type LeverStates, type PresetName } from './levers.js';
 import { checkPickOptions } from './options.js';
 
 export type MemoryCandidateRole = 'reference' | 'rule';
@@ -102,23 +105,29 @@ export type PickAnswer =
    *  Recorded for tag and route questions; a decide reply cannot produce it. */
   | { readonly status: 'unassessed'; readonly detail?: string };
 
-export type PickDecide = (
+export type PickDecide = ((
   batch: PickBatch,
   signal: AbortSignal,
-) => Promise<Record<string, PickAnswer>>;
+) => Promise<Record<string, PickAnswer>>) & {
+  /** Stable model and prompt identity for stored labels. */
+  readonly deciderId?: string;
+};
 
-/** The label gate's settings. Labels are the answers to the seven kind
- *  questions in `LABEL_KINDS`; a part's set is stored once so a later
- *  pick over unchanged parts asks nothing. */
+/** Label storage settings. Each source supplies its own kind questions;
+ *  unchanged text and kind definitions reuse their saved answers. */
 export interface PickLabels {
   /** The plain-file store: one JSON file per labelled item under this
    *  directory, each written to a temporary file and renamed into
-   *  place. A missing, corrupt or wrong-shaped entry is a miss. */
-  readonly directory: string;
+   *  place. A missing, corrupt or wrong-shaped entry is a miss.
+   *  Defaults to `$XDG_CACHE_HOME/curate/labels`, or
+   *  `~/.cache/curate/labels` when XDG_CACHE_HOME is unset. */
+  readonly directory?: string;
   /** The caller's name for its decide route: the model, prompt build
    *  or plan the labels were answered with. Mixed into every store
-   *  key, so a different deciderId never reuses stored labels. */
-  readonly deciderId: string;
+   *  key, so a different deciderId never reuses stored labels.
+   *  Defaults to decide.deciderId, then 'custom'. Give different
+   *  handwritten deciders different ids. */
+  readonly deciderId?: string;
   /** The kind question-set's version, mixed into every key and
    *  recorded; defaults to the package's own. A different version
    *  never reuses stored labels. */
@@ -297,6 +306,8 @@ export interface PickCascade {
 }
 
 export interface PickRecord {
+  /** Applied label definitions by source identity; [] means no label work. */
+  readonly labelKindsBySource?: Readonly<Record<string, readonly LabelKind[]>>;
   readonly ranking?: PickOptions['ranking'];
   readonly questionVersion: string;
   readonly limits: PickLimits;
@@ -311,8 +322,8 @@ export interface PickRecord {
     /** The bar `referenceBySize` produced for this set's size. */
     readonly appliedReference?: number;
   };
-  /** The preset this pick's lever set resolved to — 'performance',
-   *  'economy' or 'custom' — and every lever's state as resolved.
+  /** The preset this pick's lever set resolved to — 'default',
+   *  'conversation-recall' or 'custom' — and every lever's state as resolved.
    *  `wholeLanes` lives on the read request, so only a record
    *  pickFromSources produced carries it. `route` records the
    *  questions asked; the curate record's own `levers.route` keeps
@@ -409,6 +420,8 @@ export interface PickRecord {
     readonly rare?: {
       readonly share: number;
       readonly bar: number;
+      /** Reference count in the enabled sources, when defaults are per source. */
+      readonly n?: number;
       readonly words: readonly string[];
       readonly pulled: readonly { readonly sourceId: string; readonly id: string }[];
       readonly asked: number;
@@ -438,6 +451,9 @@ export class PickError extends Error {
 }
 
 export interface PickOptions {
+  /** Label kinds by source identity. Missing identities have no label lane.
+   *  pickFromSources fills this from each reader's labelKinds. */
+  readonly labelKindsBySource?: Readonly<Record<string, readonly LabelKind[]>>;
   /** Signal weights by Markdown kind; omitted weights remain 1. */
   readonly ranking?: Partial<Record<MemoryKind, Readonly<Record<string, number>>>>;
   readonly task: string;
@@ -462,27 +478,29 @@ export interface PickOptions {
    *  'markdown'. Source kinds come from `sourceKinds`, which
    *  pickFromSources fills from each source's `kind`. */
   readonly tagsByKind?: Readonly<Partial<Record<CandidateSourceKind, readonly PickTagSet[]>>>;
-  /** Gate which reference parts reach the decide step, off by default:
+  /** Add reference parts to the decide step, off by default:
    *  the union of the keyword lanes and a label lane. The label lane
    *  holds the parts labelled at the shared bar (0.5) or more on a kind
    *  of statement the question needs at that bar, ordered by that
    *  probability, merged with the keyword lanes by rank through
    *  reciprocal-rank fusion; the bar is a dial to fit, not a measured
-   *  best. The seven kind questions are asked through the decide port
-   *  of every reference part and once of the task, batched as decision
+   *  best. A source's kind questions are asked through the decide port
+   *  of its reference parts and once of the task per kind set, batched as decision
    *  batches are — the task's own ask packs into one request instead
    *  when `route` is on — and each item's set is stored once in `directory`
-   *  keyed by the question-set version, `deciderId` and the item's
+   *  keyed by the kind definitions, question-set version, `deciderId` and the item's
    *  text. Through `pickFromSources` the gate labels the source's full
    *  uncut search pool, so a part the keyword lanes dropped can still
-   *  reach the decide step; through `pick` directly it labels every
-   *  reference part supplied. Label batches count against
+   *  reach the decide step; through `pick` directly `labelKindsBySource`
+   *  supplies the kinds. A source without kinds gets no label questions.
+   *  Label batches count against
    *  `maxBatches` and `maxElapsedMs`, and a stop while labelling leaves
    *  the decide step unasked. The label lane is not capped by
    *  `maxCandidates`: every part in it reaches the decide step unless
    *  the scaled top-k dial caps the merged ranking. With `labels`
-   *  unset the output is identical to a pick without it. */
-  readonly labels?: PickLabels;
+   *  unset the gate is off. Pass {} to enable it with the default
+   *  directory and decider identity, or false to disable it. */
+  readonly labels?: PickLabels | false;
   /** The decision cache, off by default: each answered decide response
    *  is stored once under a key naming the exact part question it
    *  answers, and a later pick reuses it instead of asking the decider
@@ -524,7 +542,8 @@ export interface PickOptions {
    *  was cut; dropped candidates record 'unassessed' with reason
    *  'pick'. */
   readonly everyRanked?: true | { readonly c: number };
-  /** Keep every scored part, the default. `{ bar }` cuts references
+  /** Keep every scored part with true. The default cuts at the
+   *  0.0146 bar. `{ bar }` cuts references
    *  the decision model scored below that flat decision bar;
    *  `{ bySize }` cuts below a bar that rises with the
    *  answered-reference count, as [count, bar] points in size order —
@@ -538,11 +557,10 @@ export interface PickOptions {
     readonly bar?: number;
     readonly bySize?: readonly (readonly [number, number])[];
   };
-  /** The rare-word round, off by default: a second, narrow pass after
+  /** The rare-word round: a second, narrow pass after
    *  the selection pass. The words of the parts that cleared the
    *  selection bar are kept to the rare ones, rare meaning a document
-   *  frequency over the history — every reference part the pick
-   *  received, the same N as the top-k count — of at most `share` × N
+   *  frequency over reference parts in enabled sources of at most `share` × N
    *  (default 5/850, the count of 5 fitted on an 850-part history). On
    *  a history under 340 parts the default share can pull nothing: a
    *  word a part shares appears in at least 2 parts, and 5/850 × N
@@ -552,9 +570,13 @@ export interface PickOptions {
    *  scoring at or above `bar` joins the selection. `bar` is a second,
    *  lower bar than the selection bar (default 0.0146); the seeds keep
    *  the pick's own bar. `true` runs the defaults, an object supplies
-   *  them. The record's `pick.rare` lists the rare words used, the
+   *  them. Omit it to use rareBySource, or false to disable every source.
+   *  The record's `pick.rare` lists the rare words used, the
    *  parts pulled in, and how many were asked and added. */
   readonly rare?: boolean | { readonly share?: number; readonly bar?: number };
+  /** Reader defaults keyed by source ID; omitted sources are off.
+   *  pickFromSources supplies these. An explicit rare option overrides them. */
+  readonly rareBySource?: Readonly<Record<string, boolean>>;
   /** False when a source that can supply rule candidates did not finish
    *  enumerating them; its read returned `complete: false`. The combined
    *  coverage can then never report a complete applicable-rule set, even
@@ -810,6 +832,22 @@ export async function pick(
   options: PickOptions,
 ): Promise<PickResult> {
   checkPickOptions(options);
+  const everyScored = options.everyScored ?? defaultMode.pick.everyScored;
+  if (options.labels !== undefined && options.labels !== false
+    && (typeof options.labels !== 'object' || options.labels === null || Array.isArray(options.labels))) {
+    throw new TypeError('labels must be false or an options object.');
+  }
+  const labelOptions = options.labels === undefined || options.labels === false ? undefined : {
+    directory: options.labels?.directory
+      ?? join(process.env.XDG_CACHE_HOME || join(homedir(), '.cache'), 'curate', 'labels'),
+    deciderId: options.labels?.deciderId ?? options.decide.deciderId ?? 'custom',
+    questionVersion: options.labels?.questionVersion,
+  };
+  const labelKindsBySource: Record<string, readonly LabelKind[]> = Object.create(null);
+  for (const id of new Set([...Object.keys(options.labelKindsBySource ?? {}), ...candidates.map((c) => c.sourceId)])) {
+    labelKindsBySource[id] = labelOptions === undefined ? [] : options.labelKindsBySource?.[id] ?? [];
+  }
+  const kindsFor = (candidate: MemoryCandidate) => labelKindsBySource[candidate.sourceId] ?? [];
   for (const weights of Object.values(options.ranking ?? {})) {
     if (Object.values(weights).some((weight) => !Number.isFinite(weight))) {
       throw new TypeError('ranking weights must be finite numbers.');
@@ -892,8 +930,7 @@ export async function pick(
     ...(input.maxCandidates !== undefined ? { maxCandidates: input.maxCandidates } : {}),
     ...(input.maxElapsedMs !== undefined ? { maxElapsedMs: input.maxElapsedMs } : {}),
   };
-  const scored = options.everyScored === undefined || options.everyScored === true
-    ? {} : options.everyScored;
+  const scored = everyScored === undefined || everyScored === true ? {} : everyScored;
   const thresholds: PickRecord['thresholds'] = {
     reference: probabilityLimit(scored.bar, 'everyScored.bar', 0),
     rule: probabilityLimit(options.thresholds?.rule, 'thresholds.rule', 0),
@@ -901,18 +938,26 @@ export async function pick(
     ...(scored.bySize === undefined ? {}
       : { referenceBySize: [...scored.bySize].sort((left, right) => left[0] - right[0]) }),
   };
-  const rareOn = isRecord(options.rare) || options.rare === true;
+  const rareForSource = (id: string) => options.rare === undefined
+    ? options.rareBySource?.[id] === true : options.rare !== false;
+  const rareSourceIds = [...new Set([...Object.keys(options.rareBySource ?? {}), ...candidates.map((c) => c.sourceId)])];
+  const rareSources = rareSourceIds.filter(rareForSource);
+  const rareOn = options.rare === undefined ? rareSources.length > 0 : options.rare !== false;
   const rareShare = (isRecord(options.rare) ? options.rare.share : undefined) ?? RARE_SHARE;
   const rareBar = (isRecord(options.rare) ? options.rare.bar : undefined) ?? RARE_BAR;
+  const rareMatchesDefault = rareOn === Object.values(options.rareBySource ?? {}).some(Boolean)
+    && rareSourceIds.every((id) => rareForSource(id) === (options.rareBySource?.[id] === true))
+    && (!rareOn || (rareShare === RARE_SHARE && rareBar === RARE_BAR));
   // The levers as resolved, for the record and its preset name. `pick`
   // never sees `wholeLanes`: the read request carries it, and only a
   // pickFromSources record holds it.
   const levers: LeverStates = {
     everyRanked: options.everyRanked ?? true,
-    everyScored: options.everyScored ?? true,
-    labels: options.labels !== undefined,
+    everyScored: everyScored ?? true,
+    labels: labelOptions !== undefined,
     route: options.route === 'jev',
-    rare: rareOn ? { share: rareShare, bar: rareBar } : false,
+    rare: rareOn ? { share: rareShare, bar: rareBar,
+      ...(options.rareBySource === undefined ? {} : { sources: rareSources }) } : false,
   };
   const topK = isRecord(options.everyRanked) ? options.everyRanked.c : undefined;
   // A decide-feed dial is on when `everyRanked` supplies a c or the
@@ -972,7 +1017,8 @@ export async function pick(
   // does it join the record. With no dial it keeps the record it
   // always had: unasked, 'unassessed' with reason 'limits'.
   const admitted = (candidate: MemoryCandidate) =>
-    options.labels !== undefined || !dial || candidate.poolOnly !== true;
+    kindsFor(candidate).length > 0 || (topK === undefined && !rareForSource(candidate.sourceId))
+      || candidate.poolOnly !== true;
   queue.push(...references.filter(admitted));
 
   const lanes = queue.reduce((count, candidate) => Math.max(count, candidate.searchRanks?.length ?? 1), 1);
@@ -988,7 +1034,7 @@ export async function pick(
       ...rankAndInterleave(references.filter(present), new Map(), lane, options.ranking),
     ];
     for (const candidate of laneQueue.slice(0, limits.maxCandidates)) eligible.add(candidate);
-    if (options.labels !== undefined) {
+    if (labelOptions !== undefined) {
       for (const candidate of laneQueue.slice(limits.maxCandidates)) laneCut.add(candidate);
     }
   }
@@ -1179,9 +1225,8 @@ export async function pick(
     }
   };
 
-  // The label gate, off by default: the seven kind questions label every
-  // reference part and the task itself through the same decide port and
-  // the same batches, each set stored once per item's text. The label
+  // Each source's kinds label its reference parts and the task through
+  // the same decide port, once per kind set and item's text. The label
   // lane — parts at the bar on a kind the question needs — joins the
   // keyword lanes' set, and reciprocal-rank fusion of the two orders
   // decides what the decide step sees first.
@@ -1191,6 +1236,7 @@ export async function pick(
   // The lane check below reads them; so does the unassessed reason at
   // the end, where a part with no entry was never resolved by the gate.
   const labels = new Map<MemoryCandidate, PartLabels>();
+  const labelTasks = new Map<MemoryCandidate, MemoryCandidate>();
   // The task item the kind questions — and, with `route: 'jev'`, the
   // four route questions — describe. Route questions ride the task's
   // own ask: the kind-label batch when that runs, a standalone one
@@ -1215,132 +1261,135 @@ export async function pick(
       title: taskItem.title, text: taskItem.text,
     },
   });
-  // Whether the task's own label set was a store miss, so its ask —
-  // which the route questions ride — ran (or would run) this pick.
-  let taskLabelsMissed = false;
-  if (options.labels !== undefined) {
-    if (typeof options.labels.directory !== 'string' || !options.labels.directory.trim()) {
+  let routeAskedWithLabels = false;
+  if (labelOptions !== undefined) {
+    if (typeof labelOptions.directory !== 'string' || !labelOptions.directory.trim()) {
       throw new TypeError('labels.directory must be a nonempty path.');
     }
-    if (typeof options.labels.deciderId !== 'string' || !options.labels.deciderId.trim()) {
+    if (typeof labelOptions.deciderId !== 'string' || !labelOptions.deciderId.trim()) {
       throw new TypeError('labels.deciderId must be a nonempty string.');
     }
-    const questionVersion = options.labels.questionVersion ?? LABEL_QUESTION_VERSION;
+    const questionVersion = labelOptions.questionVersion ?? LABEL_QUESTION_VERSION;
     if (!questionVersion.trim()) {
       throw new TypeError('labels.questionVersion must be a nonempty string.');
     }
-    const store = labelFileStore(options.labels.directory);
-    // Items sharing a text share one store key and one label set; the
-    // task's key is namespaced so it can never collide with a part's.
-    const itemKeys = new Map<MemoryCandidate, string>();
+    const store = labelFileStore(labelOptions.directory);
+    const chatKindsKey = labelKindsKey(LABEL_KINDS);
+    type KindSet = { key: string; kinds: readonly LabelKind[]; task: MemoryCandidate;
+      parts: MemoryCandidate[]; needs: string[] };
+    const sets = new Map<string, KindSet>();
+    const sourceSets = new Map<string, KindSet>();
+    for (const [id, kinds] of Object.entries(labelKindsBySource)) {
+      if (!kinds.length) continue;
+      const key = labelKindsKey(kinds);
+      let set = sets.get(key);
+      if (set === undefined) {
+        set = { key, kinds, task: { ...taskItem, id: sets.size === 0 ? 'question' : `question:${key}` },
+          parts: [], needs: [] };
+        sets.set(key, set);
+      }
+      sourceSets.set(id, set);
+    }
     for (const candidate of queue) {
-      if (candidate.role === 'reference') {
-        itemKeys.set(candidate, labelKey(questionVersion, options.labels.deciderId, candidate.text));
-      }
+      const set = sourceSets.get(candidate.sourceId);
+      if (candidate.role !== 'reference' || set === undefined) continue;
+      set.parts.push(candidate);
+      labelTasks.set(candidate, set.task);
     }
-    itemKeys.set(taskItem, labelKey(questionVersion, options.labels.deciderId, options.task, 'question'));
-    const byKey = new Map<string, MemoryCandidate[]>();
-    for (const [item, key] of itemKeys) {
-      const group = byKey.get(key);
-      if (group === undefined) byKey.set(key, [item]);
-      else group.push(item);
-    }
-    const misses: { readonly key: string; readonly items: readonly MemoryCandidate[] }[] = [];
+    let asked = 0;
     let reused = 0;
-    // Reads run in bounded groups, in the queue's order, so the asks
-    // below batch the same way for the same candidates.
-    const keyed = [...byKey];
-    const storedEntries: { key: string; items: MemoryCandidate[]; stored: PartLabels | undefined }[] = [];
-    for (let index = 0; index < keyed.length; index += LABEL_STORE_READ_GROUP) {
-      storedEntries.push(...await Promise.all(keyed.slice(index, index + LABEL_STORE_READ_GROUP)
-        .map(async ([key, items]) =>
-          ({ key, items, stored: storedLabels(await store.get(key)) }))));
-    }
-    for (const { key, items, stored } of storedEntries) {
-      if (stored === undefined) misses.push({ key, items });
-      else {
-        reused += 1;
-        for (const item of items) labels.set(item, stored);
-      }
-    }
     let failedWrites = 0;
     let writeError: unknown;
-    const missed = new Map(misses.map(({ items }) => [items[0]!, items] as const));
-    const taskMissed = missed.get(taskItem);
-    taskLabelsMissed = taskMissed !== undefined;
-    if (!stop && taskMissed !== undefined) {
-      await ask([
-        ...LABEL_KINDS.map((kind) => ({
-          candidate: taskItem,
-          spec: { key: kind.key, ...labelTaskQuestion(kind) },
-          question: {
-            key: JSON.stringify([taskItem.sourceId, taskItem.id, kind.key]),
-            questionKey: kind.key,
-            role: 'reference' as const,
-            ...labelTaskQuestion(kind),
-            sourceId: taskItem.sourceId, id: taskItem.id,
-            title: taskItem.title, text: taskItem.text,
-          },
-        })),
-        // The route questions share the task's label request.
-        ...(options.route === 'jev' ? ROUTE_QUESTIONS.map(routePending) : []),
-      ], labelAnswers, labelQuestionTask(options.task), options.route === 'jev');
-    }
-    const partMisses = misses.filter(({ items }) => items[0] !== taskItem);
-    if (!stop && partMisses.length > 0) {
-      await ask(partMisses.flatMap(({ items }) => LABEL_KINDS.map((kind) => {
-        const item = pending(items[0]!, { key: kind.key, ...labelPartQuestion(kind) });
-        // Labels describe the whole part text, never the decision
-        // text cut's view of it, so a stored set stays valid at any
-        // later limit.
-        return { ...item, question: { ...item.question, text: items[0]!.text } };
-      })), labelAnswers, LABEL_PARTS_TASK);
-    }
-    for (const { key, items } of misses) {
-      const answers = LABEL_KINDS.map((kind) => labelAnswers.get(items[0]!)?.get(kind.key));
-      // A refused, missing or errored answer is never stored: the set
-      // is written whole or not at all, and the item is asked again
-      // next time.
-      if (!answers.every((answer) => answer?.status === 'answered')) continue;
-      const value = Object.fromEntries(LABEL_KINDS.map((kind, index) =>
-        [kind.key, (answers[index] as { readonly probability: number }).probability])) as PartLabels;
-      for (const item of items) labels.set(item, value);
-      try {
-        await store.set(key, { labels: value });
-      } catch (error) {
-        // A failed write keeps the labels for this pick and is counted:
-        // the record carries one warning, and the item is asked again
-        // next time.
-        failedWrites += 1;
-        writeError ??= error;
+    for (const set of sets.values()) {
+      if (!set.parts.length) continue;
+      const chat = set.key === chatKindsKey;
+      // Identical text shares labels only inside the same kind set.
+      const byKey = new Map<string, MemoryCandidate[]>();
+      for (const item of [...set.parts, set.task]) {
+        const key = labelKey(questionVersion, labelOptions.deciderId, item.text,
+          item === set.task ? 'question' : 'part', set.key);
+        const group = byKey.get(key);
+        if (group === undefined) byKey.set(key, [item]);
+        else group.push(item);
       }
+      const misses: { key: string; items: MemoryCandidate[] }[] = [];
+      const keyed = [...byKey];
+      for (let index = 0; index < keyed.length; index += LABEL_STORE_READ_GROUP) {
+        const entries = await Promise.all(keyed.slice(index, index + LABEL_STORE_READ_GROUP)
+          .map(async ([key, items]) => ({ key, items, stored: storedLabels(await store.get(key), set.kinds) })));
+        for (const { key, items, stored } of entries) {
+          if (stored === undefined) misses.push({ key, items });
+          else {
+            reused += 1;
+            for (const item of items) labels.set(item, stored);
+          }
+        }
+      }
+      if (!stop && misses.some(({ items }) => items[0] === set.task)) {
+        const withRoute: boolean = options.route === 'jev' && !routeAskedWithLabels;
+        await ask([
+          ...set.kinds.map((kind) => ({
+            candidate: set.task,
+            spec: { key: kind.key, ...labelTaskQuestion(kind, chat) },
+            question: {
+              key: JSON.stringify(chat ? [set.task.sourceId, set.task.id, kind.key]
+                : [set.task.sourceId, set.task.id, 'label', set.key, kind.key]),
+              questionKey: kind.key, role: 'reference' as const,
+              ...labelTaskQuestion(kind, chat),
+              sourceId: set.task.sourceId, id: set.task.id,
+              title: set.task.title, text: set.task.text,
+            },
+          })),
+          // Routes have their own answer item, even when a kind has the same key.
+          ...(withRoute ? ROUTE_QUESTIONS.map(routePending) : []),
+        ], labelAnswers, labelQuestionTask(options.task), withRoute);
+        routeAskedWithLabels ||= withRoute;
+      }
+      const partMisses = misses.filter(({ items }) => items[0] !== set.task);
+      if (!stop && partMisses.length > 0) {
+        await ask(partMisses.flatMap(({ items }) => set.kinds.map((kind) => {
+          const candidate = items[0]!;
+          const item = pending(candidate, { key: kind.key, ...labelPartQuestion(kind) });
+          return { ...item, question: { ...item.question,
+            key: JSON.stringify([candidate.sourceId, candidate.id, kind.key]),
+            questionKey: kind.key, text: candidate.text } };
+        })), labelAnswers, chat ? LABEL_PARTS_TASK
+          : 'Label short excerpts from source material. Each question names one item.');
+      }
+      asked += misses.filter(({ items }) => labelAnswers.has(items[0]!)).length;
+      for (const { key, items } of misses) {
+        const answers = set.kinds.map((kind) => labelAnswers.get(items[0]!)?.get(kind.key));
+        // Incomplete sets are retried, never stored as complete labels.
+        if (!answers.every((answer) => answer?.status === 'answered')) continue;
+        const value = Object.fromEntries(set.kinds.map((kind, index) =>
+          [kind.key, (answers[index] as { readonly probability: number }).probability]));
+        for (const item of items) labels.set(item, value);
+        try {
+          await store.set(key, { labels: value });
+        } catch (error) {
+          failedWrites += 1;
+          writeError ??= error;
+        }
+      }
+      set.needs = set.kinds.filter((kind) => (labels.get(set.task)?.[kind.key] ?? 0) >= LABEL_LANE_BAR)
+        .map((kind) => kind.key);
     }
-    const needs = LABEL_KINDS
-      .filter((kind) => (labels.get(taskItem)?.[kind.key] ?? 0) >= LABEL_LANE_BAR)
-      .map((kind) => kind.key);
     const strength = (candidate: MemoryCandidate) => {
       const own = labels.get(candidate);
-      return own === undefined || !needs.length
-        ? 0
-        : Math.max(0, ...needs.map((kind) => own[kind]));
+      const needs = sourceSets.get(candidate.sourceId)?.needs ?? [];
+      return own === undefined || !needs.length ? 0 : Math.max(0, ...needs.map((kind) => own[kind] ?? 0));
     };
     const inLane = new Set(queue.filter((candidate) =>
       candidate.role === 'reference' && strength(candidate) >= LABEL_LANE_BAR));
     for (const candidate of inLane) eligible.add(candidate);
     feed = queue.filter((candidate) => eligible.has(candidate));
-    if (needs.length > 0) {
+    if ([...sets.values()].some((set) => set.needs.length > 0)) {
       feed = fuseLabelLane(feed, queue, inLane, strength);
       feedFused = true;
     }
     labelRecord = {
-      questionVersion,
-      deciderId: options.labels.deciderId,
-      // Items whose label questions were actually sent: a stopping dial
-      // can leave misses unasked.
-      asked: misses.filter(({ items }) => labelAnswers.has(items[0]!)).length,
-      reused,
-      gate: feed.length,
-      failedWrites,
+      questionVersion, deciderId: labelOptions.deciderId, asked, reused,
+      gate: feed.length, failedWrites,
       ...(failedWrites === 0 ? {} : {
         warning: `${failedWrites} label set(s) could not be stored `
           + `(${writeError instanceof Error ? writeError.message : String(writeError)}); this pick used them, `
@@ -1352,7 +1401,7 @@ export async function pick(
   // The route questions, alone when the task's label ask did not run —
   // labels unset, or the task's set reused from the store.
   if (options.route === 'jev') {
-    if (!stop && !taskLabelsMissed) {
+    if (!stop && !routeAskedWithLabels) {
       await ask(ROUTE_QUESTIONS.map(routePending), labelAnswers, labelQuestionTask(options.task), true);
     }
     const got = labelAnswers.get(taskItem);
@@ -1526,12 +1575,13 @@ export async function pick(
   // A queued part the feed never held was never asked a question. The
   // 'gate' reason names only the gate's own call: a reference part the
   // keyword lanes never held — not one a lane's candidate limit cut —
-  // whose stored or answered labels cleared no needed kind. A rule, a
+  // whose part and task labels were resolved and cleared no needed kind. A rule, a
   // lane-limit cut and a part a stop left unlabelled keep their reason.
   for (const candidate of queue) {
     if (!statuses.has(candidate)) {
       const gated = candidate.role === 'reference'
-        && !laneCut.has(candidate) && labels.has(candidate);
+        && !laneCut.has(candidate) && labels.has(candidate)
+        && labels.has(labelTasks.get(candidate)!);
       statuses.set(candidate, { status: 'unassessed',
         reason: gated ? 'gate' : (stop ?? 'limits') });
     }
@@ -1569,12 +1619,12 @@ export async function pick(
     });
   }
 
-  // The rare-word round, off by default: the parts that cleared the
+  // The rare-word round: the parts that cleared the
   // selection bar can share rare words with parts the first pass
   // missed, so those words reach for more. A word is rare when at most
   // share × N parts of the history contain it — document frequency
-  // over every reference part received, the same N the top-k count
-  // reads. Every unselected part sharing a rare word is pulled in,
+  // over reference parts from enabled sources. Every unselected part
+  // from those sources sharing a rare word is pulled in,
   // pool members included: one never asked is sent through the decide
   // step, one already decided reuses its score, and a part scoring at
   // or above a second, lower bar joins the selection. It runs after
@@ -1583,6 +1633,7 @@ export async function pick(
   // can never carry a link.
   const rarePulled = new Set<MemoryCandidate>();
   if (rareOn && !stop) {
+    const rareReferences = references.filter((candidate) => rareForSource(candidate.sourceId));
     const wordSets = new Map<MemoryCandidate, ReadonlySet<string>>();
     const wordSet = (candidate: MemoryCandidate): ReadonlySet<string> => {
       let set = wordSets.get(candidate);
@@ -1593,21 +1644,22 @@ export async function pick(
       return set;
     };
     const frequency = new Map<string, number>();
-    for (const candidate of references) {
+    for (const candidate of rareReferences) {
       for (const word of wordSet(candidate)) frequency.set(word, (frequency.get(word) ?? 0) + 1);
     }
-    const bound = rareShare * references.length;
+    const bound = rareShare * rareReferences.length;
     const seeds = new Set<string>();
     for (const candidate of selected) {
       const status = statuses.get(candidate)!;
-      if (candidate.role !== 'reference' || status.status !== 'selected' || status.link !== undefined) {
+      if (candidate.role !== 'reference' || !rareForSource(candidate.sourceId)
+        || status.status !== 'selected' || status.link !== undefined) {
         continue;
       }
       for (const word of wordSet(candidate)) {
         if ((frequency.get(word) ?? 0) <= bound) seeds.add(word);
       }
     }
-    const pulled = references.filter((candidate) =>
+    const pulled = rareReferences.filter((candidate) =>
       statuses.get(candidate)?.status !== 'selected'
       && [...wordSet(candidate)].some((word) => seeds.has(word)));
     // A pool member the queue never held carries no status; pulling one
@@ -1655,6 +1707,7 @@ export async function pick(
     }
     pickRecord = { ...pickRecord!, rare: {
       share: rareShare, bar: rareBar,
+      ...(options.rareBySource === undefined ? {} : { n: rareReferences.length }),
       words: [...seeds].sort(),
       pulled: pulled.map((candidate) => ({ sourceId: candidate.sourceId, id: candidate.id })),
       asked, added,
@@ -1756,6 +1809,7 @@ export async function pick(
     : 'complete' as const;
 
   const record: PickRecord = {
+    labelKindsBySource,
     questionVersion,
     limits: recordedLimits,
     thresholds: { ...thresholds,
@@ -1792,7 +1846,7 @@ export async function pick(
     }),
     ...(routeRecord === undefined ? {} : { route: routeRecord }),
     ...(pickRecord === undefined ? {} : { pick: pickRecord }),
-    levers: { preset: presetName(levers), ...levers },
+    levers: { preset: presetName(levers, rareMatchesDefault), ...levers },
   };
   if (decideFailure !== undefined) {
     throw new PickError(

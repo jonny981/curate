@@ -10,6 +10,8 @@ import {
   type PickTagSet,
 } from '../src/index.js';
 
+const uncutPick = { everyRanked: true, everyScored: true, labels: false, rare: false } as const;
+
 const candidate = (id: string, score = 1, overrides: Partial<MemoryCandidate> = {}): MemoryCandidate => ({
   id, sourceId: 'notes', role: 'reference', title: id, text: `Text ${id}`,
   signals: { score }, ...overrides,
@@ -47,7 +49,7 @@ describe('cutScoreCurve', () => {
 describe('lane cuts', () => {
   it('cuts each keyword lane at its own curve and reports read and kept counts', async () => {
     const scored = [10, 9, 8, 1, 1, 1].map((score, index) => candidate(`s${index}`, score));
-    const result = await pickFromSources([reader(scored)], { task: 'task' }, { task: 'task', decide: yes });
+    const result = await pickFromSources([reader(scored)], { task: 'task' }, { ...uncutPick, task: 'task', decide: yes });
     expect(result.reads[0]).toMatchObject({
       lanes: [{ task: 'task', lane: 'search', read: 6, kept: 3 }],
     });
@@ -56,7 +58,7 @@ describe('lane cuts', () => {
 
   it('keeps every part when wholeLanes is on', async () => {
     const scored = [10, 9, 8, 1, 1, 1].map((score, index) => candidate(`s${index}`, score));
-    const result = await pickFromSources([reader(scored)], { task: 'task', wholeLanes: true }, { task: 'task', decide: yes });
+    const result = await pickFromSources([reader(scored)], { task: 'task', wholeLanes: true }, { ...uncutPick, task: 'task', decide: yes });
     expect(result.selected).toHaveLength(6);
     expect(result.reads[0]).toMatchObject({ lanes: [{ task: 'task', lane: 'search', read: 6, kept: 6 }] });
   });
@@ -75,7 +77,7 @@ describe('lane cuts', () => {
         };
       },
     };
-    const result = await pickFromSources([source], { task: 'first', searchLines: ['extra'] }, { task: 'first', decide: yes });
+    const result = await pickFromSources([source], { task: 'first', searchLines: ['extra'] }, { ...uncutPick, task: 'first', decide: yes });
     expect(calls).toEqual(['first', 'extra']);
     const read = result.reads[0]!;
     if (read.status !== 'read') throw new Error('read failed');
@@ -90,14 +92,14 @@ describe('lane cuts', () => {
 
   it('never imposes a ceiling: a wide union of equal scores is kept whole', async () => {
     const wide = Array.from({ length: 3000 }, (_, index) => candidate(`w${index}`, 5));
-    const result = await pickFromSources([reader(wide)], { task: 'task' }, { task: 'task', decide: yes });
+    const result = await pickFromSources([reader(wide)], { task: 'task' }, { ...uncutPick, task: 'task', decide: yes });
     expect(result.selected).toHaveLength(3000);
     expect(result.reads[0]).toMatchObject({ lanes: [{ task: 'task', lane: 'search', read: 3000, kept: 3000 }] });
   });
 
   it('keeps nothing and records no search match when no candidate scored', async () => {
     const flat = [candidate('a', 0), candidate('b', 0), candidate('c', -1)];
-    const result = await pickFromSources([reader(flat)], { task: 'task' }, { task: 'task', decide: yes });
+    const result = await pickFromSources([reader(flat)], { task: 'task' }, { ...uncutPick, task: 'task', decide: yes });
     expect(result.selected).toEqual([]);
     const read = result.reads[0]!;
     if (read.status !== 'read') throw new Error('read failed');
@@ -109,14 +111,14 @@ describe('lane cuts', () => {
   it('cuts on laneScore when a candidate carries one, not the merged signal', async () => {
     const items = [10, 9, 8, 1, 1, 1].map((laneScore, index) =>
       candidate(`m${index}`, 1, { laneScore }));
-    const result = await pickFromSources([reader(items)], { task: 'task' }, { task: 'task', decide: yes });
+    const result = await pickFromSources([reader(items)], { task: 'task' }, { ...uncutPick, task: 'task', decide: yes });
     expect(result.selected.map((item) => item.id)).toEqual(['m0', 'm1', 'm2']);
     expect(result.reads[0]).toMatchObject({ lanes: [{ task: 'task', lane: 'search', read: 6, kept: 3 }] });
   });
 
   it('drops candidates no lane scored and never cuts a rule source', async () => {
     const dropped = await pickFromSources([reader([candidate('hit', 4), candidate('miss', 0)])],
-      { task: 'task' }, { task: 'task', decide: yes });
+      { task: 'task' }, { ...uncutPick, task: 'task', decide: yes });
     expect(dropped.selected.map((item) => item.id)).toEqual(['hit']);
     const ruleSource: CandidateSource = {
       id: 'rules', role: 'rule',
@@ -125,7 +127,7 @@ describe('lane cuts', () => {
         candidates: [{ ...candidate('rule', 0), role: 'rule' as const }],
       }),
     };
-    const kept = await pickFromSources([ruleSource], { task: 'task' }, { task: 'task', decide: yes });
+    const kept = await pickFromSources([ruleSource], { task: 'task' }, { ...uncutPick, task: 'task', decide: yes });
     expect(kept.selected).toHaveLength(1);
   });
 
@@ -139,7 +141,7 @@ describe('lane cuts', () => {
           : [10, 9, 8, 1, 1, 1].map((score, index) => candidate(`e${index}`, score)),
       }),
     };
-    const result = await pickFromSources([source], { task: 'flat', searchLines: ['extra'] }, { task: 'flat', decide: yes });
+    const result = await pickFromSources([source], { task: 'flat', searchLines: ['extra'] }, { ...uncutPick, task: 'flat', decide: yes });
     const read = result.reads[0]!;
     if (read.status !== 'read') throw new Error('read failed');
     expect(read.lanes).toEqual([
@@ -153,7 +155,7 @@ describe('lane cuts', () => {
 
   it('keeps nothing and records no search match when every search lane of the read scored zero', async () => {
     const flat = reader([candidate('a', 0), candidate('b', 0)]);
-    const result = await pickFromSources([flat], { task: 'flat', searchLines: ['also flat'] }, { task: 'flat', decide: yes });
+    const result = await pickFromSources([flat], { task: 'flat', searchLines: ['also flat'] }, { ...uncutPick, task: 'flat', decide: yes });
     expect(result.selected).toEqual([]);
     const read = result.reads[0]!;
     if (read.status !== 'read') throw new Error('read failed');
@@ -170,7 +172,7 @@ describe('lane cuts', () => {
         candidates: [candidate('hit', 0, { text: 'got my invoice today' }), candidate('other', 0)],
       }),
     };
-    const result = await pickFromSources([source], { task: 'task', searchPhrases: ['got my'] }, { task: 'task', decide: yes });
+    const result = await pickFromSources([source], { task: 'task', searchPhrases: ['got my'] }, { ...uncutPick, task: 'task', decide: yes });
     const read = result.reads[0]!;
     if (read.status !== 'read') throw new Error('read failed');
     // The keyword lane scored zero but the phrase lane matched: the
@@ -218,7 +220,7 @@ describe('kind lanes', () => {
     };
     const result = await pickFromSources([chatSource, noteSource], {
       task: 'directions', kindLanes: { chat: ['we need to'], markdown: ['decision:'] },
-    }, { task: 'directions', decide: yes });
+    }, { ...uncutPick, task: 'directions', decide: yes });
     expect(calls).toEqual(['directions', 'we need to']);
     const lanes = result.reads.flatMap((read) => read.status === 'read' ? read.lanes ?? [] : []);
     expect(lanes).toEqual([
@@ -249,7 +251,7 @@ describe('kind lanes', () => {
     };
     const result = await pickFromSources([chatSource], {
       task: 'task', kindLanes: { chat: ['never'] },
-    }, { task: 'task', decide: yes });
+    }, { ...uncutPick, task: 'task', decide: yes });
     const read = result.reads[0]!;
     if (read.status !== 'read') throw new Error('read failed');
     // A reader that cannot score the task returns every phrase match
@@ -286,7 +288,7 @@ describe('kind lanes', () => {
     };
     const result = await pickFromSources([chatSource], {
       task: 'the shipping task', kindLanes: { chat: ['never'] },
-    }, { task: 'the shipping task', decide: yes });
+    }, { ...uncutPick, task: 'the shipping task', decide: yes });
     expect(requests).toEqual([
       { task: 'the shipping task', phrase: undefined, topic: undefined, cut: false },
       { task: 'never', phrase: true, topic: 'the shipping task', cut: false },
@@ -317,7 +319,7 @@ describe('kind lanes', () => {
     };
     const result = await pickFromSources([chatSource], {
       task: 'task', kindLanes: { chat: ['never'] }, wholeLanes: true,
-    }, { task: 'task', decide: yes });
+    }, { ...uncutPick, task: 'task', decide: yes });
     const read = result.reads[0]!;
     if (read.status !== 'read') throw new Error('read failed');
     expect(read.lanes?.find((lane) => lane.lane === 'kind')).toMatchObject({ read: 3, kept: 3 });
@@ -336,25 +338,25 @@ describe('kind lanes', () => {
     };
     const withSpeaker = await pickFromSources([chatSource], {
       task: 'what they said', kindLanes: { chat: ['we need to'] }, speakerOnly: true,
-    }, { task: 'what they said', decide: yes });
+    }, { ...uncutPick, task: 'what they said', decide: yes });
     expect(withSpeaker.selected.map((item) => item.id)).toEqual(['mine']);
     const without = await pickFromSources([chatSource], {
       task: 'what they said', kindLanes: { chat: ['we need to'] },
-    }, { task: 'what they said', decide: yes });
+    }, { ...uncutPick, task: 'what they said', decide: yes });
     expect(without.selected.map((item) => item.id).sort()).toEqual(['mine', 'theirs']);
   });
 
   it('rejects malformed lane options', async () => {
     const source = reader([candidate('a')]);
-    await expect(pickFromSources([source], { task: 't', kindLanes: { chat: 'we need to' } as never }, { task: 't', decide: yes }))
+    await expect(pickFromSources([source], { task: 't', kindLanes: { chat: 'we need to' } as never }, { ...uncutPick, task: 't', decide: yes }))
       .rejects.toThrow('kindLanes');
-    await expect(pickFromSources([source], { task: 't', kindLanes: { bogus: ['x'] } as never }, { task: 't', decide: yes }))
+    await expect(pickFromSources([source], { task: 't', kindLanes: { bogus: ['x'] } as never }, { ...uncutPick, task: 't', decide: yes }))
       .rejects.toThrow('kindLanes');
-    await expect(pickFromSources([source], { task: 't', kindLanes: { chat: ['  '] } }, { task: 't', decide: yes }))
+    await expect(pickFromSources([source], { task: 't', kindLanes: { chat: ['  '] } }, { ...uncutPick, task: 't', decide: yes }))
       .rejects.toThrow('kindLanes');
-    await expect(pickFromSources([source], { task: 't', wholeLanes: 1 as never }, { task: 't', decide: yes }))
+    await expect(pickFromSources([source], { task: 't', wholeLanes: 1 as never }, { ...uncutPick, task: 't', decide: yes }))
       .rejects.toThrow('wholeLanes');
-    await expect(pickFromSources([source], { task: 't', speakerOnly: 'yes' as never }, { task: 't', decide: yes }))
+    await expect(pickFromSources([source], { task: 't', speakerOnly: 'yes' as never }, { ...uncutPick, task: 't', decide: yes }))
       .rejects.toThrow('speakerOnly');
   });
 });
@@ -376,7 +378,7 @@ describe('decision tags', () => {
     const asked: [string | undefined, string | undefined][] = [];
     const result = await pick([
       candidate('kept', 3), candidate('dropped', 1), { ...candidate('rule', 0), role: 'rule' },
-    ], {
+    ], { ...uncutPick,
       task: 'task', tags: [intent, corrects],
       decide: async (batch) => {
         asked.push(...batch.questions.map((q) => [q.id, q.tagSet] as [string | undefined, string | undefined]));
@@ -402,14 +404,14 @@ describe('decision tags', () => {
   });
 
   it('values a single-question set to no below 0.5 and keeps missing and error answers', async () => {
-    const result = await pick([candidate('kept', 3)], {
+    const result = await pick([candidate('kept', 3)], { ...uncutPick,
       task: 'task', tags: [corrects],
       decide: async (batch) => Object.fromEntries(batch.questions.map((q) => [q.key,
         q.tagSet === 'corrects' ? { status: 'answered' as const, probability: 0.4 }
           : { status: 'answered' as const, probability: 0.9 }])),
     });
     expect(result.record.candidates[0]?.tags?.corrects?.value).toBe('no');
-    const partial = await pick([candidate('kept', 3)], {
+    const partial = await pick([candidate('kept', 3)], { ...uncutPick,
       task: 'task', tags: [intent],
       decide: async (batch) => Object.fromEntries(batch.questions.map((q) => [q.key,
         q.tagSet === 'intent' && q.questionKey === 'intent.fact'
@@ -420,7 +422,7 @@ describe('decision tags', () => {
       value: 'decision',
       answers: [{ key: 'decision', status: 'answered' }, { key: 'fact', status: 'refused', detail: 'out of scope' }],
     });
-    const none = await pick([candidate('kept', 3)], {
+    const none = await pick([candidate('kept', 3)], { ...uncutPick,
       task: 'task', tags: [intent],
       decide: async (batch) => Object.fromEntries(batch.questions.map((q) => [q.key,
         q.tagSet === 'intent' ? { status: 'missing' as const } : { status: 'answered' as const, probability: 0.9 }])),
@@ -429,7 +431,7 @@ describe('decision tags', () => {
   });
 
   it('leaves a multi-question set value unset when no answer reaches 0.5', async () => {
-    const result = await pick([candidate('kept', 3)], {
+    const result = await pick([candidate('kept', 3)], { ...uncutPick,
       task: 'task', tags: [intent],
       decide: async (batch) => Object.fromEntries(batch.questions.map((q) => [q.key,
         q.tagSet === 'intent'
@@ -456,17 +458,17 @@ describe('decision tags', () => {
         status: 'answered' as const,
         probability: q.tagSet === 'importance' ? levels[q.questionKey!.split('.')[1]!]! : 0.9,
       }]));
-    const top = await pick([candidate('kept', 3)], {
+    const top = await pick([candidate('kept', 3)], { ...uncutPick,
       task: 'task', tags: [importance],
       decide: answer({ critical: 0.9, important: 0.8, relevant: 0.8, passing: 0.8 }),
     });
     expect(top.record.candidates[0]?.tags?.importance?.value).toBe('critical');
-    const mid = await pick([candidate('kept', 3)], {
+    const mid = await pick([candidate('kept', 3)], { ...uncutPick,
       task: 'task', tags: [importance],
       decide: answer({ critical: 0.3, important: 0.8, relevant: 0.8, passing: 0.8 }),
     });
     expect(mid.record.candidates[0]?.tags?.importance?.value).toBe('important');
-    const none = await pick([candidate('kept', 3)], {
+    const none = await pick([candidate('kept', 3)], { ...uncutPick,
       task: 'task', tags: [importance],
       decide: answer({ critical: 0.3, important: 0.3, relevant: 0.3, passing: 0.3 }),
     });
@@ -481,7 +483,7 @@ describe('decision tags', () => {
     const asked: [string, string | undefined][] = [];
     const result = await pick([
       candidate('commit', 3, { sourceId: 'history' }), candidate('note', 3),
-    ], {
+    ], { ...uncutPick,
       task: 'task', tags: [corrects], tagsByKind: { 'git-history': [commitKind] },
       sourceKinds: { history: 'git-history' },
       decide: async (batch) => {
@@ -499,7 +501,7 @@ describe('decision tags', () => {
   });
 
   it('records tag questions a stop left unasked as unassessed with the reason', async () => {
-    const partial = await pick([candidate('kept', 3)], {
+    const partial = await pick([candidate('kept', 3)], { ...uncutPick,
       task: 'task', tags: [intent],
       limits: { maxBatches: 2, maxPerBatch: 1 },
       decide: yes,
@@ -512,7 +514,7 @@ describe('decision tags', () => {
         { key: 'fact', status: 'unassessed', detail: 'limits' },
       ],
     });
-    const skipped = await pick([candidate('kept', 3)], {
+    const skipped = await pick([candidate('kept', 3)], { ...uncutPick,
       task: 'task', tags: [intent],
       limits: { maxBatches: 1, maxPerBatch: 1 },
       decide: yes,
@@ -528,13 +530,13 @@ describe('decision tags', () => {
   });
 
   it('rejects duplicate tag set keys for one candidate', async () => {
-    await expect(pick([candidate('a', 3, { sourceId: 'history' })], {
+    await expect(pick([candidate('a', 3, { sourceId: 'history' })], { ...uncutPick,
       task: 'task', tags: [corrects],
       tagsByKind: { 'git-history': [corrects] },
       sourceKinds: { history: 'git-history' },
       decide: yes,
     })).rejects.toThrow('unique');
-    await expect(pick([candidate('a')], {
+    await expect(pick([candidate('a')], { ...uncutPick,
       task: 'task', tags: [{ key: 'intent', questions: [] }],
       decide: yes,
     })).rejects.toThrow('tag set');
@@ -544,7 +546,7 @@ describe('decision tags', () => {
 describe('size-dependent reference bar', () => {
   it('interpolates the bar between points and records the applied value', async () => {
     const scores = [0.9, 0.5, 0.29, 0.2];
-    const result = await pick(scores.map((p, index) => candidate(`c${index}`, 4 - index)), {
+    const result = await pick(scores.map((p, index) => candidate(`c${index}`, 4 - index)), { ...uncutPick,
       task: 'task', everyScored: { bySize: [[2, 0.1], [6, 0.5]] },
       decide: async (batch) => Object.fromEntries(batch.questions.map((q, index) => [
         q.key, { status: 'answered' as const, probability: scores[index]! }])),
@@ -557,13 +559,13 @@ describe('size-dependent reference bar', () => {
   });
 
   it('holds the flat bars outside the points and counts only decided references', async () => {
-    const flat = await pick([candidate('a', 3), candidate('b', 1)], {
+    const flat = await pick([candidate('a', 3), candidate('b', 1)], { ...uncutPick,
       task: 'task', everyScored: { bySize: [[10, 0], [100, 0.9]] },
       decide: async (batch) => Object.fromEntries(batch.questions.map((q) => [q.key, { status: 'answered' as const, probability: 0.4 }])),
     });
     expect(flat.record.thresholds.appliedReference).toBe(0);
     expect(flat.selected).toHaveLength(2);
-    const oneMissing = await pick([candidate('a', 3), { ...candidate('b', 1), role: 'rule' as const }], {
+    const oneMissing = await pick([candidate('a', 3), { ...candidate('b', 1), role: 'rule' as const }], { ...uncutPick,
       task: 'task', everyScored: { bySize: [[0, 0], [2, 0.5]] },
       decide: async (batch) => Object.fromEntries(batch.questions.map((q) => [q.key,
         q.id === 'b' ? { status: 'missing' as const } : { status: 'answered' as const, probability: 0.4 }])),
@@ -577,7 +579,7 @@ describe('size-dependent reference bar', () => {
     for (const points of [
       [], [[1, 0], [1, 0.5]], [[-1, 0]], [[1.5, 0]], [[1, -0.1]], [[1, 2]], [[1, Number.NaN]],
     ] as const) {
-      await expect(pick([candidate('a')], {
+      await expect(pick([candidate('a')], { ...uncutPick,
         task: 'task', everyScored: { bySize: points }, decide: yes,
       })).rejects.toThrow('bySize');
     }

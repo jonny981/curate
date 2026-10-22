@@ -18,9 +18,9 @@ const RENAMED_OPTIONS: Readonly<Record<string, string>> = {
 };
 
 const PICK_OPTION_KEYS: readonly (keyof PickOptions)[] = [
-  'ranking', 'task', 'decide', 'cascade', 'cascadesByKind', 'sourceKinds',
+  'ranking', 'task', 'decide', 'cascade', 'cascadesByKind', 'sourceKinds', 'labelKindsBySource',
   'keepTop', 'rankProtection', 'bestPartFirst', 'tags', 'tagsByKind',
-  'labels', 'cache', 'route', 'everyRanked', 'everyScored', 'rare',
+  'labels', 'cache', 'route', 'everyRanked', 'everyScored', 'rare', 'rareBySource',
   'rulesEnumerationComplete', 'limits', 'thresholds', 'signal',
 ];
 const THRESHOLD_KEYS: readonly (keyof PickThresholds)[] = ['rule', 'linkedPathBar'];
@@ -102,10 +102,23 @@ export function checkPickOptions(options: PickOptions): void {
   checkKeys(options.thresholds, THRESHOLD_KEYS, 'thresholds');
   checkKeys(options.limits, LIMIT_KEYS, 'limits');
   checkKeys(options.labels, LABEL_KEYS, 'labels');
+  for (const [id, kinds] of Object.entries(options.labelKindsBySource ?? {})) {
+    if (!Array.isArray(kinds) || kinds.some((kind) =>
+      !kind || [kind.key, kind.name, kind.part?.true, kind.part?.false]
+        .some((value) => typeof value !== 'string' || !value.trim()))) {
+      throw new TypeError(`labelKindsBySource.${id} needs kinds with nonblank key, name and part criteria.`);
+    }
+    if (new Set(kinds.map((kind) => kind.key)).size !== kinds.length) {
+      throw new TypeError(`labelKindsBySource.${id} needs unique kind keys.`);
+    }
+  }
   checkKeys(options.cache, CACHE_KEYS, 'cache');
   checkKeys(options.everyRanked, ['c'], 'everyRanked');
   checkKeys(options.everyScored, ['bar', 'bySize'], 'everyScored');
   checkKeys(options.rare, ['share', 'bar'], 'rare');
+  for (const [id, enabled] of Object.entries(options.rareBySource ?? {})) {
+    if (typeof enabled !== 'boolean') throw new TypeError(`rareBySource.${id} must be a boolean.`);
+  }
   checkKeys(options.ranking, MEMORY_KIND_KEYS, 'ranking');
   checkCascadeKeys(options.cascade, 'cascade');
   checkKeys(options.cascadesByKind, SOURCE_KIND_KEYS, 'cascadesByKind');

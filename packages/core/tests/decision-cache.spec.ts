@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+  LABEL_KINDS,
   decisionFileStore,
   pick,
   type DecisionStore,
@@ -13,6 +14,8 @@ import {
   type PickCascade,
   type PickDecide,
 } from '../src/index.js';
+
+const uncutPick = { everyRanked: true, everyScored: true, labels: false, rare: false } as const;
 
 function candidate(overrides: Partial<MemoryCandidate> & Pick<MemoryCandidate, 'sourceId' | 'id'>): MemoryCandidate {
   return {
@@ -100,7 +103,7 @@ describe('pick decision cache', () => {
   it('reuses a stored answer across batches: a second identical pick makes zero decider calls', async () => {
     const directory = storeDirectory();
     const counter = counting();
-    const options = {
+    const options = { ...uncutPick,
       task: 'Recall the plan', decide: counter.decide,
       cache: { store: decisionFileStore(directory), deciderId: 'test-decider' },
     };
@@ -128,7 +131,7 @@ describe('pick decision cache', () => {
   it('asks only the new part when a later pick gains a neighbour in the same batch', async () => {
     const directory = storeDirectory();
     const counter = counting();
-    const options = {
+    const options = { ...uncutPick,
       task: 'Recall the plan', decide: counter.decide,
       cache: { store: decisionFileStore(directory), deciderId: 'test-decider' },
     };
@@ -142,7 +145,7 @@ describe('pick decision cache', () => {
 
   it('asks only the added part when a kind part joins a cached pick of plain parts', async () => {
     const counter = counting();
-    const options = {
+    const options = { ...uncutPick,
       task: 'Recall the plan', decide: counter.decide,
       cache: { store: countingStore().store, deciderId: 'test-decider' },
     };
@@ -167,7 +170,7 @@ describe('pick decision cache', () => {
   it('asks every part again for a changed task', async () => {
     const counted = countingStore();
     const counter = counting();
-    const options = {
+    const options = { ...uncutPick,
       task: 'Recall the plan', decide: counter.decide,
       cache: { store: counted.store, deciderId: 'test-decider' },
     };
@@ -181,7 +184,7 @@ describe('pick decision cache', () => {
   it('asks every part again for a changed question-set version', async () => {
     const counted = countingStore();
     const counter = counting();
-    const options = {
+    const options = { ...uncutPick,
       task: 'Recall the plan', decide: counter.decide,
       cache: { store: counted.store, deciderId: 'test-decider' },
     };
@@ -199,7 +202,7 @@ describe('pick decision cache', () => {
   it('asks every part again under a different deciderId', async () => {
     const counted = countingStore();
     const counter = counting();
-    const options = {
+    const options = { ...uncutPick,
       task: 'Recall the plan', decide: counter.decide,
       cache: { store: counted.store, deciderId: 'test-decider' },
     };
@@ -214,7 +217,7 @@ describe('pick decision cache', () => {
 
   it('asks again for that part only when its title changes', async () => {
     const counter = counting();
-    const options = {
+    const options = { ...uncutPick,
       task: 'Recall the plan', decide: counter.decide,
       cache: { store: countingStore().store, deciderId: 'test-decider' },
     };
@@ -230,7 +233,7 @@ describe('pick decision cache', () => {
 
   it('asks again for that part only when its role changes', async () => {
     const counter = counting();
-    const options = {
+    const options = { ...uncutPick,
       task: 'Recall the plan', decide: counter.decide,
       cache: { store: countingStore().store, deciderId: 'test-decider' },
     };
@@ -246,7 +249,7 @@ describe('pick decision cache', () => {
 
   it('asks again for that part only when its source id changes', async () => {
     const counter = counting();
-    const options = {
+    const options = { ...uncutPick,
       task: 'Recall the plan', decide: counter.decide,
       cache: { store: countingStore().store, deciderId: 'test-decider' },
     };
@@ -266,7 +269,7 @@ describe('pick decision cache', () => {
 
   it('asks again for that part only when its kind changes', async () => {
     const counter = counting(0.5);
-    const options = {
+    const options = { ...uncutPick,
       task: 'Recall the plan', decide: counter.decide, cascade,
       cache: { store: countingStore().store, deciderId: 'test-decider' },
     };
@@ -284,7 +287,7 @@ describe('pick decision cache', () => {
 
   it('asks again for that part only when its date changes with unchanged text', async () => {
     const counter = counting();
-    const options = {
+    const options = { ...uncutPick,
       task: 'Recall the plan', decide: counter.decide,
       cache: { store: countingStore().store, deciderId: 'test-decider' },
     };
@@ -303,7 +306,7 @@ describe('pick decision cache', () => {
 
   it('asks again for that part only when its date meaning changes with unchanged text', async () => {
     const counter = counting();
-    const options = {
+    const options = { ...uncutPick,
       task: 'Recall the plan', decide: counter.decide,
       cache: { store: countingStore().store, deciderId: 'test-decider' },
     };
@@ -323,7 +326,7 @@ describe('pick decision cache', () => {
   it('asks every part again when the decision text cut changes', async () => {
     const counted = countingStore();
     const counter = counting();
-    const options = {
+    const options = { ...uncutPick,
       task: 'Recall the plan', decide: counter.decide,
       cache: { store: counted.store, deciderId: 'test-decider' },
       limits: { maxQuestionText: 100 },
@@ -339,7 +342,7 @@ describe('pick decision cache', () => {
 
   it('asks again for that part only when its text changes', async () => {
     const counter = counting();
-    const options = {
+    const options = { ...uncutPick,
       task: 'Recall the plan', decide: counter.decide,
       cache: { store: countingStore().store, deciderId: 'test-decider' },
     };
@@ -355,7 +358,7 @@ describe('pick decision cache', () => {
 
   it('asks again for that part only when its text changes past the decision text cut', async () => {
     const counter = counting();
-    const options = {
+    const options = { ...uncutPick,
       task: 'Recall the plan', decide: counter.decide,
       limits: { maxQuestionText: 20 },
       cache: { store: countingStore().store, deciderId: 'test-decider' },
@@ -383,7 +386,7 @@ describe('pick decision cache', () => {
   it('asks again when the rendered question wording changes', async () => {
     const counted = countingStore();
     const counter = counting();
-    const options = {
+    const options = { ...uncutPick,
       task: 'Recall the plan', decide: counter.decide, cascade,
       cache: { store: counted.store, deciderId: 'test-decider' },
     };
@@ -402,7 +405,7 @@ describe('pick decision cache', () => {
   it('asks again when a rendered question true criterion changes', async () => {
     const counted = countingStore();
     const counter = counting();
-    const options = {
+    const options = { ...uncutPick,
       task: 'Recall the plan', decide: counter.decide, cascade,
       cache: { store: counted.store, deciderId: 'test-decider' },
     };
@@ -421,7 +424,7 @@ describe('pick decision cache', () => {
   it('asks again when a rendered question false criterion changes', async () => {
     const counted = countingStore();
     const counter = counting();
-    const options = {
+    const options = { ...uncutPick,
       task: 'Recall the plan', decide: counter.decide, cascade,
       cache: { store: counted.store, deciderId: 'test-decider' },
     };
@@ -440,7 +443,7 @@ describe('pick decision cache', () => {
   it('sends the decider a batch holding only the parts that missed', async () => {
     const counted = countingStore();
     const counter = counting();
-    const options = {
+    const options = { ...uncutPick,
       task: 'Recall the plan', decide: counter.decide,
       cache: { store: counted.store, deciderId: 'test-decider' },
       limits: { maxPerBatch: 10 },
@@ -467,7 +470,7 @@ describe('pick decision cache', () => {
             : answered(0.9),
       ]));
     };
-    const options = {
+    const options = { ...uncutPick,
       task: 'Recall the plan', decide,
       cache: { store: decisionFileStore(directory), deciderId: 'test-decider' },
     };
@@ -488,7 +491,7 @@ describe('pick decision cache', () => {
   it('treats a corrupt, wrong-shaped or out-of-range entry as a miss and completes the pick', async () => {
     const directory = storeDirectory();
     const counter = counting();
-    const options = {
+    const options = { ...uncutPick,
       task: 'Recall the plan', decide: counter.decide,
       cache: { store: decisionFileStore(directory), deciderId: 'test-decider' },
     };
@@ -512,7 +515,7 @@ describe('pick decision cache', () => {
       set: async () => { sets += 1; },
     };
     const counter = counting();
-    const result = await pick(threeParts(), {
+    const result = await pick(threeParts(), { ...uncutPick,
       task: 'Recall the plan', decide: counter.decide,
       cache: { store, deciderId: 'test-decider' },
     });
@@ -526,7 +529,7 @@ describe('pick decision cache', () => {
     const counted = countingStore();
     counted.failWrites = true;
     const counter = counting();
-    const result = await pick(threeParts(), {
+    const result = await pick(threeParts(), { ...uncutPick,
       task: 'Recall the plan', decide: counter.decide,
       cache: { store: counted.store, deciderId: 'test-decider' },
     });
@@ -538,7 +541,7 @@ describe('pick decision cache', () => {
     // Nothing was stored, so the next pick asks every question again.
     counted.failWrites = false;
     counter.calls.length = 0;
-    const second = await pick(threeParts(), {
+    const second = await pick(threeParts(), { ...uncutPick,
       task: 'Recall the plan', decide: counter.decide,
       cache: { store: counted.store, deciderId: 'test-decider' },
     });
@@ -560,7 +563,7 @@ describe('pick decision cache', () => {
     const byId: PickDecide = async (batch) => Object.fromEntries(
       batch.questions.map((question) => [question.key, answered(keyed.get(question.id)!)]),
     );
-    const options = (threshold: number) => ({
+    const options = (threshold: number) => ({ ...uncutPick,
       task: 'Recall the plan', decide: byId,
       everyScored: { bar: threshold },
       cache: { store: decisionFileStore(directory), deciderId: 'test-decider' },
@@ -576,7 +579,7 @@ describe('pick decision cache', () => {
   it('makes every call and reads and writes nothing with cache: false', async () => {
     const counted = countingStore();
     const counter = counting();
-    const options = {
+    const options = { ...uncutPick,
       task: 'Recall the plan', decide: counter.decide,
       cache: { store: counted.store, deciderId: 'test-decider' },
     };
@@ -596,12 +599,12 @@ describe('pick decision cache', () => {
   it('returns identical output when no cache is passed', async () => {
     const counted = countingStore();
     const counter = counting();
-    const plain = await pick(threeParts(), { task: 'Recall the plan', decide: counter.decide });
-    const bypassed = await pick(threeParts(), {
+    const plain = await pick(threeParts(), { ...uncutPick, task: 'Recall the plan', decide: counter.decide });
+    const bypassed = await pick(threeParts(), { ...uncutPick,
       task: 'Recall the plan', decide: counter.decide, cache: false,
     });
     expect(bypassed.record).toEqual(plain.record);
-    const cached = await pick(threeParts(), {
+    const cached = await pick(threeParts(), { ...uncutPick,
       task: 'Recall the plan', decide: counter.decide,
       cache: { store: counted.store, deciderId: 'test-decider' },
     });
@@ -612,7 +615,7 @@ describe('pick decision cache', () => {
 
   it('needs a working store port and a nonempty deciderId', async () => {
     const counter = counting();
-    const base = { task: 'Recall the plan', decide: counter.decide };
+    const base = { ...uncutPick, task: 'Recall the plan', decide: counter.decide };
     // @ts-expect-error the store is required
     await expect(pick(threeParts(), { ...base, cache: { deciderId: 'x' } }))
       .rejects.toThrow('cache.store must supply get(key) and set(key, value).');
@@ -632,7 +635,7 @@ describe('pick decision cache', () => {
     const counted = countingStore();
     const counter = counting();
     const always = candidate({ sourceId: 'notes', id: 'r1', role: 'rule', applies: 'always' });
-    const options = {
+    const options = { ...uncutPick,
       task: 'Recall the plan', decide: counter.decide,
       cache: { store: counted.store, deciderId: 'test-decider' },
     };
@@ -649,7 +652,7 @@ describe('pick decision cache', () => {
   it('reuses every answered cascade question and marks the verdict reused', async () => {
     const counted = countingStore();
     const counter = counting(0.5);
-    const options = {
+    const options = { ...uncutPick,
       task: 'Recall the plan', decide: counter.decide, cascade,
       cache: { store: counted.store, deciderId: 'test-decider' },
     };
@@ -670,7 +673,7 @@ describe('pick decision cache', () => {
   it('reuses tag answers on a second pick', async () => {
     const counted = countingStore();
     const counter = counting(0.9);
-    const options = {
+    const options = { ...uncutPick,
       task: 'Recall the plan', decide: counter.decide,
       tags: [{ key: 'intent', questions: [{ key: 'correction', instructions: 'Corrects?', true: 't', false: 'f' }] }],
       cache: { store: counted.store, deciderId: 'test-decider' },
@@ -698,7 +701,7 @@ describe('pick decision cache', () => {
         question.key, answered(question.tagSet === 'tone' ? 0.2 : 0.9),
       ]));
     };
-    const options = {
+    const options = { ...uncutPick,
       task: 'Recall the plan', decide,
       tags: [
         { key: 'tone', questions: [{ key: 'q', instructions: 'Same?', true: 't', false: 'f' }] },
@@ -743,7 +746,7 @@ describe('pick decision cache', () => {
         { key: 'again', instructions: 'Same?', true: 't', false: 'f', weight: 0.8 },
       ],
     };
-    const options = {
+    const options = { ...uncutPick,
       task: 'Recall the plan', decide, cascade: shared,
       cache: { store: counted.store, deciderId: 'test-decider' },
     };
@@ -766,7 +769,7 @@ describe('pick decision cache', () => {
   it('asks two tag sets apart when their question names join to one fitted name', async () => {
     const counted = countingStore();
     const counter = counting(0.9);
-    const options = {
+    const options = { ...uncutPick,
       task: 'Recall the plan', decide: counter.decide,
       // Set 'a' with question 'b.c' and set 'a.b' with question 'c'
       // both name the fitted question 'a.b.c' and share one wording:
@@ -797,9 +800,10 @@ describe('pick decision cache', () => {
     const directory = storeDirectory();
     const counted = countingStore();
     const counter = counting(0.9);
-    const options = {
+    const options = { ...uncutPick,
       task: 'Recall the plan', decide: counter.decide,
       labels: { directory, deciderId: 'test-decider' },
+      labelKindsBySource: { notes: LABEL_KINDS },
       cache: { store: counted.store, deciderId: 'test-decider' },
     };
     const first = await pick(threeParts(), options);
@@ -816,7 +820,7 @@ describe('pick decision cache', () => {
   it('selects nothing on a warm cache when the signal is already aborted', async () => {
     const counted = countingStore();
     const counter = counting();
-    const options = {
+    const options = { ...uncutPick,
       task: 'Recall the plan', decide: counter.decide,
       cache: { store: counted.store, deciderId: 'test-decider' },
     };
@@ -838,7 +842,7 @@ describe('pick decision cache', () => {
   it('applies no warm-cache hit when the signal aborts while the reads run', async () => {
     const counted = countingStore();
     const counter = counting();
-    await pick(threeParts(), {
+    await pick(threeParts(), { ...uncutPick,
       task: 'Recall the plan', decide: counter.decide,
       cache: { store: counted.store, deciderId: 'test-decider' },
     });
@@ -853,7 +857,7 @@ describe('pick decision cache', () => {
       },
       set: counted.store.set,
     };
-    const stopped = await pick(threeParts(), {
+    const stopped = await pick(threeParts(), { ...uncutPick,
       task: 'Recall the plan', decide: counter.decide,
       signal: controller.signal,
       cache: { store: aborting, deciderId: 'test-decider' },
@@ -871,7 +875,7 @@ describe('pick decision cache', () => {
   it('records a time stop when warm-cache reads run past the elapsed limit', async () => {
     const counted = countingStore();
     const counter = counting();
-    await pick(threeParts(), {
+    await pick(threeParts(), { ...uncutPick,
       task: 'Recall the plan', decide: counter.decide,
       cache: { store: counted.store, deciderId: 'test-decider' },
     });
@@ -885,7 +889,7 @@ describe('pick decision cache', () => {
       },
       set: counted.store.set,
     };
-    const stopped = await pick(threeParts(), {
+    const stopped = await pick(threeParts(), { ...uncutPick,
       task: 'Recall the plan', decide: counter.decide,
       limits: { maxElapsedMs: 30 },
       cache: { store: slow, deciderId: 'test-decider' },

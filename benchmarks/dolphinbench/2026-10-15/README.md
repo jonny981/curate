@@ -1,6 +1,6 @@
-# Curate on DolphinBench: performance mode, 30-test slice
+# Curate on DolphinBench: every part decided and kept, 30-test slice
 
-Curate's package (performance mode) wrote a dated, cited memory log for each test from the person's whole history.
+Curate's package, with every part decided and kept, wrote a dated, cited memory log for each test from the person's whole history.
 An agent (GPT-5.6 Luna, high reasoning, through the Codex CLI) read the log and used the test's app tools. The
 benchmark's own grader checked the app calls; its model-judged checks ran on gpt-5.6-sol (medium) through Codex.
 

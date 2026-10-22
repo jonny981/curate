@@ -34,7 +34,7 @@ if (!labelsFile || !questionsFile || !inputsDir || !partsModule) {
   process.exit(2);
 }
 const root = dirname(fileURLToPath(import.meta.url));
-const { pick } = await import(pathToFileURL(join(root, '../packages/core/dist/index.js')).href);
+const { pick, LABEL_KINDS } = await import(pathToFileURL(join(root, '../packages/core/dist/index.js')).href);
 const { parts } = await import(pathToFileURL(partsModule).href);
 const read = (path) => JSON.parse(readFileSync(path, 'utf8'));
 
@@ -141,7 +141,11 @@ for (const q of questions) {
   try {
     const result = await pick(candidates, {
       task: input.task,
+      everyRanked: true,
+      everyScored: true,
+      rare: false,
       labels: { directory, deciderId: 'saved-labels' },
+      labelKindsBySource: { [`questions:${q.question_id}`]: LABEL_KINDS },
       decide: async (batch) => Object.fromEntries(batch.questions.map((question) => {
         if (question.questionKey === undefined) return [question.key, { status: 'answered', probability: 0.9 }];
         const table = question.id === 'question' ? entry.task : entry.parts.get(question.id);

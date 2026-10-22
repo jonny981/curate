@@ -23,7 +23,7 @@ try {
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { pick, pickFromSources, curate, addMeaningRanks, SourceReadError, performance, economy } from '@curatejs/core';
+import { pick, pickFromSources, curate, addMeaningRanks, SourceReadError, defaultMode, conversationRecall } from '@curatejs/core';
 import { asSourceReadError } from '@curatejs/core/internal';
 import { chat, CHAT_CASCADE, CHAT_KEYWORD_SETTINGS, CHAT_SEARCH_LINE_REGISTER } from '@curatejs/chat';
 import { gitHistory, GIT_HISTORY_CASCADE, GIT_KEYWORD_SETTINGS, GIT_SEARCH_LINE_REGISTER } from '@curatejs/git';
@@ -41,19 +41,37 @@ const weighted = async ({ questions }) => {
     status: 'answered', probability: candidates.find(candidate => candidate.id === q.id).signals.probability,
   }]));
 };
-const picked = await pick(candidates, { task: 'Recall backups', decide: weighted });
+const defaults = await pick(candidates, {
+  task: 'Recall backups',
+  decide: async (batch) => batch.questions.some(q => q.questionKey !== undefined) ? decide(batch) : weighted(batch),
+});
+assert.deepEqual(defaults.selected.map(candidate => candidate.id), ['host-item-0', 'host-item-1']);
+assert.equal(defaults.record.thresholds.reference, 0.0146);
+assert.equal(defaults.record.levers.preset, 'default');
+assert.equal(defaults.record.levers.labels, false);
+assert.equal(defaults.record.labels, undefined);
+assert.deepEqual(defaults.record.labelKindsBySource.host, []);
+assert.deepEqual(defaultMode.pick, { everyRanked: true, everyScored: { bar: 0.0146 }, labels: false });
+assert.deepEqual(conversationRecall.pick, { everyRanked: true, everyScored: { bar: 0.0146 }, labels: {} });
+const uncutPick = { everyRanked: true, everyScored: true, labels: false, rare: false };
+const picked = await pick(candidates, { ...uncutPick, task: 'Recall backups', decide: weighted });
 assert.deepEqual(picked.selected.map(candidate => candidate.id), ['host-item-0', 'host-item-1', 'host-item-2']);
 assert.equal(picked.record.thresholds.reference, 0);
-assert.equal(picked.record.levers.preset, 'performance');
-assert.equal(performance.pick.everyScored, true);
-assert.deepEqual(economy.pick.everyScored, { bar: 0.0146 });
+assert.equal(picked.record.levers.preset, 'custom');
+assert.equal(picked.record.levers.labels, false);
+const recall = await pick(candidates, { ...conversationRecall.pick, task: 'Recall backups', decide: weighted });
+assert.deepEqual(recall.selected.map(candidate => candidate.id), ['host-item-0', 'host-item-1']);
+assert.equal(recall.record.levers.preset, 'conversation-recall');
+assert.equal(recall.record.levers.labels, true);
+assert.equal(recall.record.labels.deciderId, 'custom');
+assert.equal(recall.record.labels.asked, 0);
 const meaning = await addMeaningRanks(candidates, 'Recall backups', {
   embed: async texts => texts.map(() => [1, 0]),
 });
 assert.equal(meaning.length, candidates.length);
 assert.ok(meaning.every(candidate => candidate.searchRanks.length === 2));
 assert.deepEqual(meaning.map(candidate => candidate.text), candidates.map(candidate => candidate.text));
-const cut = await pick(candidates, { task: 'Recall backups', decide: weighted, everyScored: { bar: 0.05 } });
+const cut = await pick(candidates, { ...uncutPick, task: 'Recall backups', decide: weighted, everyScored: { bar: 0.05 } });
 assert.deepEqual(cut.selected.map(candidate => candidate.id), ['host-item-0']);
 let prompt;
 const curated = await curate('Recall backups', picked, { write: async p => { prompt = p; return '[2025-01-01] Backups are encrypted (said 2025-01-01; E1)'; } });
@@ -86,7 +104,7 @@ assert.equal(MARKDOWN_KEYWORD_SETTINGS.b, 0.75);
 assert.ok([CHAT_SEARCH_LINE_REGISTER, GIT_SEARCH_LINE_REGISTER, MARKDOWN_SEARCH_LINE_REGISTER].every(s => s.length > 0));
 console.log('Clean consumer: core, chat, git, notes, rules and Markdown kinds passed.');
 `);
-  execFileSync(process.execPath, ['example.mjs'], { cwd: consumer, stdio: 'inherit' });
+  execFileSync(process.execPath, ['example.mjs'], { cwd: consumer, stdio: 'inherit', env: { ...process.env, XDG_CACHE_HOME: join(consumer, 'cache') } });
   writeFileSync(join(consumer, 'require.cjs'), `
 const assert = require('node:assert/strict');
 for (const name of ['core', 'chat', 'git', 'markdown']) {
@@ -95,7 +113,7 @@ for (const name of ['core', 'chat', 'git', 'markdown']) {
 }
 console.log('Clean consumer: require() loaded all four packages.');
 `);
-  execFileSync(process.execPath, ['require.cjs'], { cwd: consumer, stdio: 'inherit' });
+  execFileSync(process.execPath, ['require.cjs'], { cwd: consumer, stdio: 'inherit', env: { ...process.env, XDG_CACHE_HOME: join(consumer, 'cache') } });
 } finally {
   rmSync(consumer, { recursive: true, force: true });
 }

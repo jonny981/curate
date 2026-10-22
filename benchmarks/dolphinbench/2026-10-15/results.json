@@ -1,6 +1,6 @@
 {
   "tag": "curate-perf",
-  "mode": "performance",
+  "mode": "every part decided and kept",
   "memory": "curate",
   "tests": [
     {

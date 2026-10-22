@@ -5,6 +5,7 @@ import { phraseCount, stripSearchInstructions } from './search.js';
 import { addMeaningRanks, type MeaningSearchOptions } from './meaning.js';
 import { cutLane, laneScoreOf, type SearchLaneReport } from './lanes.js';
 import { checkPickOptions, checkReadRequest } from './options.js';
+import type { LabelKind } from './labels.js';
 
 /** What a source is asked for, once per search. */
 export interface CandidateReadRequest {
@@ -186,6 +187,10 @@ export interface CandidateSource {
   readonly kind?: CandidateSourceKind;
   /** Questions memory() uses for this source's kind unless the caller overrides them. */
   readonly cascade?: PickCascade;
+  /** Kinds this source can add through the label lane. Omitted means none. */
+  readonly labelKinds?: readonly LabelKind[];
+  /** Run the rare-word round on this source's reference evidence by default. */
+  readonly rare?: boolean;
   /** 'reference' | 'rule' | 'mixed'; declared so the caller knows
    *  whether this source can feed the applicable-rule set. */
   readonly role: 'reference' | 'rule' | 'mixed';
@@ -659,13 +664,20 @@ export async function pickFromSources(
     throw new TypeError('speakerOnly must be a boolean.');
   }
   const context: CandidateReadContext = { files: new Map() };
+  const labelKindsBySource: Record<string, readonly LabelKind[]> = Object.fromEntries(
+    sources.map((source) => [source.id, source.labelKinds ?? []]),
+  );
+  const rareBySource: Record<string, boolean> = Object.fromEntries(
+    sources.map((source) => [source.id, source.rare ?? false]),
+  );
+  checkPickOptions({ ...options, labelKindsBySource, rareBySource });
   const reads = await Promise.all(sources.map((source) => readSearches(source, {
     ...request,
     maxQuestionText: options.limits?.maxQuestionText ?? request.maxQuestionText
       ?? (source.maxQuestionText === Number.POSITIVE_INFINITY ? undefined : source.maxQuestionText ?? DEFAULT_MAX_QUESTION_TEXT),
-    labelPool: options.labels !== undefined ? 'gate'
+    labelPool: options.labels && (source.labelKinds?.length ?? 0) > 0 ? 'gate'
       : (options.everyRanked !== undefined && options.everyRanked !== true)
-        || (options.rare !== undefined && options.rare !== false)
+        || (options.rare ?? source.rare ?? false) !== false
         ? 'count' : undefined,
   }, context)));
   const candidates: MemoryCandidate[] = [];
@@ -678,6 +690,8 @@ export async function pickFromSources(
     }
     if (sources[index]!.role !== 'reference' && !read.complete) rulesEnumerationComplete = false;
     for (const candidate of read.candidates) {
+      labelKindsBySource[candidate.sourceId] = sources[index]!.labelKinds ?? [];
+      rareBySource[candidate.sourceId] = sources[index]!.rare ?? false;
       const kind = sources[index]!.kind;
       if (kind !== undefined) sourceKinds[candidate.sourceId] = kind;
       candidates.push(
@@ -717,7 +731,7 @@ export async function pickFromSources(
     combined = [...unique.values()];
   }
   const result = await pick(combined, {
-    ...options, rulesEnumerationComplete, sourceKinds,
+    ...options, rulesEnumerationComplete, sourceKinds, labelKindsBySource, rareBySource,
   });
   // The read request's lever joins the pick's resolved set, and the
   // preset names the combination. `meaning.wholeLanes` resolves the
@@ -729,5 +743,6 @@ export async function pickFromSources(
     wholeLanes: keywordWhole === meaningWhole ? keywordWhole
       : { keyword: keywordWhole, meaning: meaningWhole } };
   return { ...result, reads,
-    record: { ...result.record, levers: { ...levers, preset: presetName(levers) } } };
+    record: { ...result.record, levers: { ...levers,
+      preset: presetName(levers, result.record.levers.preset !== 'custom') } } };
 }

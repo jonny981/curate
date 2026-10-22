@@ -75,7 +75,7 @@ export interface CurateRecord {
   readonly route?: 'jev';
   /** The whole mode's lever set as applied, carried from the pick's
    *  record: the read, pick and curator states in one place, and
-   *  `levers.preset` the mode they match — 'performance', 'economy' or
+   *  `levers.preset` the mode they match — 'default', 'conversation-recall' or
    *  'custom'. `route` holds the lever's two stages apart: `asked`,
    *  whether the pick ran the route questions, and `applied`, whether
    *  `route: 'jev'` ran here. Asked alone already spent the questions,
@@ -85,7 +85,7 @@ export interface CurateRecord {
   readonly preferenceAdvice?: boolean;
   readonly preferenceChange?: boolean;
   readonly taskDate?: string;
-  /** First validated log's length, after trimming; in a chained write,
+  /** First checked or recovered log's length; in a chained write,
    *  the layered log's length. */
   readonly logLength: number;
   readonly condensed: boolean;
@@ -93,11 +93,20 @@ export interface CurateRecord {
   readonly contextLimit?: number;
   /** The returned log still exceeds the caller's budget. */
   readonly overContextLimit: boolean;
-  /** Present when the writer returned an empty reply: no evidence bore
-   *  on the task, and the log is empty. */
+  /** Present when the log is empty: the writer found no evidence that
+   *  bore on the task, also when asked once more. */
   readonly empty?: true;
   /** How many writer replies failed the format check and were sent back once with the reason. */
   readonly repairs?: number;
+  /** How many empty replies to a whole write were asked once more; a
+   *  chained write's later passes are never asked again. */
+  readonly emptyRetries?: number;
+  /** Lines retained without a format correction or dropped for having no
+   *  supplied item id. Text is as written, with short ids mapped by `items`. */
+  readonly formatRecovery?: {
+    readonly keptAsWritten: readonly string[];
+    readonly dropped: readonly string[];
+  };
   /** The estimated token budget a chained write cut the evidence into. */
   readonly batchTokens?: number;
   /** Each pass over the log, strongest first: one token-sized batch. */
@@ -118,6 +127,7 @@ export interface CurateResult {
 
 const WORKING_HEADING = "Working (the curator's; check it against the log):";
 const REPAIR = 'A log you wrote for this task was rejected for its format; the rejected log and the reason follow the evidence. Return the same log corrected and nothing else: each observation line starts with exactly one event date in square brackets, [YYYY-MM-DD], and ends with (said YYYY-MM-DD; the item id from its header). For an event known only to a month or a span, put its first date in the brackets and say the span in the text. Change only the format; keep every fact, date and id. If no evidence bears on the task, return an empty reply instead.';
+const EMPTY_RETRY = 'Your previous reply to this task held no observation lines. Check the evidence items again and rewrite any evidence that bears on the task as observation lines. If none does, return an empty reply again.';
 const NO_WORKING = '- Do not answer the task, do not count, and do not decide whether an observation falls inside a period the task names: give its dates and leave that to the reader.';
 const CONTEXT = '\nKeep every fact with the context that gives it meaning: each observation names who, where and which item, activity or event it concerns. Carry these links from the same session, including its other evidence items, into that line instead of leaving them on another line. Resolve pronouns only when that session states the link. Do not invent a person, place, item or connection. Preserve these links when merging or condensing logs.';
 const COUNT = '\nThis task needs a count or a list. Write every instance across the supplied sessions as its own line, including small ones and ones mentioned in passing. When two items tell the same instance, write it once with both ids; when you are not sure, write both and end the later observation text with "(may be the same as [the earlier date])".';
@@ -158,7 +168,7 @@ function logPatterns(ids: readonly string[]) {
   // one group: "said 2023-05-26 and 2023-05-29; E3, E4".
   const said = `said ${date}(?:(?:,\\s*(?:and\\s+)?|\\s+and\\s+)${date})*`;
   return {
-    observation: new RegExp(`^(?<lineId>L\\d+ )?\\[(?<event>${date})\\] (?<text>.+?) \\((?<citations>${said}; ${sourceGroup}(?:;\\s*${said}; ${sourceGroup})*)\\)(?: \\(when not stated\\))?(?: \\(replaces (?:\\[(?<replacesDate>${date})\\]|(?<replacesId>L\\d+)(?::\\s*(?<replacesReason>[^()]+?))?)\\))?$`, 'd'),
+    observation: new RegExp(`^(?<lineId>L\\d+ )?\\[(?<event>${date})\\] (?<text>.+?) \\((?<citations>${said}; ${sourceGroup}(?:;\\s*${said}; ${sourceGroup})*)\\)(?: \\(when not stated\\))?(?: \\(replaces (?:\\[(?<replacesDate>${date})\\]|(?<replacesId>L\\d+)(?::\\s*(?<replacesReason>[^()]+?))?)\\))?\\.?$`, 'd'),
     preference: new RegExp(`(?:\\((?:${sources})(?:${separator}(?:${sources}))*\\)|\\[(?:${sources})(?:${separator}(?:${sources}))*\\])`),
   };
 }
@@ -228,8 +238,9 @@ function checkLog(raw: unknown, working: boolean, ids: readonly string[], prefer
  *  the brackets stays. Below the working heading every known `En`
  *  inside a bracket group is rewritten; a bare one stays. An `En`
  *  left anywhere else, such as one written as ordinary text,
- *  stays. */
-function restoreIds(log: string, ids: ReadonlyMap<string, string>): string {
+ *  stays. A malformed line retained as written also restores any known
+ *  standalone `En` token, even when its citation brackets are broken. */
+function restoreIds(log: string, ids: ReadonlyMap<string, string>, keptAsWritten: ReadonlySet<string>): string {
   const swap = (text: string) => text.replace(/\bE\d+\b/g, (id) => ids.get(id) ?? id);
   const { observation } = logPatterns([...ids.keys()]);
   const brackets = /\([^()]*\)|\[[^\[\]]*\]/g;
@@ -242,6 +253,7 @@ function restoreIds(log: string, ids: ReadonlyMap<string, string>): string {
       const at = line.indexOf(trimmed);
       return line.slice(0, at) + fixed + line.slice(at + trimmed.length);
     }
+    if (keptAsWritten.has(trimmed.replace(/^L\d+ /, ''))) return swap(line);
     if (trimmed.startsWith('Advice preferences:') || trimmed.startsWith('Changed preference:')) {
       return line.replace(brackets, swap);
     }
@@ -266,22 +278,25 @@ const layerInstructions = (base: string) => [
 interface ParsedLine {
   readonly line: string;
   /** The event date in the line's square brackets. */
-  readonly event: string;
+  readonly event?: string;
   /** The line's own stable id (`L7`); set once when the line is written. */
   readonly lineId?: string;
   /** The line id a "(replaces L7)" marker names, when present. */
   readonly replacesId?: string;
 }
 
-function parseObservations(log: string, patterns: ReturnType<typeof logPatterns>): ParsedLine[] {
+function parseObservations(log: string, patterns: ReturnType<typeof logPatterns>, keptAsWritten: ReadonlySet<string>): ParsedLine[] {
   const lines = log.split('\n').map((line) => line.trim()).filter(Boolean);
   const parsed: ParsedLine[] = [];
   for (const line of lines) {
     const match = patterns.observation.exec(line)?.groups;
-    if (!match) continue;
-    parsed.push({ line, event: match.event!,
-      ...(match.lineId === undefined ? {} : { lineId: match.lineId.trim() }),
-      ...(match.replacesId === undefined ? {} : { replacesId: match.replacesId }) });
+    const kept = keptAsWritten.has(line.replace(/^L\d+ /, ''));
+    if (!match && !kept) continue;
+    const lineId = /^(L\d+) /.exec(line)?.[1];
+    parsed.push({ line,
+      ...(match?.event === undefined ? {} : { event: match.event }),
+      ...(lineId === undefined ? {} : { lineId }),
+      ...(kept || match?.replacesId === undefined ? {} : { replacesId: match.replacesId }) });
   }
   return parsed;
 }
@@ -296,14 +311,16 @@ function numberLines(
   patterns: ReturnType<typeof logPatterns>,
   valid: ReadonlySet<string>,
   start: number,
+  keptAsWritten: ReadonlySet<string>,
 ): { readonly log: string; readonly next: number } {
   let next = start;
   const seen = new Set<string>();
+  const parsed = new Map(parseObservations(log, patterns, keptAsWritten).map((line) => [line.line, line]));
   const out = log.split('\n').map((line) => {
-    const match = patterns.observation.exec(line.trim())?.groups;
+    const match = parsed.get(line.trim());
     if (!match) return line;
-    const body = line.trim().slice(match.lineId?.length ?? 0);
-    const claimed = match.lineId?.trim();
+    const body = line.trim().replace(/^L\d+ /, '');
+    const claimed = match.lineId;
     const id = claimed !== undefined && valid.has(claimed) && !seen.has(claimed)
       ? claimed : `L${next++}`;
     seen.add(id);
@@ -312,13 +329,13 @@ function numberLines(
   return { log: out.join('\n'), next };
 }
 
-/** Drop a "(replaces ...)" tail from every observation line that
- *  carries one — a first pass has no earlier lines to replace. */
-function stripReplaces(log: string, observation: RegExp): string {
+/** Drop a "(replaces ...)" tail from checked observations: a first
+ *  pass has no earlier lines to replace. Kept malformed text stays. */
+function stripReplaces(log: string, observation: RegExp, keptAsWritten: ReadonlySet<string>): string {
   return log.split('\n').map((line) => {
     const trimmed = line.trim();
-    if (!observation.test(trimmed)) return line;
-    return trimmed.replace(/ \(replaces (?:\[\d{4}-\d{2}-\d{2}\]|L\d+(?::\s*[^()]+)?)\)$/, '');
+    if (keptAsWritten.has(trimmed.replace(/^L\d+ /, '')) || !observation.test(trimmed)) return line;
+    return trimmed.replace(/ \(replaces (?:\[\d{4}-\d{2}-\d{2}\]|L\d+(?::\s*[^()]+)?)\)(?=\.?$)/, '');
   }).join('\n');
 }
 
@@ -339,9 +356,10 @@ function reconcile(
   prev: string,
   next: string,
   patterns: ReturnType<typeof logPatterns>,
+  keptAsWritten: ReadonlySet<string>,
 ): { log: string } & Pick<CurateBatch, 'added' | 'marks'> {
-  const before = parseObservations(prev, patterns);
-  const after = parseObservations(next, patterns);
+  const before = parseObservations(prev, patterns, keptAsWritten);
+  const after = parseObservations(next, patterns, keptAsWritten);
   const beforeById = new Map(before.map((line) => [line.lineId!, line]));
   const fresh = after.filter((line) => !beforeById.has(line.lineId!));
   // A mark on a new line is honoured only when it names an earlier
@@ -350,8 +368,9 @@ function reconcile(
   // on and never recorded.
   const stripped = new Map<string, string>();
   for (const line of fresh) {
+    if (keptAsWritten.has(line.line.replace(/^L\d+ /, ''))) continue;
     if (line.replacesId !== undefined && beforeById.has(line.replacesId)) continue;
-    const cleaned = line.line.replace(/ \(replaces (?:\[\d{4}-\d{2}-\d{2}\]|L\d+(?::\s*[^()]+)?)\)$/, '');
+    const cleaned = line.line.replace(/ \(replaces (?:\[\d{4}-\d{2}-\d{2}\]|L\d+(?::\s*[^()]+)?)\)(?=\.?$)/, '');
     if (cleaned !== line.line) stripped.set(line.lineId!, cleaned);
   }
   const added = fresh.map((line) => ({ id: line.lineId!, line: stripped.get(line.lineId!) ?? line.line }));
@@ -363,24 +382,26 @@ function reconcile(
   // the last slot holds those dated after every earlier line.
   const slots = Array.from({ length: before.length + 1 }, (): string[] => []);
   const rest: string[] = [];
+  const afterByLine = new Map(after.map((line) => [line.line, line]));
   for (const line of next.split('\n')) {
     const text = line.trim();
     if (!text) continue;
-    const match = patterns.observation.exec(text)?.groups;
-    const id = match?.lineId?.trim();
+    const match = afterByLine.get(text);
+    const id = match?.lineId;
     if (id !== undefined && beforeById.has(id)) continue;
     if (match === undefined) {
       rest.push(text);
       continue;
     }
-    const later = before.findIndex((earlier) => earlier.event > match.event!);
+    const later = match.event === undefined ? -1
+      : before.findIndex((earlier) => earlier.event !== undefined && earlier.event > match.event!);
     slots[later === -1 ? before.length : later]!.push(stripped.get(id!) ?? text);
   }
   const observations = before.flatMap((line, index) => [...slots[index]!, line.line]);
   return { log: [...observations, ...slots[before.length]!, ...rest].join('\n'), added, marks };
 }
 
-/** Write only the dated log. Selected rules remain the caller's instructions. */
+/** Write the reference log. Selected rules remain the caller's instructions. */
 export async function curate(
   task: string,
   picked: PickResult,
@@ -492,18 +513,60 @@ export async function curate(
       size += needed;
     }
   }
-  // A reply that fails the format check goes back once with the reason
-  // and the rejected text; a second failure stops the curation. An
-  // empty reply passes: the writer found no evidence that bears on the
-  // task, and the record marks the empty log.
+  // Keep the original reply if its format repair also fails, so a repair
+  // cannot lose usable evidence. Only lines without a supplied id drop.
   let repairs = 0;
+  let emptyRetries = 0;
+  let formatFailure: Error | undefined;
+  let recovered = false;
+  const keptAsWritten = new Set<string>();
+  const dropped = new Set<string>();
+  const keptLines = new Set<string>();
+  const hasItemId = (text: string, available: readonly string[]) =>
+    (text.match(/\bE\d+\b/g) ?? []).some((id) => available.includes(id));
+  const recover = (raw: unknown, available: readonly string[]): string => {
+    recovered = true;
+    if (typeof raw !== 'string') return '';
+    const lines = raw.trim().split('\n').filter((line) => line.trim());
+    const kept: string[] = [];
+    let inWorking = false;
+    for (const [index, line] of lines.entries()) {
+      const text = line.trim();
+      if (working && text.replace(/^#{1,6}\s+/, '') === WORKING_HEADING && index < lines.length - 1) {
+        inWorking = true;
+        kept.push(line);
+        continue;
+      }
+      try {
+        // A working note is checked in its section; other lines can be
+        // checked alone as additions, without requiring an observation.
+        checkLog(inWorking ? `${WORKING_HEADING}\n${line}` : line,
+          working, available, preferenceAdvice, preferenceChange, true);
+      } catch {
+        if (!hasItemId(text, available)) {
+          dropped.add(line);
+          continue;
+        }
+        keptAsWritten.add(line);
+        keptLines.add(text.replace(/^L\d+ /, ''));
+      }
+      kept.push(line);
+    }
+    if (!kept.some((line) => hasItemId(line, available))) {
+      for (const line of kept) dropped.add(line);
+      return '';
+    }
+    if (kept.at(-1)?.trim().replace(/^#{1,6}\s+/, '') === WORKING_HEADING) dropped.add(kept.pop()!);
+    return kept.join('\n');
+  };
   const check = (raw: unknown, layered: boolean) => typeof raw === 'string' && !raw.trim()
     ? '' : checkLog(raw, working, shortIds, preferenceAdvice, preferenceChange, layered);
-  const writeChecked = async (prompt: CuratePrompt, layered = false): Promise<string> => {
+  const writeChecked = async (prompt: CuratePrompt, layered = false, available = shortIds): Promise<string> => {
     const raw = await options.write(prompt, signal);
     signal.throwIfAborted();
     try {
-      return check(raw, layered);
+      const checked = check(raw, layered);
+      if (checked || layered) return checked;
     } catch (error) {
       if (!(error instanceof Error) || !error.message.startsWith('curate: malformed log')) throw error;
       repairs += 1;
@@ -513,7 +576,28 @@ export async function curate(
         body: `${prompt.body}\n\nREJECTED LOG (${reason}):\n${String(raw)}`,
       }, signal);
       signal.throwIfAborted();
-      return check(fixed, layered);
+      try {
+        const checked = check(fixed, layered);
+        // An empty correction must not erase a reply that cited evidence.
+        return checked || (typeof raw === 'string' && hasItemId(raw, available) ? recover(raw, available) : '');
+      } catch (error) {
+        if (!(error instanceof Error) || !error.message.startsWith('curate: malformed log')) throw error;
+        const usable = recover(raw, available) || recover(fixed, available);
+        if (!usable) formatFailure = error;
+        return usable;
+      }
+    }
+    // A whole write that came back empty is asked once more. An empty
+    // reply stays a valid answer, so a second reply with nothing usable
+    // leaves the log empty, and a malformed one gets no repair call.
+    emptyRetries += 1;
+    const again = await options.write({ instructions: `${prompt.instructions}\n${EMPTY_RETRY}`, body: prompt.body }, signal);
+    signal.throwIfAborted();
+    try {
+      return check(again, false);
+    } catch (error) {
+      if (!(error instanceof Error) || !error.message.startsWith('curate: malformed log')) throw error;
+      return recover(again, available);
     }
   };
   let recordBatches: CurateBatch[] | undefined;
@@ -532,45 +616,48 @@ export async function curate(
     const patterns = logPatterns(shortIds);
     log = '';
     let nextLineId = 1;
+    const available: string[] = [];
     for (const indexes of batches) {
+      available.push(...indexes.map((index) => shortIds[index]!));
       if (recordBatches.length === 0) {
         const checkedFirst = await writeChecked({
           instructions: `${instructions.replace(REPLACES, FIRST_REPLACES)}${additions}`,
           body: `TASK:\n${datedTask}\n\nEVIDENCE:\n\n${indexes.map((index) => blocks[index]).join('\n\n')}`,
-        });
+        }, false, available);
         // The first pass was asked for no replacement markers; a writer
         // that left one anyway keeps the line's text and loses the
         // marker.
-        const unmarked = stripReplaces(checkedFirst, patterns.observation);
-        const numbered = numberLines(unmarked, patterns, new Set(), nextLineId);
+        const unmarked = stripReplaces(checkedFirst, patterns.observation, keptLines);
+        const numbered = numberLines(unmarked, patterns, new Set(), nextLineId, keptLines);
         log = numbered.log;
         nextLineId = numbered.next;
-        const written = parseObservations(log, patterns);
+        const written = parseObservations(log, patterns, keptLines);
         recordBatches.push({ items: indexes.length,
-          added: written.map((line) => ({ id: line.lineId!, line: restoreIds(line.line, fullIds) })),
+          added: written.map((line) => ({ id: line.lineId!, line: restoreIds(line.line, fullIds, keptLines) })),
           marks: [] });
       } else {
         const checked = await writeChecked({
           instructions: layerInstructions(instructions) + additions,
           body: `TASK:\n${datedTask}\n\nLOG SO FAR:\n${log}\n\nEVIDENCE:\n\n${indexes.map((index) => blocks[index]).join('\n\n')}`,
-        }, true);
+        }, true, available);
         // The pass returns only its additions; an empty reply means the
         // batch held nothing new and the log stands as it is.
         if (checked === '') {
           recordBatches.push({ items: indexes.length, added: [], marks: [] });
           continue;
         }
-        const live = new Set(parseObservations(log, patterns).map((line) => line.lineId!));
-        const numbered = numberLines(checked, patterns, live, nextLineId);
+        const live = new Set(parseObservations(log, patterns, keptLines).map((line) => line.lineId!));
+        const numbered = numberLines(checked, patterns, live, nextLineId, keptLines);
         nextLineId = numbered.next;
-        const merged = reconcile(log, numbered.log, patterns);
-        log = checkLog(merged.log, working, shortIds, preferenceAdvice, preferenceChange);
+        const merged = reconcile(log, numbered.log, patterns, keptLines);
+        log = merged.log;
         recordBatches.push({ items: indexes.length, marks: merged.marks,
-          added: merged.added.map((line) => ({ ...line, line: restoreIds(line.line, fullIds) })) });
+          added: merged.added.map((line) => ({ ...line, line: restoreIds(line.line, fullIds, keptLines) })) });
       }
     }
   }
-  const restoredLog = restoreIds(log, fullIds);
+  if (!log && formatFailure) throw formatFailure;
+  const restoredLog = restoreIds(log, fullIds, keptLines);
   const logLength = restoredLog.length;
   const condensed = contextLimit !== undefined && logLength > contextLimit;
   if (condensed) {
@@ -595,7 +682,12 @@ export async function curate(
       body: `TASK:\n${datedTask}\n\nITEM WEIGHTS:\n${items.map((item, index) => `E${index + 1}: ${item.weight}`).join('\n')}\n\nLOG:\n${log}`,
     }, signal);
     signal.throwIfAborted();
-    log = restoreIds(checkLog(rawCondensed, working, shortIds, preferenceAdvice, preferenceChange), fullIds);
+    try {
+      log = restoreIds(checkLog(rawCondensed, working, shortIds, preferenceAdvice, preferenceChange), fullIds, keptLines);
+    } catch (error) {
+      if (!(error instanceof Error) || !/^curate: (?:malformed|empty) log/.test(error.message)) throw error;
+      log = restoreIds(recover(rawCondensed, shortIds), fullIds, keptLines) || restoredLog;
+    }
   } else {
     log = restoredLog;
   }
@@ -613,7 +705,8 @@ export async function curate(
       ...(taskKinds === undefined ? {} : { taskKinds }),
       ...(options.route === undefined ? {} : { route: options.route }),
       levers: { ...levers,
-        preset: presetName({ ...levers, route: levers.route.asked || levers.route.applied }) },
+        preset: presetName({ ...levers, route: levers.route.asked || levers.route.applied },
+          picked.record.levers?.preset !== 'custom') },
       ...(taskDate === undefined ? {} : { taskDate }), items, logLength, condensed,
       ...(batchTokens === undefined ? {} : { batchTokens }),
       ...(recordBatches === undefined ? {} : { batches: recordBatches }),
@@ -622,6 +715,8 @@ export async function curate(
       overContextLimit: contextLimit !== undefined && log.length > contextLimit,
       ...(log === '' ? { empty: true as const } : {}),
       ...(repairs ? { repairs } : {}),
+      ...(emptyRetries ? { emptyRetries } : {}),
+      ...(recovered ? { formatRecovery: { keptAsWritten: [...keptAsWritten], dropped: [...dropped] } } : {}),
     },
   };
 }

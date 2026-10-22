@@ -1,4 +1,7 @@
-import { describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   memory, SourceReadError,
@@ -25,6 +28,16 @@ const fitted = (key: string): PickCascade => ({
   bias: 0, questions: [{ key, instructions: `Check ${key}.`, true: 'Yes.', false: 'No.', weight: 1 }],
 });
 
+let cacheRoot: string;
+beforeEach(() => {
+  cacheRoot = mkdtempSync(join(tmpdir(), 'curate-memory-'));
+  vi.stubEnv('XDG_CACHE_HOME', cacheRoot);
+});
+afterEach(() => {
+  vi.unstubAllEnvs();
+  rmSync(cacheRoot, { recursive: true, force: true });
+});
+
 describe('memory', () => {
   it('returns the cited log, exact joined rules and both full results', async () => {
     const rules: MemoryCandidate[] = ['Keep currency.\n', 'Never round an order twice.'].map((text, i) => ({
@@ -38,7 +51,7 @@ describe('memory', () => {
     expect(recalled.result.record.items).toHaveLength(1);
     expect(recalled.picked.selected).toHaveLength(3);
     expect(write.mock.calls[0]?.[0].body).not.toContain('Never round an order twice.');
-    expect(recalled.result.record.levers.preset).toBe('performance');
+    expect(recalled.result.record.levers.preset).toBe('default');
   });
 
   it('propagates a failed source read without calling either model', async () => {
@@ -95,15 +108,17 @@ describe('memory', () => {
         return decide(batch, signal);
       },
       write: async () => LOG,
-      ...(override ? { pick: { cascadesByKind: { markdown: fitted('from-caller') } } } : {}),
+      pick: { labels: false,
+        ...(override ? { cascadesByKind: { markdown: fitted('from-caller') } } : {}),
+      },
     }).recall(TASK);
     expect(questions).toEqual([override ? 'from-caller' : 'from-reader']);
     expect(recalled.rules).toBe('');
   });
 
-  it.each([false, true])('applies economy and lets explicit levers win (override %s)', async (override) => {
+  it.each([false, true])('applies the default preset and lets explicit levers win (override %s)', async (override) => {
     const recalled = await memory({
-      sources: [source([note(), note('weak')])], preset: 'economy',
+      sources: [source([note(), note('weak')])], preset: 'default',
       decide: async ({ questions }) => Object.fromEntries(questions.map((q) => [q.key, {
         status: 'answered', probability: q.id === 'weak' ? 0.001 : 0.8,
       }])),
@@ -111,7 +126,7 @@ describe('memory', () => {
       ...(override ? { pick: { everyScored: true as const } } : {}),
     }).recall(TASK);
     expect(recalled.picked.selected.map((item) => item.id)).toEqual(override ? ['billing', 'weak'] : ['billing']);
-    expect(recalled.result.record.levers.preset).toBe(override ? 'performance' : 'economy');
+    expect(recalled.result.record.levers.preset).toBe(override ? 'custom' : 'default');
   });
 
   it('passes read options, writer options and cancellation through the existing calls', async () => {

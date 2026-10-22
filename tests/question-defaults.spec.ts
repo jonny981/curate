@@ -4,6 +4,8 @@ import { CHAT_CASCADE } from '@curatejs/chat';
 import { GIT_HISTORY_CASCADE } from '@curatejs/git';
 import { MARKDOWN_CASCADE } from '@curatejs/markdown';
 
+const uncutPick = { everyRanked: true, everyScored: true, labels: false, rare: false } as const;
+
 const candidate: MemoryCandidate = {
   sourceId: 'evidence', role: 'reference', id: 'item', title: 'Evidence', text: 'Evidence for the task',
   signals: {},
@@ -16,7 +18,7 @@ async function score(cascade: PickCascade, values: Readonly<Record<string, numbe
     asked.push(key);
     return [question.key, { status: 'answered', probability: values[key]! }];
   }));
-  const result = await pick([candidate], {
+  const result = await pick([candidate], { ...uncutPick,
     task: 'Find evidence', cascade, decide,
   });
   const entry = result.record.candidates[0]!;

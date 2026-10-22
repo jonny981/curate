@@ -36,6 +36,7 @@ if (!replayFile) {
 const root = dirname(fileURLToPath(import.meta.url));
 const { pick, decisionFileStore } = await import(
   pathToFileURL(join(root, '../packages/core/dist/index.js')).href);
+const uncutPick = { everyRanked: true, everyScored: true, labels: false, rare: false };
 const { task, options = {}, candidates, answers } = JSON.parse(readFileSync(replayFile, 'utf8'));
 
 let calls = 0;
@@ -60,14 +61,14 @@ const comparable = (record) => JSON.parse(JSON.stringify(record, (key, value) =>
 const directory = mkdtempSync(join(tmpdir(), 'curate-decision-proof-'));
 try {
   const cache = { store: decisionFileStore(directory), deciderId: 'saved-decisions' };
-  const first = await pick(candidates, { task, ...options, decide, cache });
+  const first = await pick(candidates, { ...uncutPick, task, ...options, decide, cache });
   const asked = first.record.cache.asked;
   assert(asked > 0, 'the first pick asked nothing');
   const selected = first.selected.map((candidate) => candidate.id);
   const firstCalls = calls;
 
   calls = 0;
-  const second = await pick(candidates, { task, ...options, decide, cache });
+  const second = await pick(candidates, { ...uncutPick, task, ...options, decide, cache });
   assert.equal(calls, 0, `the second pick made ${calls} decider calls`);
   assert.deepEqual(second.selected.map((candidate) => candidate.id), selected);
   assert.equal(second.record.cache.reused, asked);
@@ -86,7 +87,7 @@ try {
     ? (probabilities.at(-1) + probabilities.at(-2)) / 2
     : probabilities[0] + 0.01;
   const third = await pick(candidates, {
-    task, ...options,
+    ...uncutPick, task, ...options,
     everyScored: {
       ...(typeof options.everyScored === 'object' && options.everyScored !== null ? options.everyScored : {}),
       bar,

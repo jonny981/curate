@@ -41,7 +41,7 @@ globalThis.fetch = async (url, init) => {
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
     const output = execFileSync(process.execPath, ['--import', './stub-models.mjs', 'recall.mjs'], {
       cwd: directory, encoding: 'utf8',
-      env: { ...env, TYPESAFE_API_KEY: 'test-only', CHAT_API_KEY: 'test-only' },
+      env: { ...env, XDG_CACHE_HOME: join(directory, 'cache'), TYPESAFE_API_KEY: 'test-only', CHAT_API_KEY: 'test-only' },
     });
     expect(output).toContain('[2026-01-12] Invoices preserve the order currency');
     expect(output).toContain('billing.md#1)');

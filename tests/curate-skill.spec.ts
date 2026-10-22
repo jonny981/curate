@@ -7,11 +7,13 @@ import { join, resolve } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { curate, pickFromSources, type CandidateReadRequest, type CandidateSource, type MemoryCandidate } from '@curatejs/core';
+import { LABEL_KINDS, curate, pickFromSources, type CandidateReadRequest, type CandidateSource, type MemoryCandidate } from '@curatejs/core';
 import { chat } from '@curatejs/chat';
 import { gitHistory } from '@curatejs/git';
 // @ts-expect-error The standalone JavaScript command has no type declarations.
 import { allowedSession, curationEvidence, decisionAnswers, instructionsProfile, jevRequest, pickFullSources, rankMatches, parseArgs, parseSearches, parseSources, run, sandboxAvailable, searchSource, sessionHeader, snapshotCodex, subscription } from '../skills/curate/run.mjs';
+
+const uncutPick = { everyRanked: true, everyScored: true, labels: false, rare: false } as const;
 
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
@@ -253,7 +255,7 @@ it('keeps the original task and each source register while core interleaves all 
   const result = await pickFromSources(sources.map((source) => searchSource(source, searches, audit, directory)), {
     task: 'original task', searchLines: Array.from({ length: 5 }, (_, index) => `curate-search:${index}`),
     paths: ['hint'], exclude: ['private'],
-  }, {
+  }, { ...uncutPick,
     task: 'original task', limits: { maxCandidates: 6 },
     decide: async (batch) => {
       expect(batch.task).toBe('original task');
@@ -280,7 +282,7 @@ it('keeps the original task and each source register while core interleaves all 
   }
 });
 
-it('sends every matching part to decisions, including short-word corrections below rank 150', async () => {
+it('sends every part when whole lanes are requested, including short-word corrections below rank 150', async () => {
   const directory = await folder();
   const rows = Array.from({ length: 301 }, (_, index) => JSON.stringify({
     type: index === 300 ? 'user' : 'assistant', sessionId: 'matched', timestamp: '2026-01-01T12:00:00Z',
@@ -294,17 +296,17 @@ it('sends every matching part to decisions, including short-word corrections bel
   const asked: string[] = [];
   const picked = await pickFullSources([searchSource(source, searches, [], directory)], {
     task: 'We need orchard evidence', searchLines: ['curate-search:0', 'curate-search:1'], wholeLanes: true,
-  }, { task: 'We need orchard evidence', decide: async (batch: { questions: { key: string; text: string }[] }) => {
+  }, { ...uncutPick, task: 'We need orchard evidence', decide: async (batch: { questions: { key: string; text: string }[] }) => {
     asked.push(...batch.questions.map((question) => question.text));
     return Object.fromEntries(batch.questions.map((question) => [question.key, { status: 'answered', probability: 0.8 }]));
   } });
-  expect(asked).toHaveLength(301);
+  expect(asked).toHaveLength(302);
   expect(asked).toContain('We need to keep everything.');
   expect((await searchSource(source, searches, [], directory).read({ task: 'We need orchard evidence', wholeLanes: true })).candidates[0].text)
     .toBe('We need to keep everything.');
-  expect(asked).not.toContain('Breakfast pancakes.');
-  expect(new Set(asked).size).toBe(301);
-  expect(picked.selected).toHaveLength(301);
+  expect(asked).toContain('Breakfast pancakes.');
+  expect(new Set(asked).size).toBe(302);
+  expect(picked.selected).toHaveLength(302);
   expect(picked.record.candidates.every((entry: { status: string }) => entry.status === 'selected')).toBe(true);
   expect(picked.record.limits.maxCandidates).toBeUndefined();
 });
@@ -325,14 +327,14 @@ it('asks sources to cut search lanes inside the reads it caches, unless the cut 
 
   await pickFullSources([searchSource(source, searches, [], directory)], {
     task: 'orchard', searchLines: ['curate-search:0'],
-  }, { task: 'orchard', decide });
+  }, { ...uncutPick, task: 'orchard', decide });
   expect(seen.length).toBeGreaterThan(0);
   expect(seen.every((flag) => flag === false)).toBe(true);
 
   seen.length = 0;
   await pickFullSources([searchSource(source, searches, [], directory)], {
     task: 'orchard', wholeLanes: true,
-  }, { task: 'orchard', decide });
+  }, { ...uncutPick, task: 'orchard', decide });
   expect(seen.every((flag) => flag === true)).toBe(true);
 });
 
@@ -343,7 +345,7 @@ it('passes caller decision limits such as maxBatchChars through to the pick', as
       { sourceId: 'notes', id: 'one', role: 'reference', title: 'Orchard', text: 'Orchard notes.', signals: { bm25: 1 } },
     ] }) };
 
-  const picked = await pickFullSources([source], { task: 'orchard' }, {
+  const picked = await pickFullSources([source], { task: 'orchard' }, { ...uncutPick,
     task: 'orchard', limits: { maxBatchChars: 40 },
     decide: async (batch: { questions: { key: string }[] }) =>
       Object.fromEntries(batch.questions.map((question) => [question.key, { status: 'answered', probability: 0.8 }])),
@@ -393,7 +395,7 @@ it('sends the full long commit text rather than cutting it at the default part s
     }] }),
   };
   const searches = { 'git-history': { keywords: ['orchard'], answers: ['orchard trees'] } };
-  await pickFullSources([searchSource(source, searches, [], directory)], { task: 'orchard' }, {
+  await pickFullSources([searchSource(source, searches, [], directory)], { task: 'orchard' }, { ...uncutPick,
     task: 'orchard', decide: async (batch: { questions: { key: string; text: string }[] }) => {
       expect(batch.questions[0]?.text).toBe(text);
       return { [batch.questions[0]!.key]: { status: 'answered', probability: 0.8 } };
@@ -423,13 +425,97 @@ it('pins later git searches to the first read even when a new commit lands durin
   const searches = { 'git-history': { keywords: ['orchard'], answers: ['orchard constraint'] } };
   const picked = await pickFullSources([searchSource(changingSource, searches, [], directory)], {
     task: 'orchard', searchLines: ['curate-search:0', 'curate-search:1'],
-  }, { task: 'orchard', decide: async (batch: { questions: { key: string }[] }) =>
+  }, { ...uncutPick, task: 'orchard', decide: async (batch: { questions: { key: string }[] }) =>
     Object.fromEntries(batch.questions.map((question) => [question.key, { status: 'answered', probability: 0.8 }])) });
   expect(git('rev-parse', 'HEAD').toString().trim()).not.toBe(original);
   expect(picked.selected).toHaveLength(1);
   expect(picked.selected[0]?.sourceRevision).toBe(original);
   expect(picked.selected[0]?.title).toBe('Plant orchard');
   expect(picked.selected[0]?.searchRanks).toEqual([0, 0, 0]);
+});
+
+it('skips label-only pool reads for sources without kinds while retaining ranked-pool counts', async () => {
+  const parts: MemoryCandidate[] = ['hit', 'extra'].map((id) => ({
+    sourceId: 'git', id, role: 'reference', title: id, text: id, signals: { keyword: 1 },
+  }));
+  const read = vi.fn(async (request: CandidateReadRequest) => ({ status: 'read' as const,
+    complete: true, laneCutApplied: true, candidates: request.wholeLanes ? parts : parts.slice(0, 1) }));
+  const source: CandidateSource = { id: 'git', kind: 'git-history', role: 'reference', read };
+  const options = { task: 'hit', decide: async ({ questions }: { questions: { key: string }[] }) =>
+    Object.fromEntries(questions.map((q) => [q.key, { status: 'answered', probability: 0.9 }])) };
+  await pickFullSources([source], { task: 'hit' }, options);
+  expect(read).toHaveBeenCalledTimes(1);
+  read.mockClear();
+  const counted = await pickFullSources([source], { task: 'hit' }, {
+    ...options, labels: false, everyRanked: { c: 1 },
+  });
+  expect(read).toHaveBeenCalledTimes(2);
+  expect(counted.record.pick.n).toBe(2);
+});
+
+it('recovers a part outside cut reads through the source label kinds', async () => {
+  const directory = await folder();
+  vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
+  const parts: MemoryCandidate[] = [
+    { sourceId: 'notes', id: 'hit', role: 'reference', title: 'Orchard', text: 'Orchard notes.', signals: { bm25: 1 } },
+    { sourceId: 'notes', id: 'late', role: 'reference', title: 'Transport',
+      text: 'The user owns a bicycle and keeps its original frame.', signals: { bm25: 0 } },
+  ];
+  const reads: (boolean | undefined)[] = [];
+  const source: CandidateSource = { id: 'notes', kind: 'markdown', role: 'reference', labelKinds: LABEL_KINDS,
+    read: async (request) => {
+      reads.push(request.wholeLanes);
+      return { status: 'read', complete: true, candidates: request.wholeLanes ? parts : parts.slice(0, 1) };
+    } };
+  const asked: string[] = [];
+  const picked = await pickFullSources([source], { task: 'Which bicycle does the user own?' }, {
+    task: 'Which bicycle does the user own?', labels: {},
+    decide: async ({ questions }: { questions: { key: string; id: string; text: string; questionKey?: string }[] }) =>
+      Object.fromEntries(questions.map((question) => {
+        if (question.questionKey === undefined) asked.push(question.text);
+        return [question.key, { status: 'answered', probability: question.questionKey === undefined ? 0.9
+          : question.questionKey === 'owns' && ['question', 'late'].includes(question.id) ? 0.9 : 0.1 }];
+      })),
+  });
+  expect(picked.selected.map((candidate: MemoryCandidate) => candidate.id).sort()).toEqual(['hit', 'late']);
+  expect(asked).toContain(parts[1]!.text);
+  expect(reads).toContain(false);
+  expect(reads).toContain(true);
+  expect(picked.record.levers.preset).toBe('conversation-recall');
+  expect(picked.record.labels.gate).toBe(2);
+});
+
+it('preserves an incomplete limited read beside the complete explicit label pool', async () => {
+  const directory = await folder();
+  vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
+  const parts: MemoryCandidate[] = ['first', 'second'].map((id) => ({
+    sourceId: 'notes', id, role: 'reference', title: 'Orchard', text: `Orchard notes ${id}.`, signals: { bm25: 1 },
+  }));
+  const source: CandidateSource = { id: 'notes', kind: 'markdown', role: 'reference', labelKinds: LABEL_KINDS,
+    read: async (request) => request.limit === 1
+      ? { status: 'read', complete: false, partial: 'the limit kept 1 of 2 candidates', candidates: parts.slice(0, 1) }
+      : { status: 'read', complete: true, candidates: parts } };
+  const picked = await pickFullSources([source], { task: 'orchard', wholeLanes: true, limit: 1 }, {
+    task: 'orchard', labels: {}, decide: async ({ questions }: { questions: { key: string }[] }) =>
+      Object.fromEntries(questions.map((question) => [question.key, { status: 'answered', probability: 0.8 }])),
+  });
+  expect(picked.reads[0]).toMatchObject({
+    status: 'read', complete: false, partial: 'the limit kept 1 of 2 candidates',
+  });
+  expect(picked.record.labels.gate).toBe(2);
+});
+
+it('preserves unmatched source candidates when a search requests whole lanes', async () => {
+  const directory = await folder();
+  const candidates: MemoryCandidate[] = [
+    { sourceId: 'notes', id: 'hit', role: 'reference', title: 'Orchard', text: 'Orchard notes.', signals: { bm25: 1 } },
+    { sourceId: 'notes', id: 'unmatched', role: 'reference', title: 'Transport', text: 'A bicycle.', signals: { bm25: 0 } },
+  ];
+  const source: CandidateSource = { id: 'notes', kind: 'markdown', role: 'reference',
+    read: async () => ({ status: 'read', complete: true, candidates }) };
+  const searches = { markdown: { keywords: ['orchard'], answers: ['trees'] } };
+  const result = await searchSource(source, searches, [], directory).read({ task: 'orchard', wholeLanes: true });
+  expect(result.candidates.map((candidate: MemoryCandidate) => candidate.id)).toEqual(['hit', 'unmatched']);
 });
 
 it('does not admit unrelated items just because recency or inbound links are positive', async () => {
@@ -500,7 +586,7 @@ it('labels collection dates for undated evidence without changing weights or ord
   const picked = await pickFromSources([{
     id: 'documents', kind: 'markdown', role: 'reference',
     read: async () => ({ status: 'read', complete: true, candidates: [dated, undated] }),
-  }], { task: 'orchard evidence', wholeLanes: true }, {
+  }], { task: 'orchard evidence', wholeLanes: true }, { ...uncutPick,
     task: 'orchard evidence', decide: async (batch) => Object.fromEntries(batch.questions.map((question) => [
       question.key, { status: 'answered', probability: question.id === 'dated' ? 0.9 : 0.7 },
     ])),
@@ -546,8 +632,17 @@ it('saves the pick record naming the rejected batch when the decision service fa
     kind, { keywords: ['orchard', 'orchard trees'], answers: ['The orchard has trees.', 'Fruit trees grow here.'] },
   ]));
   vi.stubEnv('HOME', home);
+  vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
   vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
-  vi.stubGlobal('fetch', vi.fn(async () => new Response('rejected', { status: 400 })));
+  vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => {
+    const payload = JSON.parse(String(init.body));
+    if (payload.state.startsWith('Label short excerpts') || payload.state.startsWith('QUESTION the user asked:')) {
+      return Response.json({ answers: Object.fromEntries(
+        Object.keys(payload.questions).map((key) => [key, { noul: 0.8 }]),
+      ) });
+    }
+    return new Response('rejected', { status: 400 });
+  }));
   const realSpawn = vi.mocked(spawn).getMockImplementation()!;
   // The subscription search call reads the output file the spawned
   // process was asked to write; this fake writes the search lines there.
@@ -608,6 +703,7 @@ describe('search line repair', () => {
     const sourcesFile = join(directory, 'sources.json');
     await writeFile(sourcesFile, JSON.stringify({ sources: [{ type: 'markdown', path: notes }] }));
     vi.stubEnv('HOME', home);
+    vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
     vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
     vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => new Response(JSON.stringify({
       usage: null,
@@ -705,6 +801,7 @@ describe('search line repair', () => {
     const sourcesFile = join(directory, 'sources.json');
     await writeFile(sourcesFile, JSON.stringify({ sources: [{ type: 'markdown', path: notes }] }));
     vi.stubEnv('HOME', home);
+    vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
     vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
     vi.stubGlobal('fetch', vi.fn(async () => new Response('{}')));
     vi.useFakeTimers({ toFake: ['setTimeout'] });
@@ -769,6 +866,8 @@ describe('search line repair', () => {
     expect(record.status).toBe('complete');
     expect(record.searchRepairs).toBeUndefined();
     expect(record.searches).toEqual(searches());
+    expect(record.pick.labels).toBeUndefined();
+    expect(record.pick.levers.labels).toBe(false);
   });
 });
 

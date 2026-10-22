@@ -6,7 +6,7 @@ import { canonicalPath, phraseCount, laneBend, embedQuery, embedSimilarities } f
 import { startChatRank, type ChatKeywordSettings } from './chat-rank.js';
 import { scrubChat } from './chat-scrub.js';
 import { CHAT_CASCADE } from './questions.js';
-import { DEFAULT_MAX_QUESTION_TEXT, type MemoryCandidate } from '@curatejs/core';
+import { DEFAULT_MAX_QUESTION_TEXT, LABEL_KINDS, type MemoryCandidate } from '@curatejs/core';
 import { SourceReadError, type CandidateReadRequest, type CandidateSource } from '@curatejs/core';
 
 export type ChatProvider = 'claude-code' | 'codex';
@@ -260,7 +260,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
   cutoff(options.since, Date.now());
   const id = scrubChat(options.id ?? `chat:${providers.map((provider) => `${provider}:${roots.get(provider)!.join(',')}`).join(';')}`);
   return {
-    id, kind: 'chat', role: 'reference', cascade: CHAT_CASCADE,
+    id, kind: 'chat', role: 'reference', cascade: CHAT_CASCADE, labelKinds: LABEL_KINDS,
     async read(request: CandidateReadRequest) {
       cancelled(request.signal);
       const size = Math.min(DEFAULT_MAX_QUESTION_TEXT, budget, positive(request.maxQuestionText ?? DEFAULT_MAX_QUESTION_TEXT, 'maxQuestionText'));

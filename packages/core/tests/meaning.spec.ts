@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { addMeaningRanks, pick, pickFromSources, type EmbeddingFunction, type MemoryCandidate } from '../src/index.js';
 
+const uncutPick = { everyRanked: true, everyScored: true, labels: false, rare: false } as const;
+
 const item = (id: string, text: string, score = 0): MemoryCandidate => ({
   id, sourceId: 'notes', role: 'reference', title: id, text, signals: { keyword: score },
 });
@@ -14,9 +16,9 @@ const decide = async ({ questions }: Parameters<Parameters<typeof pick>[1]['deci
 describe('local meaning search', () => {
   it('adds semantic matches once while preserving the entire keyword feed', async () => {
     const candidates = [item('bill', 'invoice', 9), item('dog', 'puppy'), item('both', 'mixed')];
-    const baseline = await pick(candidates, { task: 'pets', decide, limits: { maxCandidates: 1 } });
+    const baseline = await pick(candidates, { ...uncutPick, task: 'pets', decide, limits: { maxCandidates: 1 } });
     const ranked = await addMeaningRanks([...candidates, candidates[1]!], 'pets', { embed });
-    const result = await pick(ranked, { task: 'pets', decide, limits: { maxCandidates: 1 } });
+    const result = await pick(ranked, { ...uncutPick, task: 'pets', decide, limits: { maxCandidates: 1 } });
     expect(result.selected.map((candidate) => candidate.id).sort()).toEqual(['bill', 'dog']);
     expect(baseline.selected.every((candidate) => result.selected.some((value) => value.id === candidate.id))).toBe(true);
     expect(result.record.candidates.filter((entry) => entry.status === 'selected' && entry.asked)).toHaveLength(2);
@@ -67,7 +69,7 @@ describe('local meaning search', () => {
         limits.push(request.limit);
         return { status: 'read', complete: request.limit === undefined, candidates: candidates.slice(0, request.limit) };
       },
-    }], { task: 'pets', limit: 1, meaning: { embed, nearest: 1 } }, { task: 'pets', decide });
+    }], { task: 'pets', limit: 1, meaning: { embed, nearest: 1 } }, { ...uncutPick, task: 'pets', decide });
     // The middle read asks the source to serve the meaning lane itself;
     // this source ignores the flag, so the fallback re-reads the pool.
     expect(limits).toEqual([1, 1, undefined]);
@@ -96,7 +98,7 @@ describe('local meaning search', () => {
         queries.push([...texts]);
         return texts.map((text) => text === 'pets' || text === 'puppy' ? [1, 0] : [0, 1]);
       },
-    } }, { task: 'pets', limits: { maxCandidates: 1 }, decide: async (batch) => {
+    } }, { ...uncutPick, task: 'pets', limits: { maxCandidates: 1 }, decide: async (batch) => {
       asked.push(...batch.questions.map((question) => question.id));
       return decide(batch);
     } });
@@ -122,7 +124,7 @@ describe('local meaning search', () => {
     const result = await pickFromSources([{
       id: 'notes', role: 'reference',
       read: async () => ({ status: 'read', complete: true, candidates: [item('long', text)] }),
-    }], { task: 'pets', meaning: { embed: async (texts) => texts.map(() => [1, 0]) } }, {
+    }], { task: 'pets', meaning: { embed: async (texts) => texts.map(() => [1, 0]) } }, { ...uncutPick,
       task: 'pets', decide: async ({ questions }) => {
         observed = questions[0]!.text;
         return Object.fromEntries(questions.map(({ key }) => [key, { status: 'answered' as const, probability: 0 }]));
@@ -158,7 +160,7 @@ describe('local meaning search', () => {
         };
       },
     }], { task: 'pets', meaning: { embed: async (texts) => texts.map(() => [1, 0]), nearest: 1 } },
-    { task: 'pets', decide });
+    { ...uncutPick, task: 'pets', decide });
     // The keyword read plus one meaning read per query; the source
     // streamed its lane, so there is no full-pool re-read.
     expect(seen).toEqual([{ task: 'pets', meaning: false }, { task: 'pets', meaning: true, limit: 1 }]);
@@ -184,7 +186,7 @@ describe('local meaning search', () => {
       }),
     }], { task: 'pets', meaning: { embed: async (texts) =>
         texts.map((text) => (text === 'pets' ? [1, 0] : [0, 1])) } },
-      { task: 'pets', decide });
+      { ...uncutPick, task: 'pets', decide });
     const read = result.reads[0]!;
     if (read.status !== 'read') throw new Error('read failed');
     expect(read.candidates).toEqual([]);
@@ -202,7 +204,7 @@ describe('local meaning search', () => {
       }),
     }], { task: 'pets', meaning: { embed: async (texts) =>
         texts.map((text) => (text === 'pets' ? [1, 0] : [0, 1])) } },
-      { task: 'pets', decide, everyRanked: { c: 0.68 } });
+      { ...uncutPick, task: 'pets', decide, everyRanked: { c: 0.68 } });
     const countedRead = counted.reads[0]!;
     if (countedRead.status !== 'read') throw new Error('read failed');
     expect(countedRead.candidates).toHaveLength(2);
@@ -222,7 +224,7 @@ describe('local meaning search', () => {
           },
     }], { task: 'pets', meaning: { embed: async (texts) =>
         texts.map((text) => (text === 'pets' ? [1, 0] : [0, 1])) } },
-      { task: 'pets', decide, everyRanked: { c: 0.68 } });
+      { ...uncutPick, task: 'pets', decide, everyRanked: { c: 0.68 } });
     const streamedRead = streamed.reads[0]!;
     if (streamedRead.status !== 'read') throw new Error('read failed');
     expect(streamedRead.candidates).toHaveLength(2);
@@ -240,7 +242,7 @@ describe('local meaning search', () => {
         status: 'read' as const, complete: true,
         candidates: [item('bill', 'invoice'), item('dog', 'puppy')],
       }),
-    }], { task: 'pets', meaning: { embed } }, { task: 'pets', decide });
+    }], { task: 'pets', meaning: { embed } }, { ...uncutPick, task: 'pets', decide });
     const plainRead = plain.reads[0]!;
     if (plainRead.status !== 'read') throw new Error('read failed');
     expect(plainRead.candidates.map((candidate) => candidate.id)).toEqual(['dog']);
@@ -258,7 +260,7 @@ describe('local meaning search', () => {
             status: 'read' as const, complete: true, meaningLane: true as const, matched: 2,
             candidates: [{ ...item('dog', 'puppy'), signals: { similarity: 0.9 }, laneScore: 0.9 }],
           },
-    }], { task: 'pets', meaning: { embed } }, { task: 'pets', decide });
+    }], { task: 'pets', meaning: { embed } }, { ...uncutPick, task: 'pets', decide });
     const streamedRead = streamed.reads[0]!;
     if (streamedRead.status !== 'read') throw new Error('read failed');
     expect(streamedRead.candidates.map((candidate) => candidate.id)).toEqual(['dog']);
@@ -279,7 +281,7 @@ describe('local meaning search', () => {
         }
         return { status: 'read' as const, complete: true, candidates: [item('bill', 'invoice', 9)] };
       },
-    }], { task: 'pets', searchLines: ['gone', 'finance'], meaning: { embed } }, { task: 'pets', decide });
+    }], { task: 'pets', searchLines: ['gone', 'finance'], meaning: { embed } }, { ...uncutPick, task: 'pets', decide });
     const read = result.reads[0]!;
     if (read.status !== 'read') throw new Error('read failed');
     // The absent lane still holds its position: later lanes' rank
@@ -301,7 +303,7 @@ describe('local meaning search', () => {
     const result = await pickFromSources([{
       id: 'notes', role: 'reference',
       read: async () => ({ status: 'read', complete: true, candidates: [item('bill', 'invoice', 9)] }),
-    }], { task: 'pets' }, { task: 'pets', decide });
+    }], { task: 'pets' }, { ...uncutPick, task: 'pets', decide });
     expect(result.selected[0]).not.toHaveProperty('searchRanks');
   });
 

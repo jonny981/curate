@@ -9,6 +9,8 @@ import {
   type PickResult,
 } from '../src/index.js';
 
+const uncutPick = { everyRanked: true, everyScored: true, labels: false, rare: false } as const;
+
 const candidate = (id: string, overrides: Partial<MemoryCandidate> = {}): MemoryCandidate => ({
   sourceId: 'notes', id, title: id, text: `Text ${id}`, role: 'reference', signals: {}, ...overrides,
 });
@@ -35,7 +37,7 @@ function picked(
     record: {
       questionVersion: 'test', limits: {},
       thresholds: { reference: 0, rule: 0, linkedPathBar: 0 }, rulesCoverage: 'complete',
-      levers: { preset: 'performance', everyRanked: true, everyScored: true, labels: false, route: false, rare: false },
+      levers: { preset: 'custom', everyRanked: true, everyScored: true, labels: false, route: false, rare: false },
       candidates: items.map((item, index) => {
         const itemTags = tagMap[`${item.sourceId}/${item.id}`] ?? tagMap[item.id];
         return {
@@ -280,17 +282,17 @@ describe('a layered pass returns only its additions', () => {
   });
 
   it('returns an empty log, marked in the record, when every batch is empty', async () => {
-    const { calls, write } = writer(['', '']);
+    const { calls, write } = writer(['', '', '']);
     const result = await curate('task', picked([sized('a', 400), sized('b', 400)], [0.9, 0.7]), { write, batchTokens: 120 });
-    expect(calls).toHaveLength(2);
+    expect(calls).toHaveLength(3);
     expect(result.log).toBe('');
-    expect(result.record).toMatchObject({ empty: true, batches: [{ added: [] }, { added: [] }] });
+    expect(result.record).toMatchObject({ empty: true, emptyRetries: 1, batches: [{ added: [] }, { added: [] }] });
   });
 
   it('layers a later batch over an empty first batch', async () => {
-    const { calls, write } = writer(['', '[2023-01-02] B happened (said 2023-01-02; E2)']);
+    const { calls, write } = writer(['', '', '[2023-01-02] B happened (said 2023-01-02; E2)']);
     const result = await curate('task', picked([sized('a', 400), sized('b', 400)], [0.9, 0.7]), { write, batchTokens: 120 });
-    expect(calls).toHaveLength(2);
+    expect(calls).toHaveLength(3);
     expect(result.log).toBe('L1 [2023-01-02] B happened (said 2023-01-02; b)');
     expect(result.record).not.toHaveProperty('empty');
   });

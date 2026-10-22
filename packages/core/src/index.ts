@@ -1,5 +1,5 @@
 export * from './pick.js';
-export { LABEL_KINDS, LABEL_LANE_BAR, LABEL_QUESTION_VERSION, type LabelKindKey, type PartLabels } from './labels.js';
+export { LABEL_KINDS, LABEL_LANE_BAR, LABEL_QUESTION_VERSION, type LabelKind, type LabelKindKey, type PartLabels } from './labels.js';
 export { decisionFileStore, type DecisionStore } from './decisions.js';
 export * from './curate.js';
 export * from './memory.js';

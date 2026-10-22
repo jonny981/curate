@@ -1,6 +1,6 @@
 # LongMemEval S, all 500 questions, 14 October 2026
 
-Curate's packages at their default settings, Curate commit `aacb042`. Later commits change only request sizing.
+Curate's packages with every part decided and kept, at commit `aacb042`. Later commits change only request sizing.
 
 | File | Answering model | Marker | Score |
 | --- | --- | --- | --- |
@@ -65,7 +65,7 @@ python src/evaluation/print_qa_metrics.py curate-gpt-5.jsonl.eval-results-gpt-4o
 
 The GPT-4o judge is not fully deterministic, so a rerun can differ by a question or two.
 
-## Economic setting
+## References scored 0.0146 or more
 
 `economic/` holds the same run with one option changed: the decide step keeps only the parts Jev scored at 0.0146 or above.
 
@@ -73,7 +73,7 @@ The GPT-4o judge is not fully deterministic, so a rerun can differ by a question
 pick(candidates, { thresholds: { reference: 0.0146 } })
 ```
 
-The `economy` preset, or `everyScored: { bar: 0.0146 }` on the pick, reproduces the setting.
+Set `everyScored: { bar: 0.0146 }` on the pick to apply this score cut.
 
 - **Score:** 458/500 = 91.6% with GPT-5-mini answering and GPT-4o marking (Mastra's marking prompt), against 460/500 = 92.0% when every scored part is kept. On the held-out 251 both score 235. LongMemEval's own scorer gives 90.8% (`economic/official-scorer/metrics.txt`).
 - **Where 0.0146 comes from:** it is the highest cut that lost no answer message on Curate's earlier ranking, chosen on the tuning 249 only.
@@ -94,7 +94,7 @@ The `economy` preset, or `everyScored: { bar: 0.0146 }` on the pick, reproduces 
 | Held-out 251 | 218 = 86.9% | 235 = 93.6% | 236 = 94.0% |
 | Tuning 249 | 223 = 89.6% | 230 = 92.4% | 225 = 90.4% |
 
-- **Curator:** gpt-6-luna, at low reasoning effort, reads every scored part, the package default, with Curate commit `aacb042` and the same decisions as the run above (replayed, so no part was scored again). Its logs are short: 158 tokens on average, against 580 for gpt-6.1-sol. Multi-session (79%) and temporal (85%) questions lose the most.
+- **Curator:** gpt-6-luna, at low reasoning effort, reads every scored part, with Curate commit `aacb042` and the same decisions as the run above (replayed, so no part was scored again). Its logs are short: 158 tokens on average, against 580 for gpt-6.1-sol. Multi-session (79%) and temporal (85%) questions lose the most.
 - **Answerer:** gpt-6.1-sol at its default reasoning effort, with the same answer prompt as the GPT-5 file above, through Codex with no personal instructions or skills. Codex's own event shows it could not read the global instructions file (`luna-sol/isolation-event.json`).
 - **Marker:** LongMemEval's own scorer only. `luna-sol/official-scorer/metrics.txt` holds its output for all 500 and for each half.
 - **Speed:** the median question took 14.0 seconds to a finished log (90th percentile 28.4), measured on the 252 questions curated in this run; deciding is timed from the run above, which made the same decisions. The median answer took 5.4 seconds (90th percentile 13.3), over all 500.

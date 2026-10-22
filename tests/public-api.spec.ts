@@ -1,13 +1,15 @@
 import { asSourceReadError } from '@curatejs/core/internal';
 import { describe, expect, it } from 'vitest';
 
-import { curate, decisionFileStore, DEFAULT_MAX_QUESTION_TEXT, economy, LABEL_KINDS, LABEL_LANE_BAR, LABEL_QUESTION_VERSION, performance, pick, PICK_QUESTION_VERSION, pickFromSources, SourceReadError, type CandidateSource, type CurateOptions, type CurateRecord, type CurateResult, type CurateWrite, type DecisionStore, type LeverStates, type MemoryCandidate, type PickCache, type PickLabels, type PickOptions, type PickThresholds, type Preset } from '@curatejs/core';
+import { curate, decisionFileStore, DEFAULT_MAX_QUESTION_TEXT, defaultMode, conversationRecall, LABEL_KINDS, LABEL_LANE_BAR, LABEL_QUESTION_VERSION, pick, PICK_QUESTION_VERSION, pickFromSources, SourceReadError, type CandidateSource, type CurateOptions, type CurateRecord, type CurateResult, type CurateWrite, type DecisionStore, type LeverStates, type MemoryCandidate, type PickCache, type PickLabels, type PickOptions, type PickThresholds, type Preset } from '@curatejs/core';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { chat, type ChatOptions, type ChatProvider } from '@curatejs/chat';
 import { gitHistory, type GitHistoryOptions } from '@curatejs/git';
 import { markdown, knowledgeBase, rules, type MarkdownOptions, type KnowledgeBaseOptions } from '@curatejs/markdown';
+
+const uncutPick = { everyRanked: true, everyScored: true, labels: false, rare: false } as const;
 
 describe('package exports', () => {
   it('exports the curate step and its caller-supplied writer types', async () => {
@@ -17,7 +19,7 @@ describe('package exports', () => {
       sourceId: 'notes', role: 'reference', id: 'trip', title: 'Trip',
       text: 'Visited York last Saturday.', signals: {},
       date: { value: '2023-05-20', meaning: 'recorded' },
-    }], {
+    }], { ...uncutPick,
       task: 'Where did I go?', decide: async (batch) => Object.fromEntries(
         batch.questions.map((q) => [q.key, { status: 'answered', probability: 0.9 }]),
       ),
@@ -94,14 +96,14 @@ describe('package exports', () => {
     expect(PICK_QUESTION_VERSION).toContain('memory-pick');
   });
 
-  it('exports the performance and economy presets and their types', () => {
-    const modes: Preset[] = [performance, economy];
-    expect(performance.read).toEqual({ wholeLanes: false });
-    expect(performance.pick).toEqual({ everyRanked: true, everyScored: true });
-    expect(performance.curate).toEqual({});
-    expect(economy.read).toEqual({ wholeLanes: false });
-    expect(economy.pick).toEqual({ everyRanked: true, everyScored: { bar: 0.0146 } });
-    expect(economy.curate).toEqual({});
+  it('exports the default and conversation recall presets and their types', () => {
+    const modes: Preset[] = [defaultMode, conversationRecall];
+    expect(defaultMode.read).toEqual({ wholeLanes: false });
+    expect(defaultMode.pick).toEqual({ everyRanked: true, everyScored: { bar: 0.0146 }, labels: false });
+    expect(defaultMode.curate).toEqual({});
+    expect(conversationRecall.read).toEqual({ wholeLanes: false });
+    expect(conversationRecall.pick).toEqual({ everyRanked: true, everyScored: { bar: 0.0146 }, labels: {} });
+    expect(conversationRecall.curate).toEqual({});
     const levers: LeverStates = {
       everyRanked: true, everyScored: true, labels: false, route: false, rare: false,
     };
@@ -110,13 +112,14 @@ describe('package exports', () => {
   });
 
   it('exports the label gate, its kind questions and its option type', async () => {
-    const labels: PickLabels = { directory: mkdtempSync(join(tmpdir(), 'curate-api-')), deciderId: 'api-test' };
+    const directory = mkdtempSync(join(tmpdir(), 'curate-api-'));
+    const labels: PickLabels = { directory, deciderId: 'api-test' };
     try {
       const picked = await pick([{
         sourceId: 'notes', role: 'reference', id: 'trip', title: 'Trip',
         text: 'Visited York last Saturday.', signals: {},
-      }], {
-        task: 'Where did I go?', labels,
+      }], { ...uncutPick,
+        task: 'Where did I go?', labels, labelKindsBySource: { notes: LABEL_KINDS },
         decide: async (batch) => Object.fromEntries(
           batch.questions.map((q) => [q.key, { status: 'answered', probability: 0.9 }]),
         ),
@@ -130,7 +133,7 @@ describe('package exports', () => {
         asked: 2, reused: 0, gate: 1, failedWrites: 0,
       });
     } finally {
-      rmSync(labels.directory, { recursive: true, force: true });
+      rmSync(directory, { recursive: true, force: true });
     }
   });
 });

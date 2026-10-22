@@ -15,6 +15,8 @@ import {
   type PickLabels,
 } from '../src/index.js';
 
+const uncutPick = { everyRanked: true, everyScored: true, labels: false, rare: false } as const;
+
 const KIND_KEYS = new Set<string>(LABEL_KINDS.map((kind) => kind.key));
 const ROUTE_KEYS = new Set<string>(ROUTE_QUESTIONS.map((route) => route.key));
 
@@ -81,7 +83,9 @@ function counting(probability: (question: PickBatch['questions'][number]) => num
 }
 
 const labelOptions = (directory: string, extra: Partial<PickLabels> = {}) => ({
+  everyScored: true as const,
   labels: { directory, deciderId: 'test-decider', ...extra },
+  labelKindsBySource: { notes: LABEL_KINDS },
 });
 
 const directories: string[] = [];
@@ -114,7 +118,7 @@ describe('route: jev', () => {
     // With labels off, the route questions go alone.
     const alone = counting(() => 0.8);
     const parts = threeParts();
-    await pick(parts, { task: 'Recall the plan', decide: alone.decide, route: 'jev' });
+    await pick(parts, { ...uncutPick, task: 'Recall the plan', decide: alone.decide, route: 'jev' });
     expect(alone.routeCalls).toEqual([['count', 'date', 'taste', 'latest']]);
 
     // With the task's label set stored, the route questions still go alone.
@@ -133,7 +137,7 @@ describe('route: jev', () => {
   it('keeps the task\'s route questions in one request under tight batch limits', async () => {
     // Labels off and maxPerBatch 2: the four route questions still go in one request.
     const off = counting(() => 0.8);
-    await pick(threeParts(), {
+    await pick(threeParts(), { ...uncutPick,
       task: 'Recall the plan', decide: off.decide, route: 'jev', limits: { maxPerBatch: 2 },
     });
     expect(off.routeCalls).toEqual([['count', 'date', 'taste', 'latest']]);
@@ -155,7 +159,7 @@ describe('route: jev', () => {
     ['latest', ['working'], { working: true, preferenceAdvice: false, preferenceChange: false }],
     ['taste', ['preferenceAdvice', 'preferenceChange'], { working: false, preferenceAdvice: true, preferenceChange: true }],
   ] as const)('a %s answer at the bar switches exactly its options', async (key, on, expected) => {
-    const picked = await pick([candidate('notes#2')], {
+    const picked = await pick([candidate('notes#2')], { ...uncutPick,
       task: 'Recall the plan', route: 'jev',
       decide: counting((question) =>
         question.questionKey === undefined ? 0.9 : question.questionKey === key ? 0.5 : 0.1).decide,
@@ -176,7 +180,7 @@ describe('route: jev', () => {
   });
 
   it.each(['count', 'date', 'taste', 'latest'] as const)('a %s answer just below the bar switches nothing', async (key) => {
-    const picked = await pick([candidate('notes#2')], {
+    const picked = await pick([candidate('notes#2')], { ...uncutPick,
       task: 'Recall the plan', route: 'jev',
       decide: counting((question) =>
         question.questionKey === undefined ? 0.9 : question.questionKey === key ? 0.49 : 0.1).decide,
@@ -185,7 +189,7 @@ describe('route: jev', () => {
   });
 
   it.each([0.49, 0.5])('a taste answer of %s switches the preference lines only at the shared bar', async (probability) => {
-    const picked = await pick([candidate('notes#2')], {
+    const picked = await pick([candidate('notes#2')], { ...uncutPick,
       task: 'Recall the plan', route: 'jev',
       decide: counting((question) =>
         question.questionKey === undefined ? 0.9 : question.questionKey === 'taste' ? probability : 0.1).decide,
@@ -194,7 +198,7 @@ describe('route: jev', () => {
   });
 
   it('switches nothing when every route answer is below the bar', async () => {
-    const picked = await pick([candidate('notes#2')], {
+    const picked = await pick([candidate('notes#2')], { ...uncutPick,
       task: 'Recall the plan', route: 'jev',
       decide: counting((question) => question.questionKey === undefined ? 0.9 : 0.4).decide,
     });
@@ -205,7 +209,7 @@ describe('route: jev', () => {
   });
 
   it('refuses route: jev and routeByTask together', async () => {
-    const picked = await pick([candidate('notes#2')], {
+    const picked = await pick([candidate('notes#2')], { ...uncutPick,
       task: 'Recall the plan', route: 'jev', decide: counting(() => 0.9).decide,
     });
     await expect(curate('Recall the plan', picked, {
@@ -214,7 +218,7 @@ describe('route: jev', () => {
   });
 
   it('refuses route: jev on a pick that recorded no route answers', async () => {
-    const picked = await pick([candidate('notes#2')], {
+    const picked = await pick([candidate('notes#2')], { ...uncutPick,
       task: 'Recall the plan', decide: counting(() => 0.9).decide,
     });
     await expect(curate('Recall the plan', picked, { write: writer().write, route: 'jev' }))
@@ -222,7 +226,7 @@ describe('route: jev', () => {
   });
 
   it('lets explicit curator options override the route', async () => {
-    const picked = await pick([candidate('notes#2')], {
+    const picked = await pick([candidate('notes#2')], { ...uncutPick,
       task: 'Recall the plan', route: 'jev',
       decide: counting((question) =>
         question.questionKey === undefined ? 0.9 : question.questionKey === 'taste' ? 0.9 : 0.1).decide,
@@ -236,15 +240,15 @@ describe('route: jev', () => {
   it('leaves the pick and the curate identical when the route option is unset', async () => {
     const counter = counting(() => 0.9);
     const parts = [candidate('notes#2')];
-    const plain = await pick(parts, { task: 'Recall the plan', decide: counter.decide });
+    const plain = await pick(parts, { ...uncutPick, task: 'Recall the plan', decide: counter.decide });
     expect(plain.record.route).toBeUndefined();
     expect(counter.routeCalls).toHaveLength(0);
 
-    const routed = await pick(parts, {
+    const routed = await pick(parts, { ...uncutPick,
       task: 'Recall the plan', route: 'jev', decide: counting(() => 0.9).decide,
     });
     const { route: _route, levers, ...record } = routed.record;
-    expect({ ...record, levers: { ...levers, route: false, preset: 'performance' } }).toEqual(plain.record);
+    expect({ ...record, levers: { ...levers, route: false, preset: 'custom' } }).toEqual(plain.record);
     expect(routed.selected).toEqual(plain.selected);
 
     const result = await curate('Recall the plan', plain, { write: writer().write });

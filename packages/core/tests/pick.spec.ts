@@ -12,6 +12,8 @@ import {
   type PickDecide,
 } from '../src/index.js';
 
+const uncutPick = { everyRanked: true, everyScored: true, labels: false, rare: false } as const;
+
 function candidate(overrides: Partial<MemoryCandidate> & Pick<MemoryCandidate, 'sourceId' | 'id'>): MemoryCandidate {
   return {
     role: 'reference',
@@ -58,7 +60,7 @@ describe('pick', () => {
     const probabilities: Record<string, number> = { zero: 0, strong: 0.9, weak: 0.01, 'does-not-apply': 0.59, applies: 0.6 };
     const { decide } = stubDecide((batch) => Object.fromEntries(batch.questions.map((q) =>
       [q.key, answered(probabilities[q.id]!)])));
-    const picked = await pick(candidates, { task: 'Recall evidence', decide });
+    const picked = await pick(candidates, { ...uncutPick, task: 'Recall evidence', decide });
     expect(picked.selected.map((item) => item.id)).toEqual(['applies', 'does-not-apply', 'strong', 'weak', 'zero']);
     expect(picked.record.thresholds).toEqual({ reference: 0, rule: 0, linkedPathBar: 0.4 });
     const result = await curate('Recall evidence', picked, { write: async (prompt) => {
@@ -84,7 +86,7 @@ describe('pick', () => {
         answered(question.id === 'low' ? 0.2 : 0.9),
       ])));
 
-    const result = await pick(candidates, { task: 'fix the flaky test', decide, everyScored: { bar: 0.6 } });
+    const result = await pick(candidates, { ...uncutPick, task: 'fix the flaky test', decide, everyScored: { bar: 0.6 } });
 
     expect(result.selected.map((item) => item.id)).toEqual(['high', 'mid']);
     expect(calls).toHaveLength(1);
@@ -110,7 +112,7 @@ describe('pick', () => {
       candidate({ sourceId: 'handbook', id: `h${index}`, signals: { score: index } }));
     const { decide, calls } = stubDecide((batch) => allAnswered(batch, 0.1));
 
-    const result = await pick([...commits, ...handbook], {
+    const result = await pick([...commits, ...handbook], { ...uncutPick,
       task: 'plan the release',
       decide,
       limits: { maxCandidates: 10, maxPerBatch: 10 },
@@ -133,7 +135,7 @@ describe('pick', () => {
       return allAnswered(batch, 0.9);
     });
 
-    const result = await pick(candidates, {
+    const result = await pick(candidates, { ...uncutPick,
       task: 'write the report',
       decide,
       limits: { maxPerBatch: 2 },
@@ -156,7 +158,7 @@ describe('pick', () => {
     const { decide, calls } = stubDecide((batch, call) =>
       allAnswered(batch, call === 2 ? 0.1 : 0.9));
 
-    const result = await pick(candidates, {
+    const result = await pick(candidates, { ...uncutPick,
       task: 'triage the bug',
       decide,
       everyScored: { bar: 0.6 },
@@ -183,7 +185,7 @@ describe('pick', () => {
       return answers;
     });
 
-    const result = await pick(candidates, { task: 'review the list', decide });
+    const result = await pick(candidates, { ...uncutPick, task: 'review the list', decide });
 
     const questions = calls.flatMap((batch) => batch.questions);
     expect(questions.map((question) => question.sourceId)).toEqual(['left', 'right']);
@@ -204,7 +206,7 @@ describe('pick', () => {
       [batch.questions[3]!.key]: answered(1.5),
     }));
 
-    const result = await pick(candidates, { task: 'pick a fix', decide });
+    const result = await pick(candidates, { ...uncutPick, task: 'pick a fix', decide });
 
     expect(result.selected.map((item) => item.id)).toEqual(['n0']);
     const statuses = result.record.candidates;
@@ -223,7 +225,7 @@ describe('pick', () => {
       return new Promise<Record<string, PickAnswer>>(() => {});
     };
 
-    const result = await pick(candidates, {
+    const result = await pick(candidates, { ...uncutPick,
       task: 'triage the queue',
       decide,
       limits: { maxPerBatch: 2, maxElapsedMs: 25 },
@@ -249,7 +251,7 @@ describe('pick', () => {
       throw new Error('engine down');
     });
 
-    const failure = await pick(candidates, {
+    const failure = await pick(candidates, { ...uncutPick,
       task: 'fix it', decide, limits: { maxPerBatch: 2 },
     }).then(
       () => { throw new Error('the pick resolved'); },
@@ -280,7 +282,7 @@ describe('pick', () => {
       return allAnswered(batch, 0.9);
     });
 
-    const result = await pick(candidates, {
+    const result = await pick(candidates, { ...uncutPick,
       task: 'write the report', decide, limits: { maxPerBatch: 2 }, signal: controller.signal,
     });
 
@@ -313,7 +315,7 @@ describe('pick', () => {
     const failure = await pick([
       candidate({ sourceId: 'notes', id: 'a', signals: { score: 2 } }),
       candidate({ sourceId: 'notes', id: 'b', signals: { score: 1 } }),
-    ], { task: 't', decide, cascade }).then(
+    ], { ...uncutPick, task: 't', decide, cascade }).then(
       () => { throw new Error('the pick resolved'); },
       (reason: unknown) => reason as PickError,
     );
@@ -337,7 +339,7 @@ describe('pick', () => {
       return allAnswered(batch, 0.9);
     });
 
-    const failure = await pick([candidate({ sourceId: 'notes', id: 'a' })], {
+    const failure = await pick([candidate({ sourceId: 'notes', id: 'a' })], { ...uncutPick,
       task: 't', decide,
       tags: [{ key: 'intent', questions: [{ key: 'why', instructions: 'Why?', true: 't', false: 'f' }] }],
     }).then(
@@ -360,7 +362,7 @@ describe('pick', () => {
       candidate({ sourceId: 'rules', id: `r${index}`, role: 'rule', signals: { score: index } }));
     const limited = stubDecide((batch) => allAnswered(batch, 0.9));
 
-    const result = await pick(rules, {
+    const result = await pick(rules, { ...uncutPick,
       task: 'change the schema',
       decide: limited.decide,
       limits: { maxBatches: 1, maxPerBatch: 2 },
@@ -371,7 +373,7 @@ describe('pick', () => {
       .toMatchObject({ id: 'r0', reason: 'limits' });
 
     const room = stubDecide((batch) => allAnswered(batch, 0.9));
-    const complete = await pick(rules, {
+    const complete = await pick(rules, { ...uncutPick,
       task: 'change the schema',
       decide: room.decide,
       limits: { maxPerBatch: 2 },
@@ -390,7 +392,7 @@ describe('pick', () => {
       [batch.questions[1]!.key]: { status: 'refused' },
     }));
 
-    const result = await pick(rules, { task: 'migrate the data', decide });
+    const result = await pick(rules, { ...uncutPick, task: 'migrate the data', decide });
 
     expect(result.record.rulesCoverage).toBe('incomplete');
   });
@@ -402,7 +404,7 @@ describe('pick', () => {
     ];
     const { decide, calls } = stubDecide((batch) => allAnswered(batch, 0.9));
 
-    const result = await pick(rules, { task: 'ship it', decide });
+    const result = await pick(rules, { ...uncutPick, task: 'ship it', decide });
 
     expect(calls.flatMap((batch) => batch.questions.map((question) => question.id))).toEqual(['maybe']);
     expect(result.selected.map((item) => item.id)).toEqual(['always', 'maybe']);
@@ -410,12 +412,12 @@ describe('pick', () => {
     expect(result.record.rulesCoverage).toBe('complete');
   });
 
-  it('judges full candidate text and every batch by default', async () => {
+  it('judges full candidate text and every batch when every scored part is kept', async () => {
     const candidates = Array.from({ length: 751 }, (_, index) => candidate({
       sourceId: 'notes', id: `item-${index}`, text: 'x'.repeat(701) + `evidence-${index}`,
     }));
     const seen = new Map<string, string>();
-    const result = await pick(candidates, { task: 'find evidence', decide: async (batch) => {
+    const result = await pick(candidates, { ...uncutPick, task: 'find evidence', decide: async (batch) => {
       for (const question of batch.questions) seen.set(question.id, question.text);
       return Object.fromEntries(batch.questions.map((question) => [question.key,
         answered(question.text.endsWith(`evidence-${question.id.slice(5)}`) ? 1 : 0)]));
@@ -432,7 +434,7 @@ describe('pick', () => {
     const short = candidate({ sourceId: 'notes', id: 'short', text: 'tiny' });
     const { decide, calls } = stubDecide((batch) => allAnswered(batch, 0.9));
 
-    const result = await pick([long, short], {
+    const result = await pick([long, short], { ...uncutPick,
       task: 'summarise',
       decide,
       limits: { maxQuestionText: 10 },
@@ -469,7 +471,7 @@ describe('pick', () => {
     // 'a' counts 12 + 11 + 11 = 34 and 'b' counts 30 + 22 = 52 with its
     // date; the task's 6 characters leave room for a + b (92) inside the
     // bound of 110, but even c's first question (115) would pass it.
-    const result = await pick(candidates, {
+    const result = await pick(candidates, { ...uncutPick,
       task: 'fix it', decide, cascade: countingCascade, limits: { maxBatchChars: 110 },
     });
 
@@ -491,7 +493,7 @@ describe('pick', () => {
     // The item counts 1 + 1 + 20 = 22 once, plus 11 per question:
     // 1 + 22 + 33 = 56 reaches the bound exactly. Counting the item per
     // question (1 + 66 = 67) would split its questions across batches.
-    await pick([candidate({ sourceId: 'notes', id: 'a', title: 'a', text: 'x'.repeat(20) })], {
+    await pick([candidate({ sourceId: 'notes', id: 'a', title: 'a', text: 'x'.repeat(20) })], { ...uncutPick,
       task: 't', decide, cascade, limits: { maxBatchChars: 56 },
     });
 
@@ -509,7 +511,7 @@ describe('pick', () => {
 
     // 'big' counts 206 + 11 = 217, over the bound of 51, so it goes by
     // itself; the small items count 14 + 11 = 25 each and share a batch.
-    const result = await pick(candidates, {
+    const result = await pick(candidates, { ...uncutPick,
       task: 't', decide,
       cascade: { bias: 0, questions: [countingCascade.questions[0]!] },
       limits: { maxBatchChars: 51 },
@@ -532,7 +534,7 @@ describe('pick', () => {
     // The count bound bites first: each item counts 24 + 11 = 35, all
     // four fit the character budget, so batches split at three questions.
     const counted = stubDecide((batch) => allAnswered(batch, 0.9));
-    await pick(candidates, {
+    await pick(candidates, { ...uncutPick,
       task: 't', decide: counted.decide,
       cascade: { bias: 0, questions: [countingCascade.questions[0]!] },
       limits: { maxPerBatch: 3, maxBatchChars: 1000 },
@@ -543,7 +545,7 @@ describe('pick', () => {
     // The character bound bites first: 1 + 35 + 35 = 71 fits two items,
     // a third would pass it, so batches pair despite the room for 150.
     const sized = stubDecide((batch) => allAnswered(batch, 0.9));
-    await pick(candidates, {
+    await pick(candidates, { ...uncutPick,
       task: 't', decide: sized.decide,
       cascade: { bias: 0, questions: [countingCascade.questions[0]!] },
       limits: { maxPerBatch: 150, maxBatchChars: 71 },
@@ -559,7 +561,7 @@ describe('pick', () => {
     ];
     const { decide } = stubDecide((batch) => allAnswered(batch, 0.9));
 
-    const result = await pick(candidates, { task: 'ship it', decide });
+    const result = await pick(candidates, { ...uncutPick, task: 'ship it', decide });
 
     expect(result.record.candidates[0]).toMatchObject({ changedPaths: ['src/a.ts', 'docs/b.md'] });
     expect(result.record.candidates[1]).not.toHaveProperty('changedPaths');
@@ -572,7 +574,7 @@ describe('pick', () => {
     ];
     const { decide } = stubDecide((batch) => allAnswered(batch, 0.9));
 
-    const result = await pick(rules, {
+    const result = await pick(rules, { ...uncutPick,
       task: 'change the schema',
       decide,
       rulesEnumerationComplete: false,
@@ -589,7 +591,7 @@ describe('pick', () => {
     ];
     const { decide, calls } = stubDecide((batch) => allAnswered(batch, 0.9));
 
-    await pick(candidates, { task: 'do the thing', decide });
+    await pick(candidates, { ...uncutPick, task: 'do the thing', decide });
 
     const questions = calls.flatMap((batch) => batch.questions);
     expect(questions[0]).toMatchObject({
@@ -631,7 +633,7 @@ describe('the changed-path link', () => {
     const { decide } = stubDecide((batch) =>
       byId({ 'commit a1b2c3d': answered(0.9), ops: answered(0.45), other: answered(0.45) })(batch));
 
-    const result = await pick([commit(), opsNote(), otherNote()], { task: 'fix the ops doc', decide, everyScored: { bar: 0.6 } });
+    const result = await pick([commit(), opsNote(), otherNote()], { ...uncutPick, task: 'fix the ops doc', decide, everyScored: { bar: 0.6 } });
 
     expect(result.selected.map((item) => item.id).sort()).toEqual(['commit a1b2c3d', 'ops']);
     const byEntry = new Map(result.record.candidates.map((entry) => [entry.id, entry]));
@@ -665,7 +667,7 @@ describe('the changed-path link', () => {
     const { decide } = stubDecide((batch) =>
       byId({ 'commit a1b2c3d': answered(0.9), ops: answered(0.4), low: answered(0.39) })(batch));
 
-    const result = await pick([wide(), opsNote(), low()], { task: 'fix the docs', decide, everyScored: { bar: 0.6 } });
+    const result = await pick([wide(), opsNote(), low()], { ...uncutPick, task: 'fix the docs', decide, everyScored: { bar: 0.6 } });
 
     expect(result.selected.map((item) => item.id).sort()).toEqual(['commit a1b2c3d', 'ops']);
     expect(result.record.candidates.find((entry) => entry.id === 'low'))
@@ -676,7 +678,7 @@ describe('the changed-path link', () => {
     const { decide } = stubDecide((batch) =>
       byId({ 'commit a1b2c3d': answered(0.9), ops: answered(0.45) })(batch));
 
-    const result = await pick([commit(), opsNote()], {
+    const result = await pick([commit(), opsNote()], { ...uncutPick,
       task: 'fix the ops doc',
       decide,
       everyScored: { bar: 0.6 }, thresholds: { linkedPathBar: 0.5 },
@@ -696,7 +698,7 @@ describe('the changed-path link', () => {
     const { decide } = stubDecide((batch) =>
       byId({ 'commit a1b2c3d': answered(0.9), foreign: answered(0.45) })(batch));
 
-    const result = await pick([commit(), foreign()], { task: 'fix the ops doc', decide, everyScored: { bar: 0.6 } });
+    const result = await pick([commit(), foreign()], { ...uncutPick, task: 'fix the ops doc', decide, everyScored: { bar: 0.6 } });
 
     expect(result.record.candidates.find((entry) => entry.id === 'foreign'))
       .toMatchObject({ status: 'rejected', probability: 0.45 });
@@ -723,7 +725,7 @@ describe('the changed-path link', () => {
         deep: answered(0.45),
       })(batch));
 
-    const result = await pick([commit(), mid(), deep()], { task: 'fix the docs', decide, everyScored: { bar: 0.6 } });
+    const result = await pick([commit(), mid(), deep()], { ...uncutPick, task: 'fix the docs', decide, everyScored: { bar: 0.6 } });
 
     expect(result.selected.map((item) => item.id).sort()).toEqual(['commit a1b2c3d', 'mid']);
     expect(result.record.candidates.find((entry) => entry.id === 'deep'))
@@ -737,7 +739,7 @@ describe('the changed-path link', () => {
     const { decide } = stubDecide((batch) =>
       byId({ 'commit a1b2c3d': answered(0.9), rule: answered(0.45) })(batch));
 
-    const result = await pick([commit(), rule()], { task: 'fix the ops doc', decide, everyScored: { bar: 0.6 }, thresholds: { rule: 0.6 } });
+    const result = await pick([commit(), rule()], { ...uncutPick, task: 'fix the ops doc', decide, everyScored: { bar: 0.6 }, thresholds: { rule: 0.6 } });
 
     expect(result.record.candidates.find((entry) => entry.id === 'rule'))
       .toMatchObject({ status: 'rejected', probability: 0.45 });
@@ -751,7 +753,7 @@ describe('the changed-path link', () => {
       const { decide } = stubDecide((batch) =>
         byId({ 'commit a1b2c3d': answered(0.9), ops: answer })(batch));
 
-      const result = await pick([commit(), opsNote()], { task: 'fix the ops doc', decide, everyScored: { bar: 0.6 } });
+      const result = await pick([commit(), opsNote()], { ...uncutPick, task: 'fix the ops doc', decide, everyScored: { bar: 0.6 } });
 
       const entry = result.record.candidates.find((item) => item.id === 'ops');
       expect(entry!.status).toBe('unanswered');
@@ -762,12 +764,12 @@ describe('the changed-path link', () => {
       Object.fromEntries(batch.questions
         .filter((question) => question.id !== 'ops')
         .map((question) => [question.key, answered(0.9)])));
-    const missingResult = await pick([commit(), opsNote()], { task: 'x', decide: missing });
+    const missingResult = await pick([commit(), opsNote()], { ...uncutPick, task: 'x', decide: missing });
     expect(missingResult.record.candidates.find((entry) => entry.id === 'ops')!.status)
       .toBe('unanswered');
 
     const { decide: one } = stubDecide((batch) => allAnswered(batch, 0.9));
-    const shortResult = await pick([commit(), opsNote()], {
+    const shortResult = await pick([commit(), opsNote()], { ...uncutPick,
       task: 'fix the ops doc',
       decide: one,
       limits: { maxCandidates: 1 },
@@ -780,7 +782,7 @@ describe('the changed-path link', () => {
   it('leaves an ordinary above-threshold selection without a link field', async () => {
     const { decide } = stubDecide((batch) => allAnswered(batch, 0.9));
 
-    const result = await pick([commit(), opsNote()], { task: 'fix the ops doc', decide, everyScored: { bar: 0.6 } });
+    const result = await pick([commit(), opsNote()], { ...uncutPick, task: 'fix the ops doc', decide, everyScored: { bar: 0.6 } });
 
     const entry = result.record.candidates.find((item) => item.id === 'ops');
     expect(entry).toMatchObject({ status: 'selected' });

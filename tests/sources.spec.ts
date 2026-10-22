@@ -4,8 +4,10 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { pickFromSources, SourceReadError, type CandidateReadResult, type CandidateSource, type MemoryCandidate, type PickAnswer } from '@curatejs/core';
+import { LABEL_KINDS, pickFromSources, SourceReadError, type CandidateReadResult, type CandidateSource, type MemoryCandidate, type PickAnswer } from '@curatejs/core';
 import { gitHistory } from '@curatejs/git';
+
+const uncutPick = { everyRanked: true, everyScored: true, labels: false, rare: false } as const;
 
 function candidate(overrides: Partial<MemoryCandidate> & Pick<MemoryCandidate, 'sourceId' | 'id'>): MemoryCandidate {
   return {
@@ -47,7 +49,7 @@ describe('pickFromSources', () => {
         })),
       ],
       { task: 'the task' },
-      { task: 'the task', decide: sayYes },
+      { ...uncutPick, task: 'the task', decide: sayYes },
     );
 
     expect(result.selected.map((item) => item.id).sort()).toEqual(['n1', 'r1']);
@@ -68,7 +70,7 @@ describe('pickFromSources', () => {
           })),
         ],
         { task: 'the task' },
-        { task: 'the task', decide: sayYes },
+        { ...uncutPick, task: 'the task', decide: sayYes },
       );
 
       expect(result.reads[0]).toEqual({ status: 'absent', reason: 'no-history' });
@@ -89,7 +91,7 @@ describe('pickFromSources', () => {
         })),
       ],
       { task: 'the task' },
-      { task: 'the task', decide: sayYes },
+      { ...uncutPick, task: 'the task', decide: sayYes },
     );
 
     expect(result.reads[0]).toEqual({ status: 'absent', reason: 'no directory' });
@@ -110,7 +112,7 @@ describe('pickFromSources', () => {
         })),
       ],
       { task: 'the task' },
-      { task: 'the task', decide: sayYes },
+      { ...uncutPick, task: 'the task', decide: sayYes },
     );
 
     const byId = new Map(result.selected.map((item) => [item.id, item]));
@@ -129,7 +131,7 @@ describe('pickFromSources', () => {
         })),
       ],
       { task: 'the task' },
-      { task: 'the task', decide: sayYes },
+      { ...uncutPick, task: 'the task', decide: sayYes },
     );
 
     expect(result.record.rulesCoverage).toBe('incomplete');
@@ -146,7 +148,7 @@ describe('pickFromSources', () => {
         })),
       ],
       { task: 'the task' },
-      { task: 'the task', decide: sayYes, rulesEnumerationComplete: false },
+      { ...uncutPick, task: 'the task', decide: sayYes, rulesEnumerationComplete: false },
     );
 
     // The caller warned that rules were omitted upstream; a clean set of
@@ -165,7 +167,7 @@ describe('pickFromSources', () => {
         })),
       ],
       { task: 'the task' },
-      { task: 'the task', decide: sayYes },
+      { ...uncutPick, task: 'the task', decide: sayYes },
     );
 
     expect(result.record.rulesCoverage).toBe('incomplete');
@@ -183,7 +185,7 @@ describe('pickFromSources', () => {
         })),
       ],
       { task: 'the task' },
-      { task: 'the task', decide: sayYes },
+      { ...uncutPick, task: 'the task', decide: sayYes },
     );
 
     expect(result.record.rulesCoverage).toBe('complete');
@@ -207,9 +209,9 @@ describe('pickFromSources', () => {
       const decided: string[] = [];
       const labelled: string[] = [];
       const result = await pickFromSources(
-        [source('notes', 'reference', read)],
+        [{ ...source('notes', 'reference', read), labelKinds: LABEL_KINDS }],
         { task: 'the task' },
-        {
+        { ...uncutPick,
           task: 'the task',
           labels: { directory, deciderId: 'test-decider' },
           decide: async (batch) => {
@@ -258,9 +260,9 @@ describe('pickFromSources', () => {
         texts.map((text) => (text === 'the task' || text === 'text of notes/late' ? [1, 0] : [0, 1]));
       const decided: string[] = [];
       const result = await pickFromSources(
-        [source('notes', 'reference', read)],
+        [{ ...source('notes', 'reference', read), labelKinds: LABEL_KINDS }],
         { task: 'the task', meaning: { embed, nearest: 1 } },
-        {
+        { ...uncutPick,
           task: 'the task',
           labels: { directory, deciderId: 'test-decider' },
           decide: async (batch) => {
@@ -305,9 +307,9 @@ describe('pickFromSources', () => {
         ],
       });
       const result = await pickFromSources(
-        [source('notes', 'reference', read)],
+        [{ ...source('notes', 'reference', read), labelKinds: LABEL_KINDS }],
         { task: 'the task' },
-        { task: 'the task', labels: { directory, deciderId: 'test-decider' }, decide: sayYes },
+        { ...uncutPick, task: 'the task', labels: { directory, deciderId: 'test-decider' }, decide: sayYes },
       );
 
       const merged = result.reads[0]!;
@@ -329,7 +331,7 @@ describe('pickFromSources', () => {
           throw new SourceReadError('failed', 'permission denied');
         })],
         { task: 'the task' },
-        { task: 'the task', decide: sayYes },
+        { ...uncutPick, task: 'the task', decide: sayYes },
       ),
     ).rejects.toMatchObject({ name: 'SourceReadError', code: 'failed' });
   });
