@@ -454,6 +454,7 @@ Costs are per question.
 - **With `conversation-recall`, Curate matches Mem0 with 15 times less context** (93.4 against 93.4, 449 tokens against 6,787).
 - **On GPT-5-mini, Mastra's raw score is higher:** 93.6 against 92.0 per question, and 94.87 against 90.99 as an equal average of the six question types. Its answering model reads about 50 times more context.
 - **Curate has the highest adjusted score** of these systems, because its answering model reads the least context.
+- **On LoCoMo, Curate's `conversation-recall` scores 93.7 (149/159) with GPT-5,** against Mem0's own published answers on the same 159 questions, 94.3 (150/159), and 91.6 across all 1,540 ([proof files](benchmarks/locomo/2026-10-22/README.md)).
 
 **Notes on the table**
 

@@ -1,0 +1,46 @@
+{
+  "curate.conversation_recall.slice_159": {
+    "questions": 159,
+    "marked": 159,
+    "correct": 149,
+    "accuracy": 93.71,
+    "by_category": {
+      "multi-hop": "27/28",
+      "temporal": "34/36",
+      "open-domain": "10/13",
+      "single-hop": "78/82"
+    },
+    "context_tokens_mean": 923,
+    "context_tokens_median": 480,
+    "answer_output_tokens_mean": 1235,
+    "answer_output_tokens_max": 4174,
+    "mark_output_tokens_mean": 202,
+    "empty_answers": 0,
+    "answers_cut_off": 0,
+    "cost_usd_list": 2.9167,
+    "cost_usd_per_question_list": 0.0183,
+    "input_tokens": 505393,
+    "cached_input_tokens": 201344
+  },
+  "mem0.platform.same_159": {
+    "questions": 159,
+    "correct": 150,
+    "accuracy": 94.34,
+    "by_category": {
+      "multi-hop": "27/28",
+      "temporal": "35/36",
+      "open-domain": "11/13",
+      "single-hop": "77/82"
+    }
+  },
+  "mem0.platform.all_1540": {
+    "questions": 1540,
+    "correct": 1410,
+    "errors": 1,
+    "accuracy": 91.56
+  },
+  "mem0.source": {
+    "url": "https://github.com/mem0ai/memory-benchmarks/blob/edcd6f1d42400837b1fcb6997716f1769dc51a37/results/platform/locomo_results.json",
+    "sha256": "36338fa6c1ca38bcf9e3fc33a5cbc3b6e53bdc4bafaeeaee0947cf13b5527911"
+  }
+}
