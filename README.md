@@ -1,22 +1,37 @@
 # Curate
 
+Best in class memory that just works - simple, performant and precise without embeddings, vector databases or third party platforms
+
 Curate gives an agent the context it needs for a task, drawn from chat transcripts, Markdown and git history.
 It chooses evidence and turns it into a dated, cited log that the agent reads before starting work.
 
 ## Results at a glance
 
-On LongMemEval S, across all 500 questions:
+Top tier benchmark scores with up to 50 times fewer tokens
 
-| Setting | Answering model and marker | All 500 | Held-out 251 | Context tokens (mean) | Adjusted score | Cost per question (list, est.) |
-| --- | --- | --- | --- | --- | --- | --- |
-| **Every part decided and kept** | GPT-5 answers, GPT-5 marks | **94.0** (470/500) | 94.8 (238/251) | 580 | **99.0** | $0.49 |
-| **Every part decided and kept** | GPT-5-mini answers, GPT-4o marks | **92.0** (460/500) | 93.6 (235/251) | 580 | **97.0** | $0.48 |
-| **References scored 0.0146 or more** | GPT-5-mini answers, GPT-4o marks | **91.6** (458/500) | 93.6 (235/251) | 485 | **96.9** | **$0.12** |
+| Benchmark | System | Task model | Score | Task model tokens |
+| --- | --- | --- | --- | --- |
+| **LongMemEval S** | **Curate, every part kept** | **GPT-5** | **94.0** | **580** |
+| **LongMemEval S** | **Curate, conversation-recall** | **GPT-5** | **93.2** | **449** |
+| LongMemEval S | [Mem0 platform](https://github.com/mem0ai/memory-benchmarks/blob/4b61c5d31b9c668a12b4f5e78064248a02c82d2b/results/platform/longmemeval_results.json) | GPT-5 | 93.4 | 6,787 mean (12x more) |
+| **LongMemEval S** | **Curate, every part kept** | **GPT-5-mini** | **92.0** | **580** |
+| **LongMemEval S** | **Curate, default** | **GPT-5-mini** | **91.6** | **485** |
+| LongMemEval S | [Mastra observational memory](https://mastra.ai/research/observational-memory) | GPT-5-mini | 93.6 | ~30,000 mean (52x more) |
+| LongMemEval S | [Zep](https://getzep.com/research) | GPT-5.4 | 90.2 | 4,408 median (8x more) |
 
-DolphinBench: **23 of 30 tests passed** with every part decided and kept.
-That is an unofficial slice of 600 tests with a different agent setup; the comparisons are not one controlled run.
-LongMemEval comparisons also use different models and token counts.
-See [Results](#results) for the full tables, costs, proof files and limits.
+The task model does the work (here, answering the question), and you do not want to flood its context with noise.
+
+*Each multiplier uses Curate's 580-token every-part setting; see the [full comparison](#against-published-systems) for scoring methods and costs.*
+
+DolphinBench: **23 of 30 tests passed** with every part decided and kept. [See the results](#dolphinbench-mem0s-benchmark-a-30-test-slice).
+
+## Built for memory that keeps growing
+
+- **No work when history is written.** Curate reads transcripts, git history and Markdown where they already live, when a task asks. No extraction step, index, vector database or graph to keep in sync.
+- **Go straight to the source.** [Mem0](https://docs.mem0.ai/core-concepts/memory-operations/add) extracts facts with a model, [Mastra](https://mastra.ai/docs/memory/observational-memory) keeps observations written by a model, and [Zep](https://help.getzep.com/v4/how-graph-creation-works) builds a knowledge graph. Curate selects from the original history for each task.
+- **Keep the task model focused.** It gets a dated, cited log chosen for its task, even when the history spans thousands of parts.
+
+[LongMemEval](benchmarks/longmemeval/2026-10-14/README.md): **449 to 580 task-model tokens** from about **50 sessions**. [DolphinBench slice](benchmarks/dolphinbench/2026-10-15/results.md): a median log of **about 5,400 tokens** from **5,400–5,900 history parts**.
 
 ## Install only what you need
 
@@ -367,27 +382,30 @@ LongMemEval tests whether a model can answer questions from a long chat history.
 Curate ran all 500 LongMemEval S questions with its packages at commit `aacb042`, at two settings:
 
 - **Every part decided and kept.** Every part of each history went to the decision model, every scored part went to the curator, and the curator wrote one log per question.
-- **References scored 0.0146 or more.** One option, `everyScored` off at `bar` 0.0146: only the parts the decision model scored 0.0146 or more went to the curator, about 70 of a history's 851. 0.0146 is the highest cut that lost no answer message in an earlier measurement on the tuning questions.
+- **References scored 0.0146 or more.** One option, `everyScored` off at `bar` 0.0146: only the parts the decision model scored 0.0146 or more went to the curator, about 70 of a history's 851. In a measurement on 249 of the 500 questions, 0.0146 was the highest cut that lost no answer message. The default mode uses this cut.
+
+A second run used `conversation-recall`, the 0.0146 cut plus chat labels. Its answers, verdicts and build details are in [its proof files](benchmarks/longmemeval/2026-10-22/README.md).
 
 The answering model read only the log.
 Every answer, verdict and log is in [the proof files](benchmarks/longmemeval/2026-10-14/README.md).
 
-| Setting | Answering model and marker | All 500 | Held-out 251 | Context tokens (mean) | Adjusted score | Cost per question (list, est.) |
-| --- | --- | --- | --- | --- | --- | --- |
-| **Every part decided and kept** | GPT-5 answers, GPT-5 marks | **94.0** (470/500) | 94.8 (238/251) | 580 | **99.0** | $0.49 |
-| **Every part decided and kept** | GPT-5-mini answers, GPT-4o marks | **92.0** (460/500) | 93.6 (235/251) | 580 | **97.0** | $0.48 |
-| **References scored 0.0146 or more** | GPT-5-mini answers, GPT-4o marks | **91.6** (458/500) | 93.6 (235/251) | 485 | **96.9** | **$0.12** |
+| Setting | Answering model and marker | All 500 | Context tokens (mean) | [Adjusted score](#adjusted-score) | Cost per question (list, est.) |
+| --- | --- | --- | --- | --- | --- |
+| **Every part decided and kept** | GPT-5 answers, GPT-5 marks | **94.0** (470/500) | 580 | **99.0** | $0.49 |
+| **`conversation-recall`** | GPT-5 answers, GPT-5 marks | **93.2** (466/500) | 449 | **98.7** | $0.16 |
+| **Every part decided and kept** | GPT-5-mini answers, GPT-4o marks | **92.0** (460/500) | 580 | **97.0** | $0.48 |
+| **References scored 0.0146 or more** | GPT-5-mini answers, GPT-4o marks | **91.6** (458/500) | 485 | **96.9** | **$0.12** |
 
-The held-out 251 are the questions never used to tune Curate.
 The GPT-5-mini row with every part kept answers the same saved logs as the GPT-5 row; it asks no new decisions and writes no new logs.
 The row with a 0.0146 cut reuses the full-selection run's saved decisions and writes new logs from fewer parts.
+The `conversation-recall` row reuses the same saved decisions, adds chat labels, and writes its own logs; its curator reads about 34,000 tokens a question against about 232,000 with every part kept.
 Two runs of one setting differ by up to 8 questions on 249, so the two settings score the same within that noise.
 
 ### Settings: dials for cost, speed and score
 
 Curate's options let each use set its own balance of cost, speed and score.
 A host can send every scored part to the curator or choose a score cut that sends fewer parts.
-These dials were measured on the 249 tuning questions, with gpt-6.1-sol curating unless named, GPT-5-mini answering and GPT-4o marking:
+These dials were measured on 249 of the 500 questions, with gpt-6.1-sol curating unless named, GPT-5-mini answering and GPT-4o marking:
 
 | Dial | Parts the curator reads | Correct of 249 | Cost per question (list, est.) |
 | --- | --- | --- | --- |
@@ -407,6 +425,7 @@ The same answers, judged by LongMemEval's own `evaluate_qa.py` (commit `9e0b455`
 | Answering model | Overall | Average of the six types | Abstention questions |
 | --- | --- | --- | --- |
 | **GPT-5**, every part kept | **93.0** (465/500) | 92.1 | 29/30 |
+| **GPT-5**, `conversation-recall` | **91.6** (458/500) | 92.6 | 26/30 |
 | **GPT-5-mini**, every part kept | **92.2** (461/500) | 91.2 | 22/30 |
 | **GPT-5-mini**, scores 0.0146 or more | **90.8** (454/500) | 89.3 | 23/30 |
 | **gpt-6.1-sol** through the Codex CLI, with gpt-6-luna curating | **88.2** (441/500) | 89.5 | 29/30 |
@@ -422,6 +441,7 @@ The answers are in LongMemEval's own format (`question_id`, `hypothesis`), with 
 | **Curate** | A TypeScript library: plain files, no database | GPT-5 | **94.0** | **580** | **$0.0007** | $0.49 at list prices (est.); $0.024 paid |
 | **Curate** | A TypeScript library: plain files, no database | GPT-5-mini | 92.0 | 580 | $0.0001 | $0.48 at list prices (est.) |
 | **Curate, scores 0.0146 or more** | A TypeScript library: plain files, no database | GPT-5-mini | 91.6 | 485 | $0.0001 | **$0.12** at list prices (est.) |
+| **Curate, `conversation-recall`** | A TypeScript library: plain files, no database | GPT-5 | 93.2 | **449** | **$0.0006** | $0.16 at list prices (est.) |
 | [Mem0 platform](https://github.com/mem0ai/memory-benchmarks/blob/4b61c5d31b9c668a12b4f5e78064248a02c82d2b/results/platform/longmemeval_results.json) | Mem0's hosted platform | GPT-5 | 93.4 | 6,787 mean | $0.0085 | not published |
 | [Mastra observational memory](https://mastra.ai/research/observational-memory) | A TypeScript framework you run, with a storage provider | GPT-5-mini | 93.6 (94.87 by type) | ~30,000 mean | $0.0075 | ~$0.045 (est.) |
 | [Zep](https://getzep.com/research) | Zep's hosted service is its recommended setup | GPT-5.4 | 90.2 | 4,408 median | not priced | not published |
@@ -430,6 +450,7 @@ The answers are in LongMemEval's own format (`question_id`, `hypothesis`), with 
 Costs are per question.
 
 - **On GPT-5, Curate scores above Mem0's committed result file** (94.0 against 93.4, both marked by GPT-5). With LongMemEval's own GPT-4o judge, Curate's GPT-5 answers score 93.0.
+- **With `conversation-recall`, Curate matches Mem0 with 15 times less context** (93.2 against 93.4, 449 tokens against 6,787).
 - **On GPT-5-mini, Mastra's raw score is higher:** 93.6 against 92.0 per question, and 94.87 against 90.99 as an equal average of the six question types. Its answering model reads about 50 times more context.
 - **Curate has the highest adjusted score** of these systems, because its answering model reads the least context.
 
@@ -446,6 +467,8 @@ Costs are per question.
 - **Marking models differ:** GPT-5 for Curate's first row and for Mem0, GPT-4o for Curate's second row and for Mastra, GPT-5.4 for Zep.
 - **Token counting differs** too, including Zep's median in place of a mean. The rows compare roughly; they are not one controlled run.
 - **Prices:** OpenAI's list prices, checked 13 October 2026. Jev: $0.042 per million input tokens, output free.
+
+### Adjusted score
 
 ```text
 adjusted score = answer score − 5 × log10(context tokens ÷ 5,698)
