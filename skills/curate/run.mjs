@@ -371,7 +371,7 @@ export async function run(args = process.argv.slice(2), callSubscription = subsc
       try {
         const response = await fetch('https://api.typesafe.ai/v1/systemone', {
           method: 'POST', headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },
-          signal: AbortSignal.any([signal, AbortSignal.timeout(120_000)]),
+          signal,
           body: JSON.stringify(jevRequest(batch)),
         });
         if (!response.ok) throw new Error(`Decision service returned HTTP ${response.status}.`);
