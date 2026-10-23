@@ -1,0 +1,21 @@
+[
+  {
+    "tool": "create_doc",
+    "args": {
+      "title": "Historical Honeycomb Alert Handling — Dec 23, 2023–Jan 1, 2024",
+      "body": "# Historical Honeycomb Alert Handling\n\n**Coverage period:** December 23, 2023 through January 1, 2024  \n**Normal schedule resumed:** Tuesday, January 2, 2024\n\n## Operating guidance\n\n- **Thresholds:** Keep the existing Honeycomb alert thresholds unchanged throughout the holiday coverage period.\n- **Paging:** Page the named on-call owner first, following the holiday roster. Engineering/production coverage was Marcus primary, with Leo Park as backup. Customer support triage was Rishi primary, with Priya as backup. Product/design clarification for active customer issues was Priya primary, with Jake as backup. Devon Haye held deploy and rollback authority.\n- **Escalation:** Escalate only when there is confirmed customer impact or when the named owner is unreachable after the documented escalation path. Founders were not intended to be a catch-all escalation route.\n- **Quiet-week reporting:** Do not escalate ordinary alert noise or non-urgent cleanup during the reduced schedule. Roll quiet alerts and other non-actionable activity into the Monday digest.\n\n## Historical outcome\n\nThe reduced-week digest reported two non-production alert flaps, no confirmed customer impact, and one slow acknowledgment. The handling direction remained unchanged: preserve current thresholds, page the named owner first, escalate only under the defined conditions, and defer non-urgent cleanup until January.",
+      "folder": "historical-notes"
+    },
+    "result": {
+      "ok": true,
+      "document": {
+        "id": "doc_0157dd616d5d44a4a7fd63f8e4876135",
+        "title": "Historical Honeycomb Alert Handling — Dec 23, 2023–Jan 1, 2024",
+        "body": "# Historical Honeycomb Alert Handling\n\n**Coverage period:** December 23, 2023 through January 1, 2024  \n**Normal schedule resumed:** Tuesday, January 2, 2024\n\n## Operating guidance\n\n- **Thresholds:** Keep the existing Honeycomb alert thresholds unchanged throughout the holiday coverage period.\n- **Paging:** Page the named on-call owner first, following the holiday roster. Engineering/production coverage was Marcus primary, with Leo Park as backup. Customer support triage was Rishi primary, with Priya as backup. Product/design clarification for active customer issues was Priya primary, with Jake as backup. Devon Haye held deploy and rollback authority.\n- **Escalation:** Escalate only when there is confirmed customer impact or when the named owner is unreachable after the documented escalation path. Founders were not intended to be a catch-all escalation route.\n- **Quiet-week reporting:** Do not escalate ordinary alert noise or non-urgent cleanup during the reduced schedule. Roll quiet alerts and other non-actionable activity into the Monday digest.\n\n## Historical outcome\n\nThe reduced-week digest reported two non-production alert flaps, no confirmed customer impact, and one slow acknowledgment. The handling direction remained unchanged: preserve current thresholds, page the named owner first, escalate only under the defined conditions, and defer non-urgent cleanup until January.",
+        "folder": "historical-notes",
+        "created_at": "2026-10-22T10:05:53.451130Z",
+        "url": "https://docs.mock/doc_0157dd616d5d44a4a7fd63f8e4876135"
+      }
+    }
+  }
+]

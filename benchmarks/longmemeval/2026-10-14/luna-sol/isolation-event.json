@@ -1,8 +1,0 @@
-{
- "type": "item.completed",
- "item": {
-  "id": "item_0",
-  "type": "error",
-  "message": "Failed to read global AGENTS.md instructions from `~/.codex/AGENTS.md`: Operation not permitted (os error 1)"
- }
-}

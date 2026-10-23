@@ -11,7 +11,7 @@ import {
   type PickDecide,
 } from '../src/index.js';
 
-const uncutPick = { everyRanked: true, everyScored: true, labels: false, rare: false } as const;
+const uncutPick = { everyRanked: true, everyScored: true, rare: false } as const;
 
 function candidate(overrides: Partial<MemoryCandidate> & Pick<MemoryCandidate, 'sourceId' | 'id'>): MemoryCandidate {
   return {
@@ -90,8 +90,8 @@ describe('pick rare-word round', () => {
       share: 0.5, bar: 0.0146, asked: 1, added: 1,
       pulled: [{ sourceId: 'notes', id: 'p7' }],
     });
-    expect(result.record.pick?.rare?.words).toContain('zephyr');
-    expect(result.record.pick?.rare?.words).not.toContain('plain');
+    expect(result.record.pick?.rare?.sources.notes?.words).toContain('zephyr');
+    expect(result.record.pick?.rare?.sources.notes?.words).not.toContain('plain');
     expect(result.record.candidates.find((entry) => entry.id === 'p7'))
       .toMatchObject({ status: 'selected', asked: true, probability: 0.9 });
   });
@@ -110,7 +110,7 @@ describe('pick rare-word round', () => {
     expect(decidedIds(counter.calls)).toEqual(parts(4).map((item) => item.id));
     expect(result.selected.map((item) => item.id)).toEqual(['p0', 'p1', 'p2']);
     expect(result.record.pick?.rare).toMatchObject({ asked: 0, added: 0, pulled: [] });
-    expect(result.record.pick?.rare?.words).toEqual([]);
+    expect(result.record.pick?.rare?.sources.notes?.words).toEqual([]);
   });
 
   it('asks each part at most once across both rounds', async () => {
@@ -223,8 +223,8 @@ describe('pick rare-word round', () => {
 
     expect(result.record.pick?.n).toBe(count);
     expect(result.record.pick?.rare?.added).toBe(added);
-    if (rare) expect(result.record.pick?.rare?.words).toContain('zephyr');
-    else expect(result.record.pick?.rare?.words).not.toContain('zephyr');
+    if (rare) expect(result.record.pick?.rare?.sources.notes?.words).toContain('zephyr');
+    else expect(result.record.pick?.rare?.sources.notes?.words).not.toContain('zephyr');
     expect(result.selected.some((item) => item.id === 'p7')).toBe(rare);
   });
 

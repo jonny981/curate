@@ -39,25 +39,23 @@ const { log, rules, picked, result } = await mem.recall('What billing constraint
 - **Incomplete collection:** Absent or incomplete reads, unanswered candidates and interrupted decisions throw before the writer runs. Parts intentionally excluded by the label questions are allowed. The error's `cause` holds `picked` for inspection. Source read errors propagate. A limit that leaves candidates unassessed also throws; use `pickFromSources()` directly if you need to accept a partial selection.
 - **Cancellation:** `mem.recall(task, { signal })` passes the signal to the readers and both model functions.
 
-Use `agent-tasks` for agents working from any mix of chat, git and docs. It is what runs when no mode is chosen.
-It decides every ranked part and keeps references scored 0.0146 or more, with labels and routing off.
-Git and Markdown sources enable the rare-word round; chat leaves it off.
-Choose `preset: 'conversation-recall'` for questions about past conversations.
-It adds labels using each source's kinds: seven for chat, none for git or Markdown.
-Set `preset: 'agent-tasks'` to choose it explicitly.
-Explicit `read`, `pick` and `curate` options override the preset:
+Each source carries its own settings: whether the rare-word round runs on it, which label kinds its parts are asked, and the decision-score bars its parts are cut at.
+Git and Markdown run the rare-word round and chat leaves it off; chat asks the seven label kinds and git and Markdown ask none; every reader keeps references scored 0.0146 or more.
+Out of the box the call decides every ranked part, with routing off.
+Explicit `read`, `pick` and `curate` options apply to the whole call:
 
 ```ts
 const mem = memory({
-  sources,
+  sources: [historySource({ reader: chat(), ...chatSettings }), git('.')],
   decide,
   write,
-  preset: 'conversation-recall',
   read: { wholeLanes: true },
   pick: { everyScored: { bar: 0.05 } },
   curate: { context: true },
 });
 ```
+
+See [levers and source settings](#levers-and-source-settings) for each source's settings and how to change them.
 
 `pickFromSources()` and `curate()` remain separate public calls for hosts that manage each step themselves.
 Calling them directly does not apply a reader's question set automatically.
@@ -396,9 +394,14 @@ a 0.4 continuation gate. No continuation gate is used by the package.
 
 `pick(candidates, { task, decide })` ranks the candidates, asks `decide`
 in bounded batches, and returns the selected candidates with a
-`PickRecord`. By default, labels are off, and
-`everyScored: { bar: 0.0146 }` keeps references at or above that score.
-Set `everyScored: true` to keep every valid score, including zero.
+`PickRecord`. By default, labels run only for a source that carries
+label kinds: `chat()` carries the seven kinds, and `git()` and the
+Markdown readers carry none. Each reference is kept
+when its score reaches its source's bar: `barBySource`, keyed by source
+id, or 0.0146 for a source it does not name. `pickFromSources` fills
+`barBySource` from each source's `bar`. `everyScored` sets one bar for
+every source in their place; `everyScored: true` keeps every valid
+score, including zero.
 The model orders and weights selected references. References
 with no valid decision answer remain unanswered; limits can leave items
 unassessed. A `decide` call that throws fails the pick with a `PickError`,
@@ -410,7 +413,7 @@ batch answered some of their questions; a failed tag batch leaves a
 decided selection standing and records the error on the tag answers.
 There is no retry and no fallback.
 
-To change the score cut, set your own bar:
+To change the score cut for every source, set your own bar:
 
 ```ts
 const picked = await pick(candidates, {
@@ -418,8 +421,9 @@ const picked = await pick(candidates, {
 });
 ```
 
-Rules also keep every scored item by default. Set `thresholds.rule`
-for an optional applicability cut. `applies: always` rules bypass that check.
+Rules also keep every scored item by default. A rules source's
+`ruleBar`, or `ruleBarBySource` on a direct `pick()`, sets an optional
+applicability cut. `applies: always` rules bypass that check.
 
 `everyScored: { bySize }` replaces the flat bar with a
 curve of `[decided count, bar]` points. Below the first point the first
@@ -441,7 +445,7 @@ answered. `rulesEnumerationComplete: false` in the options is honoured
 the same way.
 
 Each candidate's `changedPaths` names the repository paths it changed;
-`gitHistory` fills it from the commit's diff, never from paths the text
+`git()` fills it from the commit's diff, never from paths the text
 mentions. When a reference score cut applies, a reference answered
 at or above `linkedPathBar` (0.4 by default) still passes when a selected
 commit from the same `repository` names its `path` in
@@ -473,11 +477,11 @@ Rule candidates keep their separate applicability question.
 ```ts
 import { pickFromSources } from '@curatejs/core';
 import { chat, CHAT_CASCADE } from '@curatejs/chat';
-import { gitHistory, GIT_HISTORY_CASCADE } from '@curatejs/git';
+import { git, GIT_HISTORY_CASCADE } from '@curatejs/git';
 import { knowledgeBase, MARKDOWN_CASCADE } from '@curatejs/markdown';
 
 const picked = await pickFromSources(
-  [chat({ paths: ['transcripts'] }), gitHistory('.'), knowledgeBase('docs')],
+  [chat({ paths: ['transcripts'] }), git('.'), knowledgeBase('docs')],
   { task },
   {
     task, decide,
@@ -589,21 +593,21 @@ option or pass `false` to judge the whole feed as usual.
 
 ### Label gate
 
-Labels are off by default. `conversation-recall` enables them.
-`labels: {}` turns them on with default options; `labels: false` turns them off. `directory` and `deciderId` are optional.
+The gate runs for each source that carries label kinds, and for no other.
+A source supplies its label questions through `labelKinds`, which
+`historySource()` sets from its `labels` setting: `true` for `LABEL_KINDS`
+(personal facts, things owned or used, purchases or arrivals, events or
+plans, preferences, habits, and decisions), a list for those kinds, or
+`false` for none. Chat's settings ask the seven kinds; git's and Markdown's ask none.
+A source with no kinds receives no label questions; its other search lanes still apply.
+`pick.labels: { directory, deciderId }` sets where labels are stored and the decider identity they are keyed by; both are optional.
 The default directory is `$XDG_CACHE_HOME/curate/labels`, or `~/.cache/curate/labels` when `XDG_CACHE_HOME` is unset.
 
-Each source supplies its label questions through `labelKinds`.
-`chat()` carries `LABEL_KINDS`: personal facts, things owned or used,
-purchases or arrivals, events or plans, preferences, habits, and decisions.
-Git, Markdown, knowledge notes and rules carry no kinds by default.
-A source with no kinds receives no label questions; its other search lanes still apply.
-
-Replace a source's kinds by spreading it and setting `labelKinds`:
+Give a source your own kinds through `labels`:
 
 ```ts
-import type { LabelKind } from '@curatejs/core';
-import { markdown } from '@curatejs/markdown';
+import { historySource, type LabelKind } from '@curatejs/core';
+import { markdown, markdownSettings } from '@curatejs/markdown';
 
 const labelKinds: readonly LabelKind[] = [{
   key: 'constraint',
@@ -613,11 +617,10 @@ const labelKinds: readonly LabelKind[] = [{
     false: 'The excerpt states no constraint.',
   },
 }];
-const source = { ...markdown({ paths: ['docs'], kind: 'docs' }), labelKinds };
+const source = historySource({ reader: markdown({ paths: ['docs'], kind: 'docs' }), ...markdownSettings, labels: labelKinds });
 ```
 
-When labels are enabled, `memory()` and `pickFromSources()` use the source's kinds automatically.
-Set `labelKinds: []` to leave that source out of labelling.
+`memory()` and `pickFromSources()` use each source's kinds automatically.
 For a direct `pick()`, pass `labelKindsBySource`, keyed by each candidate's
 `sourceId`; an absent or empty set means no label work:
 
@@ -664,7 +667,7 @@ leaves the decide step unasked. The label lane is not capped by
 `everyRanked` caps the merged ranking.
 
 The record's `labelKindsBySource` lists the full kind definitions applied
-to each source, or `[]` when none apply or labels are off.
+to each source, or `[]` when it carries none.
 The record's `labels` field keeps the question-set version, the
 `deciderId`, how many items' labels the decide port was asked, how many
 were reused from the store, the gate's size, and `failedWrites`, how
@@ -780,36 +783,37 @@ history's size instead of with the whole ranking.
 
 ### Optional rare-word round
 
-Git and Markdown sources enable a second, narrow round after selection.
-Chat leaves it off. Each source declares its default through `rare`.
-To disable it for one source, spread that source and set `rare: false`:
+A second, narrow round after selection, run within each source on its own.
+Git and Markdown turn it on through their `rare` setting; chat leaves it off.
+To turn it off for one source, build that source with `rare: false`:
 
 ```ts
-const source = { ...gitHistory('.'), rare: false };
+const source = historySource({ reader: git('.'), ...gitSettings, rare: false });
 ```
 
-`memory()` and `pickFromSources()` use these source defaults.
+`memory()` and `pickFromSources()` use each source's setting.
 For direct `pick()` calls, pass `rareBySource`, keyed by each candidate's `sourceId`.
 An omitted or false entry leaves that source's round off.
-Explicit `rare: true`, `rare: false` or `rare: { share, bar }` overrides the source defaults for the whole pick.
+Explicit `rare: true`, `rare: false` or `rare: { share, bar }` overrides every source's setting for the whole pick.
 The round only adds reference evidence. Rules keep their exact text and separate applicability check.
 `rare: true` uses the round's default settings; `{ share, bar }` tunes them.
-Only reference parts from enabled sources supply seed words, count toward word frequency, or get pulled in.
-The parts that cleared the selection bar supply the seed words.
-A seed word is rare when it appears in at most `share × N` reference parts from enabled sources.
-N includes those sources' pool members that the search lanes left out.
+Each source's round reads only that source: its reference parts supply the seed words, count toward word frequency, and are the only parts it pulls in.
+So one source's setting never changes another source's pick.
+The parts that cleared their source's bar supply the seed words.
+A seed word is rare when it appears in at most `share × N` of its source's reference parts, where N is that source's reference count.
+N includes the source's pool members that the search lanes left out.
 It can differ from `pick.n`, which counts references across every source for the top-k limit.
 `share` defaults to `5/850`, the count of 5 fitted on an 850-part LongMemEval history.
-With fewer than 340 enabled reference parts, the default share can pull nothing:
+On a source with fewer than 340 reference parts, the default share can pull nothing:
 a shared word appears in at least 2 parts, and `5/850 × N` stays below 2.
-Every unselected reference from enabled sources that shares a rare word is pulled in, pool members included.
+Every unselected reference of the source that shares one of its rare words is pulled in, pool members included.
 One the first pass never asked goes through the decide step; one already decided reuses its score.
 No part is asked twice. A pulled part joins the selection at or
-above `bar`, a separate bar defaulting to `0.0146`; the seeds keep the
-pick's own bar. `share` must be a positive finite number and `bar` between 0 and 1, both checked before
+above `bar`, a separate bar defaulting to `0.0146`; the seeds keep
+their source's own bar. `share` must be a positive finite number and `bar` between 0 and 1, both checked before
 any decide call. The record's `pick.rare` keeps the share and bar
-used, the rare words, the parts pulled in, and how many were asked
-and added. For picks with per-source settings, `pick.rare.n` records the enabled reference count.
+used, each source's N and rare words under `sources`, the parts pulled
+in, and how many were asked and added.
 The outer `pick.n` still counts references across every source.
 
 Measured on the tuning half's saved decisions (249 questions): holding
@@ -1082,77 +1086,86 @@ a chained log's line ids, so passing both throws a `TypeError` before
 the writer runs. `batchTokens` must be a positive integer. Nothing is
 cut or dropped; batching only splits the evidence across more calls.
 
-## Levers and modes
+## Levers and source settings
 
 Every cost and selection lever follows one rule: turning it on reads more
 evidence or adds more guidance, at the risk of more cost; turning it
-off saves cost and can lose quality. Each lever lives in one of three
-places: the read request `pickFromSources` takes, the options `pick`
-takes, or the options `curate` takes. The pick's record keeps every
-lever's resolved state under `levers`, and `levers.preset` names the
-mode the states match: `agent-tasks`, `conversation-recall` or `custom`. Its
-`route` records the questions asked. The curate record carries the
-same lever set for the whole mode. Its `route` holds both states,
-`{ asked, applied }`, and its `preset` names the mode they make, so a
-pick that asked and a curator that never applied reads `custom`.
+off saves cost and can lose quality. A lever lives in one of four
+places: a source's own settings, the read request `pickFromSources`
+takes, the options `pick` takes, or the options `curate` takes. The
+pick's record keeps every lever's resolved state under `levers`, with
+the settings each source ran with under `levers.sources`. Its `route`
+records the questions asked. The curate record carries the same lever
+set; its `route` holds both states, `{ asked, applied }`.
 `meaning.wholeLanes` resolves the meaning lanes on their own, so when it disagrees with the read request's `wholeLanes` the
-record holds `levers.wholeLanes: { keyword, meaning }` and the preset
-is `custom`.
+record holds `levers.wholeLanes: { keyword, meaning }`.
 
 | Lever | What "on" does | Cost when on | Measured impact | Where measured |
 | --- | --- | --- | --- | --- |
 | Read `wholeLanes` | Keeps every candidate each keyword and meaning lane returned. Off, each lane cuts where its own score curve flattens (chat: the pre-merge keyword score; `searchPhrases` lanes are never cut, and kind lanes are never cut on phrase counts). | The decide feed grows by the parts the curves would have cut; kept counts vary with each lane's scores, and deciding is the expensive stage. | The cut the off state applies missed 6 of 445 answer messages on the tuning half: three shared no words with the question, three ranked below the cut. Its score and cost impact, and the loss under the label gate, are not yet measured. | Saved tuning-half lanes, 249 questions. |
 | Pick `everyRanked` | Every ranked reference part reaches the decide step. Off as `{ c }`, only the top `round(c × N^0.8)` reach it, where N is the number of reference parts the pick received; rules pass through uncut and dropped parts record `unassessed` with reason `'pick'`. | The decide step reads every ranked part, the whole ranking: all 850 of 850 parts at one measured size and all 8,475 of 8,475 at the largest. The off dial at c = 0.68 read 150 of the 850 and 944 of the 8,475. | On the keyword-and-label ranking the off dial at c = 0.68 kept 437–442 of 445 answer messages (98–99%) at every size from 127 to 8,475 parts (on keeps the whole ranking) and scored 229 of 249 at $0.18 a question; the on state's score and cost under the label gate are not yet measured. | Saved tuning-half rankings replayed, label gate on and `wholeLanes` on; the tuning dials in the root README. |
-| Pick `everyScored` | Every part with a valid decision probability stays selected, including zero. Off as `{ bar }` cuts below the bar; `{ bySize }` cuts below a bar that rises with the decided count. | The curator receives every scored part: about 850 parts at $0.51 a question in the LongMemEval run, against about 70 parts at $0.13 at the 0.0146 bar. | On scored 225 of the 249 tuning questions at $0.51 a question; off at the 0.0146 bar scored the same 225 at $0.13 (223 on the all-500 replay) and 458 of 500 against 460, at a quarter of the cost. A saved 0.6 bar removed every fed fragment of 183 labelled answer turns; a 0.05 bar lost 8 of 438 answer messages. 0.0146 is the highest cut that lost no answer message on the tuning questions. | Saved-decision sweep and the LongMemEval runs in the root README. |
-| Pick `labels` | Labels reference parts with their source's kind questions and asks the task once per distinct kind set. Sources with no kinds receive no label questions. Stores each set under `directory` and adds a label lane so parts the keyword lanes dropped can reach decide. Uses a default cache directory and decision-function ID; both can be overridden. | One question per kind for each part and task, once per text, kind set and `deciderId`; later picks reuse the store. | Keyword alone reached 439 of the tuning half's 445 answer messages; with each part labelled, all 445 were reached at 38% of each history. Its score and cost impact is not yet measured. | Saved label run on the tuning half, in the root README. |
+| Source `bar`, pick `everyScored` | Off by default: each source cuts its references below its own `bar`, 0.0146 for every reader. `everyScored` sets one cut for every source in place of their bars: `true` keeps every part with a valid decision probability, including zero; `{ bar }` cuts below a flat bar; `{ bySize }` cuts below a bar that rises with the decided count. | The curator receives every scored part. At the 0.0146 bar it receives about 70 of a LongMemEval history's 850 parts. | At the 0.0146 bar: 225 of the 249 tuning questions at $0.13 a question (223 on the all-500 replay), and 458 of 500. A saved 0.6 bar removed every fed fragment of 183 labelled answer turns; a 0.05 bar lost 8 of 438 answer messages. 0.0146 is the highest cut that lost no answer message on the tuning questions. | Saved-decision sweep and the LongMemEval runs in the root README. |
+| Source `labels` | Per source: a source that carries label kinds has its reference parts labelled with those kind questions, and the task is asked once per distinct kind set. Sources with no kinds receive no label questions. Stores each set under `directory` and adds a label lane so parts the keyword lanes dropped can reach decide. Uses a default cache directory and decision-function ID; `pick.labels` overrides both. | One question per kind for each part and task, once per text, kind set and `deciderId`; later picks reuse the store. | Keyword alone reached 439 of the tuning half's 445 answer messages; with each part labelled, all 445 were reached at 38% of each history. Its score and cost impact is not yet measured. | Saved label run on the tuning half, in the root README. |
 | Pick `route`, `curate` `route` | `route: 'jev'` on the pick asks the task the four route questions once. `route: 'jev'` on `curate` applies the recorded answers to the curator's guidance: worked notes, the preference lines. | Four questions asked of the task once a pick, sharing the task's label request when that runs and asked in one separate request otherwise; the curator adds the lines the answers chose. | Not yet measured. | Not yet measured. |
-| Pick `rare` | After the selection pass, pulls in unselected references sharing a rare word with a selected reference. Only enabled sources supply seed words, count toward word frequency, or get pulled in, pool members included; parts at or above `rare.bar` (default `0.0146`) join the selection. A word is rare at a document frequency of at most `rare.share × N` (default `5/850`), where N counts references from enabled sources. | The parts it pulls are asked or their scores reused: 12.9 parts a question at the defaults on the tuning half. On a history under 340 parts the default share can pull nothing. | Holding the selection bar at 0.05 lost 15 answer messages and the round recovered 6 of them. Its score impact is not yet measured. | Saved tuning-half decisions, 249 questions. |
+| Source `rare`, pick `rare` | Per source: after the selection pass, pulls in the source's unselected references sharing a rare word with one of its selected references. Each source turns it on with its own `rare` setting; `pick.rare` sets it for every source. Each source's round counts word frequency over its own references only and pulls only its own parts, pool members included; parts at or above `rare.bar` (default `0.0146`) join the selection. A word is rare at a document frequency of at most `rare.share × N` (default `5/850`), where N is that source's reference count. | The parts it pulls are asked or their scores reused: 12.9 parts a question at the defaults on the tuning half. On a history under 340 parts the default share can pull nothing. | Holding the selection bar at 0.05 lost 15 answer messages and the round recovered 6 of them. Its score impact is not yet measured. | Saved tuning-half decisions, 249 questions. |
 
 The decision cache and the short `En` item ids are not levers: they
 lose no quality, so they stay available whenever the caller asks for
 them. The cache is on whenever the caller passes one.
 
-### Modes by use case
+### Source settings
 
-`agentTasks` suits agents working from any mix of chat, git and docs, and runs when no mode is chosen.
-`conversationRecall` adds labels for questions about past conversations.
-Both are exported plain objects with `{ read, pick, curate }` fragments:
+Each source carries four settings, tuned for its kind of history:
 
-```ts
-import { curate, conversationRecall, pickFromSources } from '@curatejs/core';
+- **`rare`:** run the rare-word round on this source's parts.
+- **`labels`:** the label kinds asked of each part: `true` for `LABEL_KINDS`, a list for those kinds, `false` for none.
+- **`bar`:** keep a reference part scored at or above this.
+- **`ruleBar`:** keep a rule scored at or above this; absent means 0. Only sources whose parts are rules use it.
 
-const picked = await pickFromSources(sources,
-  { task, ...conversationRecall.read },
-  { task, decide, ...conversationRecall.pick });
-const curated = await curate(task, picked, { write, ...conversationRecall.curate });
-```
+Each reader package exports its settings as one plain object, and its convenience functions carry it:
 
-| Lever | `agentTasks` | `conversationRecall` |
+| Settings object | Value | Carried by |
 | --- | --- | --- |
-| `wholeLanes` | Off: cut each search lane | Off: cut each search lane |
-| `everyRanked` | On: decide every ranked part | On: decide every ranked part |
-| `everyScored` | Keep scores 0.0146 or more | Keep scores 0.0146 or more |
-| `labels` | Off | On: use each source's kinds |
-| `route` | Off | Off |
-| `rare` | Use source defaults: git and Markdown on, chat off | Use source defaults: git and Markdown on, chat off |
+| `chatSettings` (`@curatejs/chat`) | `{ rare: false, labels: true, bar: 0.0146 }` | `chat()` |
+| `gitSettings` (`@curatejs/git`) | `{ rare: true, labels: false, bar: 0.0146 }` | `git()` |
+| `markdownSettings` (`@curatejs/markdown`) | `{ rare: true, labels: false, bar: 0.0146 }` | `markdown()`, `knowledgeBase()` |
+| `rulesSettings` (`@curatejs/markdown`) | `{ ...markdownSettings, ruleBar: 0 }` | `rules()` |
 
-Omitting the settings runs `agentTasks` and records `preset: 'agent-tasks'`.
-`memory()` accepts `preset: 'agent-tasks'` or `preset: 'conversation-recall'`.
 The 0.0146 bar is the highest cut that lost no answer message on the tuning questions.
+The levers for the whole call start at: `wholeLanes` off, `everyRanked` on, and `route` off.
+`everyScored` and `rare` are unset, so each source's own `bar` and `rare` apply.
 
-Build your own mode by changing any lever:
+A source's settings change only that source's pick, with one exception: a selected commit brings in a note it changed, through the changed-path link.
+That holds while `everyRanked` stays on and no stopping limit is set.
+`everyRanked: { c }` ranks every source's parts in one list before it cuts, and a stopping limit in `limits` is shared by every source, so with either one, one source's settings can change another's pick.
+
+The record's `levers.sources` maps each source id to the settings it ran with, a `SourceSettings`:
+
+- **`kind`:** the source's kind, when it declares one.
+- **`labels`:** whether the label gate ran on its parts.
+- **`rare`:** whether the rare-word round was on for its parts.
+- **`bar`:** the bar its references were cut at, 0 when every scored part was kept.
+- **`ruleBar`:** the bar its rules were cut at, present when the source produced rules.
+
+So a run reads as, for example, `{ kind: 'chat', labels: true, rare: false, bar: 0.0146 }`: a chat source with labels on.
+`levers.rare` is `false` or `{ share, bar }`, and `levers.everyScored` is present only when the call gave it.
+
+Set your own with `historySource()`.
+`reader` is any source, a reader's or your own, and `rare`, `labels` and `bar` are required, so spread a settings object to start from its values:
 
 ```ts
-const ownLabels = {
-  ...conversationRecall,
-  pick: { ...conversationRecall.pick, labels: { directory: 'labels', deciderId: 'my-decider' } },
-};
+import { historySource, pickFromSources } from '@curatejs/core';
+import { chat, chatSettings } from '@curatejs/chat';
+import { markdown, markdownSettings } from '@curatejs/markdown';
+
+const sources = [
+  historySource({ reader: chat(), ...chatSettings, labels: false }),
+  historySource({ reader: markdown({ paths: ['docs'], kind: 'docs' }), ...markdownSettings, rare: false, bar: 0.05 }),
+];
+const picked = await pickFromSources(sources, { task }, { task, decide });
 ```
 
-`record.levers.preset` reads `custom` when the resolved settings match neither mode.
-Source defaults are part of the match: git and Markdown can enable the rare-word round while chat leaves it off without making the mode custom.
-The record's `levers.rare` is `false` or `{ share, bar }`.
-When a source map is supplied and the round is on, `levers.rare.sources` lists the enabled source IDs.
+A direct `pick()` takes the same settings by source id: `labelKindsBySource`, `rareBySource`, `barBySource` and `ruleBarBySource`.
 
 ## Optional evidence limits
 
@@ -1173,7 +1186,7 @@ left out. Pass `wholeLanes: true` to keep every returned candidate in its lane.
 | **`maxElapsedMs`** | Off | Stops questions when the elapsed time is reached. Loss depends on response time; stopped and failed questions remain in the record. |
 | **`maxQuestionText`** | Off | Cuts each decision item to N Unicode characters and records `truncated`. For a 1,000-character item at 700, 300 characters are hidden. Readers can split instead; direct `pick` callers must choose their own cut. |
 | **Source read `limit`** | Off | Chat and Markdown keep ranked candidates; git keeps newest commits before ranking. Readers report partial coverage. A limit of 1 on 2 candidates drops 1. |
-| **`thresholds.rule`** | 0 | A user applicability cut omits rules below its probability. Quality loss on labelled rule tasks is unmeasured; the default adds no cut loss. |
+| **A source's `ruleBar`** | 0 | A user applicability cut omits that source's rules below its probability. Quality loss on labelled rule tasks is unmeasured; the default adds no cut loss. |
 | **`contextLimit`** | Off | Requests a second writer call to condense the complete log. Format checks do not prove fact retention. No quality loss curve has been established; leave off for full retention. Cannot combine with a chained write. |
 | **`batchTokens`** | Off | Splits a chained write into passes of about N estimated tokens of evidence each, strongest first. Changes only how many calls the writer makes; no evidence is dropped. Cannot combine with `contextLimit`. |
 

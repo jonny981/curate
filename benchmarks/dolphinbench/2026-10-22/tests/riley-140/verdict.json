@@ -1,0 +1,50 @@
+{
+  "passed": true,
+  "checks": [
+    {
+      "check": 0,
+      "name": "riley_140_00",
+      "passed": true,
+      "judged": false,
+      "reason": "comparison passed",
+      "judge_messages": null
+    },
+    {
+      "check": 1,
+      "name": "riley_140_01",
+      "passed": true,
+      "judged": false,
+      "reason": "comparison passed",
+      "judge_messages": null
+    },
+    {
+      "check": 2,
+      "name": "riley_140_02",
+      "passed": true,
+      "judged": true,
+      "reason": "The comment states Riley was \"remaining cautiously optimistic\" and that the result \"was not treated as fully settled,\" specifically noting \"the planned post-ship cohort still needed review before drawing a final conclusion.\"",
+      "judge_messages": [
+        {
+          "role": "system",
+          "content": "Evaluate each named criterion independently\nagainst its extracted value and the complete arguments of this SAME tool call.\nReturn one Boolean verdict and a concise evidence-based reason per check_id.\nDo not combine criteria into a holistic score or add requirements.\n\nUse the request and same-call arguments to resolve names, pronouns, abbreviations,\nand intended authorship. Accept equivalent wording that communicates the required\nmeaning. A first-person document written for the requesting user can refer to\nthat user as I; do not demand repetition of a name when authorship is clear.\nThe request and criteria are not evidence that the action included an answer.\nMissing, incomplete, ambiguous, contradictory, or negated REQUIRED meaning fails.\nDo not confuse mentioning a forbidden claim in an explicit denial with making\nthat claim. Do not obtain missing content from another call or criterion.\n\nReturn only JSON: {\"results\": [{\"check_id\": \"supplied ID\", \"passed\": true,\n\"reason\": \"exact supporting text or missing requirement\"}]}.\nInclude every supplied check_id exactly once and no additional IDs.\n"
+        },
+        {
+          "role": "user",
+          "content": "{\"user_request\": \"Please review the draft executive-communications retrospective at document ID `doc_1830355200001` and post a comment correcting its account of the April 3, 2023 onboarding-trigger briefing. The correction should reflect the stance held at that checkpoint and the additional confirmation still needed before describing the result as fully settled. Do not edit the document itself.\", \"today\": \"2028-01-01\", \"tool\": \"post_doc_comment\", \"arguments\": {\"doc_id\": \"doc_1830355200001\", \"body\": \"Correction: On April 3, the second-cohort confirmation was encouraging—pooled week-1 retention was +3.1 points versus control (p=0.04, n=420)—and Riley called the ship while remaining cautiously optimistic. The result was not treated as fully settled: SRM, signup-source mix, country/device skew, and the planned post-ship cohort still needed review before drawing a final conclusion.\"}, \"checks\": [{\"check_id\": \"riley_140_02\", \"path\": \"args\", \"criterion\": \"The comment must correct the draft's claim that the result was fully settled on April 3, 2023. It must convey that Riley's contemporaneous executive framing was cautiously optimistic rather than conclusive and that Riley still wanted one additional post-ship cohort before treating the result as fully settled. Missing either the cautious framing or the specific post-ship-cohort confirmation boundary, or endorsing the draft's settled-win framing, must fail.\", \"value\": {\"doc_id\": \"doc_1830355200001\", \"body\": \"Correction: On April 3, the second-cohort confirmation was encouraging—pooled week-1 retention was +3.1 points versus control (p=0.04, n=420)—and Riley called the ship while remaining cautiously optimistic. The result was not treated as fully settled: SRM, signup-source mix, country/device skew, and the planned post-ship cohort still needed review before drawing a final conclusion.\"}}]}"
+        },
+        {
+          "role": "assistant",
+          "content": "{\"results\":[{\"check_id\":\"riley_140_02\",\"passed\":true,\"reason\":\"The comment states Riley was \\\"remaining cautiously optimistic\\\" and that the result \\\"was not treated as fully settled,\\\" specifically noting \\\"the planned post-ship cohort still needed review before drawing a final conclusion.\\\"\"}]}",
+          "duration_ms": 5679.471332987305,
+          "usage": {
+            "input_tokens": 4549,
+            "cached_input_tokens": 3712,
+            "cache_write_input_tokens": 0,
+            "output_tokens": 66,
+            "reasoning_output_tokens": 0
+          }
+        }
+      ]
+    }
+  ]
+}

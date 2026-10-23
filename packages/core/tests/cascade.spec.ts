@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { pick, type MemoryCandidate, type PickCascade, type PickDecide } from '../src/index.js';
 
-const uncutPick = { everyRanked: true, everyScored: true, labels: false, rare: false } as const;
+const uncutPick = { everyRanked: true, everyScored: true, rare: false } as const;
 
 const cascade: PickCascade = {
   bias: -1.7305, first: 'relevant', band: [0.1, 0.9],

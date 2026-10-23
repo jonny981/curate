@@ -1,6 +1,6 @@
-# LongMemEval S, all 500 questions, conversation-recall
+# LongMemEval S, all 500 questions, GPT-5
 
-Curate's `conversation-recall` mode: decide every ranked part, keep references the decision model scored 0.0146 or more, and add chat labels.
+Curate's presets as they come: the decision model scored every ranked part, and only references it scored 0.0146 or more reached the curator. Chat labels were asked, as they are by default, and changed nothing the curator received (see [Labels changed nothing](#labels-changed-nothing)).
 
 | File | Answering model | Marker | Score |
 | --- | --- | --- | --- |
@@ -13,11 +13,18 @@ Curate's `conversation-recall` mode: decide every ranked part, keep references t
 
 1. **Rank:** the chat package's ranking over every part of the question's history.
 2. **Decide:** Jev's saved decisions from the 14 October run, replayed request for request, with the chat package's question set (`relevant`, `own`, `needed`).
-3. **Label:** Jev's answers to the chat package's seven label kinds (personal, owns, acquired, event, preference, habit, decision) for every part. A part that a label marks as likely evidence joins the keyword lanes at the decide step.
+3. **Label:** Jev also answered the chat package's seven label kinds (personal, owns, acquired, event, preference, habit, decision) for every part. Every part was already going to the decide step, so labels added no part.
 4. **Keep:** only references scored 0.0146 or more went to the curator, about 70 of a history's 851.
 5. **Curate:** gpt-6.1-sol, at low reasoning effort, wrote one dated, cited log per question. It ran on a ChatGPT plan through the Codex CLI.
 6. **Answer:** GPT-5 read only the log and the question.
 7. **Mark:** GPT-5 compared each answer with LongMemEval's gold answer, with Mem0's marking prompt.
+
+## Labels changed nothing
+
+The run asked the decision model the chat label questions, and its records show labels on. They changed nothing the curator received.
+
+- **No part was left for labels to add.** Labels add parts that the keyword lanes left out. Here every part of every history went to the decide step, and the label gate admitted every part on all 500 questions.
+- **Byte replay.** Both settings, the run's own and the same without labels, were replayed on the run's build from its saved decision-model answers, with no model call and a stub curator that recorded each prompt. On 500 of 500 questions the curator's prompt was byte-identical with and without labels, and each question kept as many parts as its published log was written from. The same comparison catches a one-byte change in one prompt.
 
 ## Builds
 
@@ -30,7 +37,7 @@ Curate's `conversation-recall` mode: decide every ranked part, keep references t
 - **Why:** the run sent `max_completion_tokens: 4096` with every answer. That is the default of Mem0's benchmark client, not a rule of LongMemEval's scoring. On these two questions GPT-5 spent all 4,096 tokens reasoning and returned an empty answer.
 - **With no limit:** `88432d0a` used 4,502 output tokens and answered "6 times.", still wrong against the gold answer of 4. `gpt4_2f91af09` used 3,734 and answered 23 (adding that it is 22 if one titled piece is among the stories), now right.
 - **The other 498:** no other answer reached the limit; the longest used 3,581 output tokens. No mark reached it either; the longest used 1,598. The limit cut off no other result, so the merged file holds no answer the limit shaped.
-- **Other runs:** Mem0's published run has no empty answers, and neither does the every-part run in [`../2026-10-14/`](../2026-10-14/README.md), whose longest GPT-5 answer used 3,696 tokens. Both stand as they are.
+- **Other runs:** Mem0's published run has no empty answers, so it stands as it is.
 
 ## Fields
 

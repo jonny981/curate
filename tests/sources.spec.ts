@@ -5,9 +5,9 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { LABEL_KINDS, pickFromSources, SourceReadError, type CandidateReadResult, type CandidateSource, type MemoryCandidate, type PickAnswer } from '@curatejs/core';
-import { gitHistory } from '@curatejs/git';
+import { git } from '@curatejs/git';
 
-const uncutPick = { everyRanked: true, everyScored: true, labels: false, rare: false } as const;
+const uncutPick = { everyRanked: true, everyScored: true, rare: false } as const;
 
 function candidate(overrides: Partial<MemoryCandidate> & Pick<MemoryCandidate, 'sourceId' | 'id'>): MemoryCandidate {
   return {
@@ -62,7 +62,7 @@ describe('pickFromSources', () => {
     try {
       const result = await pickFromSources(
         [
-          gitHistory(directory),
+          git(directory),
           source('notes', 'reference', async () => ({
             status: 'read',
             complete: true,

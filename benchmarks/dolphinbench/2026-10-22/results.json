@@ -1,0 +1,1245 @@
+{
+  "tag": "curate-eco",
+  "mode": "decision-score bar 0.0146, labels off",
+  "memory": "curate-eco",
+  "tests": [
+    {
+      "test": "morgan/020",
+      "request": "Create a venue-screening checklist for the Redwood Ridge team offsite before we choose a venue.",
+      "asked": "2026-09-14",
+      "passed": true,
+      "mem0_passed": true,
+      "no_memory_passed": false,
+      "fact_messages_passed": true,
+      "parts_decided": 399,
+      "parts_read": 17,
+      "curator_batches": 1,
+      "batch_tokens": 150000,
+      "curator_output_tokens_per_pass": [
+        331,
+        242
+      ],
+      "stalled_curator_calls_retried": 1,
+      "curator_input_tokens": 23455,
+      "curator_output_tokens": 573,
+      "log_chars": 1409,
+      "jev_cost_usd": 0,
+      "agent_seconds": 14.593,
+      "agent_usage": {
+        "input_tokens": 12013,
+        "cached_input_tokens": 4736,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 1205,
+        "reasoning_output_tokens": 120
+      },
+      "judge_calls": 1,
+      "judge_seconds": 4.479,
+      "list_cost": {
+        "jev_usd": 0,
+        "curator_list_usd": 0.0526,
+        "agent_list_usd": 0.003,
+        "total_usd": 0.0556
+      },
+      "log_sha256_as_read": "837725f2b771b4295ac0647c60220e2cbee0fe932275a326d34bf94f3b8d631e"
+    },
+    {
+      "test": "morgan/040",
+      "request": "Replace slide 6 of Q3_2026_Board_PreRead with the appropriate board cohort-chart cadence and a note on internal weekly cuts. The draft currently proposes weekly cohorts for the board.",
+      "asked": "2026-09-14",
+      "passed": true,
+      "mem0_passed": false,
+      "no_memory_passed": false,
+      "fact_messages_passed": true,
+      "parts_decided": 407,
+      "parts_read": 304,
+      "curator_batches": 1,
+      "batch_tokens": 150000,
+      "curator_output_tokens_per_pass": [
+        4963
+      ],
+      "stalled_curator_calls_retried": 0,
+      "curator_input_tokens": 62689,
+      "curator_output_tokens": 4963,
+      "log_chars": 33303,
+      "jev_cost_usd": 0,
+      "agent_seconds": 9.554,
+      "agent_usage": {
+        "input_tokens": 41616,
+        "cached_input_tokens": 27136,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 296,
+        "reasoning_output_tokens": 115
+      },
+      "judge_calls": 1,
+      "judge_seconds": 5.571,
+      "list_cost": {
+        "jev_usd": 0,
+        "curator_list_usd": 0.175,
+        "agent_list_usd": 0.00379,
+        "total_usd": 0.1788
+      },
+      "log_sha256_as_read": "628db2660551c94c1ea1a8d15ca5428f136720da7a72be556a218cab62fc1852"
+    },
+    {
+      "test": "morgan/060",
+      "request": "Create our selected household dinner hold for September 16, 6:30-8:30 PM Pacific, at home in Oakland. Add notes for anyone triaging work conflicts against it.",
+      "asked": "2026-09-14",
+      "passed": false,
+      "mem0_passed": true,
+      "no_memory_passed": false,
+      "fact_messages_passed": true,
+      "parts_decided": 374,
+      "parts_read": 240,
+      "curator_batches": 1,
+      "batch_tokens": 150000,
+      "curator_output_tokens_per_pass": [
+        3188,
+        3119
+      ],
+      "stalled_curator_calls_retried": 0,
+      "curator_input_tokens": 102363,
+      "curator_output_tokens": 6307,
+      "log_chars": 18914,
+      "jev_cost_usd": 0,
+      "agent_seconds": 10.153,
+      "agent_usage": {
+        "input_tokens": 21221,
+        "cached_input_tokens": 14464,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 294,
+        "reasoning_output_tokens": 91
+      },
+      "judge_calls": 1,
+      "judge_seconds": 8.51,
+      "list_cost": {
+        "jev_usd": 0,
+        "curator_list_usd": 0.2678,
+        "agent_list_usd": 0.00199,
+        "total_usd": 0.2698
+      },
+      "log_sha256_as_read": "1432d649e3dad0885faba18f6a29639d22a1e956f125c523d84a3daa6171e8b8"
+    },
+    {
+      "test": "morgan/080",
+      "request": "Email sarah@scaffold.dev with the decision about whether Harbor Health's Mercury quote should use 180 purchased seats or 63 monthly active developers, and whether to add a one-off enterprise exception.",
+      "asked": "2026-09-14",
+      "passed": true,
+      "mem0_passed": true,
+      "no_memory_passed": false,
+      "fact_messages_passed": true,
+      "parts_decided": 485,
+      "parts_read": 298,
+      "curator_batches": 1,
+      "batch_tokens": 150000,
+      "curator_output_tokens_per_pass": [
+        5717,
+        5713
+      ],
+      "stalled_curator_calls_retried": 0,
+      "curator_input_tokens": 132465,
+      "curator_output_tokens": 11430,
+      "log_chars": 42162,
+      "jev_cost_usd": 0,
+      "agent_seconds": 11.048,
+      "agent_usage": {
+        "input_tokens": 33593,
+        "cached_input_tokens": 16384,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 389,
+        "reasoning_output_tokens": 203
+      },
+      "judge_calls": 1,
+      "judge_seconds": 4.561,
+      "list_cost": {
+        "jev_usd": 0,
+        "curator_list_usd": 0.3792,
+        "agent_list_usd": 0.00424,
+        "total_usd": 0.3835
+      },
+      "log_sha256_as_read": "98aeedd33236c45995c61cc67ead971ee6a74ef245d915c688aa7571924386b0"
+    },
+    {
+      "test": "morgan/100",
+      "request": "Create a document titled Sep 14 support-triage summary using my usual summary format from the notes below.\n\nNotes:\nAcme asked where the export documentation explains resuming a request after a connection drops. Their follow-up asks whether the example covers a long date range. These are documentation questions, not a report that an export failed. Evergreen asked whether the usage wording in its help text refers to active developers or every invited teammate, and requested an example for someone invited but not active that month. Mercury has three source-specific tickets: one reports an invitation email that did not arrive, another asks about an unexpected role label, and the third concerns a teammate list that did not refresh after a change. They arrived separately; there is no evidence here of one shared cause. Atlas has a JWT clock-skew question. The customer wants to know which timestamps to include in the support thread. The on-call handoff reports no customer-impacting incident. A second handoff entry repeats the Evergreen wording question and should not be mistaken for another customer or incident.",
+      "asked": "2026-09-14",
+      "passed": false,
+      "mem0_passed": false,
+      "no_memory_passed": false,
+      "fact_messages_passed": true,
+      "parts_decided": 657,
+      "parts_read": 560,
+      "curator_batches": 1,
+      "batch_tokens": 150000,
+      "curator_output_tokens_per_pass": [
+        4178
+      ],
+      "stalled_curator_calls_retried": 0,
+      "curator_input_tokens": 113461,
+      "curator_output_tokens": 4178,
+      "log_chars": 27358,
+      "jev_cost_usd": 0,
+      "agent_seconds": 10.863,
+      "agent_usage": {
+        "input_tokens": 24410,
+        "cached_input_tokens": 15744,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 444,
+        "reasoning_output_tokens": 60
+      },
+      "judge_calls": 0,
+      "judge_seconds": 0,
+      "list_cost": {
+        "jev_usd": 0,
+        "curator_list_usd": 0.2687,
+        "agent_list_usd": 0.00258,
+        "total_usd": 0.2713
+      },
+      "log_sha256_as_read": "b0bb01860da1c1548f1d5d46adced80ae9b186077a1a99f659d88d17b56e290f"
+    },
+    {
+      "test": "morgan/120",
+      "request": "Create a short late-deploy coverage note explaining what the Q3 2022 weekend incident should have taught us before the later March outage.",
+      "asked": "2026-09-14",
+      "passed": true,
+      "mem0_passed": true,
+      "no_memory_passed": false,
+      "fact_messages_passed": true,
+      "parts_decided": 326,
+      "parts_read": 121,
+      "curator_batches": 1,
+      "batch_tokens": 150000,
+      "curator_output_tokens_per_pass": [
+        473,
+        381
+      ],
+      "stalled_curator_calls_retried": 0,
+      "curator_input_tokens": 59719,
+      "curator_output_tokens": 854,
+      "log_chars": 2120,
+      "jev_cost_usd": 0,
+      "agent_seconds": 10.938,
+      "agent_usage": {
+        "input_tokens": 10749,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 291,
+        "reasoning_output_tokens": 38
+      },
+      "judge_calls": 1,
+      "judge_seconds": 8.487,
+      "list_cost": {
+        "jev_usd": 0,
+        "curator_list_usd": 0.128,
+        "agent_list_usd": 0.0025,
+        "total_usd": 0.1305
+      },
+      "log_sha256_as_read": "ad300a14eedba102a7ff9cc7cb52bc838a6d8af8ec323d6e190d4da7dbad4342"
+    },
+    {
+      "test": "morgan/140",
+      "request": "On scaffold/mercury#3362, correct the description of the supported-source-types help link as activation-lift proof and the proposal to bundle invite-link status into the change.",
+      "asked": "2026-09-14",
+      "passed": false,
+      "mem0_passed": true,
+      "no_memory_passed": false,
+      "fact_messages_passed": true,
+      "parts_decided": 357,
+      "parts_read": 318,
+      "curator_batches": 1,
+      "batch_tokens": 150000,
+      "curator_output_tokens_per_pass": [
+        5096
+      ],
+      "stalled_curator_calls_retried": 0,
+      "curator_input_tokens": 68307,
+      "curator_output_tokens": 5096,
+      "log_chars": 32264,
+      "jev_cost_usd": 0,
+      "agent_seconds": 11.62,
+      "agent_usage": {
+        "input_tokens": 40542,
+        "cached_input_tokens": 26368,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 503,
+        "reasoning_output_tokens": 219
+      },
+      "judge_calls": 1,
+      "judge_seconds": 8.299,
+      "list_cost": {
+        "jev_usd": 0,
+        "curator_list_usd": 0.1876,
+        "agent_list_usd": 0.00397,
+        "total_usd": 0.1915
+      },
+      "log_sha256_as_read": "3d0bfaa8779639f92266280c8c294d3611e838bccd1455e38a4afe676ab9d4b8"
+    },
+    {
+      "test": "morgan/160",
+      "request": "Create a historical Honeycomb alert-handling note for December 23, 2023 through January 1, 2024, covering thresholds, paging, escalation, and quiet-week reporting.",
+      "asked": "2026-09-14",
+      "passed": false,
+      "mem0_passed": true,
+      "no_memory_passed": false,
+      "fact_messages_passed": true,
+      "parts_decided": 466,
+      "parts_read": 105,
+      "curator_batches": 1,
+      "batch_tokens": 150000,
+      "curator_output_tokens_per_pass": [
+        822
+      ],
+      "stalled_curator_calls_retried": 0,
+      "curator_input_tokens": 26478,
+      "curator_output_tokens": 822,
+      "log_chars": 4992,
+      "jev_cost_usd": 0,
+      "agent_seconds": 8.891,
+      "agent_usage": {
+        "input_tokens": 12833,
+        "cached_input_tokens": 5760,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 561,
+        "reasoning_output_tokens": 131
+      },
+      "judge_calls": 1,
+      "judge_seconds": 6.835,
+      "list_cost": {
+        "jev_usd": 0,
+        "curator_list_usd": 0.0612,
+        "agent_list_usd": 0.0022,
+        "total_usd": 0.0634
+      },
+      "log_sha256_as_read": "4fd88f321475d9d989f4c4328479f851c9ada481e26f37249f4db769abe12e1d"
+    },
+    {
+      "test": "morgan/180",
+      "request": "Create a short standalone archive note reconstructing the Investors section of the May 5, 2023 Friday wrap.",
+      "asked": "2026-09-14",
+      "passed": true,
+      "mem0_passed": true,
+      "no_memory_passed": false,
+      "fact_messages_passed": true,
+      "parts_decided": 541,
+      "parts_read": 257,
+      "curator_batches": 1,
+      "batch_tokens": 150000,
+      "curator_output_tokens_per_pass": [
+        1670
+      ],
+      "stalled_curator_calls_retried": 0,
+      "curator_input_tokens": 51250,
+      "curator_output_tokens": 1670,
+      "log_chars": 10616,
+      "jev_cost_usd": 0,
+      "agent_seconds": 10.314,
+      "agent_usage": {
+        "input_tokens": 15659,
+        "cached_input_tokens": 7424,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 346,
+        "reasoning_output_tokens": 175
+      },
+      "judge_calls": 1,
+      "judge_seconds": 4.877,
+      "list_cost": {
+        "jev_usd": 0,
+        "curator_list_usd": 0.1192,
+        "agent_list_usd": 0.00221,
+        "total_usd": 0.1214
+      },
+      "log_sha256_as_read": "572bee7b5e9c81d8b7a1dfd65e8f6348a3df4cdb9ec4e4bcb0aa3a8da3b9a230"
+    },
+    {
+      "test": "morgan/200",
+      "request": "Create an archive note on Leo's approved involvement in the January 2025 Compass v0.1 work and when its scope had to return to me for review.",
+      "asked": "2026-09-14",
+      "passed": true,
+      "mem0_passed": true,
+      "no_memory_passed": false,
+      "fact_messages_passed": true,
+      "parts_decided": 387,
+      "parts_read": 299,
+      "curator_batches": 1,
+      "batch_tokens": 150000,
+      "curator_output_tokens_per_pass": [
+        1903,
+        1887
+      ],
+      "stalled_curator_calls_retried": 0,
+      "curator_input_tokens": 126021,
+      "curator_output_tokens": 3790,
+      "log_chars": 12368,
+      "jev_cost_usd": 0,
+      "agent_seconds": 9.779,
+      "agent_usage": {
+        "input_tokens": 16327,
+        "cached_input_tokens": 7680,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 464,
+        "reasoning_output_tokens": 124
+      },
+      "judge_calls": 1,
+      "judge_seconds": 5.422,
+      "list_cost": {
+        "jev_usd": 0,
+        "curator_list_usd": 0.2899,
+        "agent_list_usd": 0.00244,
+        "total_usd": 0.2924
+      },
+      "log_sha256_as_read": "2a8a2f63040a9e8269496a13fa4853fe5962d2fdce9f009cf9b99d1387743252"
+    },
+    {
+      "test": "alex/020",
+      "request": "Create a bouldering event with Ren on January 6, 2028 from 7:00 to 9:00 PM Eastern, with notes on how I should start the session.",
+      "asked": "2028-01-01",
+      "passed": true,
+      "mem0_passed": false,
+      "no_memory_passed": false,
+      "fact_messages_passed": true,
+      "parts_decided": 821,
+      "parts_read": 252,
+      "curator_batches": 1,
+      "batch_tokens": 150000,
+      "curator_output_tokens_per_pass": [
+        2353,
+        2327
+      ],
+      "stalled_curator_calls_retried": 0,
+      "curator_input_tokens": 92641,
+      "curator_output_tokens": 4680,
+      "log_chars": 13555,
+      "jev_cost_usd": 0,
+      "agent_seconds": 9.157,
+      "agent_usage": {
+        "input_tokens": 26325,
+        "cached_input_tokens": 8320,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 475,
+        "reasoning_output_tokens": 215
+      },
+      "judge_calls": 1,
+      "judge_seconds": 4.686,
+      "list_cost": {
+        "jev_usd": 0,
+        "curator_list_usd": 0.2321,
+        "agent_list_usd": 0.00434,
+        "total_usd": 0.2364
+      },
+      "log_sha256_as_read": "4a81447bde461e6f89f58099fb3078568d43edd9d85f16af30d7a93cb3ee88db"
+    },
+    {
+      "test": "alex/040",
+      "request": "Create a neutral archive comparison of Sphere's 2027 individual HDHP and PPO terms and enrollment deadline.",
+      "asked": "2028-01-01",
+      "passed": true,
+      "mem0_passed": true,
+      "no_memory_passed": false,
+      "fact_messages_passed": true,
+      "parts_decided": 158,
+      "parts_read": 47,
+      "curator_batches": 1,
+      "batch_tokens": 150000,
+      "curator_output_tokens_per_pass": [
+        2050
+      ],
+      "stalled_curator_calls_retried": 0,
+      "curator_input_tokens": 16439,
+      "curator_output_tokens": 2050,
+      "log_chars": 12083,
+      "jev_cost_usd": 0,
+      "agent_seconds": 9.491,
+      "agent_usage": {
+        "input_tokens": 17139,
+        "cached_input_tokens": 7936,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 534,
+        "reasoning_output_tokens": 77
+      },
+      "judge_calls": 1,
+      "judge_seconds": 7.013,
+      "list_cost": {
+        "jev_usd": 0,
+        "curator_list_usd": 0.0534,
+        "agent_list_usd": 0.00264,
+        "total_usd": 0.056
+      },
+      "log_sha256_as_read": "183bf7c4bb29da9e4ddcfd4db5eb7bd9e3aa4b160dd0374a8c004d3ace72589d"
+    },
+    {
+      "test": "alex/060",
+      "request": "Create a January 9, 2028 9:30-10:30 AM Eastern cortado-and-crossword event at my usual Park Slope cafe, including enough location detail to identify it.",
+      "asked": "2028-01-01",
+      "passed": true,
+      "mem0_passed": true,
+      "no_memory_passed": false,
+      "fact_messages_passed": true,
+      "parts_decided": 920,
+      "parts_read": 279,
+      "curator_batches": 1,
+      "batch_tokens": 150000,
+      "curator_output_tokens_per_pass": [
+        1820
+      ],
+      "stalled_curator_calls_retried": 0,
+      "curator_input_tokens": 48394,
+      "curator_output_tokens": 1820,
+      "log_chars": 10914,
+      "jev_cost_usd": 0,
+      "agent_seconds": 7.485,
+      "agent_usage": {
+        "input_tokens": 16441,
+        "cached_input_tokens": 7808,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 296,
+        "reasoning_output_tokens": 115
+      },
+      "judge_calls": 1,
+      "judge_seconds": 4.678,
+      "list_cost": {
+        "jev_usd": 0,
+        "curator_list_usd": 0.115,
+        "agent_list_usd": 0.00224,
+        "total_usd": 0.1172
+      },
+      "log_sha256_as_read": "837ee3bb46a927b45c9810ae9cad84a98f3d94187010a5546e7369cdd88a68d1"
+    },
+    {
+      "test": "alex/080",
+      "request": "Comment on doc_nadia_cross_review_history to correct its claim that the strained first review defined my later work with Nadia.",
+      "asked": "2028-01-01",
+      "passed": false,
+      "mem0_passed": false,
+      "no_memory_passed": false,
+      "fact_messages_passed": true,
+      "parts_decided": 526,
+      "parts_read": 462,
+      "curator_batches": 1,
+      "batch_tokens": 150000,
+      "curator_output_tokens_per_pass": [
+        4934
+      ],
+      "stalled_curator_calls_retried": 0,
+      "curator_input_tokens": 81135,
+      "curator_output_tokens": 4934,
+      "log_chars": 31227,
+      "jev_cost_usd": 0,
+      "agent_seconds": 10.348,
+      "agent_usage": {
+        "input_tokens": 60895,
+        "cached_input_tokens": 36224,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 391,
+        "reasoning_output_tokens": 180
+      },
+      "judge_calls": 1,
+      "judge_seconds": 5.6,
+      "list_cost": {
+        "jev_usd": 0,
+        "curator_list_usd": 0.2116,
+        "agent_list_usd": 0.00613,
+        "total_usd": 0.2177
+      },
+      "log_sha256_as_read": "677cba95863ce91368dbc3cd39b329254a989de16208e58bb5ed0ecafe0b4c8b"
+    },
+    {
+      "test": "alex/100",
+      "request": "Create a document containing a short historical note that identifies the customer live-ramp event retained as formal evidence for Wes's later ownership review.",
+      "asked": "2028-01-01",
+      "passed": true,
+      "mem0_passed": false,
+      "no_memory_passed": false,
+      "fact_messages_passed": true,
+      "parts_decided": 486,
+      "parts_read": 456,
+      "curator_batches": 1,
+      "batch_tokens": 150000,
+      "curator_output_tokens_per_pass": [
+        2710
+      ],
+      "stalled_curator_calls_retried": 0,
+      "curator_input_tokens": 86051,
+      "curator_output_tokens": 2710,
+      "log_chars": 16746,
+      "jev_cost_usd": 0,
+      "agent_seconds": 7.877,
+      "agent_usage": {
+        "input_tokens": 18458,
+        "cached_input_tokens": 8832,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 250,
+        "reasoning_output_tokens": 62
+      },
+      "judge_calls": 1,
+      "judge_seconds": 5.072,
+      "list_cost": {
+        "jev_usd": 0,
+        "curator_list_usd": 0.1992,
+        "agent_list_usd": 0.0024,
+        "total_usd": 0.2016
+      },
+      "log_sha256_as_read": "f34b8f33aa986ffd14545913d311133986844e76e77fc885f53703b66506928b"
+    },
+    {
+      "test": "alex/120",
+      "request": "Create a short historical note on the two older services Alex treated as informal responsibility in his May 2, 2023 runbook-audit inventory.",
+      "asked": "2028-01-01",
+      "passed": true,
+      "mem0_passed": false,
+      "no_memory_passed": false,
+      "fact_messages_passed": true,
+      "parts_decided": 940,
+      "parts_read": 447,
+      "curator_batches": 1,
+      "batch_tokens": 150000,
+      "curator_output_tokens_per_pass": [
+        2222
+      ],
+      "stalled_curator_calls_retried": 0,
+      "curator_input_tokens": 80881,
+      "curator_output_tokens": 2222,
+      "log_chars": 14998,
+      "jev_cost_usd": 0,
+      "agent_seconds": 7.753,
+      "agent_usage": {
+        "input_tokens": 18162,
+        "cached_input_tokens": 12672,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 296,
+        "reasoning_output_tokens": 52
+      },
+      "judge_calls": 1,
+      "judge_seconds": 6.66,
+      "list_cost": {
+        "jev_usd": 0,
+        "curator_list_usd": 0.184,
+        "agent_list_usd": 0.00171,
+        "total_usd": 0.1857
+      },
+      "log_sha256_as_read": "41c17411e15613caeb061bc91bce509c36074c7fbe121c0dbce4653c195361be"
+    },
+    {
+      "test": "alex/140",
+      "request": "Update runbook entry metrics-pipeline-2023-cutover-order with the original service sequence and the reasons for its first and last positions, clearly labeled as a historical 2023 decision.",
+      "asked": "2028-01-01",
+      "passed": true,
+      "mem0_passed": true,
+      "no_memory_passed": false,
+      "fact_messages_passed": true,
+      "parts_decided": 303,
+      "parts_read": 237,
+      "curator_batches": 1,
+      "batch_tokens": 150000,
+      "curator_output_tokens_per_pass": [
+        993
+      ],
+      "stalled_curator_calls_retried": 0,
+      "curator_input_tokens": 49152,
+      "curator_output_tokens": 993,
+      "log_chars": 5742,
+      "jev_cost_usd": 0,
+      "agent_seconds": 10.437,
+      "agent_usage": {
+        "input_tokens": 19929,
+        "cached_input_tokens": 6400,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 404,
+        "reasoning_output_tokens": 88
+      },
+      "judge_calls": 1,
+      "judge_seconds": 5.973,
+      "list_cost": {
+        "jev_usd": 0,
+        "curator_list_usd": 0.1082,
+        "agent_list_usd": 0.00332,
+        "total_usd": 0.1116
+      },
+      "log_sha256_as_read": "6d170494d1abde875dff186a581cd00c2547c464ebc511c5c5acb5a5b9dda0d7"
+    },
+    {
+      "test": "alex/160",
+      "request": "Find the newest South Slope management email about the $680 sink-cabinet charge and reply with the established cause, repair result, and household balance, asking for a corrected ledger in writing.",
+      "asked": "2028-01-01",
+      "passed": false,
+      "mem0_passed": true,
+      "no_memory_passed": false,
+      "fact_messages_passed": false,
+      "parts_decided": 579,
+      "parts_read": 196,
+      "curator_batches": 1,
+      "batch_tokens": 150000,
+      "curator_output_tokens_per_pass": [
+        1161,
+        1085
+      ],
+      "stalled_curator_calls_retried": 0,
+      "curator_input_tokens": 76974,
+      "curator_output_tokens": 2246,
+      "log_chars": 6431,
+      "jev_cost_usd": 0,
+      "agent_seconds": 10.778,
+      "agent_usage": {
+        "input_tokens": 21028,
+        "cached_input_tokens": 13056,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 639,
+        "reasoning_output_tokens": 211
+      },
+      "judge_calls": 1,
+      "judge_seconds": 7.347,
+      "list_cost": {
+        "jev_usd": 0,
+        "curator_list_usd": 0.1764,
+        "agent_list_usd": 0.00262,
+        "total_usd": 0.179
+      },
+      "log_sha256_as_read": "d9e6cf6e1330f40ef345cf86811662a1f22cdec94d9ca31c32121cb5656d3c8e"
+    },
+    {
+      "test": "alex/180",
+      "request": "Inspect otel-schema#590 and review its production deployment.environment behavior across the metrics path. State the allowed and rejected values, missing-input behavior, per-tenant limit, and every production component that must show parity.",
+      "asked": "2028-01-01",
+      "passed": true,
+      "mem0_passed": true,
+      "no_memory_passed": false,
+      "fact_messages_passed": true,
+      "parts_decided": 375,
+      "parts_read": 303,
+      "curator_batches": 1,
+      "batch_tokens": 150000,
+      "curator_output_tokens_per_pass": [
+        3921,
+        3966
+      ],
+      "stalled_curator_calls_retried": 0,
+      "curator_input_tokens": 126699,
+      "curator_output_tokens": 7887,
+      "log_chars": 24473,
+      "jev_cost_usd": 0,
+      "agent_seconds": 18.075,
+      "agent_usage": {
+        "input_tokens": 48002,
+        "cached_input_tokens": 38784,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 1064,
+        "reasoning_output_tokens": 570
+      },
+      "judge_calls": 1,
+      "judge_seconds": 8.113,
+      "list_cost": {
+        "jev_usd": 0,
+        "curator_list_usd": 0.3323,
+        "agent_list_usd": 0.0039,
+        "total_usd": 0.3362
+      },
+      "log_sha256_as_read": "6b6a5815a6ddcc67f8e299b55832957a0b5d9d7d61feb5397f7928e34682869b"
+    },
+    {
+      "test": "alex/200",
+      "request": "Prospect Park paths are not icy on January 5, 2028. Check this week's Infra on-call roster and my calendar, then create my regular run if its conditions are met.",
+      "asked": "2028-01-01",
+      "passed": false,
+      "mem0_passed": false,
+      "no_memory_passed": false,
+      "fact_messages_passed": true,
+      "parts_decided": 417,
+      "parts_read": 312,
+      "curator_batches": 1,
+      "batch_tokens": 150000,
+      "curator_output_tokens_per_pass": [
+        2066,
+        1984
+      ],
+      "stalled_curator_calls_retried": 0,
+      "curator_input_tokens": 116289,
+      "curator_output_tokens": 4050,
+      "log_chars": 11504,
+      "jev_cost_usd": 0,
+      "agent_seconds": 14.388,
+      "agent_usage": {
+        "input_tokens": 34345,
+        "cached_input_tokens": 24832,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 548,
+        "reasoning_output_tokens": 202
+      },
+      "judge_calls": 0,
+      "judge_seconds": 0,
+      "list_cost": {
+        "jev_usd": 0,
+        "curator_list_usd": 0.2731,
+        "agent_list_usd": 0.00306,
+        "total_usd": 0.2761
+      },
+      "log_sha256_as_read": "925218ed40369ae0de1f5c542a3f281737ff76f23015ac6cd1dba224e0254321"
+    },
+    {
+      "test": "riley/020",
+      "request": "Create a 10-minute reminder at 9:00 AM Central three days before each 2028 employer HSA deposit. Each reminder must include the deposit date, amount, and eligibility condition.",
+      "asked": "2028-01-01",
+      "passed": true,
+      "mem0_passed": false,
+      "no_memory_passed": false,
+      "fact_messages_passed": true,
+      "parts_decided": 551,
+      "parts_read": 84,
+      "curator_batches": 1,
+      "batch_tokens": 150000,
+      "curator_output_tokens_per_pass": [
+        2528
+      ],
+      "stalled_curator_calls_retried": 0,
+      "curator_input_tokens": 21795,
+      "curator_output_tokens": 2528,
+      "log_chars": 16768,
+      "jev_cost_usd": 0,
+      "agent_seconds": 14.568,
+      "agent_usage": {
+        "input_tokens": 52963,
+        "cached_input_tokens": 30592,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 614,
+        "reasoning_output_tokens": 93
+      },
+      "judge_calls": 2,
+      "judge_seconds": 8.76,
+      "list_cost": {
+        "jev_usd": 0,
+        "curator_list_usd": 0.0689,
+        "agent_list_usd": 0.00582,
+        "total_usd": 0.0747
+      },
+      "log_sha256_as_read": "5c32299c2e20c9ea0cb7c289efd63e8804998906fae92a7a6ec3b1e018b77d03"
+    },
+    {
+      "test": "riley/040",
+      "request": "Please create a brief historical decision-rights note titled “July 2023 decision rights — Helio Start and retained-mid expansion” for our governance retrospective. Cover both workstreams during July 2023, distinguish the strategic decision lane from routine execution, and explicitly label the note as a period-specific record rather than current org policy.",
+      "asked": "2028-01-01",
+      "passed": true,
+      "mem0_passed": true,
+      "no_memory_passed": false,
+      "fact_messages_passed": true,
+      "parts_decided": 655,
+      "parts_read": 578,
+      "curator_batches": 1,
+      "batch_tokens": 150000,
+      "curator_output_tokens_per_pass": [
+        4190,
+        4146
+      ],
+      "stalled_curator_calls_retried": 0,
+      "curator_input_tokens": 222328,
+      "curator_output_tokens": 8336,
+      "log_chars": 24886,
+      "jev_cost_usd": 0,
+      "agent_seconds": 11.048,
+      "agent_usage": {
+        "input_tokens": 23337,
+        "cached_input_tokens": 14976,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 672,
+        "reasoning_output_tokens": 88
+      },
+      "judge_calls": 1,
+      "judge_seconds": 8.757,
+      "list_cost": {
+        "jev_usd": 0,
+        "curator_list_usd": 0.528,
+        "agent_list_usd": 0.00278,
+        "total_usd": 0.5308
+      },
+      "log_sha256_as_read": "f64e74ebdeb5f56cdc6a98531a9cfd27bdb28bc6325bf2dfee67ceb2015cc3e7"
+    },
+    {
+      "test": "riley/060",
+      "request": "Create a concise, current operating checklist for the lifecycle team covering routine-send release, audit and stop conditions, state-changing preflight requirements, and escalation. Use each person's name for routine release, preflight exceptions, customer corrections and incident stops, and engineering release controls. Do not use `you`, `the requester`, or a generic role in place of a person's name. Make the checklist usable without case-by-case approval of each low-risk send.",
+      "asked": "2028-01-01",
+      "passed": false,
+      "mem0_passed": false,
+      "no_memory_passed": false,
+      "fact_messages_passed": true,
+      "parts_decided": 555,
+      "parts_read": 521,
+      "curator_batches": 1,
+      "batch_tokens": 150000,
+      "curator_output_tokens_per_pass": [
+        7560,
+        7615
+      ],
+      "stalled_curator_calls_retried": 0,
+      "curator_input_tokens": 199324,
+      "curator_output_tokens": 15175,
+      "log_chars": 47240,
+      "jev_cost_usd": 0,
+      "agent_seconds": 14.063,
+      "agent_usage": {
+        "input_tokens": 35061,
+        "cached_input_tokens": 16384,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 1224,
+        "reasoning_output_tokens": 336
+      },
+      "judge_calls": 1,
+      "judge_seconds": 8.514,
+      "list_cost": {
+        "jev_usd": 0,
+        "curator_list_usd": 0.5504,
+        "agent_list_usd": 0.00553,
+        "total_usd": 0.5559
+      },
+      "log_sha256_as_read": "cde4090a0175e6f1c475a385626bed858e2bf25fb4b97d9736bdd1f3bd910ebf"
+    },
+    {
+      "test": "riley/080",
+      "request": "Create a concise document titled `June 2023 legacy status cleanup` that records the June 3, 2023 close snapshot for the expansion-nudge experiment, the small-business-tier initiative, and the mid-segment churn documentation and related all-hands work. Clearly separate the three projects, frame their statuses as historical rather than current, and keep the note project-only so stale records do not make unfinished work look decision-ready or completed work look active.",
+      "asked": "2028-01-01",
+      "passed": true,
+      "mem0_passed": true,
+      "no_memory_passed": false,
+      "fact_messages_passed": true,
+      "parts_decided": 583,
+      "parts_read": 453,
+      "curator_batches": 1,
+      "batch_tokens": 150000,
+      "curator_output_tokens_per_pass": [
+        2068
+      ],
+      "stalled_curator_calls_retried": 0,
+      "curator_input_tokens": 87338,
+      "curator_output_tokens": 2068,
+      "log_chars": 11691,
+      "jev_cost_usd": 0,
+      "agent_seconds": 7.945,
+      "agent_usage": {
+        "input_tokens": 16618,
+        "cached_input_tokens": 11904,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 425,
+        "reasoning_output_tokens": 100
+      },
+      "judge_calls": 1,
+      "judge_seconds": 10.13,
+      "list_cost": {
+        "jev_usd": 0,
+        "curator_list_usd": 0.1954,
+        "agent_list_usd": 0.00169,
+        "total_usd": 0.197
+      },
+      "log_sha256_as_read": "ba3f7f60fed96b86a38d61e40bad174375c92fa452a15f69efd64df898113858"
+    },
+    {
+      "test": "riley/100",
+      "request": "Send Tomas a one-line Slack briefing on the fixed Q2 2027 Helio Start paid-test lane. Include the complete approved descriptive result and every excluded claim category, while omitting how the evidence was assembled.",
+      "asked": "2028-01-01",
+      "passed": true,
+      "mem0_passed": false,
+      "no_memory_passed": false,
+      "fact_messages_passed": true,
+      "parts_decided": 603,
+      "parts_read": 564,
+      "curator_batches": 1,
+      "batch_tokens": 150000,
+      "curator_output_tokens_per_pass": [
+        6050
+      ],
+      "stalled_curator_calls_retried": 0,
+      "curator_input_tokens": 106286,
+      "curator_output_tokens": 6050,
+      "log_chars": 37101,
+      "jev_cost_usd": 0,
+      "agent_seconds": 10.838,
+      "agent_usage": {
+        "input_tokens": 46037,
+        "cached_input_tokens": 29824,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 601,
+        "reasoning_output_tokens": 394
+      },
+      "judge_calls": 1,
+      "judge_seconds": 8.188,
+      "list_cost": {
+        "jev_usd": 0,
+        "curator_list_usd": 0.2731,
+        "agent_list_usd": 0.00456,
+        "total_usd": 0.2776
+      },
+      "log_sha256_as_read": "3a7a4b9b97d42364e8abd76da90496aa22a6ba839f8089f62f009745446879c5"
+    },
+    {
+      "test": "riley/120",
+      "request": "Create a compact archival ownership card titled “July 2023 analysis ownership card” for the Operating Archive. Cover the Helio Start baseline analysis and retained-mid expansion eligibility analysis as two distinct lanes, identify the default owner for each, and make clear that these assignments were limited to July 2023 rather than a current standing org rule.",
+      "asked": "2028-01-01",
+      "passed": true,
+      "mem0_passed": true,
+      "no_memory_passed": false,
+      "fact_messages_passed": true,
+      "parts_decided": 675,
+      "parts_read": 567,
+      "curator_batches": 1,
+      "batch_tokens": 150000,
+      "curator_output_tokens_per_pass": [
+        1825,
+        1783
+      ],
+      "stalled_curator_calls_retried": 0,
+      "curator_input_tokens": 214840,
+      "curator_output_tokens": 3608,
+      "log_chars": 11136,
+      "jev_cost_usd": 0,
+      "agent_seconds": 8.109,
+      "agent_usage": {
+        "input_tokens": 15727,
+        "cached_input_tokens": 7424,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 329,
+        "reasoning_output_tokens": 87
+      },
+      "judge_calls": 1,
+      "judge_seconds": 7.6,
+      "list_cost": {
+        "jev_usd": 0,
+        "curator_list_usd": 0.4658,
+        "agent_list_usd": 0.0022,
+        "total_usd": 0.468
+      },
+      "log_sha256_as_read": "ef258700456291341593d1c4903c1ab673ad91e973b446b74c06f05c13398415"
+    },
+    {
+      "test": "riley/140",
+      "request": "Please review the draft executive-communications retrospective at document ID `doc_1830355200001` and post a comment correcting its account of the April 3, 2023 onboarding-trigger briefing. The correction should reflect the stance held at that checkpoint and the additional confirmation still needed before describing the result as fully settled. Do not edit the document itself.",
+      "asked": "2028-01-01",
+      "passed": true,
+      "mem0_passed": true,
+      "no_memory_passed": false,
+      "fact_messages_passed": true,
+      "parts_decided": 708,
+      "parts_read": 398,
+      "curator_batches": 1,
+      "batch_tokens": 150000,
+      "curator_output_tokens_per_pass": [
+        2046
+      ],
+      "stalled_curator_calls_retried": 0,
+      "curator_input_tokens": 75210,
+      "curator_output_tokens": 2046,
+      "log_chars": 11461,
+      "jev_cost_usd": 0,
+      "agent_seconds": 10.617,
+      "agent_usage": {
+        "input_tokens": 24238,
+        "cached_input_tokens": 15360,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 350,
+        "reasoning_output_tokens": 141
+      },
+      "judge_calls": 1,
+      "judge_seconds": 5.678,
+      "list_cost": {
+        "jev_usd": 0,
+        "curator_list_usd": 0.1709,
+        "agent_list_usd": 0.0025,
+        "total_usd": 0.1734
+      },
+      "log_sha256_as_read": "979a4f67de9f1f9af8f2312d51728cca9095149e79e26c57f1e8034449fedae0"
+    },
+    {
+      "test": "riley/160",
+      "request": "Create an audit-ready evidence card for the historical CS auto-nudge production shadow. Include the interval, reconciled outcomes and causes, suppressions, reviewer validations, release boundary, and a plain explanation of external-system authority. Distinguish shadow evaluation from a production switch.",
+      "asked": "2028-01-01",
+      "passed": true,
+      "mem0_passed": true,
+      "no_memory_passed": false,
+      "fact_messages_passed": true,
+      "parts_decided": 454,
+      "parts_read": 434,
+      "curator_batches": 1,
+      "batch_tokens": 150000,
+      "curator_output_tokens_per_pass": [
+        8073
+      ],
+      "stalled_curator_calls_retried": 0,
+      "curator_input_tokens": 82590,
+      "curator_output_tokens": 8073,
+      "log_chars": 53136,
+      "jev_cost_usd": 0,
+      "agent_seconds": 11.477,
+      "agent_usage": {
+        "input_tokens": 38447,
+        "cached_input_tokens": 18304,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 813,
+        "reasoning_output_tokens": 163
+      },
+      "judge_calls": 1,
+      "judge_seconds": 9.939,
+      "list_cost": {
+        "jev_usd": 0,
+        "curator_list_usd": 0.2459,
+        "agent_list_usd": 0.00537,
+        "total_usd": 0.2513
+      },
+      "log_sha256_as_read": "6d94714604f9cb833de29dba28738322dcff27d9c3b0996786aa2df6ba3d62b1"
+    },
+    {
+      "test": "riley/180",
+      "request": "Review `doc_lifecycle_entitlement_correction_2028` and post a concise comment correcting the decision-rights assignment for this customer correction and its production release. Name the person who owns the decision, the person who controls the production release, and the person who is restricted from executing it. State whether the restricted person has engineering release-control access. Do not edit the document itself.",
+      "asked": "2028-01-01",
+      "passed": true,
+      "mem0_passed": true,
+      "no_memory_passed": false,
+      "fact_messages_passed": true,
+      "parts_decided": 536,
+      "parts_read": 402,
+      "curator_batches": 1,
+      "batch_tokens": 150000,
+      "curator_output_tokens_per_pass": [
+        5879,
+        5923
+      ],
+      "stalled_curator_calls_retried": 0,
+      "curator_input_tokens": 156526,
+      "curator_output_tokens": 11802,
+      "log_chars": 36759,
+      "jev_cost_usd": 0,
+      "agent_seconds": 11.028,
+      "agent_usage": {
+        "input_tokens": 41369,
+        "cached_input_tokens": 26880,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 317,
+        "reasoning_output_tokens": 156
+      },
+      "judge_calls": 1,
+      "judge_seconds": 7.702,
+      "list_cost": {
+        "jev_usd": 0,
+        "curator_list_usd": 0.4311,
+        "agent_list_usd": 0.00382,
+        "total_usd": 0.4349
+      },
+      "log_sha256_as_read": "b1f2817b8c9ecf7604c12369337393ec2fe637c244be8a37c75c469ff1b78667"
+    },
+    {
+      "test": "riley/200",
+      "request": "Create a new document titled `Helio Start 2028 bounded proposal worksheet`. Make it a reusable worksheet for a proposed 2028 Helio Start run, with fill-in sections for scope, owner, dates, budget, operating safeguards, and approval/sign-off. Prefill the maximum-admissions field using the Customer Success capacity we established. Set the approval section to Pending, and make clear that neither the staffing capacity nor this worksheet authorizes paid traffic or a launch; those require separate approval.",
+      "asked": "2028-01-01",
+      "passed": true,
+      "mem0_passed": true,
+      "no_memory_passed": false,
+      "fact_messages_passed": true,
+      "parts_decided": 521,
+      "parts_read": 501,
+      "curator_batches": 1,
+      "batch_tokens": 150000,
+      "curator_output_tokens_per_pass": [
+        5411
+      ],
+      "stalled_curator_calls_retried": 0,
+      "curator_input_tokens": 95069,
+      "curator_output_tokens": 5411,
+      "log_chars": 35337,
+      "jev_cost_usd": 0.0096,
+      "agent_seconds": 19.171,
+      "agent_usage": {
+        "input_tokens": 31033,
+        "cached_input_tokens": 13952,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 1490,
+        "reasoning_output_tokens": 61
+      },
+      "judge_calls": 1,
+      "judge_seconds": 5.411,
+      "list_cost": {
+        "jev_usd": 0.0096,
+        "curator_list_usd": 0.2442,
+        "agent_list_usd": 0.00548,
+        "total_usd": 0.2594
+      },
+      "log_sha256_as_read": "581a01582ae2923657362a2c2dfe9f40471f4ae5e23d879c0e85dcc6a647018e"
+    }
+  ],
+  "totals": {
+    "tests": 30,
+    "passed": 22,
+    "mem0_passed": 20,
+    "no_memory_passed": 0,
+    "fact_messages_passed": 29,
+    "won_against_mem0": [
+      "morgan/040",
+      "alex/020",
+      "alex/100",
+      "alex/120",
+      "riley/020",
+      "riley/100"
+    ],
+    "lost_against_mem0": [
+      "morgan/060",
+      "morgan/140",
+      "morgan/160",
+      "alex/160"
+    ],
+    "parts_read": 10012,
+    "curator_input_tokens": 2802169,
+    "curator_output_tokens": 138372,
+    "median_log_chars": 15872.0,
+    "jev_cost_usd_of_logs": 0.0096,
+    "jev_spend_all_passes": {
+      "usd": 0.0096,
+      "requests": 7,
+      "input_tokens": 229335
+    },
+    "median_agent_seconds": 10.697500000000002,
+    "median_judge_seconds": 6.7475000000000005,
+    "list_cost_usd": 7.1,
+    "list_cost_per_test_usd": 0.2366,
+    "curator_list_usd": 6.99,
+    "agent_list_usd": 0.101,
+    "mem0_per_test_usd": 0.1604,
+    "batch_tokens": [
+      150000
+    ],
+    "tests_with_stalled_curator_calls": {
+      "morgan/020": 1
+    },
+    "curator_output_tokens_per_pass": {
+      "median": 2353,
+      "max": 8073
+    }
+  },
+  "judge_agreement": {
+    "tests": 30,
+    "graded": 30,
+    "errors": [],
+    "test_verdicts_agree": 30,
+    "mem0_passed": 20,
+    "plan_passed": 20,
+    "judged_checks": 29,
+    "judged_checks_agree": 29,
+    "deterministic_checks": 74,
+    "deterministic_checks_agree": 74,
+    "prompts_identical": 30,
+    "prompts_compared": 30,
+    "disagreements": []
+  },
+  "scrub_control": {
+    "planted": 13,
+    "caught_before_scrub": 13,
+    "left_after_scrub": 0,
+    "ordinary_text_kept": true
+  },
+  "prices": {
+    "curator_gpt_6_1_sol": {
+      "input": 2.0,
+      "output": 10.0
+    },
+    "agent_gpt_5_6_luna": {
+      "input": 0.2,
+      "cached": 0.02,
+      "output": 1.2
+    },
+    "mem0_published": {
+      "total_usd": 96.213881,
+      "tests": 600,
+      "per_test_usd": 0.1604
+    }
+  }
+}

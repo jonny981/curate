@@ -1,0 +1,21 @@
+[
+  {
+    "tool": "create_doc",
+    "args": {
+      "title": "Historical note — Wes ownership review evidence",
+      "body": "On October 6, 2025, Wes independently operated the Mosaic Commerce production live-ramp slice as traffic reached 16.0 million data points per minute. The ramp completed without a production change or rollback, while key health and safety checks remained at baseline. This event was retained as formal evidence for Wes’s later metrics-router ownership review.",
+      "folder": "default"
+    },
+    "result": {
+      "ok": true,
+      "document": {
+        "id": "doc_8527808dfb4f41a6b41e4e77debcde51",
+        "title": "Historical note — Wes ownership review evidence",
+        "body": "On October 6, 2025, Wes independently operated the Mosaic Commerce production live-ramp slice as traffic reached 16.0 million data points per minute. The ramp completed without a production change or rollback, while key health and safety checks remained at baseline. This event was retained as formal evidence for Wes’s later metrics-router ownership review.",
+        "folder": "default",
+        "created_at": "2026-10-22T10:06:44.148556Z",
+        "url": "https://docs.mock/doc_8527808dfb4f41a6b41e4e77debcde51"
+      }
+    }
+  }
+]

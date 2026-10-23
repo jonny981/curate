@@ -1,0 +1,59 @@
+{
+  "mastra.all_500": {
+    "questions": 500,
+    "marked": 500,
+    "correct": 458,
+    "accuracy": 91.6,
+    "six_type_average": 90.22,
+    "by_type": {
+      "knowledge-update": "72/78",
+      "multi-session": "116/133",
+      "single-session-assistant": "56/56",
+      "single-session-preference": "21/30",
+      "single-session-user": "69/70",
+      "temporal-reasoning": "124/133"
+    },
+    "context_tokens_mean": 485,
+    "context_tokens_median": 414.5,
+    "adjusted": 96.9,
+    "missing_runs": []
+  },
+  "mastra.held_out_251": {
+    "questions": 251,
+    "marked": 251,
+    "correct": 235,
+    "accuracy": 93.63,
+    "six_type_average": 92.72,
+    "by_type": {
+      "knowledge-update": "35/39",
+      "multi-session": "63/67",
+      "single-session-assistant": "28/28",
+      "single-session-preference": "12/15",
+      "single-session-user": "35/35",
+      "temporal-reasoning": "62/67"
+    },
+    "context_tokens_mean": 489,
+    "context_tokens_median": 415,
+    "adjusted": 99.0,
+    "missing_runs": []
+  },
+  "mastra.tune_249": {
+    "questions": 249,
+    "marked": 249,
+    "correct": 223,
+    "accuracy": 89.56,
+    "six_type_average": 87.71,
+    "by_type": {
+      "knowledge-update": "37/39",
+      "multi-session": "53/66",
+      "single-session-assistant": "28/28",
+      "single-session-preference": "9/15",
+      "single-session-user": "34/35",
+      "temporal-reasoning": "62/66"
+    },
+    "context_tokens_mean": 481,
+    "context_tokens_median": 414,
+    "adjusted": 94.9,
+    "missing_runs": []
+  }
+}

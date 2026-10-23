@@ -111,14 +111,22 @@ const picked = await pickFromSources(sources, { task }, { task, decide });
 
 ## Defaults and overrides
 
-Core's `agent-tasks` mode, which runs when no mode is chosen, decides every ranked part and keeps references scored 0.0146 or more,
-ordered and weighted by decision probability.
-Set `everyScored: true` to keep every scored reference.
+`markdown()` and `knowledgeBase()` read with `markdownSettings`, `{ rare: true, labels: false, bar: 0.0146 }`: references kept when scored 0.0146 or more,
+ordered and weighted by decision probability, and no label kinds.
+Set `everyScored: true` on the pick to keep every scored reference from every source.
+`rules()` reads with `rulesSettings`, `{ ...markdownSettings, ruleBar: 0 }`, so it keeps every scored rule.
+`markdown()` with kind `rules` or `instructions` also keeps every scored rule, since an absent rule bar is 0.
 The curator receives exact scores. Its `tiers` instructions ask for less space for low-scored items.
-The source enables the rare-word round to find unselected references that share rare words with selected evidence.
-Spread the source and set `rare: false` to disable that round for it.
-Labels are off in the `agent-tasks` mode.
-Rules keep every scored item; set `thresholds.rule` for an optional applicability cut.
+The rare-word round finds unselected notes that share rare words with selected notes, counting words over this source only.
+To change a setting, build the source with core's `historySource()`:
+
+```ts
+import { historySource } from '@curatejs/core';
+import { rules, rulesSettings } from '@curatejs/markdown';
+
+const source = historySource({ reader: rules('rules'), ...rulesSettings, ruleBar: 0.5 });
+```
+
 See [core's measured reason](https://github.com/jonny981/curate/blob/main/packages/core/README.md#defaults-and-evidence) for the saved-decision sweep's answer-turn losses.
 
 - **Keyword settings:** `MARKDOWN_KEYWORD_SETTINGS` exports the ranking defaults. Pass a partial `keyword` object to the reader to override them.

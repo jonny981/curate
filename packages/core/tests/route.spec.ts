@@ -15,7 +15,7 @@ import {
   type PickLabels,
 } from '../src/index.js';
 
-const uncutPick = { everyRanked: true, everyScored: true, labels: false, rare: false } as const;
+const uncutPick = { everyRanked: true, everyScored: true, rare: false } as const;
 
 const KIND_KEYS = new Set<string>(LABEL_KINDS.map((kind) => kind.key));
 const ROUTE_KEYS = new Set<string>(ROUTE_QUESTIONS.map((route) => route.key));
@@ -248,7 +248,7 @@ describe('route: jev', () => {
       task: 'Recall the plan', route: 'jev', decide: counting(() => 0.9).decide,
     });
     const { route: _route, levers, ...record } = routed.record;
-    expect({ ...record, levers: { ...levers, route: false, preset: 'custom' } }).toEqual(plain.record);
+    expect({ ...record, levers: { ...levers, route: false } }).toEqual(plain.record);
     expect(routed.selected).toEqual(plain.selected);
 
     const result = await curate('Recall the plan', plain, { write: writer().write });

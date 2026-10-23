@@ -1,0 +1,21 @@
+[
+  {
+    "tool": "create_doc",
+    "args": {
+      "title": "Sphere 2027 Individual HDHP and PPO — Archived Comparison",
+      "body": "# Sphere 2027 Individual HDHP and PPO — Archived Comparison\n\nArchived January 1, 2028.\n\n## Terms\n\n| Feature | Individual HDHP | Individual PPO |\n|---|---:|---:|\n| Premium per biweekly paycheck | $98 | $164 |\n| Annual premium over 26 paychecks | $2,548 | $4,264 |\n| Deductible | $2,300 | $750 |\n| Coinsurance after deductible | 10% | 20% |\n| Preventive care | Fully covered | Fully covered |\n| HSA eligibility | Eligible | Not eligible |\n| Employer HSA funding | $900, paid as four $225 deposits in January, April, July, and October | None stated; plan was not HSA-eligible |\n\n## Enrollment deadline\n\nSphere’s 2027 benefits enrollment deadline was October 23, 2026, at 5:00 PM Eastern. Elections submitted during open enrollment applied to the 2027 plan year and generally could not be changed after the deadline without a qualifying life event.\n\n## Neutral comparison\n\nThe HDHP had the lower payroll premium, a higher deductible, lower post-deductible coinsurance, and HSA eligibility with employer funding. The PPO had the higher payroll premium and lower deductible, higher post-deductible coinsurance, and no HSA eligibility.\n\nThis document is an archival comparison of posted 2027 terms and the enrollment deadline. It does not make or record a plan election.",
+      "folder": "Benefits Archive"
+    },
+    "result": {
+      "ok": true,
+      "document": {
+        "id": "doc_0c3320dfe804470fb4f984335e39752e",
+        "title": "Sphere 2027 Individual HDHP and PPO — Archived Comparison",
+        "body": "# Sphere 2027 Individual HDHP and PPO — Archived Comparison\n\nArchived January 1, 2028.\n\n## Terms\n\n| Feature | Individual HDHP | Individual PPO |\n|---|---:|---:|\n| Premium per biweekly paycheck | $98 | $164 |\n| Annual premium over 26 paychecks | $2,548 | $4,264 |\n| Deductible | $2,300 | $750 |\n| Coinsurance after deductible | 10% | 20% |\n| Preventive care | Fully covered | Fully covered |\n| HSA eligibility | Eligible | Not eligible |\n| Employer HSA funding | $900, paid as four $225 deposits in January, April, July, and October | None stated; plan was not HSA-eligible |\n\n## Enrollment deadline\n\nSphere’s 2027 benefits enrollment deadline was October 23, 2026, at 5:00 PM Eastern. Elections submitted during open enrollment applied to the 2027 plan year and generally could not be changed after the deadline without a qualifying life event.\n\n## Neutral comparison\n\nThe HDHP had the lower payroll premium, a higher deductible, lower post-deductible coinsurance, and HSA eligibility with employer funding. The PPO had the higher payroll premium and lower deductible, higher post-deductible coinsurance, and no HSA eligibility.\n\nThis document is an archival comparison of posted 2027 terms and the enrollment deadline. It does not make or record a plan election.",
+        "folder": "Benefits Archive",
+        "created_at": "2026-10-22T10:06:24.210482Z",
+        "url": "https://docs.mock/doc_0c3320dfe804470fb4f984335e39752e"
+      }
+    }
+  }
+]

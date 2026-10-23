@@ -1,4 +1,12 @@
+import type { HistorySettings } from '@curatejs/core';
+
 export { CHAT_KEYWORD_SETTINGS } from './chat-rank.js';
+
+/** The settings `chat()` reads with: no rare-word round, the seven label
+ *  kinds, which find parts the keyword search missed, and the 0.0146
+ *  decision-score bar.
+ *  Change one with `historySource({ reader: chat(), ...chatSettings, labels: false })`. */
+export const chatSettings: HistorySettings = { rare: false, labels: true, bar: 0.0146 };
 
 /** Wording guidance for host-written extra searches; Curate generates no lines. */
 export const CHAT_SEARCH_LINE_REGISTER = "A user's chat message.";

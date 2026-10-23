@@ -1,0 +1,42 @@
+{
+  "passed": false,
+  "checks": [
+    {
+      "check": 0,
+      "name": "morgan_060_00",
+      "passed": false,
+      "judged": false,
+      "reason": "no distinct call satisfies every check for this action",
+      "judge_messages": null
+    },
+    {
+      "check": 1,
+      "name": "morgan_060_01",
+      "passed": false,
+      "judged": true,
+      "reason": "no distinct call satisfies every check for this action",
+      "judge_messages": [
+        {
+          "role": "system",
+          "content": "You are an impartial grader evaluating whether a completed action satisfies a CRITERION. You will be given:\n  - The VALUE extracted from a tool call or agent output (as JSON)\n  - CONTEXT containing the user's request, the action's arguments, and the date when available\n  - A CRITERION describing what the value must satisfy\n\nDecide binary PASS or FAIL strictly on the criterion. No partial credit. Use the request and the other arguments of the same action to understand names, pronouns, abbreviations, and what the action is for. Accept different wording that communicates the same required meaning. Do not require a message to repeat its recipient's name. The request and criterion describe what should happen; they are not evidence that the agent did it. Do not supply a missing answer from them or from a different action. Fail when the completed action omits, contradicts, or leaves unclear a required meaning. Output ONLY valid JSON in this shape:\n\n{\"passed\": true, \"reason\": \"a concise explanation naming the exact supporting text or the exact missing requirement\"}\n\nNo prose, no markdown fences."
+        },
+        {
+          "role": "user",
+          "content": "VALUE (as JSON):\n\"At home in Oakland. Protected household time for Morgan and Jamie. Normal work, investor, board, customer, and internal scheduling routes around it; interrupt only for an actual incident or customer-impacting emergency.\"\n\nCONTEXT: {\"user_request\": \"Create our selected household dinner hold for September 16, 6:30-8:30 PM Pacific, at home in Oakland. Add notes for anyone triaging work conflicts against it.\", \"today\": \"2026-09-14\", \"tool\": \"create_calendar_event\", \"arguments\": {\"title\": \"Offline household dinner at home\", \"start\": \"2026-09-16T18:30-07:00\", \"end\": \"2026-09-16T20:30-07:00\", \"attendees\": null, \"body\": \"At home in Oakland. Protected household time for Morgan and Jamie. Normal work, investor, board, customer, and internal scheduling routes around it; interrupt only for an actual incident or customer-impacting emergency.\"}, \"field_being_checked\": \"result.event.body\"}\n\nCRITERION:\nMarks the selected block as offline household time. Says routine Scaffold work, investor follow-ups, customer check-ins, and internal catch-ups must be scheduled around it. Allows an override only for a real incident or an equivalent customer-impacting emergency.\n\nReturn the JSON verdict now."
+        },
+        {
+          "role": "assistant",
+          "content": "{\"passed\":false,\"reason\":\"The body says “Protected household time” but does not mark the block as offline, and it does not explicitly identify routine Scaffold work; the scheduling-around and emergency-override requirements are otherwise present.\"}",
+          "duration_ms": 8512.002208037302,
+          "usage": {
+            "input_tokens": 4421,
+            "cached_input_tokens": 0,
+            "cache_write_input_tokens": 0,
+            "output_tokens": 176,
+            "reasoning_output_tokens": 123
+          }
+        }
+      ]
+    }
+  ]
+}

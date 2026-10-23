@@ -7,7 +7,7 @@ import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { type CandidateSource } from '@curatejs/core';
-import { gitHistory } from '../src/index.js';
+import { git as gitSource } from '../src/index.js';
 import { commitDate } from '@curatejs/core/internal';
 
 // The reader's own git invocations always carry `-c core.hooksPath=…`;
@@ -163,21 +163,21 @@ describe('commitDate', () => {
   });
 });
 
-describe('gitHistory', () => {
+describe('git', () => {
   it('emits one candidate per non-merge commit, newest first, carrying the commit fields', async () => {
     const directory = await repositoryWithMerge();
     const toplevel = (await git(directory, ['rev-parse', '--show-toplevel'])).trim();
     const head = (await git(directory, ['rev-parse', 'HEAD'])).trim();
     const side = (await git(directory, ['rev-parse', 'side'])).trim();
 
-    const result = await read(gitHistory(directory), { task: 'work on the docs' });
+    const result = await read(gitSource(directory), { task: 'work on the docs' });
 
     expect(result.status).toBe('read');
     if (result.status !== 'read') return;
     expect(result.revision).toBe(head);
     expect(result.candidates).toHaveLength(3);
     expect(result.candidates[0]).toMatchObject({
-      sourceId: `gitHistory:${directory}`,
+      sourceId: `git:${directory}`,
       sourceRevision: head,
       role: 'reference',
       id: `commit ${side.slice(0, 7)}`,
@@ -209,7 +209,7 @@ describe('gitHistory', () => {
 
   it('accepts a file: URL for the repository', async () => {
     const directory = await repository([{ subject: 'one', files: { 'a.md': 'a' } }]);
-    const result = await read(gitHistory(new URL(`file://${directory}`)), { task: 'work' });
+    const result = await read(gitSource(new URL(`file://${directory}`)), { task: 'work' });
     expect(result.status).toBe('read');
     if (result.status !== 'read') return;
     expect(result.candidates).toHaveLength(1);
@@ -218,7 +218,7 @@ describe('gitHistory', () => {
   it('reports absent for a directory that is not a repository', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'curate-git-'));
     temporaryDirectories.push(directory);
-    await expect(read(gitHistory(directory), { task: 'work' }))
+    await expect(read(gitSource(directory), { task: 'work' }))
       .resolves.toEqual({ status: 'absent', reason: 'no-history' });
   });
 
@@ -226,13 +226,13 @@ describe('gitHistory', () => {
     const directory = await mkdtemp(join(tmpdir(), 'curate-git-'));
     temporaryDirectories.push(directory);
     await git(directory, ['init', '--bare', '-b', 'main']);
-    await expect(read(gitHistory(directory), { task: 'work' }))
+    await expect(read(gitSource(directory), { task: 'work' }))
       .resolves.toEqual({ status: 'absent', reason: 'no-history' });
   });
 
   it('reports absent for a path that is not a directory', async () => {
     const directory = await repository([{ subject: 'one', files: { 'a.md': 'a' } }]);
-    await expect(read(gitHistory(join(directory, 'a.md')), { task: 'work' }))
+    await expect(read(gitSource(join(directory, 'a.md')), { task: 'work' }))
       .resolves.toEqual({ status: 'absent', reason: 'not-a-directory' });
   });
 
@@ -240,7 +240,7 @@ describe('gitHistory', () => {
     const directory = await mkdtemp(join(tmpdir(), 'curate-git-'));
     temporaryDirectories.push(directory);
     await git(directory, ['init', '-b', 'main']);
-    await expect(read(gitHistory(directory), { task: 'work' }))
+    await expect(read(gitSource(directory), { task: 'work' }))
       .resolves.toEqual({ status: 'absent', reason: 'no-history' });
 
     const withoutBinaries = await mkdtemp(join(tmpdir(), 'curate-git-'));
@@ -248,7 +248,7 @@ describe('gitHistory', () => {
     const path = process.env.PATH;
     process.env.PATH = withoutBinaries;
     try {
-      await expect(read(gitHistory(directory), { task: 'work' }))
+      await expect(read(gitSource(directory), { task: 'work' }))
         .resolves.toEqual({ status: 'absent', reason: 'no-git-binary' });
     } finally {
       process.env.PATH = path;
@@ -258,7 +258,7 @@ describe('gitHistory', () => {
   it('throws a SourceReadError for a pinned revision the repository does not have', async () => {
     const directory = await repository([{ subject: 'one', files: { 'a.md': 'a' } }]);
     const missing = 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef';
-    await expect(read(gitHistory(directory), { task: 'work', revision: missing }))
+    await expect(read(gitSource(directory), { task: 'work', revision: missing }))
       .rejects.toMatchObject({ name: 'SourceReadError', code: 'failed' });
   });
 
@@ -269,7 +269,7 @@ describe('gitHistory', () => {
     ]);
     const head = (await git(directory, ['rev-parse', 'HEAD'])).trim();
 
-    await read(gitHistory(directory), { task: 'work', revision: 'HEAD' });
+    await read(gitSource(directory), { task: 'work', revision: 'HEAD' });
 
     const revParses = gitCalls.filter((args) => args.includes('rev-parse'));
     expect(revParses.map((args) => args.slice(6))).toEqual([
@@ -289,7 +289,7 @@ describe('gitHistory', () => {
     ]);
     const first = (await git(directory, ['rev-parse', 'HEAD~1'])).trim();
 
-    const result = await read(gitHistory(directory), { task: 'work', revision: first });
+    const result = await read(gitSource(directory), { task: 'work', revision: first });
 
     expect(result.status).toBe('read');
     if (result.status !== 'read') return;
@@ -320,7 +320,7 @@ describe('gitHistory', () => {
       }
     };
     try {
-      const result = await read(gitHistory(directory), { task: 'work', revision: 'HEAD' });
+      const result = await read(gitSource(directory), { task: 'work', revision: 'HEAD' });
 
       expect(result.status).toBe('read');
       if (result.status !== 'read') return;
@@ -344,7 +344,7 @@ describe('gitHistory', () => {
 
     const kept = (await git(directory, ['rev-parse', 'HEAD~1'])).trim();
     const result = await read(
-      gitHistory(directory),
+      gitSource(directory),
       { task: 'work', exclude: ['secret.md'] },
     );
 
@@ -375,7 +375,7 @@ describe('gitHistory', () => {
       { subject: 'hidden', body: 'the hidden body', files: { 'secret.md': 's' } },
       { subject: 'second', body: 'the second body', files: { 'b.md': 'b' } },
     ]);
-    const result = await read(gitHistory(directory), { task: 'work', exclude: ['secret.md'] });
+    const result = await read(gitSource(directory), { task: 'work', exclude: ['secret.md'] });
     expect(result.status).toBe('read');
     if (result.status !== 'read') return;
     expect(result.candidates.map((candidate) => [candidate.title, candidate.text])).toEqual([
@@ -394,7 +394,7 @@ describe('gitHistory', () => {
     const renamed = (await git(directory, ['rev-parse', 'HEAD'])).trim();
 
     const result = await read(
-      gitHistory(directory),
+      gitSource(directory),
       { task: 'work', exclude: ['docs/secret.md'] },
     );
 
@@ -420,7 +420,7 @@ describe('gitHistory', () => {
     // relative '.' all name the same thing: every repository path sits
     // beneath the entry, so no commit is admitted.
     for (const entry of [directory, dirname(directory), '.']) {
-      const result = await read(gitHistory(directory), { task: 'work', exclude: [entry] });
+      const result = await read(gitSource(directory), { task: 'work', exclude: [entry] });
 
       expect(result.status).toBe('read');
       if (result.status !== 'read') return;
@@ -440,7 +440,7 @@ describe('gitHistory', () => {
     await git(directory, ['mv', 'docs/secret.md', 'docs/public.md']);
     await commit(directory, 'rename it');
 
-    const result = await read(gitHistory(directory), { task: 'work' });
+    const result = await read(gitSource(directory), { task: 'work' });
 
     expect(result.status).toBe('read');
     if (result.status !== 'read') return;
@@ -458,7 +458,7 @@ describe('gitHistory', () => {
     ]);
 
     const result = await read(
-      gitHistory(directory),
+      gitSource(directory),
       { task: 'work', exclude: ['secret.md'], limit: 1 },
     );
 
@@ -479,7 +479,7 @@ describe('gitHistory', () => {
     await symlink(directory, link);
 
     const result = await read(
-      gitHistory(link),
+      gitSource(link),
       { task: 'work', exclude: [join(link, 'secret.md')] },
     );
 
@@ -494,7 +494,7 @@ describe('gitHistory', () => {
       { subject: 'two', files: { 'b.md': 'b' } },
     ]);
 
-    const result = await read(gitHistory(directory), { task: 'work', limit: 1 });
+    const result = await read(gitSource(directory), { task: 'work', limit: 1 });
 
     expect(result.status).toBe('read');
     if (result.status !== 'read') return;
@@ -512,7 +512,7 @@ describe('gitHistory', () => {
       },
     ]);
 
-    const result = await read(gitHistory(directory), { task: 'work' });
+    const result = await read(gitSource(directory), { task: 'work' });
 
     expect(result.status).toBe('read');
     if (result.status !== 'read') return;
@@ -529,7 +529,7 @@ describe('gitHistory', () => {
       { subject: 'chore', body: 'assorted notes', files: { 'docs/misc.md': 'o' } },
     ]);
 
-    const result = await read(gitHistory(directory), {
+    const result = await read(gitSource(directory), {
       task: 'explain the billing retries',
       paths: ['docs/misc.md'],
     });
@@ -547,7 +547,7 @@ describe('gitHistory', () => {
   it('does not mark a named-path touch for paths outside the repository', async () => {
     const directory = await repository([{ subject: 'one', files: { 'a.md': 'a' } }]);
 
-    const result = await read(gitHistory(directory), {
+    const result = await read(gitSource(directory), {
       task: 'work',
       paths: ['/etc/passwd', join(directory, '..', 'outside.md')],
     });
@@ -560,7 +560,7 @@ describe('gitHistory', () => {
   it('runs one log pass and the pin resolution when nothing is opted in', async () => {
     const directory = await repository([{ subject: 'one', files: { 'a.md': 'a' } }]);
 
-    await read(gitHistory(directory), { task: 'work' });
+    await read(gitSource(directory), { task: 'work' });
 
     const commands = gitCalls.map((args) => args[6]);
     expect(commands).toEqual(['rev-parse', 'rev-parse', 'log']);
@@ -573,8 +573,8 @@ describe('gitHistory', () => {
     ]);
     const writer = (await git(directory, ['rev-parse', 'HEAD~1'])).trim();
 
-    const plain = await read(gitHistory(directory), { task: 'work', paths: ['docs/a.md'] });
-    const blamed = await read(gitHistory(directory, { blame: true }), { task: 'work', paths: ['docs/a.md'] });
+    const plain = await read(gitSource(directory), { task: 'work', paths: ['docs/a.md'] });
+    const blamed = await read(gitSource(directory, { blame: true }), { task: 'work', paths: ['docs/a.md'] });
 
     if (plain.status !== 'read' || blamed.status !== 'read') throw new Error('reads failed');
     expect(plain.candidates.every((candidate) => candidate.signals['live_lines'] === undefined)).toBe(true);
@@ -588,7 +588,7 @@ describe('gitHistory', () => {
     onGitChild = (child, args) => {
       if (args[6] === 'blame') child.kill('SIGKILL');
     };
-    await expect(read(gitHistory(directory, { blame: true }), { task: 'work', paths: ['a.md'] }))
+    await expect(read(gitSource(directory, { blame: true }), { task: 'work', paths: ['a.md'] }))
       .rejects.toMatchObject({ code: 'failed' });
   });
 
@@ -597,7 +597,7 @@ describe('gitHistory', () => {
       { subject: 'write first sixty', files: Object.fromEntries(Array.from({ length: 60 }, (_, index) => [`docs/a${index}.md`, 'line'])) },
       { subject: 'write last file', files: { 'docs/z.md': 'last line' } },
     ]);
-    const result = await read(gitHistory(directory, { blame: true }), { task: 'work', paths: ['docs'] });
+    const result = await read(gitSource(directory, { blame: true }), { task: 'work', paths: ['docs'] });
     if (result.status !== 'read') throw new Error('read failed');
     expect(result.candidates.find((candidate) => candidate.title === 'write last file')!.signals['live_lines']).toBe(2);
     expect(gitCalls.filter((args) => args[6] === 'blame')).toHaveLength(61);
@@ -609,7 +609,7 @@ describe('gitHistory', () => {
       { subject: 'pair once', files: { 'x.md': 'x', ...files } },
       { subject: 'last neighbour alone', files: { 'n9.md': 'second' } },
     ]);
-    const result = await read(gitHistory(directory, { coChange: true }), { task: 'work', paths: ['x.md'] });
+    const result = await read(gitSource(directory, { coChange: true }), { task: 'work', paths: ['x.md'] });
     if (result.status !== 'read') throw new Error('read failed');
     expect(result.candidates.find((candidate) => candidate.title === 'last neighbour alone')!.signals['co_change']).toBe(1);
   });
@@ -629,7 +629,7 @@ describe('gitHistory', () => {
       }
     }
     execFileSync('git', ['-C', directory, 'fast-import', '--quiet'], { input });
-    const result = await read(gitHistory(directory, { coChange: true }), { task: 'work', paths: ['x.md'] });
+    const result = await read(gitSource(directory, { coChange: true }), { task: 'work', paths: ['x.md'] });
     if (result.status !== 'read') throw new Error('read failed');
     expect(result.candidates.find((candidate) => candidate.title === 'old shared change')!.signals['co_change']).toBe(1);
     expect(result.candidates.find((candidate) => candidate.title === 'neighbour 0')!.signals['co_change']).toBe(1);
@@ -641,7 +641,7 @@ describe('gitHistory', () => {
       { subject: 'add private', files: { 'docs/private.md': 'hidden' } },
     ]);
 
-    const result = await read(gitHistory(directory, { blame: true }), {
+    const result = await read(gitSource(directory, { blame: true }), {
       task: 'work',
       paths: ['docs'],
       exclude: ['docs/private.md'],
@@ -663,9 +663,9 @@ describe('gitHistory', () => {
       { subject: 'solo', files: { 'z.md': 'z' } },
     ]);
 
-    const plain = await read(gitHistory(directory), { task: 'work', paths: ['x.md'] });
+    const plain = await read(gitSource(directory), { task: 'work', paths: ['x.md'] });
     const enriched = await read(
-      gitHistory(directory, { coChange: true }),
+      gitSource(directory, { coChange: true }),
       { task: 'work', paths: ['x.md'] },
     );
 
@@ -689,7 +689,7 @@ describe('gitHistory', () => {
     process.env.LC_ALL = 'de_DE.UTF-8';
     process.env.LANGUAGE = 'de';
     try {
-      await expect(read(gitHistory(directory), { task: 'work' }))
+      await expect(read(gitSource(directory), { task: 'work' }))
         .resolves.toEqual({ status: 'absent', reason: 'no-history' });
     } finally {
       for (const name of names) {
@@ -709,7 +709,7 @@ describe('gitHistory', () => {
     // commit fields and would land in the parsers' output.
     await git(directory, ['config', 'log.showSignature', 'true']);
 
-    const result = await read(gitHistory(directory), { task: 'work' });
+    const result = await read(gitSource(directory), { task: 'work' });
 
     expect(result.status).toBe('read');
     expect(gitCalls.length).toBeGreaterThan(0);
@@ -734,7 +734,7 @@ describe('gitHistory', () => {
     const path = process.env.PATH;
     process.env.PATH = `${bin}:${path}`;
     try {
-      await expect(read(gitHistory(directory), { task: 'work', signal: controller.signal }))
+      await expect(read(gitSource(directory), { task: 'work', signal: controller.signal }))
         .rejects.toMatchObject({ name: 'SourceReadError', code: 'cancelled' });
     } finally {
       process.env.PATH = path;
@@ -748,7 +748,7 @@ describe('gitHistory', () => {
     const controller = new AbortController();
     controller.abort();
 
-    await expect(read(gitHistory(directory), { task: 'work', signal: controller.signal }))
+    await expect(read(gitSource(directory), { task: 'work', signal: controller.signal }))
       .rejects.toMatchObject({ code: 'cancelled' });
     expect(gitCalls).toHaveLength(0);
   });
@@ -757,8 +757,8 @@ describe('gitHistory', () => {
     const first = await repository([{ subject: 'first', files: { 'docs/a.md': 'a' } }]);
     const second = await repository([{ subject: 'second', files: { 'docs/a.md': 'a' } }]);
 
-    const left = await read(gitHistory(first), { task: 'work' });
-    const right = await read(gitHistory(second), { task: 'work' });
+    const left = await read(gitSource(first), { task: 'work' });
+    const right = await read(gitSource(second), { task: 'work' });
 
     if (left.status !== 'read' || right.status !== 'read') throw new Error('reads failed');
     expect(left.candidates[0]!.changedPaths).toEqual(['docs/a.md']);
@@ -771,7 +771,7 @@ describe('gitHistory', () => {
     const directory = await repository([{ subject: 'one', files: { 'a.md': 'a' } }]);
 
     const result = await read(
-      gitHistory(directory, { id: 'history', repository: 'shared-key' }),
+      gitSource(directory, { id: 'history', repository: 'shared-key' }),
       { task: 'work' },
     );
 
@@ -810,10 +810,10 @@ describe('gitHistory', () => {
 
     const embed = async (texts: readonly string[]) =>
       texts.map((text) => (text.includes('battery backup') ? [1, 0] : [0, 1]));
-    const source = gitHistory(directory);
+    const source = gitSource(directory);
     const samples: number[] = [];
     const timer = setInterval(() => samples.push(process.memoryUsage().heapUsed), 5);
-    let result: Awaited<ReturnType<ReturnType<typeof gitHistory>['read']>>;
+    let result: Awaited<ReturnType<ReturnType<typeof gitSource>['read']>>;
     let kindResult: typeof result;
     let meaningResult: typeof result;
     try {
@@ -857,7 +857,7 @@ describe('gitHistory', () => {
 
 it('allows a host to override commit keyword weights', async () => {
   const directory = await repository([{ subject: 'backup evidence', files: { 'backup.md': 'backup' } }]);
-  const result = await read(gitHistory(directory, { keyword: { sharedWordCap: 0 } }), { task: 'backup evidence' });
+  const result = await read(gitSource(directory, { keyword: { sharedWordCap: 0 } }), { task: 'backup evidence' });
   expect(result.status).toBe('read');
   if (result.status !== 'read') throw new Error('Expected commit candidates');
   expect(result.candidates[0]!.signals.shared_words).toBe(0);

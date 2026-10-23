@@ -21,9 +21,9 @@ const PICK_OPTION_KEYS: readonly (keyof PickOptions)[] = [
   'ranking', 'task', 'decide', 'cascade', 'cascadesByKind', 'sourceKinds', 'labelKindsBySource',
   'keepTop', 'rankProtection', 'bestPartFirst', 'tags', 'tagsByKind',
   'labels', 'cache', 'route', 'everyRanked', 'everyScored', 'rare', 'rareBySource',
-  'rulesEnumerationComplete', 'limits', 'thresholds', 'signal',
+  'barBySource', 'ruleBarBySource', 'rulesEnumerationComplete', 'limits', 'thresholds', 'signal',
 ];
-const THRESHOLD_KEYS: readonly (keyof PickThresholds)[] = ['rule', 'linkedPathBar'];
+const THRESHOLD_KEYS: readonly (keyof PickThresholds)[] = ['linkedPathBar'];
 const LIMIT_KEYS: readonly (keyof PickLimits)[] = [
   'maxPerBatch', 'maxBatchChars', 'maxBatches', 'maxCandidates',
   'maxElapsedMs', 'maxQuestionText',
@@ -118,6 +118,13 @@ export function checkPickOptions(options: PickOptions): void {
   checkKeys(options.rare, ['share', 'bar'], 'rare');
   for (const [id, enabled] of Object.entries(options.rareBySource ?? {})) {
     if (typeof enabled !== 'boolean') throw new TypeError(`rareBySource.${id} must be a boolean.`);
+  }
+  for (const [name, bars] of [['barBySource', options.barBySource], ['ruleBarBySource', options.ruleBarBySource]] as const) {
+    for (const [id, bar] of Object.entries(bars ?? {})) {
+      if (typeof bar !== 'number' || !Number.isFinite(bar) || bar < 0 || bar > 1) {
+        throw new TypeError(`${name}.${id} must be a number between 0 and 1.`);
+      }
+    }
   }
   checkKeys(options.ranking, MEMORY_KIND_KEYS, 'ranking');
   checkCascadeKeys(options.cascade, 'cascade');

@@ -69,18 +69,25 @@ const source = chat({ providers: ['claude-code', 'codex'], since: '14 days' });
 
 ## Defaults and overrides
 
-Core's `agent-tasks` mode, which runs when no mode is chosen, decides every ranked part and keeps references scored 0.0146 or more,
+`chat()` reads with `chatSettings`, `{ rare: false, labels: true, bar: 0.0146 }`: no rare-word round, core's seven label kinds, and references kept when scored 0.0146 or more,
 ordered and weighted by decision probability.
-Set `everyScored: true` to keep every scored reference.
+Set `everyScored: true` on the pick to keep every scored reference from every source.
 The curator receives exact scores. Its `tiers` instructions ask for less space for low-scored items.
-Use `preset: 'conversation-recall'` with `memory()` to answer questions about past conversations.
-It enables chat's seven label kinds; labels and the rare-word round are off for chat in the `agent-tasks` mode.
-Rules keep every scored item; set `thresholds.rule` for an optional applicability cut.
+Labels are on because they find parts the keyword search missed, which recall needs.
+To change a setting, build the source with core's `historySource()`. To turn labels off for one chat source:
+
+```ts
+import { historySource } from '@curatejs/core';
+import { chat, chatSettings } from '@curatejs/chat';
+
+const source = historySource({ reader: chat({ paths: ['transcripts'] }), ...chatSettings, labels: false });
+```
+
 See [core's measured reason](https://github.com/jonny981/curate/blob/main/packages/core/README.md#defaults-and-evidence) for the saved-decision sweep's answer-turn losses.
 
 - **Keyword settings:** `CHAT_KEYWORD_SETTINGS` exports the ranking defaults. Pass a partial `keyword` object to the reader to override them.
 - **Questions:** `chat()` carries `CHAT_CASCADE`, its fitted question set. Core's `memory()` uses it automatically; override it with `pick.cascadesByKind.chat`. With `pickFromSources()` or `pick()`, pass it through `cascade` or `cascadesByKind` explicitly.
-- **Labels:** When enabled, labels use core's seven `LABEL_KINDS` carried by `chat()` for transcript facts. Replace the source's `labelKinds` with your own set, or `[]` to disable its label questions. See [core's label options](https://github.com/jonny981/curate/blob/main/packages/core/README.md#label-gate).
+- **Labels:** `labels: true` asks core's seven `LABEL_KINDS` for transcript facts; a list of kinds asks your own set instead. See [core's label options](https://github.com/jonny981/curate/blob/main/packages/core/README.md#label-gate).
 - **Search wording:** `CHAT_SEARCH_LINE_REGISTER` describes the wording for host-written extra search lines. Copy or replace this text in your host; the package generates no lines.
 - **Kind phrases:** `CHAT_KIND_PHRASES` exports phrases in the chat register for `directions`, `decisions` and `corrections`. Pass one list to core's `kindLanes` option, for example `{ chat: CHAT_KIND_PHRASES.directions }`; kind lanes stay off by default.
 

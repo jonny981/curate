@@ -1,0 +1,37 @@
+{
+  "test": "morgan/140",
+  "asked": "2026-09-14",
+  "passed": false,
+  "mem0_passed": true,
+  "no_memory_passed": false,
+  "fact_messages_passed": true,
+  "parts_decided": 357,
+  "parts_read": 318,
+  "curator_batches": 1,
+  "batch_tokens": 150000,
+  "curator_output_tokens_per_pass": [
+    5096
+  ],
+  "stalled_curator_calls_retried": 0,
+  "curator_input_tokens": 68307,
+  "curator_output_tokens": 5096,
+  "log_chars": 32264,
+  "jev_cost_usd": 0,
+  "agent_seconds": 11.62,
+  "agent_usage": {
+    "input_tokens": 40542,
+    "cached_input_tokens": 26368,
+    "cache_write_input_tokens": 0,
+    "output_tokens": 503,
+    "reasoning_output_tokens": 219
+  },
+  "judge_calls": 1,
+  "judge_seconds": 8.299,
+  "list_cost": {
+    "jev_usd": 0,
+    "curator_list_usd": 0.1876,
+    "agent_list_usd": 0.00397,
+    "total_usd": 0.1915
+  },
+  "log_sha256_as_read": "3d0bfaa8779639f92266280c8c294d3611e838bccd1455e38a4afe676ab9d4b8"
+}

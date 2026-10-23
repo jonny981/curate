@@ -5,13 +5,13 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { curate, pickFromSources, SourceReadError, stripSearchInstructions, type CandidateReadRequest, type CandidateReadResult, type CandidateSource, type MemoryCandidate, type PickDecide } from '@curatejs/core';
-import { chat } from '@curatejs/chat';
-import { gitHistory } from '@curatejs/git';
+import { curate, historySource, pickFromSources, SourceReadError, stripSearchInstructions, type CandidateReadRequest, type CandidateReadResult, type CandidateSource, type MemoryCandidate, type PickDecide } from '@curatejs/core';
+import { chat, chatSettings } from '@curatejs/chat';
+import { git as gitSource } from '@curatejs/git';
 import { knowledgeBase, rules } from '@curatejs/markdown';
 import { DEFAULT_MAX_QUESTION_TEXT } from '@curatejs/core';
 
-const uncutPick = { everyRanked: true, everyScored: true, labels: false, rare: false } as const;
+const uncutPick = { everyRanked: true, everyScored: true, rare: false } as const;
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -271,7 +271,7 @@ describe('extra searches with built-in readers', () => {
     git(['add', '.']);
     git(['commit', '-m', 'Apple orchard', '-m', 'Apple orchard evidence.']);
     const firstRevision = git(['rev-parse', 'HEAD']).trim();
-    const reader = gitHistory(directory);
+    const reader = gitSource(directory);
     const revisions: (string | undefined)[] = [];
     const moving = source(async (request) => {
       revisions.push(request.revision);
@@ -317,7 +317,7 @@ describe('extra searches with built-in readers', () => {
       type: 'user', sessionId: 'fixture', timestamp: '2026-10-01T00:00:00Z', message: { content: text },
     }));
     await writeFile(join(directory, 'project', 'fixture.jsonl'), records.map((record) => JSON.stringify(record)).join('\n'));
-    const reader = chat({ providers: ['claude-code'], paths: [directory] });
+    const reader = historySource({ reader: chat({ providers: ['claude-code'], paths: [directory] }), ...chatSettings, labels: false });
     const original = await pickSource(reader, { task: 'apple orchard', limit: 1 });
     const expanded = await pickSource(reader, { task: 'apple orchard', searchLines: ['banana harvest'], limit: 1 });
     expect(original.selected).toHaveLength(1);
@@ -346,7 +346,7 @@ describe('extra searches with built-in readers', () => {
     await writeFile(join(directory, 'fruit.txt'), 'banana');
     git(['add', '.']);
     git(['commit', '-m', 'Banana harvest', '-m', 'Banana harvest evidence.']);
-    const reader = gitHistory(directory);
+    const reader = gitSource(directory);
     const expanded = await pickFromSources([reader], { task: 'apple orchard', searchLines: ['banana harvest'] }, { ...uncutPick,
       task: 'apple orchard', decide: yes, limits: { maxCandidates: 1 },
     });
@@ -377,8 +377,8 @@ describe('phrase searches with built-in readers', () => {
     await writeFile(join(directory, 'session.jsonl'), ['Albums albums albums albums on a shelf.', 'I even got my vinyl signed.'].map((text) => JSON.stringify({
       type: 'response_item', timestamp: '2026-01-01T00:00:00Z', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text }] },
     })).join('\n'));
-    const reader = kind === 'chat' ? chat({ paths: [directory], providers: ['codex'] })
-      : kind === 'markdown' ? knowledgeBase(directory) : gitHistory(directory);
+    const reader = kind === 'chat' ? historySource({ reader: chat({ paths: [directory], providers: ['codex'] }), ...chatSettings, labels: false })
+      : kind === 'markdown' ? knowledgeBase(directory) : gitSource(directory);
     const task = 'How many albums did I buy?';
     const baseline = await pickFromSources([reader], { task }, { ...uncutPick, task, decide: yes, limits: { maxCandidates: 1 } });
     const expanded = await pickFromSources([reader], { task, searchPhrases: ['got my'], limit: 1 }, { ...uncutPick, task, decide: yes, limits: { maxCandidates: 1 } });

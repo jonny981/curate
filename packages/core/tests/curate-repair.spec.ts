@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { curate, type CuratePrompt, type CurateWrite, type MemoryCandidate, type PickResult } from '../src/index.js';
 
-const uncutPick = { everyRanked: true, everyScored: true, labels: false, rare: false } as const;
+const uncutPick = { everyRanked: true, everyScored: true, rare: false } as const;
 
 const candidate = (id: string): MemoryCandidate => ({
   sourceId: 'notes', id, title: id, text: `Text ${id}`, role: 'reference', signals: {},
@@ -13,8 +13,8 @@ function picked(items: MemoryCandidate[]): PickResult {
     selected: items,
     record: {
       questionVersion: 'test', limits: {},
-      thresholds: { reference: 0, rule: 0, linkedPathBar: 0 }, rulesCoverage: 'complete',
-      levers: { preset: 'custom', everyRanked: true, everyScored: true, labels: false, route: false, rare: false },
+      thresholds: { linkedPathBar: 0 }, rulesCoverage: 'complete',
+      levers: { everyRanked: true, everyScored: true, route: false, rare: false, sources: {} },
       candidates: items.map((item, index) => ({
         sourceId: item.sourceId, id: item.id, role: item.role, priority: index,
         signals: item.signals, status: 'selected' as const, asked: true, probability: 0.9,

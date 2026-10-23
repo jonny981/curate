@@ -1,0 +1,33 @@
+[
+  {
+    "tool": "list_decks",
+    "args": {},
+    "result": [
+      {
+        "id": "Q3_2026_Board_PreRead",
+        "slides": {
+          "6": {
+            "number": 6,
+            "content": "Draft: weekly cohort chart for the board."
+          }
+        }
+      }
+    ]
+  },
+  {
+    "tool": "update_deck_slide",
+    "args": {
+      "deck": "Q3_2026_Board_PreRead",
+      "slide": 6,
+      "content": "Board cohort chart: quarterly cohorts only; show the latest quarter through observed maturity. Weekly operating cuts are internal directional signals and reviewed separately."
+    },
+    "result": {
+      "ok": true,
+      "deck": "Q3_2026_Board_PreRead",
+      "slide": {
+        "number": 6,
+        "content": "Board cohort chart: quarterly cohorts only; show the latest quarter through observed maturity. Weekly operating cuts are internal directional signals and reviewed separately."
+      }
+    }
+  }
+]

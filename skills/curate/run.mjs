@@ -6,7 +6,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { curate, pickFromSources } from '@curatejs/core';
 import { chat, CHAT_CASCADE, CHAT_SEARCH_LINE_REGISTER } from '@curatejs/chat';
-import { gitHistory, GIT_HISTORY_CASCADE, GIT_SEARCH_LINE_REGISTER } from '@curatejs/git';
+import { git, GIT_HISTORY_CASCADE, GIT_SEARCH_LINE_REGISTER } from '@curatejs/git';
 import { knowledgeBase, MARKDOWN_CASCADE, MARKDOWN_SEARCH_LINE_REGISTER } from '@curatejs/markdown';
 
 const homePath = (path) => resolve(path.startsWith('~/') ? join(homedir(), path.slice(2)) : path);
@@ -265,7 +265,7 @@ export async function pickFullSources(sources, request, options) {
       for (const candidate of read.candidates ?? []) maxQuestionText = Math.max(maxQuestionText, candidate.text.length);
     }
     let pool;
-    if (source.role === 'reference' && ((options.labels && source.labelKinds?.length)
+    if (source.role === 'reference' && (source.labelKinds?.length
       || (options.everyRanked !== undefined && options.everyRanked !== true)
       || (options.rare ?? source.rare ?? false) !== false)) {
       pool = await source.read({ ...request, task: request.task, wholeLanes: true, limit: undefined,
@@ -346,7 +346,7 @@ export async function run(args = process.argv.slice(2), callSubscription = subsc
     if (!apiKey) throw new Error('Set TYPESAFE_API_KEY or name a KEY=VALUE envFile in the sources file.');
     const sources = [];
     for (const entry of settings.sources) {
-      if (entry.type === 'git') sources.push(gitHistory(entry.path));
+      if (entry.type === 'git') sources.push(git(entry.path));
       else if (entry.type === 'markdown') sources.push(knowledgeBase(entry.path));
       else {
         if (entry.type === 'codex') {

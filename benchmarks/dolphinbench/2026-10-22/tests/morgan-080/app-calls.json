@@ -1,0 +1,20 @@
+[
+  {
+    "tool": "send_email",
+    "args": {
+      "to": "sarah@scaffold.dev",
+      "subject": "Harbor Health Mercury quote decision",
+      "body": "Hi Sarah,\n\nFor Harbor Health’s Mercury quote, use 63 monthly active developers—not the 180 purchased seats—as the usage measure. Since 63 is above the Pilot band, apply the standard Growth terms.\n\nDo not add a one-off enterprise exception; keep the quote on standard Mercury terms.\n\nBest,\nMorgan",
+      "cc": null
+    },
+    "result": {
+      "ok": true,
+      "id": "send_email_067548428707408cb936b645cdddb4e0",
+      "to": "sarah@scaffold.dev",
+      "subject": "Harbor Health Mercury quote decision",
+      "body": "Hi Sarah,\n\nFor Harbor Health’s Mercury quote, use 63 monthly active developers—not the 180 purchased seats—as the usage measure. Since 63 is above the Pilot band, apply the standard Growth terms.\n\nDo not add a one-off enterprise exception; keep the quote on standard Mercury terms.\n\nBest,\nMorgan",
+      "cc": [],
+      "sent_at": "2026-10-22T10:05:19.670751Z"
+    }
+  }
+]

@@ -10,7 +10,7 @@ import {
   type PickTagSet,
 } from '../src/index.js';
 
-const uncutPick = { everyRanked: true, everyScored: true, labels: false, rare: false } as const;
+const uncutPick = { everyRanked: true, everyScored: true, rare: false } as const;
 
 const candidate = (id: string, score = 1, overrides: Partial<MemoryCandidate> = {}): MemoryCandidate => ({
   id, sourceId: 'notes', role: 'reference', title: id, text: `Text ${id}`,

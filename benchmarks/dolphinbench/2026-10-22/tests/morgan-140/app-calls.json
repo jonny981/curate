@@ -1,0 +1,35 @@
+[
+  {
+    "tool": "list_open_prs",
+    "args": {
+      "repo": "scaffold/mercury",
+      "author": null,
+      "assignee": null,
+      "status": null,
+      "reviewer": null
+    },
+    "result": [
+      {
+        "id": "scaffold/mercury#3362",
+        "repo": "scaffold/mercury",
+        "status": "open"
+      }
+    ]
+  },
+  {
+    "tool": "post_pr_comment",
+    "args": {
+      "pr_id": "scaffold/mercury#3362",
+      "body": "Correction: the supported-source-types help link is a docs-discovery/setup-support aid, not evidence of activation lift. Please remove any activation-lift or activation-clarity claim from this change; first-sync/activation conversion has not materially changed. Keep invite-link status out of this PR as well—its copy/status work should remain a separate change and release note. Source-specific caveats belong in the supported-source-types docs/support guidance, not in a broader product or activation promise."
+    },
+    "result": {
+      "ok": true,
+      "comment": {
+        "id": "prc_32e7b9c720ee4416b9d5672bc07af4a9",
+        "pr_id": "scaffold/mercury#3362",
+        "body": "Correction: the supported-source-types help link is a docs-discovery/setup-support aid, not evidence of activation lift. Please remove any activation-lift or activation-clarity claim from this change; first-sync/activation conversion has not materially changed. Keep invite-link status out of this PR as well—its copy/status work should remain a separate change and release note. Source-specific caveats belong in the supported-source-types docs/support guidance, not in a broader product or activation promise.",
+        "created_at": "2026-10-22T10:05:46.371856Z"
+      }
+    }
+  }
+]

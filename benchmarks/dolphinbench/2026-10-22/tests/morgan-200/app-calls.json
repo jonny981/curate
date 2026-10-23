@@ -1,0 +1,21 @@
+[
+  {
+    "tool": "create_doc",
+    "args": {
+      "title": "Archive Note — Leo’s Approved Compass v0.1 Involvement (January 2025)",
+      "body": "Date: January 2025\n\nLeo Park’s approved involvement in Compass v0.1 was limited to a lightweight first read on data/platform seams and release-discipline or event-provenance checks. His work supported testing whether renewal-risk/admin-friction evidence and the post-first-live-sync expansion prompt could be used reliably by the current owner group.\n\nLeo was not approved as a broad product owner, and Compass was not authorized to become a dashboard, platform, or broader customer-analytics build. Any exposure beyond the current team required his seam check first. If the work began expanding into a dashboard/platform build or otherwise exceeded the narrow v0.1 seam review, its scope had to return to Morgan Chen for review. January’s center of gravity remained Mercury activation: workspace creation → first source connected → first live sync, with teammate-invite and admin-role basics.",
+      "folder": "archive"
+    },
+    "result": {
+      "ok": true,
+      "document": {
+        "id": "doc_2e8b0764e3c844fea8afb910bd97c64e",
+        "title": "Archive Note — Leo’s Approved Compass v0.1 Involvement (January 2025)",
+        "body": "Date: January 2025\n\nLeo Park’s approved involvement in Compass v0.1 was limited to a lightweight first read on data/platform seams and release-discipline or event-provenance checks. His work supported testing whether renewal-risk/admin-friction evidence and the post-first-live-sync expansion prompt could be used reliably by the current owner group.\n\nLeo was not approved as a broad product owner, and Compass was not authorized to become a dashboard, platform, or broader customer-analytics build. Any exposure beyond the current team required his seam check first. If the work began expanding into a dashboard/platform build or otherwise exceeded the narrow v0.1 seam review, its scope had to return to Morgan Chen for review. January’s center of gravity remained Mercury activation: workspace creation → first source connected → first live sync, with teammate-invite and admin-role basics.",
+        "folder": "archive",
+        "created_at": "2026-10-22T10:06:09.512555Z",
+        "url": "https://docs.mock/doc_2e8b0764e3c844fea8afb910bd97c64e"
+      }
+    }
+  }
+]

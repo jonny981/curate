@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { curate, pick, type MemoryCandidate, type PickAnswer, type PickCascade, type PickCriterion, type PickDecide, type PickError, type PickQuestion } from '../src/index.js';
 
-const uncutPick = { everyRanked: true, everyScored: true, labels: false, rare: false } as const;
+const uncutPick = { everyRanked: true, everyScored: true, rare: false } as const;
 
 const item = (id: string, overrides: Partial<MemoryCandidate> = {}): MemoryCandidate => ({
   sourceId: 'notes', id, role: 'reference', title: id, text: 'Evidence',
@@ -480,7 +480,7 @@ describe('stopping document assessment', () => {
     const result = await pick([
       item('rule-a', { role: 'rule', documentId: 'rules', signals: { score: 9 } }),
       item('rule-b', { role: 'rule', documentId: 'rules' }),
-    ], { ...uncutPick, task: 'battery charge', decide: stub.decide, bestPartFirst: true, everyScored: { bar: 0.6 }, thresholds: { rule: 0.6 } });
+    ], { ...uncutPick, task: 'battery charge', decide: stub.decide, bestPartFirst: true, everyScored: { bar: 0.6 }, ruleBarBySource: { notes: 0.6 } });
     expect(stub.ids()).toEqual(['rule-a', 'rule-b']);
     expect(result.record.rulesCoverage).toBe('complete');
     expect(result.selected.map((candidate) => candidate.id)).toEqual(['rule-b']);

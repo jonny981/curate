@@ -4,9 +4,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it, vi } from 'vitest';
 
-import { memory, type PickQuestion } from '@curatejs/core';
-import { chat, CHAT_CASCADE } from '@curatejs/chat';
-import { gitHistory, GIT_HISTORY_CASCADE } from '@curatejs/git';
+import { historySource, memory, type PickQuestion } from '@curatejs/core';
+import { chat, CHAT_CASCADE, chatSettings } from '@curatejs/chat';
+import { git as gitSource, GIT_HISTORY_CASCADE } from '@curatejs/git';
 import { markdown, MARKDOWN_CASCADE } from '@curatejs/markdown';
 
 it('uses each real reader question set without a cascadesByKind map', async () => {
@@ -31,8 +31,8 @@ it('uses each real reader question set without a cascadesByKind map', async () =
     git('add', 'docs');
     git('-c', 'commit.gpgsign=false', 'commit', '-m', 'Keep billing currency', '-m', 'Invoices preserve the order currency.');
     const sources = [
-      chat({ paths: [join(directory, 'transcripts')], providers: ['claude-code'] }),
-      gitHistory(directory),
+      historySource({ reader: chat({ paths: [join(directory, 'transcripts')], providers: ['claude-code'] }), ...chatSettings, labels: false }),
+      gitSource(directory),
       markdown({ paths: [join(directory, 'docs')], kind: 'docs' }),
       markdown({ paths: [join(directory, 'policy')], kind: 'rules' }),
     ];
@@ -55,9 +55,8 @@ it('uses each real reader question set without a cascadesByKind map', async () =
         expect(q.question).toBe(cascade.questions.find((item) => item.key === q.questionKey)!.instructions);
       }
     }
-    expect(picked.record.levers.preset).toBe('agent-tasks');
-    expect(picked.record.levers.labels).toBe(false);
-    expect(picked.record.thresholds.reference).toBe(0.0146);
+    expect(Object.values(picked.record.levers.sources).every((settings) => !settings.labels)).toBe(true);
+    expect(Object.values(picked.record.levers.sources).every((settings) => settings.bar === 0.0146)).toBe(true);
     expect(picked.record.labels).toBeUndefined();
     expect(picked.selected.filter((item) => item.role === 'reference')).toHaveLength(3);
     expect(result.record.items).toHaveLength(3);

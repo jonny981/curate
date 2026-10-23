@@ -36,7 +36,7 @@ if (!replayFile) {
 const root = dirname(fileURLToPath(import.meta.url));
 const { pick, decisionFileStore } = await import(
   pathToFileURL(join(root, '../packages/core/dist/index.js')).href);
-const uncutPick = { everyRanked: true, everyScored: true, labels: false, rare: false };
+const uncutPick = { everyRanked: true, rare: false };
 const { task, options = {}, candidates, answers } = JSON.parse(readFileSync(replayFile, 'utf8'));
 
 let calls = 0;

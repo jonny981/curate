@@ -1,0 +1,68 @@
+[
+  {
+    "tool": "list_workspace_users",
+    "args": {},
+    "result": {
+      "users": [
+        {
+          "key": "daniela",
+          "name": "Daniela Schultz"
+        },
+        {
+          "key": "ines",
+          "name": "Ines Kovac"
+        },
+        {
+          "key": "marcus_tanaka",
+          "name": "Marcus Tanaka"
+        },
+        {
+          "key": "marcus_vail",
+          "name": "Marcus Vail"
+        },
+        {
+          "key": "maya",
+          "name": "Maya Shah"
+        },
+        {
+          "key": "mom",
+          "name": "Mom"
+        },
+        {
+          "key": "owen",
+          "name": "Owen Pham"
+        },
+        {
+          "key": "priya",
+          "name": "Priya Devarajan"
+        },
+        {
+          "key": "riley",
+          "name": "Riley Tanaka"
+        },
+        {
+          "key": "sam",
+          "name": "Sam Okonkwo"
+        },
+        {
+          "key": "tomas",
+          "name": "Tomás Vega"
+        }
+      ]
+    }
+  },
+  {
+    "tool": "send_slack_dm",
+    "args": {
+      "user": "tomas",
+      "message": "Fixed Q2 2027 Helio Start paid-test lane (25 admissions, Apr 12–May 17; all day-90 windows complete): 18 paid-active, $27,860 refund-adjusted collected cash, 33 median/116 90th-percentile account-level support minutes, and 5/25 above 90 minutes; descriptive only—no causal-acquisition, support-improvement, scale/scale-readiness, revenue, pipeline, or forecast claim/credit, and no further Q3 batch authorized."
+    },
+    "result": {
+      "ok": true,
+      "id": "send_slack_dm_e49a0afaffa64c7ab4173377fdfe47d6",
+      "user": "tomas",
+      "message": "Fixed Q2 2027 Helio Start paid-test lane (25 admissions, Apr 12–May 17; all day-90 windows complete): 18 paid-active, $27,860 refund-adjusted collected cash, 33 median/116 90th-percentile account-level support minutes, and 5/25 above 90 minutes; descriptive only—no causal-acquisition, support-improvement, scale/scale-readiness, revenue, pipeline, or forecast claim/credit, and no further Q3 batch authorized.",
+      "sent_at": "2026-10-22T10:08:29.018686Z"
+    }
+  }
+]

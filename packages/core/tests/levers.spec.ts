@@ -6,7 +6,6 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   LABEL_KINDS,
   curate,
-  agentTasks,
   pick,
   pickFromSources,
   ROUTE_QUESTIONS,
@@ -18,7 +17,7 @@ import {
   type PickDecide,
 } from '../src/index.js';
 
-const uncutPick = { everyRanked: true, everyScored: true, labels: false, rare: false } as const;
+const uncutPick = { everyRanked: true, everyScored: true, rare: false } as const;
 
 function candidate(overrides: Partial<MemoryCandidate> & Pick<MemoryCandidate, 'sourceId' | 'id'>): MemoryCandidate {
   return {
@@ -92,104 +91,92 @@ afterEach(() => {
   while (directories.length) rmSync(directories.pop()!, { recursive: true, force: true });
 });
 
-describe('levers and presets', () => {
-  it('records keeping every scored part as a custom setting', async () => {
+describe('levers', () => {
+  it('records keeping every scored part', async () => {
     const candidates = [0.9, 0.5, 0.1].map((probability, index) =>
       candidate({ sourceId: 'notes', id: `p${index}`, signals: { score: 1 } }));
     const decide = async (batch: PickBatch) => Object.fromEntries(
       batch.questions.map((question) => [question.key, answered(0.8)]));
-    const plain = await pick(candidates, { task: 'Recall the plan', decide, everyScored: true, labels: false });
-    const preset = await pick(candidates, { task: 'Recall the plan', decide, ...uncutPick });
-    expect(preset.record).toEqual(plain.record);
-    expect(preset.selected).toEqual(plain.selected);
+    const plain = await pick(candidates, { task: 'Recall the plan', decide, everyScored: true });
+    const uncut = await pick(candidates, { task: 'Recall the plan', decide, ...uncutPick });
+    expect(uncut.record).toEqual(plain.record);
+    expect(uncut.selected).toEqual(plain.selected);
     expect(plain.record.levers).toEqual({
-      preset: 'custom',
       everyRanked: true,
       everyScored: true,
-      labels: false,
       route: false,
       rare: false,
+      sources: { notes: { labels: false, rare: false, bar: 0 } },
     });
 
     const readPlain = await pickFromSources([laneSource()], { task: 'task' },
-      { task: 'task', decide, everyScored: true, labels: false });
-    const readPreset = await pickFromSources([laneSource()], { task: 'task', wholeLanes: false },
+      { task: 'task', decide, everyScored: true });
+    const readUncut = await pickFromSources([laneSource()], { task: 'task', wholeLanes: false },
       { task: 'task', decide, ...uncutPick });
-    expect(readPreset.record).toEqual(readPlain.record);
+    expect(readUncut.record).toEqual(readPlain.record);
     expect(readPlain.record.levers).toEqual({
-      preset: 'custom', wholeLanes: false,
-      everyRanked: true, everyScored: true, labels: false, route: false, rare: false,
+      wholeLanes: false, everyRanked: true, everyScored: true, route: false, rare: false, sources: { notes: { labels: false, rare: false, bar: 0 } },
     });
   });
 
-  it('matches the default preset to an explicit decision bar', async () => {
+  it('cuts at the 0.0146 decision bar by default, as an explicit bar does', async () => {
     const candidates = [0.9, 0.05, 0.01].map((probability, index) =>
       candidate({ sourceId: 'notes', id: `p${index}`, signals: { score: 1 }, text: `part ${probability}` }));
     const decide = async (batch: PickBatch) => Object.fromEntries(batch.questions.map((question) =>
       [question.key, answered(Number(question.id.slice(1)) === 0 ? 0.9 : Number(question.id.slice(1)) === 1 ? 0.05 : 0.01)]));
-    const preset = await pick(candidates, { task: 'Recall the plan', decide, ...agentTasks.pick });
+    const defaults = await pick(candidates, { task: 'Recall the plan', decide });
     const literal = await pick(candidates, {
-      task: 'Recall the plan', decide, everyScored: { bar: 0.0146 }, labels: false,
+      task: 'Recall the plan', decide, everyScored: { bar: 0.0146 },
     });
-    expect(preset.record).toEqual(literal.record);
-    expect(preset.selected).toEqual(literal.selected);
+    expect(defaults.record.candidates).toEqual(literal.record.candidates);
+    expect(defaults.selected).toEqual(literal.selected);
     // The default cut references below 0.0146.
-    expect(preset.record.thresholds.reference).toBe(0.0146);
-    expect(preset.selected.map((item) => item.id)).toEqual(['p0', 'p1']);
-    expect(preset.record.levers).toEqual({
-      preset: 'agent-tasks',
+    expect(defaults.selected.map((item) => item.id)).toEqual(['p0', 'p1']);
+    expect(defaults.record.levers).toEqual({
       everyRanked: true,
-      everyScored: { bar: 0.0146 },
-      labels: false,
       route: false,
       rare: false,
+      sources: { notes: { labels: false, rare: false, bar: 0.0146 } },
     });
+    expect(literal.record.levers.everyScored).toEqual({ bar: 0.0146 });
 
-    const read = await pickFromSources([laneSource()], { task: 'task', ...agentTasks.read },
-      { task: 'task', decide, ...agentTasks.pick });
+    const read = await pickFromSources([laneSource()], { task: 'task' }, { task: 'task', decide });
     // The lane cut stays on: the curve keeps the head only.
     expect(read.reads[0]?.status === 'read' && read.reads[0].candidates).toHaveLength(1);
     expect(read.record.levers).toEqual({
-      preset: 'agent-tasks', wholeLanes: false,
-      everyRanked: true, everyScored: { bar: 0.0146 }, labels: false, route: false, rare: false,
+      wholeLanes: false, everyRanked: true, route: false, rare: false, sources: { notes: { labels: false, rare: false, bar: 0.0146 } },
     });
 
-    const plain = await curate('Recall the plan', preset, { write: writer().write });
-    const routed = await curate('Recall the plan', preset, { write: writer().write, ...agentTasks.curate });
-    expect(routed.record.working).toBe(plain.record.working);
+    const plain = await curate('Recall the plan', defaults, { write: writer().write });
     expect(plain.record.route).toBeUndefined();
     expect(plain.record.levers.route).toEqual({ asked: false, applied: false });
   });
 
-  it('changes only the flipped lever when a preset is spread and one lever flipped', async () => {
+  it('changes only the lever a call flips', async () => {
     const parts = Array.from({ length: 100 }, (_, index) =>
       candidate({ sourceId: 'notes', id: `p${index}`, searchRanks: [index], signals: { score: 1 } }));
     const counter = stubDecide(() => answered(0.9));
     const result = await pick(parts, {
       task: 'Recall the plan', decide: counter.decide,
-      ...agentTasks.pick, everyRanked: { c: 0.68 },
+      everyRanked: { c: 0.68 },
     });
     // Only everyRanked changed: the decide step read the top 27, the
-    // 0.0146 bar still stood, and the record names the mode custom.
+    // 0.0146 bar still stood.
     expect(decidedIds(counter.calls)).toHaveLength(27);
     expect(result.record.pick).toEqual({ n: 100, c: 0.68, kept: 27, ranking: 'keyword' });
     expect(result.record.levers).toEqual({
-      preset: 'custom',
       everyRanked: { c: 0.68 },
-      everyScored: { bar: 0.0146 },
-      labels: false,
       route: false,
       rare: false,
+      sources: { notes: { labels: false, rare: false, bar: 0.0146 } },
     });
-    expect(result.record.thresholds.reference).toBe(0.0146);
 
     const read = await pickFromSources([laneSource()],
       { task: 'task', wholeLanes: true },
       { task: 'task', decide: stubDecide(() => answered(0.9)).decide, ...uncutPick });
     expect(read.reads[0]?.status === 'read' && read.reads[0].candidates).toHaveLength(6);
     expect(read.record.levers).toEqual({
-      preset: 'custom', wholeLanes: true,
-      everyRanked: true, everyScored: true, labels: false, route: false, rare: false,
+      wholeLanes: true, everyRanked: true, everyScored: true, route: false, rare: false, sources: { notes: { labels: false, rare: false, bar: 0 } },
     });
   });
 
@@ -202,26 +189,23 @@ describe('levers and presets', () => {
       { task: 'task', meaning: { embed } },
       { task: 'task', decide, ...uncutPick });
     expect(followed.record.levers).toEqual({
-      preset: 'custom', wholeLanes: false,
-      everyRanked: true, everyScored: true, labels: false, route: false, rare: false,
+      wholeLanes: false, everyRanked: true, everyScored: true, route: false, rare: false, sources: { notes: { labels: false, rare: false, bar: 0 } },
     });
 
     // A meaning override that disagrees with the keyword lanes records
-    // both resolved states, and no preset holds the split.
+    // both resolved states.
     const meaningWhole = await pickFromSources([laneSource()],
       { task: 'task', meaning: { embed, wholeLanes: true } },
       { task: 'task', decide, ...uncutPick });
     expect(meaningWhole.record.levers.wholeLanes).toEqual({ keyword: false, meaning: true });
-    expect(meaningWhole.record.levers.preset).toBe('custom');
 
     const keywordWhole = await pickFromSources([laneSource()],
       { task: 'task', wholeLanes: true, meaning: { embed, wholeLanes: false } },
       { task: 'task', decide, ...uncutPick });
     expect(keywordWhole.record.levers.wholeLanes).toEqual({ keyword: true, meaning: false });
-    expect(keywordWhole.record.levers.preset).toBe('custom');
   });
 
-  it('adds labels to explicit levers with a caller-supplied store and deciderId', async () => {
+  it('runs labels for a source with label kinds, with a caller-supplied store and deciderId', async () => {
     const parts = [
       candidate({ sourceId: 'notes', id: 'lane', searchRanks: [0], signals: { score: 1 } }),
       candidate({ sourceId: 'notes', id: 'pool', poolOnly: true, signals: { score: 0 } }),
@@ -235,12 +219,11 @@ describe('levers and presets', () => {
     // The label lane admitted the pool part the keyword lane never held.
     expect(decidedIds(counter.calls)).toEqual(expect.arrayContaining(['lane', 'pool']));
     expect(result.record.levers).toEqual({
-      preset: 'custom',
       everyRanked: true,
       everyScored: true,
-      labels: true,
       route: false,
       rare: false,
+      sources: { notes: { labels: true, rare: false, bar: 0 } },
     });
   });
 
@@ -321,18 +304,14 @@ describe('levers and presets', () => {
       expect(applied.calls[0]!.instructions).toContain("Working (the curator's");
       expect(plain.calls[0]!.instructions).not.toContain("Working (the curator's");
       // The pick record kept 'asked'; the curate record keeps both
-      // route states — the questions asked and the answers applied —
-      // and asked alone already spent the questions, so its preset
-      // names no preset.
+      // route states: the questions asked and the answers applied.
       expect(unrouted.record.levers).toEqual({
-        preset: 'custom',
-        everyRanked: true, everyScored: true, labels: false,
-        route: { asked: true, applied: false }, rare: false,
+        everyRanked: true, everyScored: true,
+        route: { asked: true, applied: false }, rare: false, sources: { notes: { labels: false, rare: false, bar: 0 } },
       });
       expect(routedCurate.record.levers).toEqual({
-        preset: 'custom',
-        everyRanked: true, everyScored: true, labels: false,
-        route: { asked: true, applied: true }, rare: false,
+        everyRanked: true, everyScored: true,
+        route: { asked: true, applied: true }, rare: false, sources: { notes: { labels: false, rare: false, bar: 0 } },
       });
     });
 
@@ -449,18 +428,16 @@ describe('levers and presets', () => {
       expect(counter.calls).toHaveLength(0);
     });
 
-    it('lets a preset spread take added known keys', async () => {
+    it('takes added known keys beside the levers', async () => {
       const counter = stubDecide(() => answered(0.9));
-      const picked = await pick([part], { task: 'task', decide: counter.decide,
-        ...agentTasks.pick, keepTop: 1 });
-      expect(picked.record.levers.everyScored).toEqual({ bar: 0.0146 });
+      const picked = await pick([part], { task: 'task', decide: counter.decide, keepTop: 1 });
+      expect(picked.record.levers.sources.notes?.bar).toBe(0.0146);
       const read = await pickFromSources([laneSource()],
-        { task: 'task', ...agentTasks.read, limit: 5 },
-        { task: 'task', decide: counter.decide, ...agentTasks.pick });
+        { task: 'task', limit: 5 },
+        { task: 'task', decide: counter.decide });
       expect(read.reads[0]?.status).toBe('read');
       const written = writer();
-      const result = await curate('task', picked,
-        { write: written.write, ...agentTasks.curate, working: true });
+      const result = await curate('task', picked, { write: written.write, working: true });
       expect(result.record.working).toBe(true);
     });
 

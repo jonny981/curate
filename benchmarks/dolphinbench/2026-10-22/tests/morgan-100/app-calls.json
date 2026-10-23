@@ -1,0 +1,21 @@
+[
+  {
+    "tool": "create_doc",
+    "args": {
+      "title": "Sep 14 support-triage summary",
+      "body": "Support triage summary — Sep 14, 2026\n\nAcme / Atlas API v2\n- Acme asked where the export documentation explains resuming a request after a connection drop, and whether the example covers a long date range.\n- Classification: documentation clarification, not a report of a failed export.\n\nEvergreen / Mercury usage\n- Evergreen asked whether the usage wording in its help text refers to active developers or every invited teammate, and requested an example of someone invited but inactive during the month.\n- The repeated Evergreen wording entry in the handoff is the same question, not a separate customer or incident.\n\nMercury teammate support\n- Three separate source-specific tickets arrived: an invitation email did not arrive, an unexpected role label appeared, and the teammate list did not refresh after a change.\n- No evidence here indicates a shared cause.\n\nAtlas JWT\n- A customer asked which timestamps to include in the support thread for a JWT clock-skew question.\n- The on-call handoff reports no customer-impacting incident.\n\nTriage disposition\n- Handle the Acme, Evergreen, Mercury, and Atlas items through normal documentation/support routes.\n- Do not classify the notes as a confirmed export failure, shared Mercury incident, or customer-impacting Atlas incident.",
+      "folder": "default"
+    },
+    "result": {
+      "ok": true,
+      "document": {
+        "id": "doc_c7c46a6c2c084348afb33b98ac28438d",
+        "title": "Sep 14 support-triage summary",
+        "body": "Support triage summary — Sep 14, 2026\n\nAcme / Atlas API v2\n- Acme asked where the export documentation explains resuming a request after a connection drop, and whether the example covers a long date range.\n- Classification: documentation clarification, not a report of a failed export.\n\nEvergreen / Mercury usage\n- Evergreen asked whether the usage wording in its help text refers to active developers or every invited teammate, and requested an example of someone invited but inactive during the month.\n- The repeated Evergreen wording entry in the handoff is the same question, not a separate customer or incident.\n\nMercury teammate support\n- Three separate source-specific tickets arrived: an invitation email did not arrive, an unexpected role label appeared, and the teammate list did not refresh after a change.\n- No evidence here indicates a shared cause.\n\nAtlas JWT\n- A customer asked which timestamps to include in the support thread for a JWT clock-skew question.\n- The on-call handoff reports no customer-impacting incident.\n\nTriage disposition\n- Handle the Acme, Evergreen, Mercury, and Atlas items through normal documentation/support routes.\n- Do not classify the notes as a confirmed export failure, shared Mercury incident, or customer-impacting Atlas incident.",
+        "folder": "default",
+        "created_at": "2026-10-22T10:05:35.127859Z",
+        "url": "https://docs.mock/doc_c7c46a6c2c084348afb33b98ac28438d"
+      }
+    }
+  }
+]

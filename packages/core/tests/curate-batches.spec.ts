@@ -9,7 +9,7 @@ import {
   type PickResult,
 } from '../src/index.js';
 
-const uncutPick = { everyRanked: true, everyScored: true, labels: false, rare: false } as const;
+const uncutPick = { everyRanked: true, everyScored: true, rare: false } as const;
 
 const candidate = (id: string, overrides: Partial<MemoryCandidate> = {}): MemoryCandidate => ({
   sourceId: 'notes', id, title: id, text: `Text ${id}`, role: 'reference', signals: {}, ...overrides,
@@ -36,8 +36,8 @@ function picked(
     selected: items,
     record: {
       questionVersion: 'test', limits: {},
-      thresholds: { reference: 0, rule: 0, linkedPathBar: 0 }, rulesCoverage: 'complete',
-      levers: { preset: 'custom', everyRanked: true, everyScored: true, labels: false, route: false, rare: false },
+      thresholds: { linkedPathBar: 0 }, rulesCoverage: 'complete',
+      levers: { everyRanked: true, everyScored: true, route: false, rare: false, sources: {} },
       candidates: items.map((item, index) => {
         const itemTags = tagMap[`${item.sourceId}/${item.id}`] ?? tagMap[item.id];
         return {

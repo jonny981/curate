@@ -1,0 +1,90 @@
+[
+  {
+    "tool": "create_calendar_event",
+    "args": {
+      "title": "Reminder: $250 employer HSA deposit on Jan 15",
+      "start": "2028-01-12T09:00-06:00",
+      "end": "2028-01-12T09:10-06:00",
+      "attendees": null,
+      "body": "Scheduled deposit: $250 on January 15, 2028. Eligibility condition: remain HSA-eligible on the deposit date."
+    },
+    "result": {
+      "ok": true,
+      "id": "evt_9ccdde66e2e941989df29752fa86a034",
+      "event": {
+        "id": "evt_9ccdde66e2e941989df29752fa86a034",
+        "attendees": [],
+        "title": "Reminder: $250 employer HSA deposit on Jan 15",
+        "start": "2028-01-12T09:00-06:00",
+        "end": "2028-01-12T09:10-06:00",
+        "body": "Scheduled deposit: $250 on January 15, 2028. Eligibility condition: remain HSA-eligible on the deposit date."
+      }
+    }
+  },
+  {
+    "tool": "create_calendar_event",
+    "args": {
+      "title": "Reminder: $250 employer HSA deposit on Apr 15",
+      "start": "2028-04-12T09:00-05:00",
+      "end": "2028-04-12T09:10-05:00",
+      "attendees": null,
+      "body": "Scheduled deposit: $250 on April 15, 2028. Eligibility condition: remain HSA-eligible on the deposit date."
+    },
+    "result": {
+      "ok": true,
+      "id": "evt_8caa0028f077470e931ddbd5500edb7b",
+      "event": {
+        "id": "evt_8caa0028f077470e931ddbd5500edb7b",
+        "attendees": [],
+        "title": "Reminder: $250 employer HSA deposit on Apr 15",
+        "start": "2028-04-12T09:00-05:00",
+        "end": "2028-04-12T09:10-05:00",
+        "body": "Scheduled deposit: $250 on April 15, 2028. Eligibility condition: remain HSA-eligible on the deposit date."
+      }
+    }
+  },
+  {
+    "tool": "create_calendar_event",
+    "args": {
+      "title": "Reminder: $250 employer HSA deposit on Jul 15",
+      "start": "2028-07-12T09:00-05:00",
+      "end": "2028-07-12T09:10-05:00",
+      "attendees": null,
+      "body": "Scheduled deposit: $250 on July 15, 2028. Eligibility condition: remain HSA-eligible on the deposit date."
+    },
+    "result": {
+      "ok": true,
+      "id": "evt_3f986501376b4fa4a2af8b09431137ae",
+      "event": {
+        "id": "evt_3f986501376b4fa4a2af8b09431137ae",
+        "attendees": [],
+        "title": "Reminder: $250 employer HSA deposit on Jul 15",
+        "start": "2028-07-12T09:00-05:00",
+        "end": "2028-07-12T09:10-05:00",
+        "body": "Scheduled deposit: $250 on July 15, 2028. Eligibility condition: remain HSA-eligible on the deposit date."
+      }
+    }
+  },
+  {
+    "tool": "create_calendar_event",
+    "args": {
+      "title": "Reminder: $250 employer HSA deposit on Oct 15",
+      "start": "2028-10-12T09:00-05:00",
+      "end": "2028-10-12T09:10-05:00",
+      "attendees": null,
+      "body": "Scheduled deposit: $250 on October 15, 2028. Eligibility condition: remain HSA-eligible on the deposit date."
+    },
+    "result": {
+      "ok": true,
+      "id": "evt_6fc994a2faf847bd8f0960b94da68174",
+      "event": {
+        "id": "evt_6fc994a2faf847bd8f0960b94da68174",
+        "attendees": [],
+        "title": "Reminder: $250 employer HSA deposit on Oct 15",
+        "start": "2028-10-12T09:00-05:00",
+        "end": "2028-10-12T09:10-05:00",
+        "body": "Scheduled deposit: $250 on October 15, 2028. Eligibility condition: remain HSA-eligible on the deposit date."
+      }
+    }
+  }
+]

@@ -1,0 +1,38 @@
+{
+  "test": "alex/200",
+  "asked": "2028-01-01",
+  "passed": false,
+  "mem0_passed": false,
+  "no_memory_passed": false,
+  "fact_messages_passed": true,
+  "parts_decided": 417,
+  "parts_read": 312,
+  "curator_batches": 1,
+  "batch_tokens": 150000,
+  "curator_output_tokens_per_pass": [
+    2066,
+    1984
+  ],
+  "stalled_curator_calls_retried": 0,
+  "curator_input_tokens": 116289,
+  "curator_output_tokens": 4050,
+  "log_chars": 11504,
+  "jev_cost_usd": 0,
+  "agent_seconds": 14.388,
+  "agent_usage": {
+    "input_tokens": 34345,
+    "cached_input_tokens": 24832,
+    "cache_write_input_tokens": 0,
+    "output_tokens": 548,
+    "reasoning_output_tokens": 202
+  },
+  "judge_calls": 0,
+  "judge_seconds": 0,
+  "list_cost": {
+    "jev_usd": 0,
+    "curator_list_usd": 0.2731,
+    "agent_list_usd": 0.00306,
+    "total_usd": 0.2761
+  },
+  "log_sha256_as_read": "925218ed40369ae0de1f5c542a3f281737ff76f23015ac6cd1dba224e0254321"
+}

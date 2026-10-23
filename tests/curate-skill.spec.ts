@@ -7,13 +7,13 @@ import { join, resolve } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { LABEL_KINDS, curate, pickFromSources, type CandidateReadRequest, type CandidateSource, type MemoryCandidate } from '@curatejs/core';
-import { chat } from '@curatejs/chat';
-import { gitHistory } from '@curatejs/git';
+import { LABEL_KINDS, curate, historySource, pickFromSources, type CandidateReadRequest, type CandidateSource, type MemoryCandidate } from '@curatejs/core';
+import { chat, chatSettings } from '@curatejs/chat';
+import { git as gitSource } from '@curatejs/git';
 // @ts-expect-error The standalone JavaScript command has no type declarations.
 import { allowedSession, curationEvidence, decisionAnswers, instructionsProfile, jevRequest, pickFullSources, rankMatches, parseArgs, parseSearches, parseSources, run, sandboxAvailable, searchSource, sessionHeader, snapshotCodex, subscription } from '../skills/curate/run.mjs';
 
-const uncutPick = { everyRanked: true, everyScored: true, labels: false, rare: false } as const;
+const uncutPick = { everyRanked: true, everyScored: true, rare: false } as const;
 
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
@@ -291,7 +291,7 @@ it('sends every part when whole lanes are requested, including short-word correc
   rows.push(JSON.stringify({ type: 'user', sessionId: 'unmatched', timestamp: '2026-01-01T12:00:00Z',
     message: { content: 'Breakfast pancakes.' } }));
   await writeFile(join(directory, 'session.jsonl'), rows.join('\n'));
-  const source = chat({ providers: ['claude-code'], paths: [directory] });
+  const source = historySource({ reader: chat({ providers: ['claude-code'], paths: [directory] }), ...chatSettings, labels: false });
   const searches = { chat: { keywords: ['orchard', 'We asked for orchard'], answers: ['fruit trees', 'planted trees'] } };
   const asked: string[] = [];
   const picked = await pickFullSources([searchSource(source, searches, [], directory)], {
@@ -412,7 +412,7 @@ it('pins later git searches to the first read even when a new commit lands durin
   git('add', 'orchard.txt');
   git('commit', '-m', 'Plant orchard');
   const original = git('rev-parse', 'HEAD').toString().trim();
-  const source = gitHistory(directory);
+  const source = gitSource(directory);
   let first = true;
   const changingSource: CandidateSource = { ...source, read: async (request) => {
     const result = await source.read(request);
@@ -447,7 +447,7 @@ it('skips label-only pool reads for sources without kinds while retaining ranked
   expect(read).toHaveBeenCalledTimes(1);
   read.mockClear();
   const counted = await pickFullSources([source], { task: 'hit' }, {
-    ...options, labels: false, everyRanked: { c: 1 },
+    ...options, everyRanked: { c: 1 },
   });
   expect(read).toHaveBeenCalledTimes(2);
   expect(counted.record.pick.n).toBe(2);
@@ -469,7 +469,7 @@ it('recovers a part outside cut reads through the source label kinds', async () 
     } };
   const asked: string[] = [];
   const picked = await pickFullSources([source], { task: 'Which bicycle does the user own?' }, {
-    task: 'Which bicycle does the user own?', labels: {},
+    task: 'Which bicycle does the user own?',
     decide: async ({ questions }: { questions: { key: string; id: string; text: string; questionKey?: string }[] }) =>
       Object.fromEntries(questions.map((question) => {
         if (question.questionKey === undefined) asked.push(question.text);
@@ -481,7 +481,7 @@ it('recovers a part outside cut reads through the source label kinds', async () 
   expect(asked).toContain(parts[1]!.text);
   expect(reads).toContain(false);
   expect(reads).toContain(true);
-  expect(picked.record.levers.preset).toBe('conversation-recall');
+  expect(picked.record.levers.sources.notes).toEqual({ kind: 'markdown', labels: true, rare: false, bar: 0.0146 });
   expect(picked.record.labels.gate).toBe(2);
 });
 
@@ -496,7 +496,7 @@ it('preserves an incomplete limited read beside the complete explicit label pool
       ? { status: 'read', complete: false, partial: 'the limit kept 1 of 2 candidates', candidates: parts.slice(0, 1) }
       : { status: 'read', complete: true, candidates: parts } };
   const picked = await pickFullSources([source], { task: 'orchard', wholeLanes: true, limit: 1 }, {
-    task: 'orchard', labels: {}, decide: async ({ questions }: { questions: { key: string }[] }) =>
+    task: 'orchard', decide: async ({ questions }: { questions: { key: string }[] }) =>
       Object.fromEntries(questions.map((question) => [question.key, { status: 'answered', probability: 0.8 }])),
   });
   expect(picked.reads[0]).toMatchObject({
@@ -867,7 +867,7 @@ describe('search line repair', () => {
     expect(record.searchRepairs).toBeUndefined();
     expect(record.searches).toEqual(searches());
     expect(record.pick.labels).toBeUndefined();
-    expect(record.pick.levers.labels).toBe(false);
+    expect(Object.values(record.pick.levers.sources as Record<string, { labels: boolean }>).every((settings) => !settings.labels)).toBe(true);
   });
 });
 

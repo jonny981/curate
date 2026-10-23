@@ -10,7 +10,7 @@ import {
   decisionKey, storedDecision, type DecisionStore,
 } from './decisions.js';
 import { ROUTE_QUESTIONS, routeOptions, type RouteKey, type RouteOption } from './task.js';
-import { agentTasks, presetName, type LeverStates, type PresetName } from './levers.js';
+import type { LeverStates } from './levers.js';
 import { checkPickOptions } from './options.js';
 
 export type MemoryCandidateRole = 'reference' | 'rule';
@@ -185,8 +185,6 @@ export interface PickLimits {
 }
 
 export interface PickThresholds {
-  /** Keep every scored rule by default; set a bar to filter applicability. */
-  readonly rule?: number;
   /** The bar a 'reference' candidate at or above it still clears when a
    *  threshold-selected commit from the same `repository` names its
    *  `path` in `changedPaths`. Applies only to references rejected by a cut.
@@ -311,24 +309,21 @@ export interface PickRecord {
   readonly ranking?: PickOptions['ranking'];
   readonly questionVersion: string;
   readonly limits: PickLimits;
+  /** The bars each source's parts were cut at live on
+   *  `levers.sources`; these are the bars for the whole call. */
   readonly thresholds: {
-    /** The resolved reference-selection bar `everyScored` set: 0 when
-     *  the lever stayed on and every scored part was kept. */
-    readonly reference: number;
-    readonly rule: number;
     readonly linkedPathBar: number;
     /** The size curve `everyScored: { bySize }` supplied, sorted. */
     readonly referenceBySize?: readonly (readonly [number, number])[];
     /** The bar `referenceBySize` produced for this set's size. */
     readonly appliedReference?: number;
   };
-  /** The preset this pick's lever set resolved to — 'agent-tasks',
-   *  'conversation-recall' or 'custom' — and every lever's state as resolved.
-   *  `wholeLanes` lives on the read request, so only a record
+  /** Every lever's state as resolved, with the settings each source ran
+   *  with under `sources`. `wholeLanes` lives on the read request, so only a record
    *  pickFromSources produced carries it. `route` records the
    *  questions asked; the curate record's own `levers.route` keeps
    *  that state as `asked` beside the curator's `applied`. */
-  readonly levers: { readonly preset: PresetName } & LeverStates;
+  readonly levers: LeverStates;
   readonly candidates: readonly PickRecordEntry[];
   readonly rulesCoverage: 'complete' | 'incomplete';
   /** Present when a decide call rejected its batch and ended the pick:
@@ -420,9 +415,10 @@ export interface PickRecord {
     readonly rare?: {
       readonly share: number;
       readonly bar: number;
-      /** Reference count in the enabled sources, when defaults are per source. */
-      readonly n?: number;
-      readonly words: readonly string[];
+      /** Each source the round ran on, by source id: its reference
+       *  count N, which sets its bound, and the rare words its selected
+       *  parts contributed. */
+      readonly sources: Readonly<Record<string, { readonly n: number; readonly words: readonly string[] }>>;
       readonly pulled: readonly { readonly sourceId: string; readonly id: string }[];
       readonly asked: number;
       readonly added: number;
@@ -497,10 +493,11 @@ export interface PickOptions {
    *  `maxBatches` and `maxElapsedMs`, and a stop while labelling leaves
    *  the decide step unasked. The label lane is not capped by
    *  `maxCandidates`: every part in it reaches the decide step unless
-   *  the scaled top-k dial caps the merged ranking. With `labels`
-   *  unset the gate is off. Pass {} to enable it with the default
-   *  directory and decider identity, or false to disable it. */
-  readonly labels?: PickLabels | false;
+   *  the scaled top-k dial caps the merged ranking. The gate runs when a
+   *  source carries label kinds; `labels` only sets where labels are
+   *  stored and the decider identity they are keyed by, with defaults
+   *  for both. */
+  readonly labels?: PickLabels;
   /** The decision cache, off by default: each answered decide response
    *  is stored once under a key naming the exact part question it
    *  answers, and a later pick reuses it instead of asking the decider
@@ -542,8 +539,9 @@ export interface PickOptions {
    *  was cut; dropped candidates record 'unassessed' with reason
    *  'pick'. */
   readonly everyRanked?: true | { readonly c: number };
-  /** Keep every scored part with true. The default cuts at the
-   *  0.0146 bar. `{ bar }` cuts references
+  /** The decision-score bars for every source at once, in place of
+   *  each source's own `bar` (`barBySource`). Unset, each source's bar
+   *  applies. Keep every scored part with true. `{ bar }` cuts references
    *  the decision model scored below that flat decision bar;
    *  `{ bySize }` cuts below a bar that rises with the
    *  answered-reference count, as [count, bar] points in size order —
@@ -558,25 +556,37 @@ export interface PickOptions {
     readonly bySize?: readonly (readonly [number, number])[];
   };
   /** The rare-word round: a second, narrow pass after
-   *  the selection pass. The words of the parts that cleared the
-   *  selection bar are kept to the rare ones, rare meaning a document
-   *  frequency over reference parts in enabled sources of at most `share` × N
-   *  (default 5/850, the count of 5 fitted on an 850-part history). On
-   *  a history under 340 parts the default share can pull nothing: a
-   *  word a part shares appears in at least 2 parts, and 5/850 × N
-   *  stays below 2. Every unselected part sharing a rare word is
+   *  the selection pass, run within each enabled source on its own. The
+   *  words of a source's parts that cleared the selection bar are kept
+   *  to the rare ones, rare meaning a document frequency over that
+   *  source's reference parts of at most `share` × N, N that source's
+   *  reference count (default 5/850, the count of 5 fitted on an
+   *  850-part history). On a source under 340 parts the default share
+   *  can pull nothing: a word a part shares appears in at least 2
+   *  parts, and 5/850 × N stays below 2. Every unselected part of that
+   *  source sharing one of its rare words is
    *  pulled in, pool members included: one never asked goes through
    *  the decide step, one already decided reuses its score, and a part
    *  scoring at or above `bar` joins the selection. `bar` is a second,
    *  lower bar than the selection bar (default 0.0146); the seeds keep
-   *  the pick's own bar. `true` runs the defaults, an object supplies
-   *  them. Omit it to use rareBySource, or false to disable every source.
-   *  The record's `pick.rare` lists the rare words used, the
-   *  parts pulled in, and how many were asked and added. */
+   *  their source's own bar. `true` runs the defaults on every source,
+   *  an object supplies them. Omit it to use rareBySource, or false to
+   *  disable every source. The record's `pick.rare` lists each source's
+   *  N and rare words, the parts pulled in, and how many were asked and
+   *  added. */
   readonly rare?: boolean | { readonly share?: number; readonly bar?: number };
   /** Reader defaults keyed by source ID; omitted sources are off.
    *  pickFromSources supplies these. An explicit rare option overrides them. */
   readonly rareBySource?: Readonly<Record<string, boolean>>;
+  /** Each source's decision-score bar for its reference parts, by
+   *  source ID: a part scored at or above it is kept. Omitted sources
+   *  use 0.0146. pickFromSources supplies these from each source's
+   *  `bar`; `everyScored` overrides them. */
+  readonly barBySource?: Readonly<Record<string, number>>;
+  /** Each source's bar for its rule parts, by source ID; omitted
+   *  sources keep every scored rule. pickFromSources supplies these
+   *  from each source's `ruleBar`. */
+  readonly ruleBarBySource?: Readonly<Record<string, number>>;
   /** False when a source that can supply rule candidates did not finish
    *  enumerating them; its read returned `complete: false`. The combined
    *  coverage can then never report a complete applicable-rule set, even
@@ -594,6 +604,10 @@ export const PICK_QUESTION_VERSION = 'memory-pick-questions-1';
  *  pass the process's file limit; reads run in groups of this size. */
 const LABEL_STORE_READ_GROUP = 64;
 const DEFAULT_MAX_PER_BATCH = 150;
+/** The bar for a source that declares none cuts scored references below
+ *  0.0146: the highest cut that lost no answer message in the
+ *  measurement on the tuning questions. */
+const DEFAULT_BAR = 0.0146;
 /** Default reader part size, in characters. Readers preserve every part;
  *  pick itself shows full candidate text unless a caller supplies a cut. */
 export const DEFAULT_MAX_QUESTION_TEXT = 700;
@@ -832,12 +846,12 @@ export async function pick(
   options: PickOptions,
 ): Promise<PickResult> {
   checkPickOptions(options);
-  const everyScored = options.everyScored ?? agentTasks.pick.everyScored;
-  if (options.labels !== undefined && options.labels !== false
+  const everyScored = options.everyScored;
+  if (options.labels !== undefined
     && (typeof options.labels !== 'object' || options.labels === null || Array.isArray(options.labels))) {
-    throw new TypeError('labels must be false or an options object.');
+    throw new TypeError('labels must be an options object.');
   }
-  const labelOptions = options.labels === undefined || options.labels === false ? undefined : {
+  const labelOptions = {
     directory: options.labels?.directory
       ?? join(process.env.XDG_CACHE_HOME || join(homedir(), '.cache'), 'curate', 'labels'),
     deciderId: options.labels?.deciderId ?? options.decide.deciderId ?? 'custom',
@@ -845,8 +859,10 @@ export async function pick(
   };
   const labelKindsBySource: Record<string, readonly LabelKind[]> = Object.create(null);
   for (const id of new Set([...Object.keys(options.labelKindsBySource ?? {}), ...candidates.map((c) => c.sourceId)])) {
-    labelKindsBySource[id] = labelOptions === undefined ? [] : options.labelKindsBySource?.[id] ?? [];
+    labelKindsBySource[id] = options.labelKindsBySource?.[id] ?? [];
   }
+  // The label gate runs when any source carries label kinds.
+  const labelsOn = Object.values(labelKindsBySource).some((kinds) => kinds.length > 0);
   const kindsFor = (candidate: MemoryCandidate) => labelKindsBySource[candidate.sourceId] ?? [];
   for (const weights of Object.values(options.ranking ?? {})) {
     if (Object.values(weights).some((weight) => !Number.isFinite(weight))) {
@@ -931,9 +947,9 @@ export async function pick(
     ...(input.maxElapsedMs !== undefined ? { maxElapsedMs: input.maxElapsedMs } : {}),
   };
   const scored = everyScored === undefined || everyScored === true ? {} : everyScored;
+  const barFor = (id: string) => everyScored === true ? 0 : scored.bar ?? options.barBySource?.[id] ?? DEFAULT_BAR;
+  const ruleBarFor = (id: string) => options.ruleBarBySource?.[id] ?? 0;
   const thresholds: PickRecord['thresholds'] = {
-    reference: probabilityLimit(scored.bar, 'everyScored.bar', 0),
-    rule: probabilityLimit(options.thresholds?.rule, 'thresholds.rule', 0),
     linkedPathBar: probabilityLimit(options.thresholds?.linkedPathBar, 'thresholds.linkedPathBar', DEFAULT_LINKED_PATH_BAR),
     ...(scored.bySize === undefined ? {}
       : { referenceBySize: [...scored.bySize].sort((left, right) => left[0] - right[0]) }),
@@ -945,19 +961,14 @@ export async function pick(
   const rareOn = options.rare === undefined ? rareSources.length > 0 : options.rare !== false;
   const rareShare = (isRecord(options.rare) ? options.rare.share : undefined) ?? RARE_SHARE;
   const rareBar = (isRecord(options.rare) ? options.rare.bar : undefined) ?? RARE_BAR;
-  const rareMatchesDefault = rareOn === Object.values(options.rareBySource ?? {}).some(Boolean)
-    && rareSourceIds.every((id) => rareForSource(id) === (options.rareBySource?.[id] === true))
-    && (!rareOn || (rareShare === RARE_SHARE && rareBar === RARE_BAR));
-  // The levers as resolved, for the record and its preset name. `pick`
+  // The levers as resolved, for the record. `pick`
   // never sees `wholeLanes`: the read request carries it, and only a
   // pickFromSources record holds it.
-  const levers: LeverStates = {
+  const levers: Omit<LeverStates, 'sources'> = {
     everyRanked: options.everyRanked ?? true,
-    everyScored: everyScored ?? true,
-    labels: labelOptions !== undefined,
+    ...(everyScored === undefined ? {} : { everyScored }),
     route: options.route === 'jev',
-    rare: rareOn ? { share: rareShare, bar: rareBar,
-      ...(options.rareBySource === undefined ? {} : { sources: rareSources }) } : false,
+    rare: rareOn ? { share: rareShare, bar: rareBar } : false,
   };
   const topK = isRecord(options.everyRanked) ? options.everyRanked.c : undefined;
   // A decide-feed dial is on when `everyRanked` supplies a c or the
@@ -1034,7 +1045,7 @@ export async function pick(
       ...rankAndInterleave(references.filter(present), new Map(), lane, options.ranking),
     ];
     for (const candidate of laneQueue.slice(0, limits.maxCandidates)) eligible.add(candidate);
-    if (labelOptions !== undefined) {
+    if (labelsOn) {
       for (const candidate of laneQueue.slice(limits.maxCandidates)) laneCut.add(candidate);
     }
   }
@@ -1262,7 +1273,7 @@ export async function pick(
     },
   });
   let routeAskedWithLabels = false;
-  if (labelOptions !== undefined) {
+  if (labelsOn) {
     if (typeof labelOptions.directory !== 'string' || !labelOptions.directory.trim()) {
       throw new TypeError('labels.directory must be a nonempty path.');
     }
@@ -1540,13 +1551,13 @@ export async function pick(
   } else if (!stop) await evaluate(feed);
 
   // The reference bar may rise with the decided set's size, so the
-  // selection pass runs once the whole feed has answered.
+  // selection pass runs once the whole feed has answered. Without that
+  // curve each reference is cut at its own source's bar.
   const decided = feed.reduce((count, candidate) =>
     count + Number(candidate.role === 'reference' && combined.get(candidate)?.status === 'answered'), 0);
-  const referenceBar = thresholds.referenceBySize === undefined
-    ? thresholds.reference
-    : sizeBar(thresholds.referenceBySize, decided);
-  const appliedReference = thresholds.referenceBySize === undefined ? undefined : referenceBar;
+  const appliedReference = thresholds.referenceBySize === undefined
+    ? undefined : sizeBar(thresholds.referenceBySize, decided);
+  const referenceBar = (id: string) => appliedReference ?? barFor(id);
   for (const candidate of feed) {
     // A failed decision batch leaves its candidates unanswered even
     // when an earlier batch answered some of their questions: a
@@ -1564,7 +1575,7 @@ export async function pick(
       continue;
     }
     if (answer.status === 'answered') {
-      const threshold = candidate.role === 'rule' ? thresholds.rule : referenceBar;
+      const threshold = candidate.role === 'rule' ? ruleBarFor(candidate.sourceId) : referenceBar(candidate.sourceId);
       const reused = answer.reused === true ? { reused: true } : {};
       if (answer.probability >= threshold) {
         selected.push(candidate);
@@ -1621,11 +1632,12 @@ export async function pick(
 
   // The rare-word round: the parts that cleared the
   // selection bar can share rare words with parts the first pass
-  // missed, so those words reach for more. A word is rare when at most
-  // share × N parts of the history contain it — document frequency
-  // over reference parts from enabled sources. Every unselected part
-  // from those sources sharing a rare word is pulled in,
-  // pool members included: one never asked is sent through the decide
+  // missed, so those words reach for more. It runs within each enabled
+  // source on its own, so a setting on one source never moves another's
+  // pick. A word is rare in a source when at most share × N of its
+  // reference parts contain it, N that source's reference count. Every
+  // unselected part of that source sharing one of its rare words is
+  // pulled in, pool members included: one never asked is sent through the decide
   // step, one already decided reuses its score, and a part scoring at
   // or above a second, lower bar joins the selection. It runs after
   // the link pass so a link-carried part stays out of the seeds — it
@@ -1633,7 +1645,6 @@ export async function pick(
   // can never carry a link.
   const rarePulled = new Set<MemoryCandidate>();
   if (rareOn && !stop) {
-    const rareReferences = references.filter((candidate) => rareForSource(candidate.sourceId));
     const wordSets = new Map<MemoryCandidate, ReadonlySet<string>>();
     const wordSet = (candidate: MemoryCandidate): ReadonlySet<string> => {
       let set = wordSets.get(candidate);
@@ -1643,25 +1654,35 @@ export async function pick(
       }
       return set;
     };
-    const frequency = new Map<string, number>();
-    for (const candidate of rareReferences) {
-      for (const word of wordSet(candidate)) frequency.set(word, (frequency.get(word) ?? 0) + 1);
-    }
-    const bound = rareShare * rareReferences.length;
-    const seeds = new Set<string>();
-    for (const candidate of selected) {
-      const status = statuses.get(candidate)!;
-      if (candidate.role !== 'reference' || !rareForSource(candidate.sourceId)
-        || status.status !== 'selected' || status.link !== undefined) {
-        continue;
+    const seedsBySource = new Map<string, Set<string>>();
+    const rareRecord: Record<string, { n: number; words: string[] }> = {};
+    for (const id of rareSources) {
+      const own = references.filter((candidate) => candidate.sourceId === id);
+      if (!own.length) continue;
+      const frequency = new Map<string, number>();
+      for (const candidate of own) {
+        for (const word of wordSet(candidate)) frequency.set(word, (frequency.get(word) ?? 0) + 1);
       }
-      for (const word of wordSet(candidate)) {
-        if ((frequency.get(word) ?? 0) <= bound) seeds.add(word);
+      const bound = rareShare * own.length;
+      const seeds = new Set<string>();
+      for (const candidate of selected) {
+        const status = statuses.get(candidate)!;
+        if (candidate.role !== 'reference' || candidate.sourceId !== id
+          || status.status !== 'selected' || status.link !== undefined) {
+          continue;
+        }
+        for (const word of wordSet(candidate)) {
+          if ((frequency.get(word) ?? 0) <= bound) seeds.add(word);
+        }
       }
+      seedsBySource.set(id, seeds);
+      rareRecord[id] = { n: own.length, words: [...seeds].sort() };
     }
-    const pulled = rareReferences.filter((candidate) =>
-      statuses.get(candidate)?.status !== 'selected'
-      && [...wordSet(candidate)].some((word) => seeds.has(word)));
+    const pulled = references.filter((candidate) => {
+      const seeds = seedsBySource.get(candidate.sourceId);
+      return seeds !== undefined && statuses.get(candidate)?.status !== 'selected'
+        && [...wordSet(candidate)].some((word) => seeds.has(word));
+    });
     // A pool member the queue never held carries no status; pulling one
     // in gives it the never-asked state a queued part starts from, and
     // `rarePulled` keeps it for the record the queue's members keep.
@@ -1706,9 +1727,7 @@ export async function pick(
       }
     }
     pickRecord = { ...pickRecord!, rare: {
-      share: rareShare, bar: rareBar,
-      ...(options.rareBySource === undefined ? {} : { n: rareReferences.length }),
-      words: [...seeds].sort(),
+      share: rareShare, bar: rareBar, sources: rareRecord,
       pulled: pulled.map((candidate) => ({ sourceId: candidate.sourceId, id: candidate.id })),
       asked, added,
     } };
@@ -1846,7 +1865,14 @@ export async function pick(
     }),
     ...(routeRecord === undefined ? {} : { route: routeRecord }),
     ...(pickRecord === undefined ? {} : { pick: pickRecord }),
-    levers: { preset: presetName(levers, rareMatchesDefault), ...levers },
+    levers: { ...levers, sources: Object.fromEntries([...new Set([
+      ...Object.keys(labelKindsBySource), ...rareSourceIds,
+      ...Object.keys(options.barBySource ?? {}), ...Object.keys(options.ruleBarBySource ?? {}),
+    ])].map((id) => [id, {
+      ...(options.sourceKinds?.[id] === undefined ? {} : { kind: options.sourceKinds[id] }),
+      labels: (labelKindsBySource[id]?.length ?? 0) > 0, rare: rareForSource(id), bar: referenceBar(id),
+      ...(candidates.some((c) => c.sourceId === id && c.role === 'rule') ? { ruleBar: ruleBarFor(id) } : {}),
+    }])) },
   };
   if (decideFailure !== undefined) {
     throw new PickError(

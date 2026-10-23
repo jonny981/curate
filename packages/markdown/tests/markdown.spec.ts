@@ -7,10 +7,10 @@ import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { pick, pickFromSources, SourceReadError, type CandidateSource, type PickAnswer, type PickBatch } from '@curatejs/core';
-import { gitHistory } from '@curatejs/git';
+import { git as gitSource } from '@curatejs/git';
 import { knowledgeBase, rules } from '../src/index.js';
 
-const uncutPick = { everyRanked: true, everyScored: true, labels: false, rare: false } as const;
+const uncutPick = { everyRanked: true, everyScored: true, rare: false } as const;
 
 // knowledgeBase's own git invocations carry `-c core.hooksPath=…`; only
 // those calls have their child environment recorded, so the fixture's own
@@ -843,7 +843,7 @@ describe('knowledgeBase git dates', () => {
     await chmod(privateNote, 0o000);
     try {
       const request = { task: 'ops work', exclude: ['docs/private.md'] };
-      const commits = await read(gitHistory(repo), request);
+      const commits = await read(gitSource(repo), request);
       const notes = await read(knowledgeBase(join(repo, 'docs')), request);
       const head = (await git(repo, ['rev-parse', 'HEAD'])).trim();
       const pinned = await read(
@@ -1023,7 +1023,7 @@ describe('knowledgeBase git dates', () => {
     // can only name a root through the readers' own anchors — the
     // repository root, not the process's cwd. On the working-tree pass
     // and the pinned pass alike, nothing beneath it is opened.
-    const commits = await read(gitHistory(repo), { task: 'ops work', exclude: ['.'] });
+    const commits = await read(gitSource(repo), { task: 'ops work', exclude: ['.'] });
     expect(commits.status).toBe('read');
     if (commits.status === 'read') expect(commits.candidates).toHaveLength(0);
     for (const request of [

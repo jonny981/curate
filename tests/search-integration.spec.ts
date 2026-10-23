@@ -4,12 +4,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it } from 'vitest';
 
-import { curate, pickFromSources, type PickCascade } from '@curatejs/core';
-import { chat } from '@curatejs/chat';
-import { gitHistory } from '@curatejs/git';
+import { curate, historySource, pickFromSources, type PickCascade } from '@curatejs/core';
+import { chat, chatSettings } from '@curatejs/chat';
+import { git as gitSource } from '@curatejs/git';
 import { knowledgeBase, rules } from '@curatejs/markdown';
 
-const uncutPick = { everyRanked: true, everyScored: true, labels: false, rare: false } as const;
+const uncutPick = { everyRanked: true, everyScored: true, rare: false } as const;
 
 it('combines search options and source questions across real readers', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'curate-search-integration-'));
@@ -31,8 +31,8 @@ it('combines search options and source questions across real readers', async () 
     git('init', '-b', 'main');
     git('add', 'notes', 'policy');
     git('-c', 'commit.gpgsign=false', 'commit', '-m', 'Apple orchard backup', '-m', 'Preserve banana harvest evidence.');
-    const readers = [chat({ paths: [join(directory, 'transcripts')], providers: ['codex'] }),
-      gitHistory(directory), knowledgeBase(join(directory, 'notes')), rules(join(directory, 'policy'))];
+    const readers = [historySource({ reader: chat({ paths: [join(directory, 'transcripts')], providers: ['codex'] }), ...chatSettings, labels: false }),
+      gitSource(directory), knowledgeBase(join(directory, 'notes')), rules(join(directory, 'policy'))];
     const kinds = new Map(readers.map((reader) => [reader.id, reader.kind]));
     const fitted = (key: string): PickCascade => ({ bias: 0, questions: [{
       key, instructions: `Check ${key}?`, true: 'It supplies evidence.', false: 'It supplies no evidence.', weight: 1,

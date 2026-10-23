@@ -1,4 +1,4 @@
-import { MARKDOWN_KEYWORD_SETTINGS, type MarkdownKeywordSettings } from './defaults.js';
+import { MARKDOWN_KEYWORD_SETTINGS, markdownSettings, rulesSettings, type MarkdownKeywordSettings } from './defaults.js';
 import { MARKDOWN_CASCADE } from './questions.js';
 import {
   hits,
@@ -29,6 +29,7 @@ import {
 } from '@curatejs/core/internal';
 import { DEFAULT_MAX_QUESTION_TEXT, type MemoryCandidate, type MemoryKind } from '@curatejs/core';
 import {
+  historySource,
   SourceReadError,
   type CandidateReadContext,
   type CandidateReadRequest,
@@ -57,7 +58,7 @@ export interface MarkdownOptions extends RulesOptions {
   readonly kind: MemoryKind;
   /** Optional part size; omitted keeps text whole. */
   readonly maxQuestionText?: number;
-  /** Repository key shared with gitHistory for changed-path links. */
+  /** Repository key shared with git() for changed-path links. */
   readonly repository?: string;
 }
 const FRONTMATTER = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*\r?\n?/;
@@ -417,9 +418,9 @@ async function listTree(
     if (record === '') continue;
     const match = /^(\d+) (\w+) ([0-9a-f]{40})\t([\s\S]*)$/.exec(record);
     if (match === null) throw new SourceReadError('failed', `Could not parse ${record}`);
-    const [, mode, type, oid, name] = match;
+    const [, fileMode, type, oid, name] = match;
     if (type !== 'blob') continue;
-    entries.push({ name: name!, oid: oid!, symlink: mode === '120000' });
+    entries.push({ name: name!, oid: oid!, symlink: fileMode === '120000' });
   }
   return entries;
 }
@@ -570,7 +571,7 @@ async function openDirectory(
   // working tree but held at the pinned revision. When the corpus sits
   // inside a work tree the entry also matches relative to the repository
   // root, so one relative exclusion means the same thing to this reader
-  // and to gitHistory. An entry naming a root — '.', './', '/' — keeps
+  // and to git(). An entry naming a root — '.', './', '/' — keeps
   // the marker the commit reader's repoPath resolves for it, and every
   // path beneath an anchor is refused.
   const exclude = new Set<string>();
@@ -834,7 +835,7 @@ interface CorpusGroup {
 
 /** Markdown from folders, files or glob patterns, classified by the caller. */
 export function markdown(options: MarkdownOptions): CandidateSource {
-  return markdownSource(options);
+  return historySource({ reader: markdownSource(options), ...markdownSettings });
 }
 
 function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 'rules'): CandidateSource {
@@ -856,7 +857,7 @@ function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 'rules'
   const keyword = { ...MARKDOWN_KEYWORD_SETTINGS, ...options.keyword };
   const role = options.kind === 'rules' || options.kind === 'instructions' ? 'rule' : 'reference';
   return {
-    id, role, kind: 'markdown', cascade: MARKDOWN_CASCADE, rare: true,
+    id, role, kind: 'markdown', cascade: MARKDOWN_CASCADE,
     ...(legacy === undefined ? { maxQuestionText: options.maxQuestionText ?? Number.POSITIVE_INFINITY } : {}),
     async read(request, context = { files: new Map() }) {
       if (request.maxQuestionText !== undefined
@@ -1375,12 +1376,13 @@ function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 'rules'
 /** Directory notes with the original section ids, date precedence, and part size. */
 export function knowledgeBase(directory: string, options: KnowledgeBaseOptions = {}): CandidateSource {
   if (typeof directory !== 'string' || directory.trim() === '') throw new TypeError('directory must be a non-empty string.');
-  return markdownSource({ ...options, paths: [directory], kind: 'knowledge',
+  const reader = markdownSource({ ...options, paths: [directory], kind: 'knowledge',
     maxQuestionText: options.maxQuestionText ?? DEFAULT_MAX_QUESTION_TEXT }, 'knowledge');
+  return historySource({ reader, ...markdownSettings });
 }
 
 /** Directory rules with the original file ids and README exclusion. */
 export function rules(directory: string, options: RulesOptions = {}): CandidateSource {
   if (typeof directory !== 'string' || directory.trim() === '') throw new TypeError('directory must be a non-empty string.');
-  return markdownSource({ ...options, paths: [directory], kind: 'rules' }, 'rules');
+  return historySource({ reader: markdownSource({ ...options, paths: [directory], kind: 'rules' }, 'rules'), ...rulesSettings });
 }

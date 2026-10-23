@@ -1,10 +1,10 @@
-# LoCoMo, a 159-question slice, conversation-recall
+# LoCoMo, a 159-question slice
 
-Curate's `conversation-recall` mode on a slice of LoCoMo, answered and marked the way Mem0 ran its platform result.
+Curate's presets as they come, on a slice of LoCoMo, answered and marked the way Mem0 ran its platform result.
 
 | File | Memory | Answering model | Marker | Score |
 | --- | --- | --- | --- | --- |
-| `mem0-gpt-5.jsonl` | Curate, `conversation-recall` | GPT-5 | GPT-5, Mem0's marking prompt | 149/159 = 93.7% |
+| `mem0-gpt-5.jsonl` | Curate | GPT-5 | GPT-5, Mem0's marking prompt | 149/159 = 93.7% |
 | `mem0-same-questions.jsonl` | Mem0 platform, from Mem0's published file | GPT-5 | GPT-5, Mem0's marking prompt | 150/159 = 94.3% |
 
 `scores.json` holds both scores by category, Curate's context tokens, output tokens and cost, and Mem0's score on all 1,540 questions: 1,410/1,540 = 91.6%.
@@ -19,11 +19,18 @@ Curate's `conversation-recall` mode on a slice of LoCoMo, answered and marked th
 
 1. **Rank:** each question reads only its own conversation, split into 700-character session parts. The chat package ranks every part.
 2. **Decide:** Jev (`jev-1.13.0`) scored every part for the question with the chat package's question set (`relevant`, `own`, `needed`).
-3. **Label:** Jev answered the chat package's seven label kinds for every part.
+3. **Label:** Jev also answered the chat package's seven label kinds for every part. Every part was already going to the decide step, so labels added no part.
 4. **Keep:** only parts scored 0.0146 or more went to the curator.
-5. **Curate:** the curator wrote one dated, cited log per question, with the package's own instructions. The curator model and its reasoning effort are those of the [LongMemEval `conversation-recall` run](../../longmemeval/2026-10-22/README.md). LoCoMo has no question date, so the task names the last session's date as the end of the conversation.
+5. **Curate:** the curator wrote one dated, cited log per question, with the package's own instructions. The curator model and its reasoning effort are those of the [LongMemEval GPT-5 run](../../longmemeval/2026-10-22/README.md). LoCoMo has no question date, so the task names the last session's date as the end of the conversation.
 6. **Answer:** GPT-5 read only the log and the question, with Mem0's answer prompt.
 7. **Mark:** GPT-5 compared each answer with LoCoMo's gold answer, with Mem0's marking prompt. For category 3, the gold is cut at its first semicolon, as Mem0's client does.
+
+## Labels changed nothing
+
+The run asked the decision model the chat label questions, and its records show labels on. They changed nothing the curator received.
+
+- **No part was left for labels to add.** Labels add parts that the keyword lanes left out. Here every part of every history went to the decide step, and the label gate admitted every part on all 159 questions.
+- **Byte replay.** Both settings, the run's own and the same without labels, were replayed on the run's build from its saved decision-model answers, with no model call and a stub curator that recorded each prompt. On 159 of 159 questions the curator's prompt was byte-identical with and without labels, and each question kept the same parts, in the same order, as the run. The same comparison catches a one-byte change in one prompt.
 
 ## Mem0's protocol, and the differences
 
@@ -33,7 +40,7 @@ Curate's `conversation-recall` mode on a slice of LoCoMo, answered and marked th
 
 ## Builds
 
-- **Logs:** written by Curate's packed 0.1.0 `@curatejs/core` and `@curatejs/chat` in `conversation-recall` mode.
+- **Logs:** written by Curate's packed 0.1.0 `@curatejs/core` and `@curatejs/chat`, with the presets as they come.
   - 150 logs were written by an earlier packed build with the same curator prompt and the same selection. Replaying their saved curator replies on 0.1.0 gives byte-identical logs.
   - The other 9 come out differently on 0.1.0, which accepts a full stop after an observation's citation, so they were curated again with it.
 - **Empty-reply retry:** Curate later gained one more curator call when a log comes back empty. No log here was empty, so it would change none of them.

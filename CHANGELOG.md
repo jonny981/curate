@@ -14,29 +14,38 @@ Four packages:
   fitted question sets per source kind, decision tags, optional score cuts,
   rank and batch dials, and one log format repair. Optional local meaning
   search adds embedding ranks through a host-supplied function or the shipped
-  `node-llama-cpp` adapter. An optional `labels` gate labels every reference
-  part and the task once against seven kind questions, keeps the answers in a
-  directory you choose, and adds the parts whose labels match a kind the task
-  needs to the parts keyword search already found for the decide step. It is
-  off by default.
+  `node-llama-cpp` adapter. An optional label gate labels every reference
+  part of a source that carries label kinds, and the task once, against the
+  kind questions, keeps the answers in a directory you choose, and adds the
+  parts whose labels match a kind the task needs to the parts keyword search
+  already found for the decide step. Chat asks its seven label kinds by
+  default; git and Markdown carry none.
 - **Task memory.** Recall a dated, cited log and exact rule text with
   `memory({ sources, decide, write }).recall(task)`. The entry point uses each
   reader's question set and rejects incomplete reads and unanswered or
-  unassessed candidates before writing. Presets and explicit read, selection
-  and writer options pass through to the existing APIs. Use `jev()`,
+  unassessed candidates before writing. Each source's settings and explicit
+  read, selection and writer options pass through to the existing APIs. Use `jev()`,
   `openAIDecisions()` and `chatWriter()` from `@curatejs/core/models` to
   connect models with Node's built-in `fetch`. Plain `decide` and `write`
   functions remain supported.
-- **Levers and presets.** Every cost and quality setting is a lever that
-  turns on for more quality at more cost: `wholeLanes` (read each source's
-  whole ranked list), `everyRanked` (decide every ranked part, or only the
-  top round(c × N^0.8)), `everyScored` (keep every scored part), `labels`,
-  `route: 'jev'` (the decision model chooses the curator's options per
-  question) and the rare-word round (follow strong parts by their rare words
-  to parts the first pass missed). `agentTasks`, which runs when no mode is
-  chosen, supports agents working from chat, git and docs;
-  `conversationRecall` adds labels for questions about past conversations.
-  Spread one and flip any lever for your own mode.
+- **Settings by source.** Each source carries its own settings, so a setting
+  chosen for one kind of history never changes what Curate picks from
+  another: `rare` (follow strong parts by their rare words to parts the first
+  pass missed, within that source), `labels` (the label kinds asked of each
+  part), `bar` (the decision-score bar for its references) and `ruleBar` (the
+  bar for its rules). The presets `chat()`, `git()`, `markdown()`,
+  `knowledgeBase()` and `rules()` carry their package's tuned settings
+  objects, `chatSettings`, `gitSettings`, `markdownSettings` and
+  `rulesSettings`. `historySource({ reader, ...settings })` builds a source
+  with any settings, for example a chat source with labels off:
+  `historySource({ reader: chat(), ...chatSettings, labels: false })`. Pick
+  and curate records name each source's settings under `levers.sources`.
+- **Levers for the whole call.** Every other cost and quality setting is a
+  lever that turns on for more quality at more cost: `wholeLanes` (read each
+  source's whole ranked list), `everyRanked` (decide every ranked part, or
+  only the top round(c × N^0.8)) and `route: 'jev'` (the decision model
+  chooses the curator's options per question). `everyScored` and `rare` set
+  one value for every source in place of their own.
   The core README lists each lever's purpose and measured impact.
 - **Unknown options are rejected.** `pick`, `pickFromSources` and `curate`
   throw a `TypeError` before any model call when an options object, or a

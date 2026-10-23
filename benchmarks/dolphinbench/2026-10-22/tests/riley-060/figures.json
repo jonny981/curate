@@ -1,0 +1,38 @@
+{
+  "test": "riley/060",
+  "asked": "2028-01-01",
+  "passed": false,
+  "mem0_passed": false,
+  "no_memory_passed": false,
+  "fact_messages_passed": true,
+  "parts_decided": 555,
+  "parts_read": 521,
+  "curator_batches": 1,
+  "batch_tokens": 150000,
+  "curator_output_tokens_per_pass": [
+    7560,
+    7615
+  ],
+  "stalled_curator_calls_retried": 0,
+  "curator_input_tokens": 199324,
+  "curator_output_tokens": 15175,
+  "log_chars": 47240,
+  "jev_cost_usd": 0,
+  "agent_seconds": 14.063,
+  "agent_usage": {
+    "input_tokens": 35061,
+    "cached_input_tokens": 16384,
+    "cache_write_input_tokens": 0,
+    "output_tokens": 1224,
+    "reasoning_output_tokens": 336
+  },
+  "judge_calls": 1,
+  "judge_seconds": 8.514,
+  "list_cost": {
+    "jev_usd": 0,
+    "curator_list_usd": 0.5504,
+    "agent_list_usd": 0.00553,
+    "total_usd": 0.5559
+  },
+  "log_sha256_as_read": "cde4090a0175e6f1c475a385626bed858e2bf25fb4b97d9736bdd1f3bd910ebf"
+}

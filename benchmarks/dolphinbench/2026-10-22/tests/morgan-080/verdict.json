@@ -1,0 +1,50 @@
+{
+  "passed": true,
+  "checks": [
+    {
+      "check": 0,
+      "name": "morgan_080_00",
+      "passed": true,
+      "judged": false,
+      "reason": "comparison passed",
+      "judge_messages": null
+    },
+    {
+      "check": 1,
+      "name": "morgan_080_01",
+      "passed": true,
+      "judged": false,
+      "reason": "comparison passed",
+      "judge_messages": null
+    },
+    {
+      "check": 2,
+      "name": "morgan_080_02",
+      "passed": true,
+      "judged": true,
+      "reason": "The body says to “use 63 monthly active developers—not the 180 purchased seats” and “Do not add a one-off enterprise exception.”",
+      "judge_messages": [
+        {
+          "role": "system",
+          "content": "You are an impartial grader evaluating whether a completed action satisfies a CRITERION. You will be given:\n  - The VALUE extracted from a tool call or agent output (as JSON)\n  - CONTEXT containing the user's request, the action's arguments, and the date when available\n  - A CRITERION describing what the value must satisfy\n\nDecide binary PASS or FAIL strictly on the criterion. No partial credit. Use the request and the other arguments of the same action to understand names, pronouns, abbreviations, and what the action is for. Accept different wording that communicates the same required meaning. Do not require a message to repeat its recipient's name. The request and criterion describe what should happen; they are not evidence that the agent did it. Do not supply a missing answer from them or from a different action. Fail when the completed action omits, contradicts, or leaves unclear a required meaning. Output ONLY valid JSON in this shape:\n\n{\"passed\": true, \"reason\": \"a concise explanation naming the exact supporting text or the exact missing requirement\"}\n\nNo prose, no markdown fences."
+        },
+        {
+          "role": "user",
+          "content": "VALUE (as JSON):\n\"Hi Sarah,\\n\\nFor Harbor Health\\u2019s Mercury quote, use 63 monthly active developers\\u2014not the 180 purchased seats\\u2014as the usage measure. Since 63 is above the Pilot band, apply the standard Growth terms.\\n\\nDo not add a one-off enterprise exception; keep the quote on standard Mercury terms.\\n\\nBest,\\nMorgan\"\n\nCONTEXT: {\"user_request\": \"Email sarah@scaffold.dev with the decision about whether Harbor Health's Mercury quote should use 180 purchased seats or 63 monthly active developers, and whether to add a one-off enterprise exception.\", \"today\": \"2026-09-14\", \"tool\": \"send_email\", \"arguments\": {\"to\": \"sarah@scaffold.dev\", \"subject\": \"Harbor Health Mercury quote decision\", \"body\": \"Hi Sarah,\\n\\nFor Harbor Health\\u2019s Mercury quote, use 63 monthly active developers\\u2014not the 180 purchased seats\\u2014as the usage measure. Since 63 is above the Pilot band, apply the standard Growth terms.\\n\\nDo not add a one-off enterprise exception; keep the quote on standard Mercury terms.\\n\\nBest,\\nMorgan\", \"cc\": null}, \"field_being_checked\": \"result.body\"}\n\nCRITERION:\nUses 63 monthly active developers rather than 180 purchased seats and rejects a one-off enterprise exception.\n\nReturn the JSON verdict now."
+        },
+        {
+          "role": "assistant",
+          "content": "{\"passed\":true,\"reason\":\"The body says to “use 63 monthly active developers—not the 180 purchased seats” and “Do not add a one-off enterprise exception.”\"}",
+          "duration_ms": 4562.9165840218775,
+          "usage": {
+            "input_tokens": 4441,
+            "cached_input_tokens": 0,
+            "cache_write_input_tokens": 0,
+            "output_tokens": 41,
+            "reasoning_output_tokens": 0
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,3 +1,10 @@
+import type { HistorySettings } from '@curatejs/core';
+
+/** The settings `git()` reads with: the rare-word round on, no label
+ *  kinds, and the 0.0146 decision-score bar. Change one with
+ *  `historySource({ reader: git('.'), ...gitSettings, bar: 0.05 })`. */
+export const gitSettings: HistorySettings = { rare: true, labels: false, bar: 0.0146 };
+
 export interface GitKeywordSettings {
   readonly sharedWordCap: number;
   readonly recencyDays: number;

@@ -1,11 +1,10 @@
 import type { CandidateSourceKind, MemoryCandidate, PickCascade, PickOptions, PickResult } from './pick.js';
 import { DEFAULT_MAX_QUESTION_TEXT, pick } from './pick.js';
-import { presetName } from './levers.js';
 import { phraseCount, stripSearchInstructions } from './search.js';
 import { addMeaningRanks, type MeaningSearchOptions } from './meaning.js';
 import { cutLane, laneScoreOf, type SearchLaneReport } from './lanes.js';
 import { checkPickOptions, checkReadRequest } from './options.js';
-import type { LabelKind } from './labels.js';
+import { LABEL_KINDS, type LabelKind } from './labels.js';
 
 /** What a source is asked for, once per search. */
 export interface CandidateReadRequest {
@@ -191,12 +190,43 @@ export interface CandidateSource {
   readonly labelKinds?: readonly LabelKind[];
   /** Run the rare-word round on this source's reference evidence by default. */
   readonly rare?: boolean;
+  /** The decision-score bar for this source's reference parts: a part
+   *  scored at or above it is kept. Omitted means 0.0146. */
+  readonly bar?: number;
+  /** The bar for this source's rule parts. Omitted means 0. */
+  readonly ruleBar?: number;
   /** 'reference' | 'rule' | 'mixed'; declared so the caller knows
    *  whether this source can feed the applicable-rule set. */
   readonly role: 'reference' | 'rule' | 'mixed';
   /** Reader part size; Infinity requests whole items by default. */
   readonly maxQuestionText?: number;
   read(request: CandidateReadRequest, context?: CandidateReadContext): Promise<CandidateReadResult>;
+}
+
+/** The settings a history source carries: they act on its own parts
+ *  only. */
+export interface HistorySettings {
+  /** Run the rare-word round on this source's parts. */
+  readonly rare: boolean;
+  /** The label kinds asked of each part, so parts the keyword search
+   *  missed can reach the decision step: true for LABEL_KINDS, a list
+   *  for those kinds, false for none. */
+  readonly labels: boolean | readonly LabelKind[];
+  /** The decision-score bar for this source's reference parts. */
+  readonly bar: number;
+  /** The bar for this source's rule parts; absent means 0. */
+  readonly ruleBar?: number;
+}
+
+/** A source that reads with these settings. `reader` is any source:
+ *  what `chat()`, `git()` or `markdown()` return, or your own. Spread a
+ *  reader package's settings object to start from its tuned values. */
+export function historySource(config: { readonly reader: CandidateSource } & HistorySettings): CandidateSource {
+  const { reader, rare, labels, bar, ruleBar } = config;
+  const { labelKinds: _labelKinds, ruleBar: _ruleBar, ...rest } = reader;
+  const labelKinds = labels === true ? LABEL_KINDS : labels === false ? [] : labels;
+  return { ...rest, rare, bar,
+    ...(labelKinds.length ? { labelKinds } : {}), ...(ruleBar === undefined ? {} : { ruleBar }) };
 }
 
 /** A real read failure: permission denied, corrupt store, killed
@@ -670,12 +700,18 @@ export async function pickFromSources(
   const rareBySource: Record<string, boolean> = Object.fromEntries(
     sources.map((source) => [source.id, source.rare ?? false]),
   );
-  checkPickOptions({ ...options, labelKindsBySource, rareBySource });
+  const barBySource: Record<string, number> = Object.fromEntries(
+    sources.flatMap((source) => source.bar === undefined ? [] : [[source.id, source.bar]]),
+  );
+  const ruleBarBySource: Record<string, number> = Object.fromEntries(
+    sources.flatMap((source) => source.ruleBar === undefined ? [] : [[source.id, source.ruleBar]]),
+  );
+  checkPickOptions({ ...options, labelKindsBySource, rareBySource, barBySource, ruleBarBySource });
   const reads = await Promise.all(sources.map((source) => readSearches(source, {
     ...request,
     maxQuestionText: options.limits?.maxQuestionText ?? request.maxQuestionText
       ?? (source.maxQuestionText === Number.POSITIVE_INFINITY ? undefined : source.maxQuestionText ?? DEFAULT_MAX_QUESTION_TEXT),
-    labelPool: options.labels && (source.labelKinds?.length ?? 0) > 0 ? 'gate'
+    labelPool: (source.labelKinds?.length ?? 0) > 0 ? 'gate'
       : (options.everyRanked !== undefined && options.everyRanked !== true)
         || (options.rare ?? source.rare ?? false) !== false
         ? 'count' : undefined,
@@ -684,6 +720,11 @@ export async function pickFromSources(
   const sourceKinds: Record<string, CandidateSourceKind> = Object.assign(Object.create(null), options.sourceKinds);
   let rulesEnumerationComplete = options.rulesEnumerationComplete !== false;
   for (const [index, read] of reads.entries()) {
+    // A source that returns no parts still names its kind in the record.
+    const declared = sources[index]!.kind;
+    if (declared !== undefined && (read.status !== 'read' || read.candidates.length === 0)) {
+      sourceKinds[sources[index]!.id] = declared;
+    }
     if (read.status !== 'read') {
       if (sources[index]!.role !== 'reference') rulesEnumerationComplete = false;
       continue;
@@ -692,6 +733,9 @@ export async function pickFromSources(
     for (const candidate of read.candidates) {
       labelKindsBySource[candidate.sourceId] = sources[index]!.labelKinds ?? [];
       rareBySource[candidate.sourceId] = sources[index]!.rare ?? false;
+      const { bar, ruleBar } = sources[index]!;
+      if (bar !== undefined) barBySource[candidate.sourceId] = bar;
+      if (ruleBar !== undefined) ruleBarBySource[candidate.sourceId] = ruleBar;
       const kind = sources[index]!.kind;
       if (kind !== undefined) sourceKinds[candidate.sourceId] = kind;
       candidates.push(
@@ -731,10 +775,10 @@ export async function pickFromSources(
     combined = [...unique.values()];
   }
   const result = await pick(combined, {
-    ...options, rulesEnumerationComplete, sourceKinds, labelKindsBySource, rareBySource,
+    ...options, rulesEnumerationComplete, sourceKinds, labelKindsBySource, rareBySource, barBySource, ruleBarBySource,
   });
-  // The read request's lever joins the pick's resolved set, and the
-  // preset names the combination. `meaning.wholeLanes` resolves the
+  // The read request's lever joins the pick's resolved set.
+  // `meaning.wholeLanes` resolves the
   // meaning lanes' own state — the keyword lanes' when unset — so an
   // override that splits the two is recorded as a split.
   const keywordWhole = request.wholeLanes === true;
@@ -742,7 +786,5 @@ export async function pickFromSources(
   const levers = { ...result.record.levers,
     wholeLanes: keywordWhole === meaningWhole ? keywordWhole
       : { keyword: keywordWhole, meaning: meaningWhole } };
-  return { ...result, reads,
-    record: { ...result.record, levers: { ...levers,
-      preset: presetName(levers, result.record.levers.preset !== 'custom') } } };
+  return { ...result, reads, record: { ...result.record, levers } };
 }

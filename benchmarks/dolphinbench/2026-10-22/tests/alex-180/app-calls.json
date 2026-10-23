@@ -1,0 +1,85 @@
+[
+  {
+    "tool": "list_open_prs",
+    "args": {
+      "repo": "otel-schema",
+      "author": null,
+      "assignee": null,
+      "status": null,
+      "reviewer": null
+    },
+    "result": [
+      {
+        "id": "otel-schema#590",
+        "repo": "otel-schema",
+        "title": "Normalize deployment.environment and expand accepted values",
+        "author": "mira",
+        "assignees": [
+          "mira"
+        ],
+        "reviewers": [
+          "alex"
+        ],
+        "status": "open"
+      }
+    ]
+  },
+  {
+    "tool": "get_pr",
+    "args": {
+      "pr_id": "otel-schema#590"
+    },
+    "result": {
+      "pr": {
+        "id": "otel-schema#590",
+        "title": "Normalize deployment.environment and expand accepted values",
+        "author": "mira",
+        "repo": "otel-schema",
+        "branch": "mira/deployment-environment-normalization",
+        "status": "open",
+        "reviewers": [
+          "alex"
+        ],
+        "assignees": [
+          "mira"
+        ],
+        "opened_at": "2027-12-29T15:10:00Z",
+        "description": "Simplify the production deployment.environment parser and permit additional deployment naming.",
+        "diff_summary": {
+          "production_parser": "Lowercase every supplied value and publish the resulting string without an allowlist check.",
+          "missing_input": "Publish deployment.environment=unknown when the input is absent.",
+          "accepted_values": [
+            "prod",
+            "staging",
+            "dev",
+            "qa"
+          ],
+          "tenant_distinct_value_limit": 5,
+          "downstream_validation": "No rollup-service parity fixture or producer-consumer compatibility evidence is included."
+        },
+        "files_changed": [
+          "schema/production/deployment_environment.go",
+          "schema/production/deployment_environment_test.go"
+        ]
+      }
+    }
+  },
+  {
+    "tool": "review_pr",
+    "args": {
+      "pr_id": "otel-schema#590",
+      "decision": "request_changes",
+      "body": "Request changes. Production deployment.environment must accept only case-insensitive exact values prod, staging, and dev, publishing the canonical lowercase value. Missing input must omit the key/label; it must not publish unknown. Reject qa, unknown, whitespace-padded, malformed, and arbitrary values before metric publication—lowercasing alone is not validation. The per-tenant distinct-value ceiling is 3 and must be enforced before admitting a series, so a fourth value can never be published. Add executable bidirectional parity evidence across the full metrics path: the producer mapping and OTel ingestion output, metrics-router output, and rollup-service consumer must have matching key presence and bounded values; fail on missing expected keys or unexpected downstream values. Include rejected-input/no-series and tenant-budget regression coverage before sign-off."
+    },
+    "result": {
+      "ok": true,
+      "review": {
+        "id": "review_c8b3d4300af140fa8c52b6638bfa1376",
+        "pr_id": "otel-schema#590",
+        "decision": "request_changes",
+        "body": "Request changes. Production deployment.environment must accept only case-insensitive exact values prod, staging, and dev, publishing the canonical lowercase value. Missing input must omit the key/label; it must not publish unknown. Reject qa, unknown, whitespace-padded, malformed, and arbitrary values before metric publication—lowercasing alone is not validation. The per-tenant distinct-value ceiling is 3 and must be enforced before admitting a series, so a fourth value can never be published. Add executable bidirectional parity evidence across the full metrics path: the producer mapping and OTel ingestion output, metrics-router output, and rollup-service consumer must have matching key presence and bounded values; fail on missing expected keys or unexpected downstream values. Include rejected-input/no-series and tenant-budget regression coverage before sign-off.",
+        "created_at": "2026-10-22T10:07:22.096458Z"
+      }
+    }
+  }
+]

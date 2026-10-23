@@ -1,5 +1,5 @@
 import type { MemoryCandidate, PickRecordEntry, PickResult } from './pick.js';
-import { presetName, type CurateLeverStates, type PresetName } from './levers.js';
+import type { CurateLeverStates } from './levers.js';
 import { classifyTask, type TaskKind } from './task.js';
 import { checkCurateOptions } from './options.js';
 
@@ -73,15 +73,12 @@ export interface CurateRecord {
   /** Present when `route: 'jev'` routed the curator options from the
    *  pick's recorded route answers. */
   readonly route?: 'jev';
-  /** The whole mode's lever set as applied, carried from the pick's
-   *  record: the read, pick and curator states in one place, and
-   *  `levers.preset` the mode they match — 'agent-tasks', 'conversation-recall' or
-   *  'custom'. `route` holds the lever's two stages apart: `asked`,
-   *  whether the pick ran the route questions, and `applied`, whether
-   *  `route: 'jev'` ran here. Asked alone already spent the questions,
-   *  so a pick that asked and a curator that never applied names no
-   *  preset. */
-  readonly levers: { readonly preset: PresetName } & CurateLeverStates;
+  /** The lever set as applied, carried from the pick's record: the
+   *  read, pick and curator states in one place, with the settings each
+   *  source ran with under `sources`. `route` holds the lever's two
+   *  stages apart: `asked`, whether the pick ran the route questions,
+   *  and `applied`, whether `route: 'jev'` ran here. */
+  readonly levers: CurateLeverStates;
   readonly preferenceAdvice?: boolean;
   readonly preferenceChange?: boolean;
   readonly taskDate?: string;
@@ -692,9 +689,8 @@ export async function curate(
     log = restoredLog;
   }
   // The pick's record keeps `route` as the questions asked; the curate
-  // record keeps both stages apart — the pick's asked beside this
-  // curator's applied — and the preset names the mode they make: asked
-  // alone already spent the route questions, so it names no preset.
+  // record keeps both stages apart: the pick's asked beside this
+  // curator's applied.
   const levers: CurateLeverStates = { ...picked.record.levers, route: {
     asked: picked.record.levers?.route === true, applied: options.route === 'jev' } };
   return {
@@ -704,9 +700,7 @@ export async function curate(
       ...(options.context === undefined ? {} : { context }),
       ...(taskKinds === undefined ? {} : { taskKinds }),
       ...(options.route === undefined ? {} : { route: options.route }),
-      levers: { ...levers,
-        preset: presetName({ ...levers, route: levers.route.asked || levers.route.applied },
-          picked.record.levers?.preset !== 'custom') },
+      levers,
       ...(taskDate === undefined ? {} : { taskDate }), items, logLength, condensed,
       ...(batchTokens === undefined ? {} : { batchTokens }),
       ...(recordBatches === undefined ? {} : { batches: recordBatches }),

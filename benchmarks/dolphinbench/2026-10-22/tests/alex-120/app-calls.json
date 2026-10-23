@@ -1,0 +1,21 @@
+[
+  {
+    "tool": "create_doc",
+    "args": {
+      "title": "Historical note: Alex’s informal May 2023 service responsibilities",
+      "body": "On May 2, 2023, Alex’s runbook-audit inventory identified two older services he informally treated as responsibilities alongside his three directly owned services (metrics-router, ingest-edge, and shard-keeper):\n\n- legacy-aggregator: Alex informally owned it because nobody had fully completed the migration away from it.\n- metric-rollup: Alex informally owned the old metric-rollup service, which was effectively unowned in practice.\n\nThese were informal responsibilities, distinct from the explicitly assigned ownership map established later in the audit.",
+      "folder": "historical-notes"
+    },
+    "result": {
+      "ok": true,
+      "document": {
+        "id": "doc_96241f61c0b34042a03bb2859e0532b5",
+        "title": "Historical note: Alex’s informal May 2023 service responsibilities",
+        "body": "On May 2, 2023, Alex’s runbook-audit inventory identified two older services he informally treated as responsibilities alongside his three directly owned services (metrics-router, ingest-edge, and shard-keeper):\n\n- legacy-aggregator: Alex informally owned it because nobody had fully completed the migration away from it.\n- metric-rollup: Alex informally owned the old metric-rollup service, which was effectively unowned in practice.\n\nThese were informal responsibilities, distinct from the explicitly assigned ownership map established later in the audit.",
+        "folder": "historical-notes",
+        "created_at": "2026-10-22T10:06:56.163674Z",
+        "url": "https://docs.mock/doc_96241f61c0b34042a03bb2859e0532b5"
+      }
+    }
+  }
+]

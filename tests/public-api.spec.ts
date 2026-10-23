@@ -1,15 +1,15 @@
 import { asSourceReadError } from '@curatejs/core/internal';
 import { describe, expect, it } from 'vitest';
 
-import { curate, decisionFileStore, DEFAULT_MAX_QUESTION_TEXT, agentTasks, conversationRecall, LABEL_KINDS, LABEL_LANE_BAR, LABEL_QUESTION_VERSION, pick, PICK_QUESTION_VERSION, pickFromSources, SourceReadError, type CandidateSource, type CurateOptions, type CurateRecord, type CurateResult, type CurateWrite, type DecisionStore, type LeverStates, type MemoryCandidate, type PickCache, type PickLabels, type PickOptions, type PickThresholds, type Preset } from '@curatejs/core';
+import { curate, decisionFileStore, DEFAULT_MAX_QUESTION_TEXT, historySource, LABEL_KINDS, LABEL_LANE_BAR, LABEL_QUESTION_VERSION, pick, PICK_QUESTION_VERSION, pickFromSources, SourceReadError, type CandidateSource, type CurateOptions, type CurateRecord, type CurateResult, type CurateWrite, type DecisionStore, type HistorySettings, type LeverStates, type MemoryCandidate, type PickCache, type PickLabels, type PickOptions, type PickThresholds, type SourceSettings } from '@curatejs/core';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { chat, type ChatOptions, type ChatProvider } from '@curatejs/chat';
-import { gitHistory, type GitHistoryOptions } from '@curatejs/git';
-import { markdown, knowledgeBase, rules, type MarkdownOptions, type KnowledgeBaseOptions } from '@curatejs/markdown';
+import { chat, chatSettings, type ChatOptions, type ChatProvider } from '@curatejs/chat';
+import { git, gitSettings, type GitOptions } from '@curatejs/git';
+import { markdown, markdownSettings, knowledgeBase, rules, rulesSettings, type MarkdownOptions, type KnowledgeBaseOptions } from '@curatejs/markdown';
 
-const uncutPick = { everyRanked: true, everyScored: true, labels: false, rare: false } as const;
+const uncutPick = { everyRanked: true, everyScored: true, rare: false } as const;
 
 describe('package exports', () => {
   it('exports the curate step and its caller-supplied writer types', async () => {
@@ -33,13 +33,13 @@ describe('package exports', () => {
   });
 
   it('exports the sources, the picker, and their option types', () => {
-    const historyOptions: GitHistoryOptions = {
+    const historyOptions: GitOptions = {
       id: 'history',
       repository: 'key',
       blame: true,
       coChange: true,
     };
-    const history: CandidateSource = gitHistory('/nonexistent', historyOptions);
+    const history: CandidateSource = git('/nonexistent', historyOptions);
     const baseOptions: KnowledgeBaseOptions = {
       maxQuestionText: 100,
       repository: 'key',
@@ -54,7 +54,7 @@ describe('package exports', () => {
       since: '14 days', includeTools: false, maxQuestionText: 700,
     };
     const transcripts: CandidateSource = chat(chatOptions);
-    const thresholds: PickThresholds = { rule: 0.6, linkedPathBar: 0.4 };
+    const thresholds: PickThresholds = { linkedPathBar: 0.4 };
     const pickOptions: PickOptions = {
       task: 'Recall', everyRanked: { c: 0.68 }, everyScored: { bar: 0.05 },
       rare: { share: 0.5, bar: 0.0146 },
@@ -96,19 +96,32 @@ describe('package exports', () => {
     expect(PICK_QUESTION_VERSION).toContain('memory-pick');
   });
 
-  it('exports the agent-tasks and conversation recall presets and their types', () => {
-    const modes: Preset[] = [agentTasks, conversationRecall];
-    expect(agentTasks.read).toEqual({ wholeLanes: false });
-    expect(agentTasks.pick).toEqual({ everyRanked: true, everyScored: { bar: 0.0146 }, labels: false });
-    expect(agentTasks.curate).toEqual({});
-    expect(conversationRecall.read).toEqual({ wholeLanes: false });
-    expect(conversationRecall.pick).toEqual({ everyRanked: true, everyScored: { bar: 0.0146 }, labels: {} });
-    expect(conversationRecall.curate).toEqual({});
+  it('exports the lever and source settings types', () => {
     const levers: LeverStates = {
-      everyRanked: true, everyScored: true, labels: false, route: false, rare: false,
+      everyRanked: true, everyScored: true, route: false, rare: false,
+      sources: { chat: { kind: 'chat', labels: true, rare: false, bar: 0.0146 } },
     };
-    expect(modes.map((mode) => mode.read.wholeLanes)).toEqual([false, false]);
+    const settings: SourceSettings = levers.sources['chat']!;
+    expect(settings.labels).toBe(true);
     expect(levers.everyRanked).toBe(true);
+  });
+
+  it('exports each reader\'s settings and historySource to change them', () => {
+    const settings: readonly HistorySettings[] = [chatSettings, gitSettings, markdownSettings, rulesSettings];
+    expect(settings).toEqual([
+      { rare: false, labels: true, bar: 0.0146 },
+      { rare: true, labels: false, bar: 0.0146 },
+      { rare: true, labels: false, bar: 0.0146 },
+      { rare: true, labels: false, bar: 0.0146, ruleBar: 0 },
+    ]);
+    const reader = chat({ providers: ['codex'], paths: ['/nonexistent'] });
+    expect(reader).toMatchObject({ kind: 'chat', rare: false, bar: 0.0146, labelKinds: LABEL_KINDS });
+    const unlabelled = historySource({ reader, ...chatSettings, labels: false });
+    expect(unlabelled).toMatchObject({ id: reader.id, kind: 'chat', rare: false, bar: 0.0146 });
+    expect(unlabelled.labelKinds).toBeUndefined();
+    expect(historySource({ reader: unlabelled, ...chatSettings }).labelKinds).toEqual(LABEL_KINDS);
+    expect(rules('/nonexistent')).toMatchObject({ rare: true, bar: 0.0146, ruleBar: 0 });
+    expect(historySource({ reader: rules('/nonexistent'), ...markdownSettings }).ruleBar).toBeUndefined();
   });
 
   it('exports the label gate, its kind questions and its option type', async () => {

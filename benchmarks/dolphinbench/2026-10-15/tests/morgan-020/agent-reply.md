@@ -1,1 +1,0 @@
-- [Redwood Ridge venue-screening checklist](https://docs.mock/doc_a26c04b3d67a464c81232bd2bf172a78) created.

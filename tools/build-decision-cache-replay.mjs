@@ -38,6 +38,8 @@ const picked = record.picked;
 assert(picked?.candidates, 'the record file holds no pick record under `picked`');
 assert(picked.decideError === undefined,
   'the saved pick ended on a failed decide call; its record cannot replay');
+assert(picked.levers?.sources !== undefined,
+  'the saved pick records no per-source settings; it predates them and cannot replay');
 assert(picked.labels === undefined,
   'the saved pick used the label gate; its label answers are not in the record, so the run cannot replay');
 const file = read(candidatesFile);
@@ -89,30 +91,25 @@ const replayed = picked.candidates.map((entry, index) => {
 });
 
 // The options the saved pick ran with, read back off its record: the
-// fitted cascade, its real thresholds and limits, and the dials the
-// record echoes. A changed threshold on the replay reselects from
-// stored answers, so `appliedReference` (an output, not an input) is
-// dropped.
+// fitted cascade, each source's bars, its link bar and limits, and the
+// dials the record echoes. A changed threshold on the replay reselects
+// from stored answers, so `appliedReference` (an output, not an input)
+// is dropped.
+const sources = Object.entries(picked.levers.sources);
 const options = {
   everyRanked: true,
-  everyScored: true,
   rare: false,
-  labels: false,
+  barBySource: Object.fromEntries(sources.map(([id, settings]) => [id, settings.bar])),
+  ruleBarBySource: Object.fromEntries(sources.flatMap(([id, settings]) =>
+    settings.ruleBar === undefined ? [] : [[id, settings.ruleBar]])),
   ...(picked.cascade === undefined ? {} : { cascade: picked.cascade }),
   ...(picked.cascadesByKind === undefined ? {} : { cascadesByKind: picked.cascadesByKind }),
   ...(picked.sourceKinds === undefined ? {} : { sourceKinds: picked.sourceKinds }),
   ...(picked.ranking === undefined ? {} : { ranking: picked.ranking }),
   ...(picked.thresholds === undefined ? {} : {
-    thresholds: Object.fromEntries(
-      ['rule', 'linkedPathBar']
-        .filter((key) => picked.thresholds[key] !== undefined)
-        .map((key) => [key, picked.thresholds[key]])),
-    ...((picked.thresholds.reference ?? 0) !== 0 || picked.thresholds.referenceBySize !== undefined ? {
-      everyScored: {
-        ...((picked.thresholds.reference ?? 0) !== 0 ? { bar: picked.thresholds.reference } : {}),
-        ...(picked.thresholds.referenceBySize === undefined ? {} : { bySize: picked.thresholds.referenceBySize }),
-      },
-    } : {}),
+    thresholds: { linkedPathBar: picked.thresholds.linkedPathBar },
+    ...(picked.thresholds.referenceBySize === undefined ? {}
+      : { everyScored: { bySize: picked.thresholds.referenceBySize } }),
   }),
   ...(picked.limits === undefined ? {} : { limits: picked.limits }),
   ...(picked.keepTop === undefined ? {} : { keepTop: picked.keepTop }),

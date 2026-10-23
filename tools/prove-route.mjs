@@ -52,7 +52,6 @@ for (const [index, row] of questions.entries()) {
   const requests = [];
   const result = await pick([], {
     task: row.question,
-    labels: false,
     route: 'jev',
     decide: async (batch) => {
       requests.push(batch);

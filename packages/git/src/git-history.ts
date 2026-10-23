@@ -1,4 +1,4 @@
-import { GIT_KEYWORD_SETTINGS, type GitKeywordSettings } from './defaults.js';
+import { GIT_KEYWORD_SETTINGS, gitSettings, type GitKeywordSettings } from './defaults.js';
 import { GIT_HISTORY_CASCADE } from './questions.js';
 import { realpath, stat } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
@@ -17,16 +17,17 @@ import {
 import { hits, taskTerms, phraseCount, laneBend, embedQuery, embedSimilarities } from '@curatejs/core/internal';
 import type { MemoryCandidate } from '@curatejs/core';
 import {
+  historySource,
   SourceReadError,
   type CandidateReadRequest,
   type CandidateReadResult,
   type CandidateSource,
 } from '@curatejs/core';
 
-export interface GitHistoryOptions {
+export interface GitOptions {
   /** Override the exported GIT_KEYWORD_SETTINGS. */
   readonly keyword?: Partial<GitKeywordSettings>;
-  /** The source's stable id; defaults to `gitHistory:<resolved repo>`. */
+  /** The source's stable id; defaults to `git:<resolved repo>`. */
   readonly id?: string;
   /** The repository key candidates declare. A link needs an equal value
    *  on both sides; defaults to the work-tree toplevel, and a
@@ -180,9 +181,9 @@ const NO_COMMIT = /Needed a single revision|does not have any commits|unknown re
  * per-commit scores and fetches bodies only for the commits the curve
  * kept. `blame` and `coChange` are opt-in extras on top.
  */
-export function gitHistory(
+export function git(
   repo: string | URL,
-  options: GitHistoryOptions = {},
+  options: GitOptions = {},
 ): CandidateSource {
   const keyword = { ...GIT_KEYWORD_SETTINGS, ...options.keyword };
   const directory = repo instanceof URL ? fileURLToPath(repo) : repo;
@@ -190,12 +191,11 @@ export function gitHistory(
     throw new TypeError('repo must be a directory path or a file: URL.');
   }
   const resolved = resolve(directory);
-  const id = options.id ?? `gitHistory:${resolved}`;
-  return {
+  const id = options.id ?? `git:${resolved}`;
+  const reader: CandidateSource = {
     id,
     kind: 'git-history',
     cascade: GIT_HISTORY_CASCADE,
-    rare: true,
     role: 'reference',
     async read(request) {
       const signal = request.signal;
@@ -690,4 +690,5 @@ export function gitHistory(
       }
     },
   };
+  return historySource({ reader, ...gitSettings });
 }

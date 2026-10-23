@@ -1,0 +1,31 @@
+[
+  {
+    "tool": "list_docs",
+    "args": {},
+    "result": [
+      {
+        "id": "doc_1830355200001",
+        "title": "Executive communications retrospective — onboarding-trigger briefing",
+        "body": "# Executive communications retrospective\n\n## April 3, 2023 onboarding-trigger briefing\nThe second-cohort result made the onboarding-trigger experiment a settled win. The executive briefing could therefore present the result as conclusively established, with no further confirmation needed before leadership treated the matter as closed.",
+        "folder": "Growth",
+        "created_at": "2028-01-01T09:00:00-06:00"
+      }
+    ]
+  },
+  {
+    "tool": "post_doc_comment",
+    "args": {
+      "doc_id": "doc_1830355200001",
+      "body": "Correction: On April 3, the second-cohort confirmation was encouraging—pooled week-1 retention was +3.1 points versus control (p=0.04, n=420)—and Riley called the ship while remaining cautiously optimistic. The result was not treated as fully settled: SRM, signup-source mix, country/device skew, and the planned post-ship cohort still needed review before drawing a final conclusion."
+    },
+    "result": {
+      "ok": true,
+      "comment": {
+        "id": "docc_db4f6e93567d499ba8c6d01018027bec",
+        "doc_id": "doc_1830355200001",
+        "body": "Correction: On April 3, the second-cohort confirmation was encouraging—pooled week-1 retention was +3.1 points versus control (p=0.04, n=420)—and Riley called the ship while remaining cautiously optimistic. The result was not treated as fully settled: SRM, signup-source mix, country/device skew, and the planned post-ship cohort still needed review before drawing a final conclusion.",
+        "created_at": "2026-10-22T10:08:46.200776Z"
+      }
+    }
+  }
+]

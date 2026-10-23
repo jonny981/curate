@@ -1,0 +1,24 @@
+[
+  {
+    "tool": "create_calendar_event",
+    "args": {
+      "title": "Cortado and crossword",
+      "start": "2028-01-09T09:30-05:00",
+      "end": "2028-01-09T10:30-05:00",
+      "attendees": null,
+      "body": "Usual Park Slope cafe: the 7th Avenue spot on the same 7th-Avenue block as the bagel place, opposite corner. Cortado and crossword."
+    },
+    "result": {
+      "ok": true,
+      "id": "evt_cf9ddd42594048839e7585747facc362",
+      "event": {
+        "id": "evt_cf9ddd42594048839e7585747facc362",
+        "attendees": [],
+        "title": "Cortado and crossword",
+        "start": "2028-01-09T09:30-05:00",
+        "end": "2028-01-09T10:30-05:00",
+        "body": "Usual Park Slope cafe: the 7th Avenue spot on the same 7th-Avenue block as the bagel place, opposite corner. Cortado and crossword."
+      }
+    }
+  }
+]

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { phraseCount } from '../src/search.js';
 import { pickFromSources, type CandidateSource, type MemoryCandidate } from '../src/index.js';
 
-const uncutPick = { everyRanked: true, everyScored: true, labels: false, rare: false } as const;
+const uncutPick = { everyRanked: true, everyScored: true, rare: false } as const;
 
 const candidate = (id: string, text: string): MemoryCandidate => ({ id, text, sourceId: 'chat', title: id, role: 'reference', signals: { keyword: 1 } });
 const yes = async ({ questions }: { questions: readonly { key: string }[] }) => Object.fromEntries(

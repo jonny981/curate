@@ -1,0 +1,6 @@
+4bfed90acff44900db69d63a0fba359c0ee4438e8ec067a2970ccffb480faabe  mastra-gpt-5-mini.jsonl
+83db621308aba4b59efbb9a3823cdc70a7755123b333c4678487562be3f4c512  scores.json
+9639043479ff281eea5dd694db3291b9b2c20f0edd412c0aa1bc3640a0245292  official-scorer/curate-gpt-5-mini.jsonl
+2c1bab2cd1a9fa98b6e82a8a7396850e1df0861d924899a06c3bc8c651548fab  official-scorer/curate-gpt-5-mini.jsonl.eval-results-gpt-4o
+c21cf97e8b65924a2c1164c98c5f06dc298ced49d7a980ce46c669175407fa31  official-scorer/metrics.txt
+17a4fcdcc5690da01bf28f2178e95f0fdee49c2ab440d41434c81c5e70169b21  README.md

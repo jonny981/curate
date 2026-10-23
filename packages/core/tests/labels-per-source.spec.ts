@@ -41,7 +41,7 @@ describe('label kinds per source', () => {
     const chat = source('chat', LABEL_KINDS);
     const git = source('git');
     const calls = recorder((q) => q.questionKey === undefined ? 0.9 : 0);
-    const result = await pickFromSources([chat, git], { task }, { task, decide: calls.decide, labels: {} });
+    const result = await pickFromSources([chat, git], { task }, { task, decide: calls.decide });
     expect(calls.questions.filter((q) => q.sourceId === 'git').map((q) => q.questionKey)).toEqual([undefined]);
     expect(calls.questions.filter((q) => q.sourceId === 'chat' && q.questionKey)).toHaveLength(14);
     expect(result.selected.map((c) => `${c.sourceId}/${c.id}`).sort()).toEqual(['chat/hit', 'git/hit']);
@@ -52,7 +52,7 @@ describe('label kinds per source', () => {
 
   it('does no label work when direct candidates have no declared kinds', async () => {
     const calls = recorder();
-    const result = await pick([part('git')], { task, decide: calls.decide, labels: {} });
+    const result = await pick([part('git')], { task, decide: calls.decide });
     expect(calls.questions).toHaveLength(1);
     expect(calls.questions[0]?.questionKey).toBeUndefined();
     expect(readdirSync(directory)).toEqual([]);
@@ -63,7 +63,7 @@ describe('label kinds per source', () => {
     const calls = recorder();
     const other = [{ ...custom[0]!, part: { ...custom[0]!.part, true: 'The excerpt states a different constraint.' } }];
     const run = (kinds: readonly LabelKind[]) => pick([part('notes')], {
-      task, decide: calls.decide, labels: {}, labelKindsBySource: { notes: kinds },
+      task, decide: calls.decide, labelKindsBySource: { notes: kinds },
     });
     await run(custom);
     const changed = await run(other);
@@ -76,7 +76,7 @@ describe('label kinds per source', () => {
     const calls = recorder();
     const reordered = [{ part: { false: custom[0]!.part.false, true: custom[0]!.part.true },
       name: custom[0]!.name, key: custom[0]!.key }];
-    const result = await pickFromSources([source('one', custom), source('two', reordered)], { task }, { task, decide: calls.decide, labels: {} });
+    const result = await pickFromSources([source('one', custom), source('two', reordered)], { task }, { task, decide: calls.decide });
     expect(calls.questions.filter((q) => q.sourceId === 'labels')).toHaveLength(1);
     expect(result.selected).toHaveLength(4);
     expect(calls.questions.filter((q) => q.questionKey === 'constraint').every((q) =>
@@ -87,7 +87,7 @@ describe('label kinds per source', () => {
     const taste = [{ ...custom[0]!, key: 'taste' }];
     const calls = recorder((q) => ROUTE_QUESTIONS.some((route) => route.question === q.question) ? 0 : 0.9);
     const run = () => pickFromSources([source('one', custom), source('two', taste)], { task }, {
-      task, decide: calls.decide, labels: {}, route: 'jev',
+      task, decide: calls.decide, route: 'jev',
     });
     for (let attempt = 0; attempt < 2; attempt += 1) {
       calls.questions.length = 0;
@@ -106,28 +106,29 @@ describe('label kinds per source', () => {
         : { status: 'answered', probability: q.questionKey === undefined ? 0.9 : 0 },
     ]));
     const write = vi.fn(async () => '[2026-01-12] A constraint (said 2026-01-12; E1)');
-    await expect(memory({ sources: [source('one', custom), source('two', other)], decide, write, pick: { labels: {} } }).recall(task))
+    await expect(memory({ sources: [source('one', custom), source('two', other)], decide, write }).recall(task))
       .rejects.toMatchObject({ cause: { record: { candidates: expect.arrayContaining([
         expect.objectContaining({ sourceId: 'two', id: 'extra', status: 'unassessed', reason: 'limits' }),
       ]) } } });
     expect(write).not.toHaveBeenCalled();
   });
 
-  it('records empty readers and actual candidate source IDs, including labels disabled', async () => {
+  it('records empty readers and actual candidate source IDs, and no kinds for a reader that carries none', async () => {
     const reader: CandidateSource = { id: 'reader', role: 'reference', labelKinds: custom,
       read: async () => ({ status: 'read', complete: true, candidates: [part('returned')] }) };
     const empty: CandidateSource = { id: 'empty', role: 'reference', read: async () => ({ status: 'read', complete: true, candidates: [] }) };
     const calls = recorder();
-    const enabled = await pickFromSources([reader, empty], { task }, { task, decide: calls.decide, labels: {} });
+    const enabled = await pickFromSources([reader, empty], { task }, { task, decide: calls.decide });
     expect(enabled.record.labelKindsBySource).toEqual({ reader: custom, returned: custom, empty: [] });
-    const disabled = await pickFromSources([reader, empty], { task }, { task, decide: calls.decide, labels: false });
+    const { labelKinds: _kinds, ...plain } = reader;
+    const disabled = await pickFromSources([plain, empty], { task }, { task, decide: calls.decide });
     expect(disabled.record.labelKindsBySource).toEqual({ reader: [], returned: [], empty: [] });
   });
 
   it('rejects duplicate kind keys before reading a source or deciding', async () => {
     const reader = source('notes', [custom[0]!, custom[0]!]);
     const calls = recorder();
-    await expect(pickFromSources([reader], { task }, { task, decide: calls.decide, labels: {} })).rejects.toThrow(/unique/);
+    await expect(pickFromSources([reader], { task }, { task, decide: calls.decide })).rejects.toThrow(/unique/);
     expect(reader.read).not.toHaveBeenCalled();
     expect(calls.questions).toEqual([]);
   });

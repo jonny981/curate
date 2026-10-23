@@ -1,0 +1,24 @@
+[
+  {
+    "tool": "create_calendar_event",
+    "args": {
+      "title": "Offline household dinner at home",
+      "start": "2026-09-16T18:30-07:00",
+      "end": "2026-09-16T20:30-07:00",
+      "attendees": null,
+      "body": "At home in Oakland. Protected household time for Morgan and Jamie. Normal work, investor, board, customer, and internal scheduling routes around it; interrupt only for an actual incident or customer-impacting emergency."
+    },
+    "result": {
+      "ok": true,
+      "id": "evt_867836fef44740688cb5343c97a6a0cf",
+      "event": {
+        "id": "evt_867836fef44740688cb5343c97a6a0cf",
+        "attendees": [],
+        "title": "Offline household dinner at home",
+        "start": "2026-09-16T18:30-07:00",
+        "end": "2026-09-16T20:30-07:00",
+        "body": "At home in Oakland. Protected household time for Morgan and Jamie. Normal work, investor, board, customer, and internal scheduling routes around it; interrupt only for an actual incident or customer-impacting emergency."
+      }
+    }
+  }
+]

@@ -23,11 +23,11 @@ try {
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { pick, pickFromSources, curate, addMeaningRanks, SourceReadError, agentTasks, conversationRecall } from '@curatejs/core';
+import { pick, pickFromSources, curate, addMeaningRanks, historySource, SourceReadError, LABEL_KINDS } from '@curatejs/core';
 import { asSourceReadError } from '@curatejs/core/internal';
-import { chat, CHAT_CASCADE, CHAT_KEYWORD_SETTINGS, CHAT_SEARCH_LINE_REGISTER } from '@curatejs/chat';
-import { gitHistory, GIT_HISTORY_CASCADE, GIT_KEYWORD_SETTINGS, GIT_SEARCH_LINE_REGISTER } from '@curatejs/git';
-import { markdown, knowledgeBase, rules, MARKDOWN_CASCADE, MARKDOWN_KEYWORD_SETTINGS, MARKDOWN_SEARCH_LINE_REGISTER } from '@curatejs/markdown';
+import { chat, chatSettings, CHAT_CASCADE, CHAT_KEYWORD_SETTINGS, CHAT_SEARCH_LINE_REGISTER } from '@curatejs/chat';
+import { git, gitSettings, GIT_HISTORY_CASCADE, GIT_KEYWORD_SETTINGS, GIT_SEARCH_LINE_REGISTER } from '@curatejs/git';
+import { markdown, knowledgeBase, rules, markdownSettings, rulesSettings, MARKDOWN_CASCADE, MARKDOWN_KEYWORD_SETTINGS, MARKDOWN_SEARCH_LINE_REGISTER } from '@curatejs/markdown';
 const cancelled = new SourceReadError('cancelled', 'Stopped');
 assert.equal(asSourceReadError(cancelled), cancelled);
 const decide = async ({ questions }) => Object.fromEntries(questions.map(q => [q.key, { status: 'answered', probability: q.questionKey === 'offtopic' ? 0 : 1 }]));
@@ -46,25 +46,17 @@ const defaults = await pick(candidates, {
   decide: async (batch) => batch.questions.some(q => q.questionKey !== undefined) ? decide(batch) : weighted(batch),
 });
 assert.deepEqual(defaults.selected.map(candidate => candidate.id), ['host-item-0', 'host-item-1']);
-assert.equal(defaults.record.thresholds.reference, 0.0146);
-assert.equal(defaults.record.levers.preset, 'agent-tasks');
-assert.equal(defaults.record.levers.labels, false);
+assert.deepEqual(defaults.record.levers.sources, { host: { labels: false, rare: false, bar: 0.0146 } });
 assert.equal(defaults.record.labels, undefined);
 assert.deepEqual(defaults.record.labelKindsBySource.host, []);
-assert.deepEqual(agentTasks.pick, { everyRanked: true, everyScored: { bar: 0.0146 }, labels: false });
-assert.deepEqual(conversationRecall.pick, { everyRanked: true, everyScored: { bar: 0.0146 }, labels: {} });
-const uncutPick = { everyRanked: true, everyScored: true, labels: false, rare: false };
+const uncutPick = { everyRanked: true, everyScored: true, rare: false };
 const picked = await pick(candidates, { ...uncutPick, task: 'Recall backups', decide: weighted });
 assert.deepEqual(picked.selected.map(candidate => candidate.id), ['host-item-0', 'host-item-1', 'host-item-2']);
-assert.equal(picked.record.thresholds.reference, 0);
-assert.equal(picked.record.levers.preset, 'custom');
-assert.equal(picked.record.levers.labels, false);
-const recall = await pick(candidates, { ...conversationRecall.pick, task: 'Recall backups', decide: weighted });
-assert.deepEqual(recall.selected.map(candidate => candidate.id), ['host-item-0', 'host-item-1']);
-assert.equal(recall.record.levers.preset, 'conversation-recall');
-assert.equal(recall.record.levers.labels, true);
-assert.equal(recall.record.labels.deciderId, 'custom');
-assert.equal(recall.record.labels.asked, 0);
+assert.deepEqual(picked.record.levers.sources, { host: { labels: false, rare: false, bar: 0 } });
+const labelled = await pick(candidates, { task: 'Recall backups', decide, labelKindsBySource: { host: LABEL_KINDS } });
+assert.deepEqual(labelled.record.levers.sources, { host: { labels: true, rare: false, bar: 0.0146 } });
+assert.equal(labelled.record.labels.deciderId, 'custom');
+assert.ok(labelled.record.labels.asked > 0);
 const meaning = await addMeaningRanks(candidates, 'Recall backups', {
   embed: async texts => texts.map(() => [1, 0]),
 });
@@ -88,7 +80,7 @@ execFileSync('git', ['add', 'notes']);
 execFileSync('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'commit.gpgsign=false', '-c', 'user.name=Example', '-c', 'user.email=example@example.com', 'commit', '-qm', 'Document encrypted backups']);
 for (const [source, cascade] of [
   [chat({ providers: ['claude-code'], paths: ['transcripts'] }), CHAT_CASCADE],
-  [gitHistory('.'), GIT_HISTORY_CASCADE],
+  [git('.'), GIT_HISTORY_CASCADE],
   [knowledgeBase('notes'), MARKDOWN_CASCADE],
   [rules('policy'), MARKDOWN_CASCADE],
   [markdown({ paths: ['notes/*.md'], kind: 'docs' }), MARKDOWN_CASCADE],
@@ -98,6 +90,10 @@ for (const [source, cascade] of [
   assert.ok(result.selected.length > 0, source.kind);
   assert.equal(result.reads[0].status, 'read');
 }
+assert.deepEqual([chatSettings, gitSettings, markdownSettings, rulesSettings].map(s => [s.rare, s.labels, s.bar, s.ruleBar]),
+  [[false, true, 0.0146, undefined], [true, false, 0.0146, undefined], [true, false, 0.0146, undefined], [true, false, 0.0146, 0]]);
+assert.deepEqual(chat({ paths: ['transcripts'] }).labelKinds, LABEL_KINDS);
+assert.equal(historySource({ reader: chat({ paths: ['transcripts'] }), ...chatSettings, labels: false }).labelKinds, undefined);
 assert.equal(CHAT_KEYWORD_SETTINGS.k1, 0.6);
 assert.equal(GIT_KEYWORD_SETTINGS.recencyDays, 60);
 assert.equal(MARKDOWN_KEYWORD_SETTINGS.b, 0.75);

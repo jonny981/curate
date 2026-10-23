@@ -2,14 +2,15 @@ import { describe, expect, it } from 'vitest';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { LABEL_KINDS, pickFromSources, type LabelKind, type PickQuestion } from '@curatejs/core';
-import { chat } from '@curatejs/chat';
-import { gitHistory } from '@curatejs/git';
+import { historySource, LABEL_KINDS, pickFromSources, type LabelKind, type PickQuestion } from '@curatejs/core';
+import { chat, chatSettings } from '@curatejs/chat';
+import { git } from '@curatejs/git';
 import { knowledgeBase, markdown, rules } from '@curatejs/markdown';
 
 describe('source label questions', () => {
-  it('gives chat the seven transcript label kinds', () => {
+  it('gives chat the seven transcript label kinds by default, and none when its labels are off', () => {
     const source = chat({ paths: ['/nonexistent'] });
+    expect(historySource({ reader: source, ...chatSettings, labels: false }).labelKinds).toBeUndefined();
     expect(source.labelKinds).toEqual(LABEL_KINDS);
     expect(source.labelKinds?.map((kind) => kind.key)).toEqual([
       'personal', 'owns', 'acquired', 'event', 'preference', 'habit', 'decision',
@@ -17,7 +18,7 @@ describe('source label questions', () => {
   });
 
   it.each([
-    { name: 'git history', create: () => gitHistory('/nonexistent') },
+    { name: 'git history', create: () => git('/nonexistent') },
     { name: 'Markdown', create: () => markdown({ paths: ['/nonexistent'], kind: 'docs' }) },
     { name: 'knowledge notes', create: () => knowledgeBase('/nonexistent') },
     { name: 'rules', create: () => rules('/nonexistent') },

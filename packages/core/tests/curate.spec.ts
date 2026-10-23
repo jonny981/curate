@@ -9,7 +9,7 @@ import {
   type PickResult,
 } from '../src/index.js';
 
-const uncutPick = { everyRanked: true, everyScored: true, labels: false, rare: false } as const;
+const uncutPick = { everyRanked: true, everyScored: true, rare: false } as const;
 
 const LOG = '[2023-05-13] Visited York (said 2023-05-20; notes#2)';
 const LONG_LOG = `[2023-05-13] ${'Travel notes. '.repeat(400)} (said 2023-05-20; notes#2)`;
@@ -31,8 +31,8 @@ function picked(items = [candidate('notes#2', '2023-05-20')], weights = [0.9]): 
     selected: items,
     record: {
       questionVersion: 'test', limits: {},
-      thresholds: { reference: 0, rule: 0, linkedPathBar: 0 }, rulesCoverage: 'complete',
-      levers: { preset: 'custom', everyRanked: true, everyScored: true, labels: false, route: false, rare: false },
+      thresholds: { linkedPathBar: 0 }, rulesCoverage: 'complete',
+      levers: { everyRanked: true, everyScored: true, route: false, rare: false, sources: {} },
       candidates: items.map((item, index) => ({
         sourceId: item.sourceId, id: item.id, role: item.role, priority: index,
         signals: item.signals, status: 'selected', asked: true, probability: weights[index]!,

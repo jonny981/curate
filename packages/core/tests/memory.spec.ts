@@ -51,7 +51,8 @@ describe('memory', () => {
     expect(recalled.result.record.items).toHaveLength(1);
     expect(recalled.picked.selected).toHaveLength(3);
     expect(write.mock.calls[0]?.[0].body).not.toContain('Never round an order twice.');
-    expect(recalled.result.record.levers.preset).toBe('agent-tasks');
+    expect(recalled.result.record.levers.everyScored).toBeUndefined();
+    expect(Object.values(recalled.result.record.levers.sources).map((settings) => settings.bar)).toEqual([0.0146]);
   });
 
   it('propagates a failed source read without calling either model', async () => {
@@ -108,17 +109,15 @@ describe('memory', () => {
         return decide(batch, signal);
       },
       write: async () => LOG,
-      pick: { labels: false,
-        ...(override ? { cascadesByKind: { markdown: fitted('from-caller') } } : {}),
-      },
+      pick: override ? { cascadesByKind: { markdown: fitted('from-caller') } } : {},
     }).recall(TASK);
     expect(questions).toEqual([override ? 'from-caller' : 'from-reader']);
     expect(recalled.rules).toBe('');
   });
 
-  it.each([false, true])('applies the default preset and lets explicit levers win (override %s)', async (override) => {
+  it.each([false, true])('cuts at the 0.0146 bar by default and lets an explicit lever win (override %s)', async (override) => {
     const recalled = await memory({
-      sources: [source([note(), note('weak')])], preset: 'agent-tasks',
+      sources: [source([note(), note('weak')])],
       decide: async ({ questions }) => Object.fromEntries(questions.map((q) => [q.key, {
         status: 'answered', probability: q.id === 'weak' ? 0.001 : 0.8,
       }])),
@@ -126,7 +125,8 @@ describe('memory', () => {
       ...(override ? { pick: { everyScored: true as const } } : {}),
     }).recall(TASK);
     expect(recalled.picked.selected.map((item) => item.id)).toEqual(override ? ['billing', 'weak'] : ['billing']);
-    expect(recalled.result.record.levers.preset).toBe(override ? 'custom' : 'agent-tasks');
+    expect(recalled.result.record.levers.everyScored).toEqual(override ? true : undefined);
+    expect(Object.values(recalled.result.record.levers.sources).map((settings) => settings.bar)).toEqual([override ? 0 : 0.0146]);
   });
 
   it('passes read options, writer options and cancellation through the existing calls', async () => {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { addMeaningRanks, pick, pickFromSources, type EmbeddingFunction, type MemoryCandidate } from '../src/index.js';
 
-const uncutPick = { everyRanked: true, everyScored: true, labels: false, rare: false } as const;
+const uncutPick = { everyRanked: true, everyScored: true, rare: false } as const;
 
 const item = (id: string, text: string, score = 0): MemoryCandidate => ({
   id, sourceId: 'notes', role: 'reference', title: id, text, signals: { keyword: score },
@@ -132,7 +132,7 @@ describe('local meaning search', () => {
     });
     expect(observed).toBe(text);
     expect(result.selected.map((candidate) => candidate.id)).toEqual(['long']);
-    expect(result.record.thresholds.reference).toBe(0);
+    expect(result.record.levers.sources.notes?.bar).toBe(0);
   });
 
   it('serves meaning lanes inside a streaming source with no corpus fallback', async () => {

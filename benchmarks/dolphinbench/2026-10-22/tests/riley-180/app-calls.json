@@ -1,0 +1,31 @@
+[
+  {
+    "tool": "list_docs",
+    "args": {},
+    "result": [
+      {
+        "id": "doc_lifecycle_entitlement_correction_2028",
+        "title": "Lifecycle entitlement correction — release proposal",
+        "body": "# Lifecycle entitlement correction — release proposal\n\nA recent entitlement mismatch requires a customer correction, an account-state change, and a corrected lifecycle notice.\n\n## Proposed decision and release assignment\nInes owns final approval of the customer correction and state change. She will also coordinate and execute the production release after the corrected audience is prepared. Engineering will provide implementation support as needed.\n\n## Proposed sequence\n1. Confirm the affected account set.\n2. Approve the correction and state transition.\n3. Apply the production change.\n4. Release the corrected lifecycle notice.\n5. Record the outcome in the incident log.",
+        "folder": "Growth",
+        "created_at": "2028-01-01T09:00:00-06:00"
+      }
+    ]
+  },
+  {
+    "tool": "post_doc_comment",
+    "args": {
+      "doc_id": "doc_lifecycle_entitlement_correction_2028",
+      "body": "Correction: Riley Tanaka owns the customer correction and account-state decision. Daniela Schultz controls the production release and rollback. Ines Kovac is restricted from executing the correction or release and does not have engineering release-control access."
+    },
+    "result": {
+      "ok": true,
+      "comment": {
+        "id": "docc_517e4d637d5e46d28c40aa0d21ccd538",
+        "doc_id": "doc_lifecycle_entitlement_correction_2028",
+        "body": "Correction: Riley Tanaka owns the customer correction and account-state decision. Daniela Schultz controls the production release and rollback. Ines Kovac is restricted from executing the correction or release and does not have engineering release-control access.",
+        "created_at": "2026-10-22T10:09:04.321283Z"
+      }
+    }
+  }
+]

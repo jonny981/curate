@@ -3,12 +3,12 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { pick, pickFromSources, type CandidateSource, type CandidateSourceKind, type MemoryCandidate, type PickCascade, type PickCriterion, type PickDecide } from '@curatejs/core';
-import { chat } from '@curatejs/chat';
-import { gitHistory } from '@curatejs/git';
+import { historySource, pick, pickFromSources, type CandidateSource, type CandidateSourceKind, type MemoryCandidate, type PickCascade, type PickCriterion, type PickDecide } from '@curatejs/core';
+import { chat, chatSettings } from '@curatejs/chat';
+import { git as gitSource } from '@curatejs/git';
 import { knowledgeBase, rules } from '@curatejs/markdown';
 
-const uncutPick = { everyRanked: true, everyScored: true, labels: false, rare: false } as const;
+const uncutPick = { everyRanked: true, everyScored: true, rare: false } as const;
 
 const criterion = (key: string): PickCriterion => ({
   key, instructions: `Check ${key}?`, true: `${key} applies.`, false: `${key} does not apply.`,
@@ -166,7 +166,7 @@ describe('rule questions', () => {
       candidate('applies', { role: 'rule' }), candidate('irrelevant', { role: 'rule' }), candidate('reference'),
     ], { ...uncutPick,
       task: 'Choose evidence', sourceKinds: { notes: 'markdown' },
-      cascadesByKind: { markdown: fitted('evidence') }, thresholds: { rule: 0.8 },
+      cascadesByKind: { markdown: fitted('evidence') }, ruleBarBySource: { notes: 0.8 },
       decide: async ({ questions }) => {
         asked.push(...questions.map((q) => `${q.id}:${q.questionKey ?? q.role}`));
         return Object.fromEntries(questions.map((q) => [q.key, {
@@ -186,7 +186,7 @@ describe('rule questions', () => {
 describe('built-in source routing', () => {
   it('declares each built-in source kind without reading files', () => {
     expect(chat({ paths: ['fixture'] }).kind).toBe('chat');
-    expect(gitHistory('fixture').kind).toBe('git-history');
+    expect(gitSource('fixture').kind).toBe('git-history');
     expect(knowledgeBase('fixture').kind).toBe('markdown');
     expect(rules('fixture').kind).toBe('markdown');
   });
@@ -213,8 +213,8 @@ describe('built-in source routing', () => {
       git('add', 'notes', 'policy');
       git('-c', 'commit.gpgsign=false', 'commit', '-m', 'Document input validation');
       const readers = [
-        chat({ paths: [join(directory, 'transcripts')], providers: ['codex'] }),
-        gitHistory(directory), knowledgeBase(join(directory, 'notes')), rules(join(directory, 'policy')),
+        historySource({ reader: chat({ paths: [join(directory, 'transcripts')], providers: ['codex'] }), ...chatSettings, labels: false }),
+        gitSource(directory), knowledgeBase(join(directory, 'notes')), rules(join(directory, 'policy')),
       ];
       const kindFor = new Map(readers.map((reader) => [reader.id, reader.kind]));
       const asked: string[] = [];

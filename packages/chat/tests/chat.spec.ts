@@ -2,18 +2,21 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { pickFromSources, type CandidateReadRequest, type PickDecide } from '@curatejs/core';
-import { chat, type ChatProvider } from '../src/index.js';
+import { historySource, LABEL_KINDS, pickFromSources, type CandidateReadRequest, type CandidateSource, type PickDecide, type PickQuestion } from '@curatejs/core';
+import { chat, chatSettings, type ChatProvider } from '../src/index.js';
 import { CHAT_KEYWORD_SETTINGS, rankChat } from '../src/chat-rank.js';
 import { porterStem } from '../src/porter.js';
 
-const uncutPick = { everyRanked: true, everyScored: true, labels: false, rare: false } as const;
+const uncutPick = { everyRanked: true, everyScored: true, rare: false } as const;
 
 const directories: string[] = [];
+// Chat asks label questions by default; keep their saved answers out of the real cache.
+beforeEach(async () => { vi.stubEnv('XDG_CACHE_HOME', await folder()); });
 afterEach(async () => {
   vi.useRealTimers();
+  vi.unstubAllEnvs();
   await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
 });
 async function folder(): Promise<string> {
@@ -55,6 +58,9 @@ async function read(provider: ChatProvider, directory: string, options: Paramete
   if (result.status !== 'read') throw new Error('Expected a read');
   return result;
 }
+// Chat with labels off, so only the keyword search chooses parts.
+const keywordChat = (options: Parameters<typeof chat>[0]) =>
+  historySource({ reader: chat(options), ...chatSettings, labels: false });
 
 // Hand-written fake credentials, assembled at runtime. No real transcripts.
 function fakeSecrets(): string[] {
@@ -242,7 +248,7 @@ describe('chat source contract', () => {
     const text = 'hello world\n'.repeat(20);
     const directory = await transcript('codex', [message('codex', 'user', text)]);
     const seen: string[] = [];
-    const result = await pickFromSources([chat({ paths: [directory], providers: ['codex'] })], { task: 'hello', wholeLanes: true }, {
+    const result = await pickFromSources([keywordChat({ paths: [directory], providers: ['codex'] })], { task: 'hello', wholeLanes: true }, {
       ...uncutPick,
       task: 'hello', limits: { maxQuestionText: 50 },
       decide: async (batch) => {
@@ -262,7 +268,7 @@ describe('chat source contract', () => {
       message('codex', 'assistant', 'noted, Rex is a good name'),
     ]);
     const seen: string[] = [];
-    const result = await pickFromSources([chat({ paths: [directory], providers: ['codex'] })], { task: "What's my dog's name?" }, {
+    const result = await pickFromSources([keywordChat({ paths: [directory], providers: ['codex'] })], { task: "What's my dog's name?" }, {
       ...uncutPick,
       task: "What's my dog's name?",
       decide: async (batch) => {
@@ -330,6 +336,41 @@ describe('chat keyword ranking', () => {
     const examples = { caresses: 'caress', ponies: 'poni', relational: 'relat', hopping: 'hop', running: 'run', agreed: 'agre', filing: 'file', happy: 'happi', sky: 'sky', triplicate: 'triplic', goodness: 'good', adoption: 'adopt', probate: 'probat', controll: 'control', roll: 'roll', possibly: 'possibl', analogies: 'analog', '401': '401', '4x4s': '4x4', as: 'as' };
     for (const [word, stem] of Object.entries(examples)) expect(porterStem(word)).toBe(stem);
     expect(porterStem('a'.repeat(62) + 'ies')).toBe('a'.repeat(62) + 'ies');
+  });
+});
+
+describe('chat labels', () => {
+  async function pickWithLabels(source: (directory: string) => CandidateSource) {
+    const directory = await transcript('codex', [message('codex', 'user', 'I adopted a dog called Rex')]);
+    const store = await folder();
+    const questions: PickQuestion[] = [];
+    const reader = source(directory);
+    const result = await pickFromSources([reader], { task: 'dog' }, {
+      task: 'dog', labels: { directory: store, deciderId: 'chat-labels-test' },
+      decide: async (batch) => {
+        questions.push(...batch.questions);
+        return Object.fromEntries(batch.questions.map((question) => [question.key, { status: 'answered', probability: 0.9 }]));
+      },
+    });
+    const kinds = (sourceId: string) => questions.filter((question) => question.sourceId === sourceId && question.questionKey)
+      .map((question) => question.questionKey).sort();
+    return { settings: result.record.levers.sources[reader.id], task: kinds('labels'), parts: kinds(reader.id) };
+  }
+
+  it('asks the seven label kinds for the task and the parts out of the box', async () => {
+    const asked = await pickWithLabels((directory) => chat({ paths: [directory], providers: ['codex'] }));
+    const every = LABEL_KINDS.map((kind) => kind.key).sort();
+    expect(asked.settings?.labels).toBe(true);
+    expect(asked.task).toEqual(every);
+    expect(asked.parts).toEqual(every);
+  });
+
+  it('asks no label question when one chat source turns labels off', async () => {
+    const asked = await pickWithLabels((directory) =>
+      historySource({ reader: chat({ paths: [directory], providers: ['codex'] }), ...chatSettings, labels: false }));
+    expect(asked.settings?.labels).toBe(false);
+    expect(asked.task).toEqual([]);
+    expect(asked.parts).toEqual([]);
   });
 });
 
@@ -557,7 +598,7 @@ describe('streaming read', () => {
 
     const decide: PickDecide = async (batch) => Object.fromEntries(
       batch.questions.map((q) => [q.key, { status: 'answered' as const, probability: 0.9 }]));
-    const picked = await pickFromSources([chat({ paths: [directory], providers: ['codex'] })], {
+    const picked = await pickFromSources([keywordChat({ paths: [directory], providers: ['codex'] })], {
       task: 'S3 backup recovery', searchLines: ['zxq unmatched words'],
     }, { ...uncutPick, task: 'S3 backup recovery', decide });
     const laneRead = picked.reads[0]!;
@@ -592,7 +633,7 @@ describe('streaming read', () => {
     const timer = setInterval(() => { peak = Math.max(peak, process.memoryUsage().heapUsed); }, 10);
     let result;
     try {
-      result = await pickFromSources([chat({ providers: ['codex'], paths: [directory] })],
+      result = await pickFromSources([keywordChat({ providers: ['codex'], paths: [directory] })],
         { task: 'qxzwv no such terms anywhere' },
         { ...uncutPick, task: 'qxzwv no such terms anywhere', decide });
     } finally {

@@ -15,7 +15,7 @@ Node.js 22.20 or later. Git must be on `PATH`.
 
 ## Git history
 
-`gitHistory(repo)` reads a repository's commits: one candidate per
+`git(repo)` reads a repository's commits: one candidate per
 non-merge commit, newest first, with the subject as `title`, the body as
 `text`, the commit date with meaning `recorded`, and `changedPaths`
 holding every file the commit changed relative to the repository root.
@@ -42,34 +42,40 @@ asked for.
 
 ```ts
 import { pickFromSources } from '@curatejs/core';
-import { gitHistory } from '@curatejs/git';
+import { git } from '@curatejs/git';
 
-const sources = [gitHistory('.')];
+const sources = [git('.')];
 // Supply your own decision function.
 const picked = await pickFromSources(sources, { task }, { task, decide });
 ```
 
 ## Defaults and overrides
 
-Core's `agent-tasks` mode, which runs when no mode is chosen, decides every ranked part and keeps references scored 0.0146 or more,
-ordered and weighted by decision probability.
-Set `everyScored: true` to keep every scored reference.
+`git()` reads with `gitSettings`, `{ rare: true, labels: false, bar: 0.0146 }`: references kept when scored 0.0146 or more,
+ordered and weighted by decision probability, and no label kinds.
+Set `everyScored: true` on the pick to keep every scored reference from every source.
 The curator receives exact scores. Its `tiers` instructions ask for less space for low-scored items.
-The source enables the rare-word round to find unselected references that share rare words with selected evidence.
-Spread the source and set `rare: false` to disable that round for it.
-Labels are off in the `agent-tasks` mode.
-Rules keep every scored item; set `thresholds.rule` for an optional applicability cut.
+The rare-word round finds unselected commits that share rare words with selected commits, counting words over this history only.
+To change a setting, build the source with core's `historySource()`:
+
+```ts
+import { historySource } from '@curatejs/core';
+import { git, gitSettings } from '@curatejs/git';
+
+const source = historySource({ reader: git('.'), ...gitSettings, rare: false });
+```
+
 See [core's measured reason](https://github.com/jonny981/curate/blob/main/packages/core/README.md#defaults-and-evidence) for the saved-decision sweep's answer-turn losses.
 
 - **Keyword settings:** `GIT_KEYWORD_SETTINGS` exports the ranking defaults. Pass a partial `keyword` object to the reader to override them.
-- **Questions:** `gitHistory()` carries `GIT_HISTORY_CASCADE`, its fitted question set. Core's `memory()` uses it automatically; override it with `pick.cascadesByKind['git-history']`. With `pickFromSources()` or `pick()`, pass it through `cascade` or `cascadesByKind` explicitly.
+- **Questions:** `git()` carries `GIT_HISTORY_CASCADE`, its fitted question set. Core's `memory()` uses it automatically; override it with `pick.cascadesByKind['git-history']`. With `pickFromSources()` or `pick()`, pass it through `cascade` or `cascadesByKind` explicitly.
 - **Search wording:** `GIT_SEARCH_LINE_REGISTER` describes the wording for host-written extra search lines. Copy or replace this text in your host; the package generates no lines.
 - **Kind phrases:** `GIT_HISTORY_KIND_PHRASES` exports phrases in the commit register for `directions`, `decisions` and `corrections`. Pass one list to core's `kindLanes` option, for example `{ 'git-history': GIT_HISTORY_KIND_PHRASES.decisions }`; kind lanes stay off by default.
 
 ```ts
-import { gitHistory, GIT_KEYWORD_SETTINGS, GIT_HISTORY_CASCADE, GIT_SEARCH_LINE_REGISTER } from '@curatejs/git';
+import { git, GIT_KEYWORD_SETTINGS, GIT_HISTORY_CASCADE, GIT_SEARCH_LINE_REGISTER } from '@curatejs/git';
 
-const source = gitHistory('.', { keyword: { recencyDays: 90 } });
+const source = git('.', { keyword: { recencyDays: 90 } });
 ```
 
 See [core](https://github.com/jonny981/curate/blob/main/packages/core/README.md) for selection, search lines, optional cuts and curation.

@@ -12,7 +12,7 @@ import {
   type PickDecide,
 } from '../src/index.js';
 
-const uncutPick = { everyRanked: true, everyScored: true, labels: false, rare: false } as const;
+const uncutPick = { everyRanked: true, everyScored: true, rare: false } as const;
 
 function candidate(overrides: Partial<MemoryCandidate> & Pick<MemoryCandidate, 'sourceId' | 'id'>): MemoryCandidate {
   return {
@@ -62,7 +62,9 @@ describe('pick', () => {
       [q.key, answered(probabilities[q.id]!)])));
     const picked = await pick(candidates, { ...uncutPick, task: 'Recall evidence', decide });
     expect(picked.selected.map((item) => item.id)).toEqual(['applies', 'does-not-apply', 'strong', 'weak', 'zero']);
-    expect(picked.record.thresholds).toEqual({ reference: 0, rule: 0, linkedPathBar: 0.4 });
+    expect(picked.record.thresholds).toEqual({ linkedPathBar: 0.4 });
+    expect(picked.record.levers.sources).toEqual({
+      notes: { labels: false, rare: false, bar: 0 }, rules: { labels: false, rare: false, bar: 0, ruleBar: 0 } });
     const result = await curate('Recall evidence', picked, { write: async (prompt) => {
       expect(prompt.body).toContain('### E2 (0.01): weak');
       expect(prompt.body).toContain('### E3 (0): zero');
@@ -92,7 +94,8 @@ describe('pick', () => {
     expect(calls).toHaveLength(1);
     expect(calls[0]!.questions.map((question) => question.id)).toEqual(['high', 'mid', 'low']);
     expect(result.record.questionVersion).toBe(PICK_QUESTION_VERSION);
-    expect(result.record.thresholds).toEqual({ reference: 0.6, rule: 0, linkedPathBar: 0.4 });
+    expect(result.record.thresholds).toEqual({ linkedPathBar: 0.4 });
+    expect(result.record.levers.sources.notes?.bar).toBe(0.6);
     expect(result.record.limits).toEqual({ maxPerBatch: 150 });
     expect(result.record.candidates.map((entry) => [entry.id, entry.priority])).toEqual([
       ['low', 2],
@@ -651,7 +654,8 @@ describe('the changed-path link', () => {
     });
     expect(byEntry.get('commit a1b2c3d')).not.toHaveProperty('link');
     expect(byEntry.get('other')).toMatchObject({ status: 'rejected' });
-    expect(result.record.thresholds).toEqual({ reference: 0.6, rule: 0, linkedPathBar: 0.4 });
+    expect(result.record.thresholds).toEqual({ linkedPathBar: 0.4 });
+    expect(result.record.levers.sources.notes?.bar).toBe(0.6);
   });
 
   it('holds the bar exactly: 0.39 does not link, 0.4 does', async () => {
@@ -688,7 +692,7 @@ describe('the changed-path link', () => {
     expect(result.record.candidates.find((entry) => entry.id === 'ops'))
       .toMatchObject({ status: 'rejected', probability: 0.45 });
     expect(result.record.thresholds.linkedPathBar).toBe(0.5);
-    expect(result.record.thresholds.reference).toBe(0.6);
+    expect(result.record.levers.sources.notes?.bar).toBe(0.6);
   });
 
   it('never links across repositories', async () => {
@@ -739,7 +743,7 @@ describe('the changed-path link', () => {
     const { decide } = stubDecide((batch) =>
       byId({ 'commit a1b2c3d': answered(0.9), rule: answered(0.45) })(batch));
 
-    const result = await pick([commit(), rule()], { ...uncutPick, task: 'fix the ops doc', decide, everyScored: { bar: 0.6 }, thresholds: { rule: 0.6 } });
+    const result = await pick([commit(), rule()], { ...uncutPick, task: 'fix the ops doc', decide, everyScored: { bar: 0.6 }, ruleBarBySource: { rules: 0.6 } });
 
     expect(result.record.candidates.find((entry) => entry.id === 'rule'))
       .toMatchObject({ status: 'rejected', probability: 0.45 });

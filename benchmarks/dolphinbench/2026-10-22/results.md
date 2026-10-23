@@ -1,0 +1,33 @@
+| Test | Curate | Mem0 | No memory | Fact messages | Parts read | Curator input tokens | Log chars | Jev | Agent s | Judge s | List cost |
+| --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| morgan/020 | Pass | Pass | Fail | Pass | 17 | 23,455 | 1,409 | $0.0000 | 14.6 | 4.5 | $0.06 |
+| morgan/040 | Pass | Fail | Fail | Pass | 304 | 62,689 | 33,303 | $0.0000 | 9.6 | 5.6 | $0.18 |
+| morgan/060 | Fail | Pass | Fail | Pass | 240 | 102,363 | 18,914 | $0.0000 | 10.2 | 8.5 | $0.27 |
+| morgan/080 | Pass | Pass | Fail | Pass | 298 | 132,465 | 42,162 | $0.0000 | 11.0 | 4.6 | $0.38 |
+| morgan/100 | Fail | Fail | Fail | Pass | 560 | 113,461 | 27,358 | $0.0000 | 10.9 | 0.0 | $0.27 |
+| morgan/120 | Pass | Pass | Fail | Pass | 121 | 59,719 | 2,120 | $0.0000 | 10.9 | 8.5 | $0.13 |
+| morgan/140 | Fail | Pass | Fail | Pass | 318 | 68,307 | 32,264 | $0.0000 | 11.6 | 8.3 | $0.19 |
+| morgan/160 | Fail | Pass | Fail | Pass | 105 | 26,478 | 4,992 | $0.0000 | 8.9 | 6.8 | $0.06 |
+| morgan/180 | Pass | Pass | Fail | Pass | 257 | 51,250 | 10,616 | $0.0000 | 10.3 | 4.9 | $0.12 |
+| morgan/200 | Pass | Pass | Fail | Pass | 299 | 126,021 | 12,368 | $0.0000 | 9.8 | 5.4 | $0.29 |
+| alex/020 | Pass | Fail | Fail | Pass | 252 | 92,641 | 13,555 | $0.0000 | 9.2 | 4.7 | $0.24 |
+| alex/040 | Pass | Pass | Fail | Pass | 47 | 16,439 | 12,083 | $0.0000 | 9.5 | 7.0 | $0.06 |
+| alex/060 | Pass | Pass | Fail | Pass | 279 | 48,394 | 10,914 | $0.0000 | 7.5 | 4.7 | $0.12 |
+| alex/080 | Fail | Fail | Fail | Pass | 462 | 81,135 | 31,227 | $0.0000 | 10.3 | 5.6 | $0.22 |
+| alex/100 | Pass | Fail | Fail | Pass | 456 | 86,051 | 16,746 | $0.0000 | 7.9 | 5.1 | $0.20 |
+| alex/120 | Pass | Fail | Fail | Pass | 447 | 80,881 | 14,998 | $0.0000 | 7.8 | 6.7 | $0.19 |
+| alex/140 | Pass | Pass | Fail | Pass | 237 | 49,152 | 5,742 | $0.0000 | 10.4 | 6.0 | $0.11 |
+| alex/160 | Fail | Pass | Fail | Fail | 196 | 76,974 | 6,431 | $0.0000 | 10.8 | 7.3 | $0.18 |
+| alex/180 | Pass | Pass | Fail | Pass | 303 | 126,699 | 24,473 | $0.0000 | 18.1 | 8.1 | $0.34 |
+| alex/200 | Fail | Fail | Fail | Pass | 312 | 116,289 | 11,504 | $0.0000 | 14.4 | 0.0 | $0.28 |
+| riley/020 | Pass | Fail | Fail | Pass | 84 | 21,795 | 16,768 | $0.0000 | 14.6 | 8.8 | $0.07 |
+| riley/040 | Pass | Pass | Fail | Pass | 578 | 222,328 | 24,886 | $0.0000 | 11.0 | 8.8 | $0.53 |
+| riley/060 | Fail | Fail | Fail | Pass | 521 | 199,324 | 47,240 | $0.0000 | 14.1 | 8.5 | $0.56 |
+| riley/080 | Pass | Pass | Fail | Pass | 453 | 87,338 | 11,691 | $0.0000 | 7.9 | 10.1 | $0.20 |
+| riley/100 | Pass | Fail | Fail | Pass | 564 | 106,286 | 37,101 | $0.0000 | 10.8 | 8.2 | $0.28 |
+| riley/120 | Pass | Pass | Fail | Pass | 567 | 214,840 | 11,136 | $0.0000 | 8.1 | 7.6 | $0.47 |
+| riley/140 | Pass | Pass | Fail | Pass | 398 | 75,210 | 11,461 | $0.0000 | 10.6 | 5.7 | $0.17 |
+| riley/160 | Pass | Pass | Fail | Pass | 434 | 82,590 | 53,136 | $0.0000 | 11.5 | 9.9 | $0.25 |
+| riley/180 | Pass | Pass | Fail | Pass | 402 | 156,526 | 36,759 | $0.0000 | 11.0 | 7.7 | $0.43 |
+| riley/200 | Pass | Pass | Fail | Pass | 501 | 95,069 | 35,337 | $0.0096 | 19.2 | 5.4 | $0.26 |
+| **Total** | **22 of 30** | **20 of 30** | **0** | **29** | 10,012 | 2,802,169 | median 15,872.0 | $0.01 | median 10.7 | median 6.7 | $7.10 |
