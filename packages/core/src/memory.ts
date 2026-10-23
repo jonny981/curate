@@ -1,5 +1,5 @@
 import { curate, type CurateOptions, type CurateResult, type CurateWrite } from './curate.js';
-import type { CandidateSourceKind, PickCascade, PickDecide, PickOptions } from './pick.js';
+import type { PickDecide, PickOptions } from './pick.js';
 import { pickFromSources, type CandidateReadRequest, type CandidateSource, type PickSourcesResult } from './source.js';
 
 export interface MemoryOptions {
@@ -24,17 +24,10 @@ export interface RecallResult {
 /** Read, select and curate with the question sets carried by the sources.
  *  Incomplete collection throws before writing; its cause holds the pick. */
 export function memory(options: MemoryOptions) {
-  const cascadesByKind: Partial<Record<CandidateSourceKind, PickCascade>> = {};
-  for (const source of options.sources) {
-    if (source.kind !== undefined && source.cascade !== undefined) {
-      cascadesByKind[source.kind] = source.cascade;
-    }
-  }
   return {
     async recall(task: string, { signal }: { readonly signal?: AbortSignal } = {}): Promise<RecallResult> {
       const picked = await pickFromSources(options.sources, { ...options.read, task, signal }, {
         ...options.pick, task, decide: options.decide, signal,
-        cascadesByKind: { ...cascadesByKind, ...options.pick?.cascadesByKind },
       });
       if (picked.reads.some((read) => read.status !== 'read' || !read.complete)
         || picked.record.candidates.some((item) => item.status === 'unanswered'

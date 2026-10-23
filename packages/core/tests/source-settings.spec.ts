@@ -3,9 +3,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { chatSettings } from '@curatejs/chat';
-import { gitSettings } from '@curatejs/git';
-import { markdownSettings } from '@curatejs/markdown';
 import {
   historySource, pickFromSources, type CandidateSource, type HistorySettings, type MemoryCandidate,
   type PickDecide, type PickSourcesResult,
@@ -24,6 +21,12 @@ interface Baseline {
 }
 const baseline: Record<string, Baseline> = JSON.parse(
   readFileSync(join(__dirname, 'fixtures/source-settings-baseline.json'), 'utf8'));
+
+// The presets' settings without their question sets, as the baseline ran them: it was recorded with the
+// built-in decision question.
+const chatSettings: HistorySettings = { rare: false, labels: true, bar: 0.0146 };
+const gitSettings: HistorySettings = { rare: true, labels: false, bar: 0.0146 };
+const markdownSettings: HistorySettings = { rare: true, labels: false, bar: 0.0146 };
 
 const sharedWords = (word: string) => Array.from({ length: 20 }, (_, i) => `${word}${i * 10}`).join(' ');
 const chat = (settings: Partial<HistorySettings> = {}, pool = parts('chat', 'chatword')) =>

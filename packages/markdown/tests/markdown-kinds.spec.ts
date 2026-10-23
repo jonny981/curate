@@ -3,8 +3,8 @@ import { readFile as actualReadFile, mkdir, mkdtemp, realpath, rm, stat, utimes,
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { curate, pick, pickFromSources, type CandidateReadRequest, type MemoryCandidate, type PickDecide } from '@curatejs/core';
-import { markdown, rules } from '../src/index.js';
+import { curate, historySource, pick, pickFromSources, type CandidateReadRequest, type MemoryCandidate, type PickDecide } from '@curatejs/core';
+import { markdown, MARKDOWN_CASCADE, rules } from '../src/index.js';
 
 const uncutPick = { everyRanked: true, everyScored: true, rare: false } as const;
 
@@ -97,8 +97,9 @@ describe('Markdown paths and shared reads', () => {
     const directory = await tree({ 'guide.md': text });
     const source = markdown({ paths: [directory], kind: 'docs' });
     const whole = await pickFromSources([source], { task: 'battery' }, { ...uncutPick, task: 'battery', decide: async ({ questions }) => {
-      expect(questions).toHaveLength(1);
-      expect(questions[0]!.text).toBe(text);
+      // One part, asked each question of the source's set.
+      expect(questions).toHaveLength(MARKDOWN_CASCADE.questions.length);
+      expect(questions.every((question) => question.text === text)).toBe(true);
       return yes({ task: 'battery', questions }, new AbortController().signal);
     } });
     expect(whole.selected).toHaveLength(1);
@@ -199,7 +200,11 @@ describe('Markdown dates, pins, and decisions', () => {
 
   it('uses kind-specific questions and records kinds while retaining low-score evidence and full curator text', async () => {
     const directory = await tree({ 'guide.md': 'Battery facts.' });
-    const picked = await pickFromSources(['knowledge', 'docs', 'rules', 'instructions'].map((kind) => markdown({ paths: [directory], kind: kind as 'knowledge' | 'docs' | 'rules' | 'instructions' })), { task: 'battery' }, { ...uncutPick,
+    // markdownSettings without its question set: a source without one asks each part its kind's question.
+    const picked = await pickFromSources(['knowledge', 'docs', 'rules', 'instructions'].map((kind) => historySource({
+      reader: markdown({ paths: [directory], kind: kind as 'knowledge' | 'docs' | 'rules' | 'instructions' }),
+      rare: true, labels: false, bar: 0.0146,
+    })), { task: 'battery' }, { ...uncutPick,
       task: 'battery', decide: async ({ questions }, signal) => {
         expect(questions.map((q) => q.kind).sort()).toEqual(['docs', 'instructions', 'knowledge', 'rules']);
         expect(new Set(questions.map((q) => q.question)).size).toBe(4);

@@ -5,7 +5,6 @@ import { basename, join, relative, resolve, sep } from 'node:path';
 import { canonicalPath, phraseCount, laneBend, embedQuery, embedSimilarities } from '@curatejs/core/internal';
 import { startChatRank, type ChatKeywordSettings } from './chat-rank.js';
 import { scrubChat } from './chat-scrub.js';
-import { CHAT_CASCADE } from './questions.js';
 import { DEFAULT_MAX_QUESTION_TEXT, type MemoryCandidate } from '@curatejs/core';
 import { historySource, SourceReadError, type CandidateReadRequest, type CandidateSource } from '@curatejs/core';
 import { chatSettings } from './defaults.js';
@@ -261,7 +260,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
   cutoff(options.since, Date.now());
   const id = scrubChat(options.id ?? `chat:${providers.map((provider) => `${provider}:${roots.get(provider)!.join(',')}`).join(';')}`);
   const reader: CandidateSource = {
-    id, kind: 'chat', role: 'reference', cascade: CHAT_CASCADE,
+    id, kind: 'chat', role: 'reference',
     async read(request: CandidateReadRequest) {
       cancelled(request.signal);
       const size = Math.min(DEFAULT_MAX_QUESTION_TEXT, budget, positive(request.maxQuestionText ?? DEFAULT_MAX_QUESTION_TEXT, 'maxQuestionText'));

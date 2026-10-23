@@ -150,19 +150,20 @@ const mem = memory({ sources: [chat(), git('.'), markdown({ paths: ['docs'], kin
 Each source carries its own settings, tuned for that kind of history.
 A setting on one source never changes what Curate picks from another, with one exception: a selected commit brings in a note it changed.
 
-| Source | Rare-word round | Labels | Decision-score bar | Rule bar |
-| --- | --- | --- | --- | --- |
-| `chat()` | Off | On, the seven kinds | 0.0146 | |
-| `git()` | On | Off | 0.0146 | |
-| `markdown()`, `knowledgeBase()` | On | Off | 0.0146 | |
-| `rules()` | On | Off | 0.0146 | 0 |
+| Source | Rare-word round | Labels | Decision-score bar | Rule bar | Questions |
+| --- | --- | --- | --- | --- | --- |
+| `chat()` | Off | On, the seven kinds | 0.0146 | | `CHAT_CASCADE` |
+| `git()` | On | Off | 0.0146 | | `GIT_HISTORY_CASCADE` |
+| `markdown()`, `knowledgeBase()` | On | Off | 0.0146 | | `MARKDOWN_CASCADE` |
+| `rules()` | On | Off | 0.0146 | 0 | `MARKDOWN_CASCADE` |
 
 - **Rare-word round:** after selection, find unselected parts of the same source that share a rare word with a selected part, and ask about them.
 - **Labels:** ask each part seven kinds of personal fact (what someone owns, prefers, did, decided and so on), so parts the keyword search missed can still reach the decision step. Each part is labelled once and the label stored for later questions.
 - **Decision-score bar:** keep a reference part the decision model scored at or above this.
 - **Rule bar:** keep a rule the decision model scored at or above this. Only sources whose parts are rules use it: `rules()`, and `markdown()` with kind `rules` or `instructions`.
+- **Questions:** the yes/no questions the decision model answers about each reference part, with fitted weights that combine the answers into its score.
 
-The pick record names the settings each source ran with under `levers.sources`, such as `{ kind: 'chat', labels: true, rare: false, bar: 0.0146 }`.
+The pick record names the settings each source ran with under `levers.sources`, such as `{ kind: 'chat', labels: true, rare: false, bar: 0.0146 }`, with `questions` holding the question set its parts were asked.
 
 These levers act on the whole call:
 
@@ -191,6 +192,26 @@ const source = historySource({ reader: chat({ paths: ['transcripts'] }), ...chat
 
 This turns labels off for one chat source, as the DolphinBench run did.
 `gitSettings`, `markdownSettings` and `rulesSettings` hold the other readers' settings.
+
+Give a source your own decision questions the same way:
+
+```js
+import { git, gitSettings } from '@curatejs/git';
+
+const mySet = {
+  bias: 0,
+  questions: [{
+    key: 'decision',
+    instructions: 'Does this commit record a decision the task depends on?',
+    true: 'It records a decision the task depends on.',
+    false: 'It records no decision the task depends on.',
+    weight: 1,
+  }],
+};
+const commits = historySource({ reader: git('.'), ...gitSettings, questions: mySet });
+```
+
+A source without `questions` asks each part one built-in question.
 `reader` can also be your own source; see [core's options](packages/core/README.md#levers-and-source-settings).
 
 Pass reader options under `read`, selection options under `pick`, and writer options under `curate`:
@@ -305,19 +326,15 @@ With these separate calls, check the read and candidate records yourself before 
 
 ```js
 import { pickFromSources, curate } from '@curatejs/core';
-import { markdown, MARKDOWN_CASCADE } from '@curatejs/markdown';
+import { markdown } from '@curatejs/markdown';
 
 const task = 'What billing constraint must this change preserve?';
 const sources = [markdown({ paths: ['docs'], kind: 'docs' })];
-const picked = await pickFromSources(sources, { task }, {
-  task,
-  decide,
-  cascadesByKind: { markdown: MARKDOWN_CASCADE },
-});
+const picked = await pickFromSources(sources, { task }, { task, decide });
 const result = await curate(task, picked, { write });
 ```
 
-For `memory()`, override a reader's questions through `pick.cascadesByKind`.
+`pickFromSources()` asks each source its own question set, as `memory()` does.
 See the [core package](packages/core/README.md) for question sets, tags, local meaning search and full records.
 
 ### The `/curate` skill

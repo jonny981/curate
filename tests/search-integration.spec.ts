@@ -6,8 +6,8 @@ import { expect, it } from 'vitest';
 
 import { curate, historySource, pickFromSources, type PickCascade } from '@curatejs/core';
 import { chat, chatSettings } from '@curatejs/chat';
-import { git as gitSource } from '@curatejs/git';
-import { knowledgeBase, rules } from '@curatejs/markdown';
+import { git as gitSource, gitSettings } from '@curatejs/git';
+import { knowledgeBase, markdownSettings, rules, rulesSettings } from '@curatejs/markdown';
 
 const uncutPick = { everyRanked: true, everyScored: true, rare: false } as const;
 
@@ -31,17 +31,18 @@ it('combines search options and source questions across real readers', async () 
     git('init', '-b', 'main');
     git('add', 'notes', 'policy');
     git('-c', 'commit.gpgsign=false', 'commit', '-m', 'Apple orchard backup', '-m', 'Preserve banana harvest evidence.');
-    const readers = [historySource({ reader: chat({ paths: [join(directory, 'transcripts')], providers: ['codex'] }), ...chatSettings, labels: false }),
-      gitSource(directory), knowledgeBase(join(directory, 'notes')), rules(join(directory, 'policy'))];
-    const kinds = new Map(readers.map((reader) => [reader.id, reader.kind]));
     const fitted = (key: string): PickCascade => ({ bias: 0, questions: [{
       key, instructions: `Check ${key}?`, true: 'It supplies evidence.', false: 'It supplies no evidence.', weight: 1,
     }] });
+    const readers = [historySource({ reader: chat({ paths: [join(directory, 'transcripts')], providers: ['codex'] }), ...chatSettings, labels: false, questions: fitted('chat') }),
+      historySource({ reader: gitSource(directory), ...gitSettings, questions: fitted('history') }),
+      historySource({ reader: knowledgeBase(join(directory, 'notes')), ...markdownSettings, questions: fitted('note') }),
+      historySource({ reader: rules(join(directory, 'policy')), ...rulesSettings, questions: fitted('note') })];
+    const kinds = new Map(readers.map((reader) => [reader.id, reader.kind]));
     const task = 'Apple orchard. Answer in one line. Cite both.';
     const calls: string[][] = [];
     const result = await pickFromSources(readers, { task, searchLines: ['Banana harvest'], stripSearchInstructions: true }, { ...uncutPick,
       task, bestPartFirst: true, rankProtection: true, limits: { maxCandidates: 3 },
-      cascadesByKind: { chat: fitted('chat'), 'git-history': fitted('history'), markdown: fitted('note') },
       decide: async (batch) => {
         expect(batch.task).toBe(task);
         calls.push(batch.questions.map((question) => `${question.sourceId}:${question.id}:${question.questionKey}`));

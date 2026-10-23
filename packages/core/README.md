@@ -35,7 +35,7 @@ const { log, rules, picked, result } = await mem.recall('What billing constraint
 - **Log:** `log` is the writer's text after format checks and any recovery. `result` is the full `CurateResult`, including its record.
 - **Rules:** `rules` joins selected rules with blank lines and preserves each rule's text. Rules do not go to the writer.
 - **Selection:** `picked` is the full `PickSourcesResult`, including source reads and decision records.
-- **Questions:** Each built-in reader carries its question set in `source.cascade`. `memory()` uses it for that source kind. Set `pick.cascadesByKind` to override a kind's questions. Custom sources without a set use core's ordinary question or your `pick.cascade` fallback.
+- **Questions:** Each source carries its decision question set as `questions`, set through `historySource()`, and each built-in reader carries its fitted set. `memory()`, `pickFromSources()` and the `/curate` skill all ask each source its own set. A source without one asks core's ordinary question. A direct `pick()` takes the sets by source id as `questionsBySource`.
 - **Incomplete collection:** Absent or incomplete reads, unanswered candidates and interrupted decisions throw before the writer runs. Parts intentionally excluded by the label questions are allowed. The error's `cause` holds `picked` for inspection. Source read errors propagate. A limit that leaves candidates unassessed also throws; use `pickFromSources()` directly if you need to accept a partial selection.
 - **Cancellation:** `mem.recall(task, { signal })` passes the signal to the readers and both model functions.
 
@@ -58,7 +58,7 @@ const mem = memory({
 See [levers and source settings](#levers-and-source-settings) for each source's settings and how to change them.
 
 `pickFromSources()` and `curate()` remain separate public calls for hosts that manage each step themselves.
-Calling them directly does not apply a reader's question set automatically.
+`pickFromSources()` asks each source its own question set, as `memory()` does.
 See the [runnable example](https://github.com/jonny981/curate#use-it) for installation and source setup.
 
 ## Model helpers
@@ -454,52 +454,47 @@ in `link`, and a linked candidate never carries another. The bar is a
 chosen default, not a measured best; `PickThresholds.linkedPathBar`
 overrides it.
 
-`cascade` accepts a fitted question set: `bias` and `questions`, each
-with `key`, `instructions`, `true`, `false`, and `weight`. Curate combines
-the answers with those weights into the decision probability. Optional
-`first`, `band: [low, high]`, and `firstOnly: { bias, weight }` ask one
-question first and use its fitted probability outside the band; inside
-the band, all questions contribute. The record keeps the configuration
-and each question's answer. A missing returned answer contributes nothing
+A source's `questions` setting takes a fitted question set, a
+`PickCascade`: `bias` and `questions`, each with `key`, `instructions`,
+`true`, `false`, and `weight`. Curate combines the answers with those
+weights into the decision probability. Optional `first`,
+`band: [low, high]`, and `firstOnly: { bias, weight }` ask one question
+first and use its fitted probability outside the band; inside the band,
+all questions contribute. `historySource()` checks the set when it builds
+the source. The record keeps the set under
+`levers.sources[sourceId].questions` and each question's answer on the
+part's entry. A missing returned answer contributes nothing
 to the fitted sum; when every answer is missing, the item stays unanswered.
 If a limit stops required questions before they are asked, the item stays
 unassessed.
 
 ### Question sets by source
 
-`cascadesByKind` accepts a question set for each source kind: `chat`,
-`git-history`, and `markdown`. The built-in sources declare their `kind`.
-Custom sources can declare it too. A supplied `cascade` remains the
-fallback for a kind without a set and for a source without a kind.
-Without either set, the ordinary reference question applies.
+Each source asks its reference parts the set in its own `questions`
+setting. The presets carry their reader's fitted set through their
+settings objects, and two sources of the same kind can ask different
+sets. A source without a set asks the ordinary reference question.
 Rule candidates keep their separate applicability question.
+`memory()`, `pickFromSources()` and the `/curate` skill ask each
+source's set the same way.
 
 ```ts
-import { pickFromSources } from '@curatejs/core';
-import { chat, CHAT_CASCADE } from '@curatejs/chat';
-import { git, GIT_HISTORY_CASCADE } from '@curatejs/git';
-import { knowledgeBase, MARKDOWN_CASCADE } from '@curatejs/markdown';
+import { historySource, pickFromSources } from '@curatejs/core';
+import { chat } from '@curatejs/chat';
+import { git, gitSettings } from '@curatejs/git';
+import { knowledgeBase } from '@curatejs/markdown';
 
 const picked = await pickFromSources(
-  [chat({ paths: ['transcripts'] }), git('.'), knowledgeBase('docs')],
+  [chat({ paths: ['transcripts'] }), historySource({ reader: git('.'), ...gitSettings, questions: mySet }), knowledgeBase('docs')],
   { task },
-  {
-    task, decide,
-    cascadesByKind: {
-      chat: CHAT_CASCADE,
-      'git-history': GIT_HISTORY_CASCADE,
-      markdown: MARKDOWN_CASCADE,
-    },
-  },
+  { task, decide },
 );
 ```
 
-For direct `pick` calls, supply `sourceKinds: { conversations: 'chat' }`
-to map each candidate's `sourceId` to its kind. `pickFromSources` fills
-that map from the sources that returned those candidates; a declared
-source kind takes precedence over the supplied map.
-The record keeps the per-kind sets and source map. Each candidate
-entry records `sourceKind` when its kind is known.
+A direct `pick` call has parts, not sources, so it takes the sets by
+source id: `questionsBySource: { conversations: CHAT_CASCADE }`.
+`pickFromSources` fills that map from the sources that returned those
+candidates.
 
 The chat package’s `CHAT_CASCADE` contains the fitted relevance, own-situation and needed
 questions, with relevance asked first. `GIT_HISTORY_CASCADE` and
@@ -537,7 +532,12 @@ important, critical), emphasis (neutral, emphatic, approving) and a
 yes/no "corrects something earlier" set. `GIT_HISTORY_TAGS` adds fix,
 feature and revert for commits; `MARKDOWN_TAGS` adds decision record,
 rule and how-to for notes. `tagsByKind` adds sets for references of one
-source kind, using the same `sourceKinds` map as `cascadesByKind`.
+source kind. For direct `pick` calls, supply `sourceKinds: { conversations: 'chat' }`
+to map each candidate's `sourceId` to its kind. `pickFromSources` fills
+that map from the sources that returned those candidates; a declared
+source kind takes precedence over the supplied map. The record keeps the
+map when `tagsByKind` is given, and each candidate entry records
+`sourceKind` when its kind is known.
 Tag set keys must be unique across `tags` and `tagsByKind` for one
 candidate.
 
@@ -825,8 +825,8 @@ matching the fixed-count study's 6 of 15 at about 15.
 
 The Markdown package's `markdown({ paths, kind })` source adds a candidate
 `kind`: `knowledge`, `docs`, `rules`, or `instructions`. This is separate from
-source kind `markdown`, which selects a fitted cascade through `cascadesByKind`.
-Without a cascade, core asks the candidate-kind question. Host candidates with
+the source's `questions` setting. A source without a question set asks the
+candidate-kind question. Host candidates with
 role `rule` retain rule questions; instruction candidates use the instruction
 question. Decision questions and records keep the candidate kind.
 
@@ -1115,20 +1115,21 @@ them. The cache is on whenever the caller passes one.
 
 ### Source settings
 
-Each source carries four settings, tuned for its kind of history:
+Each source carries five settings, tuned for its kind of history:
 
 - **`rare`:** run the rare-word round on this source's parts.
 - **`labels`:** the label kinds asked of each part: `true` for `LABEL_KINDS`, a list for those kinds, `false` for none.
 - **`bar`:** keep a reference part scored at or above this.
 - **`ruleBar`:** keep a rule scored at or above this; absent means 0. Only sources whose parts are rules use it.
+- **`questions`:** the decision questions asked of each reference part; absent means the built-in question for the part's kind.
 
 Each reader package exports its settings as one plain object, and its convenience functions carry it:
 
 | Settings object | Value | Carried by |
 | --- | --- | --- |
-| `chatSettings` (`@curatejs/chat`) | `{ rare: false, labels: true, bar: 0.0146 }` | `chat()` |
-| `gitSettings` (`@curatejs/git`) | `{ rare: true, labels: false, bar: 0.0146 }` | `git()` |
-| `markdownSettings` (`@curatejs/markdown`) | `{ rare: true, labels: false, bar: 0.0146 }` | `markdown()`, `knowledgeBase()` |
+| `chatSettings` (`@curatejs/chat`) | `{ rare: false, labels: true, bar: 0.0146, questions: CHAT_CASCADE }` | `chat()` |
+| `gitSettings` (`@curatejs/git`) | `{ rare: true, labels: false, bar: 0.0146, questions: GIT_HISTORY_CASCADE }` | `git()` |
+| `markdownSettings` (`@curatejs/markdown`) | `{ rare: true, labels: false, bar: 0.0146, questions: MARKDOWN_CASCADE }` | `markdown()`, `knowledgeBase()` |
 | `rulesSettings` (`@curatejs/markdown`) | `{ ...markdownSettings, ruleBar: 0 }` | `rules()` |
 
 The 0.0146 bar is the highest cut that lost no answer message on the tuning questions.
@@ -1146,6 +1147,7 @@ The record's `levers.sources` maps each source id to the settings it ran with, a
 - **`rare`:** whether the rare-word round was on for its parts.
 - **`bar`:** the bar its references were cut at, 0 when every scored part was kept.
 - **`ruleBar`:** the bar its rules were cut at, present when the source produced rules.
+- **`questions`:** the question set its reference parts were asked, present when the source carries one; absent, they were asked the built-in question.
 
 So a run reads as, for example, `{ kind: 'chat', labels: true, rare: false, bar: 0.0146 }`: a chat source with labels on.
 `levers.rare` is `false` or `{ share, bar }`, and `levers.everyScored` is present only when the call gave it.
@@ -1165,7 +1167,7 @@ const sources = [
 const picked = await pickFromSources(sources, { task }, { task, decide });
 ```
 
-A direct `pick()` takes the same settings by source id: `labelKindsBySource`, `rareBySource`, `barBySource` and `ruleBarBySource`.
+A direct `pick()` takes the same settings by source id: `labelKindsBySource`, `rareBySource`, `barBySource`, `ruleBarBySource` and `questionsBySource`.
 
 ## Optional evidence limits
 

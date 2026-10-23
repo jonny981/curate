@@ -18,7 +18,7 @@ const RENAMED_OPTIONS: Readonly<Record<string, string>> = {
 };
 
 const PICK_OPTION_KEYS: readonly (keyof PickOptions)[] = [
-  'ranking', 'task', 'decide', 'cascade', 'cascadesByKind', 'sourceKinds', 'labelKindsBySource',
+  'ranking', 'task', 'decide', 'questionsBySource', 'sourceKinds', 'labelKindsBySource',
   'keepTop', 'rankProtection', 'bestPartFirst', 'tags', 'tagsByKind',
   'labels', 'cache', 'route', 'everyRanked', 'everyScored', 'rare', 'rareBySource',
   'barBySource', 'ruleBarBySource', 'rulesEnumerationComplete', 'limits', 'thresholds', 'signal',
@@ -41,9 +41,8 @@ const CURATE_KEYS: readonly (keyof CurateOptions)[] = [
   'write', 'working', 'context', 'routeByTask', 'route', 'preferenceAdvice',
   'preferenceChange', 'taskDate', 'contextLimit', 'batchTokens', 'signal',
 ];
-/** The fixed keys of the maps keyed by source kind — cascadesByKind,
- *  tagsByKind and the read request's kindLanes — and the values
- *  sourceKinds maps to. */
+/** The fixed keys of the maps keyed by source kind — tagsByKind and
+ *  the read request's kindLanes — and the values sourceKinds maps to. */
 const SOURCE_KIND_KEYS: readonly CandidateSourceKind[] = ['chat', 'git-history', 'markdown'];
 /** The fixed keys of `ranking`, keyed by candidate kind. */
 const MEMORY_KIND_KEYS: readonly MemoryKind[] = ['knowledge', 'docs', 'rules', 'instructions'];
@@ -72,14 +71,33 @@ function checkKeys(value: unknown, allowed: readonly string[], path: string): vo
   }
 }
 
-/** One cascade's own keys, then its firstOnly weights and each fitted
- *  question's keys: an extra key beside the fitted fields would
+/** One question set's own keys, then its firstOnly weights and each
+ *  fitted question's keys: an extra key beside the fitted fields would
  *  otherwise go unread. */
-function checkCascadeKeys(cascade: PickCascade | undefined, path: string): void {
-  checkKeys(cascade, CASCADE_KEYS, path);
-  checkKeys(cascade?.firstOnly, FIRST_ONLY_KEYS, `${path}.firstOnly`);
-  for (const [index, question] of (cascade?.questions ?? []).entries()) {
+export function checkCascadeKeys(set: PickCascade | undefined, path: string): void {
+  checkKeys(set, CASCADE_KEYS, path);
+  checkKeys(set?.firstOnly, FIRST_ONLY_KEYS, `${path}.firstOnly`);
+  for (const [index, question] of (set?.questions ?? []).entries()) {
     checkKeys(question, CASCADE_QUESTION_KEYS, `${path}.questions[${index}]`);
+  }
+}
+
+/** A question set's values: unique, complete questions with finite
+ *  weights, and first, band and firstOnly together or not at all. */
+export function checkCascade(set: PickCascade | undefined): void {
+  if (set === undefined) return;
+  const keys = set.questions.map((q) => q.key);
+  if (!Number.isFinite(set.bias) || !keys.length || new Set(keys).size !== keys.length
+    || set.questions.some((q) => !q.key || !q.instructions || !q.true || !q.false || !Number.isFinite(q.weight))) {
+    throw new TypeError('a question set needs unique questions and finite fitted weights.');
+  }
+  if (set.first !== undefined || set.band !== undefined || set.firstOnly !== undefined) {
+    if (!keys.includes(set.first!) || !set.band || set.band.length !== 2
+      || set.band.some((p) => !Number.isFinite(p) || p < 0 || p > 1)
+      || set.band[0] > set.band[1] || !set.firstOnly
+      || !Number.isFinite(set.firstOnly.bias) || !Number.isFinite(set.firstOnly.weight)) {
+      throw new TypeError('a question set\'s first, band and firstOnly must be supplied together with valid weights.');
+    }
   }
 }
 
@@ -127,11 +145,9 @@ export function checkPickOptions(options: PickOptions): void {
     }
   }
   checkKeys(options.ranking, MEMORY_KIND_KEYS, 'ranking');
-  checkCascadeKeys(options.cascade, 'cascade');
-  checkKeys(options.cascadesByKind, SOURCE_KIND_KEYS, 'cascadesByKind');
   checkKeys(options.tagsByKind, SOURCE_KIND_KEYS, 'tagsByKind');
-  for (const [kind, cascade] of Object.entries(options.cascadesByKind ?? {})) {
-    checkCascadeKeys(cascade, `cascadesByKind.${kind}`);
+  for (const [id, set] of Object.entries(options.questionsBySource ?? {})) {
+    checkCascadeKeys(set, `questionsBySource.${id}`);
   }
   for (const [index, set] of (options.tags ?? []).entries()) {
     checkTagSetKeys(set, `tags[${index}]`);

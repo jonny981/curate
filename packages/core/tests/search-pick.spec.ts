@@ -331,12 +331,12 @@ describe('best document part first', () => {
   });
 
   it('completes representative cascades before asking another part', async () => {
-    const cascade: PickCascade = {
+    const fitted: PickCascade = {
       bias: 0, first: 'relevant', band: [0.1, 0.9], firstOnly: { bias: 0, weight: 1 },
       questions: [{ ...criterion('relevant'), weight: 1 }, { ...criterion('needed'), weight: 0 }],
     };
     const stub = decisions((question) => answer(0.5));
-    await pick(parts(), { ...uncutPick, task: 'battery charge schedule', decide: stub.decide, bestPartFirst: true, cascade });
+    await pick(parts(), { ...uncutPick, task: 'battery charge schedule', decide: stub.decide, bestPartFirst: true, questionsBySource: { notes: fitted } });
     expect(stub.calls.map((batch) => batch.map((question) => `${question.id}:${question.questionKey}`))).toEqual([
       ['representative:relevant'], ['representative:needed'],
       ['tail:relevant'], ['tail:needed'],
@@ -344,7 +344,7 @@ describe('best document part first', () => {
   });
 
   it.each(['missing', 'refused', 'error'] as const)('expands when a fitted question returns %s despite a low combined score', async (status) => {
-    const cascade: PickCascade = {
+    const fitted: PickCascade = {
       bias: 0, questions: [{ ...criterion('relevant'), weight: 1 }, { ...criterion('needed'), weight: 0 }],
     };
     const stub = decisions((question) => {
@@ -354,7 +354,7 @@ describe('best document part first', () => {
       return answer(question.id === 'representative' ? 0.1 : 0.9);
     });
     const result = await pick(parts(), { ...uncutPick,
-      task: 'battery charge schedule', decide: stub.decide, bestPartFirst: true, cascade, everyScored: { bar: 0.6 },
+      task: 'battery charge schedule', decide: stub.decide, bestPartFirst: true, questionsBySource: { notes: fitted }, everyScored: { bar: 0.6 },
     });
     expect(stub.ids()).toEqual(['representative', 'representative', 'tail', 'tail']);
     expect(result.record.candidates[0]).toMatchObject({ status: 'selected' });
@@ -362,20 +362,20 @@ describe('best document part first', () => {
   });
 
   it('does not treat deliberately unasked questions outside a cascade band as uncertain', async () => {
-    const cascade: PickCascade = {
+    const fitted: PickCascade = {
       bias: 0, first: 'relevant', band: [0.2, 0.8], firstOnly: { bias: 0, weight: 1 },
       questions: [{ ...criterion('relevant'), weight: 1 }, { ...criterion('needed'), weight: 0 }],
     };
     const stub = decisions((question) => answer(question.id === 'representative' ? 0.1 : 0.9));
     const result = await pick(parts(), { ...uncutPick,
-      task: 'battery charge schedule', decide: stub.decide, bestPartFirst: true, cascade, everyScored: { bar: 0.6 },
+      task: 'battery charge schedule', decide: stub.decide, bestPartFirst: true, questionsBySource: { notes: fitted }, everyScored: { bar: 0.6 },
     });
     expect(stub.calls.map((batch) => batch.map((question) => `${question.id}:${question.questionKey}`)))
       .toEqual([['representative:relevant'], ['tail:relevant']]);
     expect(result.record.candidates[0]).toMatchObject({ status: 'selected' });
   });
 
-  it('uses each source kind’s cascade for representatives and expanded parts', async () => {
+  it('uses each source’s question set for representatives and expanded parts', async () => {
     const stub = decisions();
     const result = await pick([
       ...parts(),
@@ -383,9 +383,8 @@ describe('best document part first', () => {
       item('chat-representative', { sourceId: 'chat', documentId: 'session', text: 'battery charge schedule' }),
     ], { ...uncutPick,
       task: 'battery charge schedule', decide: stub.decide, bestPartFirst: true,
-      sourceKinds: { notes: 'markdown', chat: 'chat' },
-      cascadesByKind: {
-        markdown: { bias: 0, questions: [{ ...criterion('note'), weight: 1 }] },
+      questionsBySource: {
+        notes: { bias: 0, questions: [{ ...criterion('note'), weight: 1 }] },
         chat: { bias: 0, questions: [{ ...criterion('chat'), weight: 1 }] },
       },
     });
@@ -453,7 +452,7 @@ describe('stopping document assessment', () => {
   it('retains the stop reason when the representative’s fitted assessment cannot finish', async () => {
     const stub = decisions(() => answer(0.5));
     const result = await pick(parts(), { ...uncutPick,
-      task: 'battery charge', decide: stub.decide, bestPartFirst: true, cascade: { bias: 0, first: 'one', band: [0.1, 0.9], firstOnly: { bias: 0, weight: 1 }, questions: [{ ...criterion('one'), weight: 1 }, { ...criterion('two'), weight: 1 }] }, limits: { maxBatches: 1 },
+      task: 'battery charge', decide: stub.decide, bestPartFirst: true, questionsBySource: { notes: { bias: 0, first: 'one', band: [0.1, 0.9], firstOnly: { bias: 0, weight: 1 }, questions: [{ ...criterion('one'), weight: 1 }, { ...criterion('two'), weight: 1 }] } }, limits: { maxBatches: 1 },
     });
     expect(stub.ids()).toEqual(['representative']);
     expect(result.record.candidates.map((entry) => [entry.status, 'reason' in entry ? entry.reason : undefined]))

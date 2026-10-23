@@ -5,9 +5,9 @@ import { curate, decisionFileStore, DEFAULT_MAX_QUESTION_TEXT, historySource, LA
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { chat, chatSettings, type ChatOptions, type ChatProvider } from '@curatejs/chat';
-import { git, gitSettings, type GitOptions } from '@curatejs/git';
-import { markdown, markdownSettings, knowledgeBase, rules, rulesSettings, type MarkdownOptions, type KnowledgeBaseOptions } from '@curatejs/markdown';
+import { chat, CHAT_CASCADE, chatSettings, type ChatOptions, type ChatProvider } from '@curatejs/chat';
+import { git, GIT_HISTORY_CASCADE, gitSettings, type GitOptions } from '@curatejs/git';
+import { markdown, MARKDOWN_CASCADE, markdownSettings, knowledgeBase, rules, rulesSettings, type MarkdownOptions, type KnowledgeBaseOptions } from '@curatejs/markdown';
 
 const uncutPick = { everyRanked: true, everyScored: true, rare: false } as const;
 
@@ -109,13 +109,14 @@ describe('package exports', () => {
   it('exports each reader\'s settings and historySource to change them', () => {
     const settings: readonly HistorySettings[] = [chatSettings, gitSettings, markdownSettings, rulesSettings];
     expect(settings).toEqual([
-      { rare: false, labels: true, bar: 0.0146 },
-      { rare: true, labels: false, bar: 0.0146 },
-      { rare: true, labels: false, bar: 0.0146 },
-      { rare: true, labels: false, bar: 0.0146, ruleBar: 0 },
+      { rare: false, labels: true, bar: 0.0146, questions: CHAT_CASCADE },
+      { rare: true, labels: false, bar: 0.0146, questions: GIT_HISTORY_CASCADE },
+      { rare: true, labels: false, bar: 0.0146, questions: MARKDOWN_CASCADE },
+      { rare: true, labels: false, bar: 0.0146, questions: MARKDOWN_CASCADE, ruleBar: 0 },
     ]);
     const reader = chat({ providers: ['codex'], paths: ['/nonexistent'] });
-    expect(reader).toMatchObject({ kind: 'chat', rare: false, bar: 0.0146, labelKinds: LABEL_KINDS });
+    expect(reader).toMatchObject({ kind: 'chat', rare: false, bar: 0.0146, labelKinds: LABEL_KINDS, questions: CHAT_CASCADE });
+    expect(historySource({ reader, rare: false, labels: false, bar: 0.0146 }).questions).toBeUndefined();
     const unlabelled = historySource({ reader, ...chatSettings, labels: false });
     expect(unlabelled).toMatchObject({ id: reader.id, kind: 'chat', rare: false, bar: 0.0146 });
     expect(unlabelled.labelKinds).toBeUndefined();

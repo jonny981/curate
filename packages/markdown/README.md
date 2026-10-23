@@ -58,7 +58,7 @@ const sources = [
 
 - **Kinds:** Knowledge and docs are references; rules and instructions are
   rules. Candidate, question, and selection records retain the declared kind.
-  Without a fitted cascade, core asks a question suited to that kind.
+  A source without a question set asks a question suited to that kind.
 - **Shared reads:** One `pickFromSources` call reads a file's bytes once across
   overlapping sources and search lines, up to a 64 MB shared cap; past the
   cap each pass reads from disk again, so a large corpus is never held
@@ -130,7 +130,7 @@ const source = historySource({ reader: rules('rules'), ...rulesSettings, ruleBar
 See [core's measured reason](https://github.com/jonny981/curate/blob/main/packages/core/README.md#defaults-and-evidence) for the saved-decision sweep's answer-turn losses.
 
 - **Keyword settings:** `MARKDOWN_KEYWORD_SETTINGS` exports the ranking defaults. Pass a partial `keyword` object to the reader to override them.
-- **Questions:** `markdown()` carries `MARKDOWN_CASCADE`, its fitted question set. Core's `memory()` uses it automatically; override it with `pick.cascadesByKind.markdown`. With `pickFromSources()` or `pick()`, pass it through `cascade` or `cascadesByKind` explicitly. Rule candidates keep their separate applicability question.
+- **Questions:** `markdownSettings` carries `MARKDOWN_CASCADE`, the fitted question set `markdown()`, `knowledgeBase()` and `rules()` ask of each reference part. Core's `memory()` and `pickFromSources()` ask it. Change it with `historySource({ reader: knowledgeBase('docs'), ...markdownSettings, questions: mySet })`. Rule candidates keep their separate applicability question. The git and Markdown sets were fitted on saved answers about commits and notes. No end-to-end score has measured them.
 - **Search wording:** `MARKDOWN_SEARCH_LINE_REGISTER` describes the wording for host-written extra search lines. Copy or replace this text in your host; the package generates no lines.
 - **Kind phrases:** `MARKDOWN_KIND_PHRASES` exports phrases in the note register for `directions`, `decisions` and `corrections`. Pass one list to core's `kindLanes` option, for example `{ markdown: MARKDOWN_KIND_PHRASES.corrections }`; kind lanes stay off by default.
 

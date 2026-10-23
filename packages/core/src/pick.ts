@@ -11,7 +11,7 @@ import {
 } from './decisions.js';
 import { ROUTE_QUESTIONS, routeOptions, type RouteKey, type RouteOption } from './task.js';
 import type { LeverStates } from './levers.js';
-import { checkPickOptions } from './options.js';
+import { checkCascade, checkPickOptions } from './options.js';
 
 export type MemoryCandidateRole = 'reference' | 'rule';
 export type MemoryKind = 'knowledge' | 'docs' | 'rules' | 'instructions';
@@ -77,7 +77,7 @@ export interface MemoryCandidate {
 
 export interface PickQuestion {
   readonly key: string;
-  /** The fitted question's name, when a cascade is supplied. */
+  /** The fitted question's name, when the part's source carries a question set. */
   readonly questionKey?: string;
   /** The tag set this question belongs to, for a tag question. */
   readonly tagSet?: string;
@@ -334,10 +334,7 @@ export interface PickRecord {
    *  and records the error on the tag's answers, since tags never
    *  change what is selected. */
   readonly decideError?: { readonly candidates: readonly string[]; readonly message: string };
-  readonly cascade?: PickCascade;
-  /** A source-specific set overrides cascade; undeclared kinds use cascade. */
-  readonly cascadesByKind?: Readonly<Partial<Record<CandidateSourceKind, PickCascade>>>;
-  /** Source identities mapped to kinds; pickFromSources fills these from source.kind. */
+  /** Source identities mapped to kinds, recorded when `tagsByKind` is given. */
   readonly sourceKinds?: Readonly<Record<string, CandidateSourceKind>>;
   readonly keepTop?: number;
   readonly rankProtection?: boolean;
@@ -454,9 +451,11 @@ export interface PickOptions {
   readonly ranking?: Partial<Record<MemoryKind, Readonly<Record<string, number>>>>;
   readonly task: string;
   readonly decide: PickDecide;
-  readonly cascade?: PickCascade;
-  /** A source-specific set overrides cascade; undeclared kinds use cascade. */
-  readonly cascadesByKind?: Readonly<Partial<Record<CandidateSourceKind, PickCascade>>>;
+  /** The decision questions asked of each source's reference parts, by
+   *  source ID. A source without a set asks the built-in question for
+   *  the part's kind; rule parts keep their applicability question.
+   *  pickFromSources fills these from each source's `questions`. */
+  readonly questionsBySource?: Readonly<Record<string, PickCascade>>;
   /** Source identities mapped to kinds; pickFromSources fills these from source.kind. */
   readonly sourceKinds?: Readonly<Record<string, CandidateSourceKind>>;
   /** Put these top ranked hits first if they pass the threshold. */
@@ -784,23 +783,6 @@ function checkAnswer(raw: unknown): CheckedAnswer {
   return { status: 'error', detail: 'The answer status is not recognised.' };
 }
 
-function checkCascade(cascade: PickCascade | undefined): void {
-  if (cascade === undefined) return;
-  const keys = cascade.questions.map((q) => q.key);
-  if (!Number.isFinite(cascade.bias) || !keys.length || new Set(keys).size !== keys.length
-    || cascade.questions.some((q) => !q.key || !q.instructions || !q.true || !q.false || !Number.isFinite(q.weight))) {
-    throw new TypeError('cascade needs unique questions and finite fitted weights.');
-  }
-  if (cascade.first !== undefined || cascade.band !== undefined || cascade.firstOnly !== undefined) {
-    if (!keys.includes(cascade.first!) || !cascade.band || cascade.band.length !== 2
-      || cascade.band.some((p) => !Number.isFinite(p) || p < 0 || p > 1)
-      || cascade.band[0] > cascade.band[1] || !cascade.firstOnly
-      || !Number.isFinite(cascade.firstOnly.bias) || !Number.isFinite(cascade.firstOnly.weight)) {
-      throw new TypeError('cascade first, band and firstOnly must be supplied together with valid weights.');
-    }
-  }
-}
-
 function checkTagSet(set: PickTagSet | undefined): void {
   if (set === undefined) return;
   const keys = set.questions.map((question) => question.key);
@@ -876,8 +858,7 @@ export async function pick(
       throw new TypeError('searchRanks needs nonnegative safe integers or null and at least one rank.');
     }
   }
-  checkCascade(options.cascade);
-  for (const set of Object.values(options.cascadesByKind ?? {})) checkCascade(set);
+  for (const set of Object.values(options.questionsBySource ?? {})) checkCascade(set);
   if (options.route !== undefined && options.route !== 'jev') {
     throw new TypeError(`route must be 'jev'.`);
   }
@@ -885,10 +866,9 @@ export async function pick(
   for (const sets of Object.values(options.tagsByKind ?? {})) for (const set of sets ?? []) checkTagSet(set);
   const kindFor = (candidate: MemoryCandidate) => options.sourceKinds && Object.hasOwn(options.sourceKinds, candidate.sourceId)
     ? options.sourceKinds[candidate.sourceId] : undefined;
-  const cascadeFor = (candidate: MemoryCandidate) => {
-    const kind = kindFor(candidate);
-    return (kind === undefined ? undefined : options.cascadesByKind?.[kind]) ?? options.cascade;
-  };
+  const questionsFor = (sourceId: string) => options.questionsBySource && Object.hasOwn(options.questionsBySource, sourceId)
+    ? options.questionsBySource[sourceId] : undefined;
+  const cascadeFor = (candidate: MemoryCandidate) => questionsFor(candidate.sourceId);
   const tagSetsFor = (candidate: MemoryCandidate) => {
     const kind = kindFor(candidate);
     const sets = [...options.tags ?? [], ...(kind === undefined ? [] : options.tagsByKind?.[kind] ?? [])];
@@ -1839,12 +1819,9 @@ export async function pick(
     ...(decideFailure === undefined ? {} : {
       decideError: { candidates: decideFailure.ids, message: decideFailure.message },
     }),
-    ...(options.cascade === undefined ? {} : { cascade: options.cascade }),
-    ...(options.cascadesByKind === undefined ? {} : { cascadesByKind: options.cascadesByKind }),
     ...(options.tags === undefined ? {} : { tags: options.tags }),
     ...(options.tagsByKind === undefined ? {} : { tagsByKind: options.tagsByKind }),
-    ...((options.cascadesByKind === undefined && options.tagsByKind === undefined)
-      || options.sourceKinds === undefined ? {} : { sourceKinds: options.sourceKinds }),
+    ...(options.tagsByKind === undefined || options.sourceKinds === undefined ? {} : { sourceKinds: options.sourceKinds }),
     ...(options.keepTop === undefined ? {} : { keepTop }),
     ...(options.rankProtection ? { rankProtection: true } : {}),
     ...(options.bestPartFirst ? { bestPartFirst: true } : {}),
@@ -1868,10 +1845,12 @@ export async function pick(
     levers: { ...levers, sources: Object.fromEntries([...new Set([
       ...Object.keys(labelKindsBySource), ...rareSourceIds,
       ...Object.keys(options.barBySource ?? {}), ...Object.keys(options.ruleBarBySource ?? {}),
+      ...Object.keys(options.questionsBySource ?? {}),
     ])].map((id) => [id, {
       ...(options.sourceKinds?.[id] === undefined ? {} : { kind: options.sourceKinds[id] }),
       labels: (labelKindsBySource[id]?.length ?? 0) > 0, rare: rareForSource(id), bar: referenceBar(id),
       ...(candidates.some((c) => c.sourceId === id && c.role === 'rule') ? { ruleBar: ruleBarFor(id) } : {}),
+      ...(questionsFor(id) === undefined ? {} : { questions: questionsFor(id) }),
     }])) },
   };
   if (decideFailure !== undefined) {

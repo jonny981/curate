@@ -13,7 +13,7 @@
 //   built from the saved record of a real pick and its full candidate
 //   list by tools/build-decision-cache-replay.mjs — see that tool's
 //   header. task and candidates are the pick's input, options its
-//   remaining options (cascade, keepTop, thresholds, tags, limits),
+//   remaining options (questionsBySource, keepTop, thresholds, tags, limits),
 //   and answers maps each part — keyed by its [sourceId, id] pair — to
 //   each question's spec key (the questionKey on a fitted or tag
 //   question, the role on a plain one) to the saved answer

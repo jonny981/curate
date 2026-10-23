@@ -11,7 +11,7 @@ const candidate: MemoryCandidate = {
   signals: {},
 };
 
-async function score(cascade: PickCascade, values: Readonly<Record<string, number>>) {
+async function score(questions: PickCascade, values: Readonly<Record<string, number>>) {
   const asked: string[] = [];
   const decide: PickDecide = async ({ questions }) => Object.fromEntries(questions.map((question) => {
     const key = question.questionKey!;
@@ -19,7 +19,7 @@ async function score(cascade: PickCascade, values: Readonly<Record<string, numbe
     return [question.key, { status: 'answered', probability: values[key]! }];
   }));
   const result = await pick([candidate], { ...uncutPick,
-    task: 'Find evidence', cascade, decide,
+    task: 'Find evidence', questionsBySource: { evidence: questions }, decide,
   });
   const entry = result.record.candidates[0]!;
   return { asked, probability: 'probability' in entry ? entry.probability : undefined };

@@ -1,10 +1,11 @@
 import type { HistorySettings } from '@curatejs/core';
+import { MARKDOWN_CASCADE } from './questions.js';
 
 /** The settings `markdown()` and `knowledgeBase()` read with: the
- *  rare-word round on, no label kinds, and the 0.0146 decision-score
- *  bar. Change one with
+ *  rare-word round on, no label kinds, the 0.0146 decision-score bar
+ *  and the `MARKDOWN_CASCADE` decision questions. Change one with
  *  `historySource({ reader: knowledgeBase('docs'), ...markdownSettings, rare: false })`. */
-export const markdownSettings: HistorySettings = { rare: true, labels: false, bar: 0.0146 };
+export const markdownSettings: HistorySettings = { rare: true, labels: false, bar: 0.0146, questions: MARKDOWN_CASCADE };
 
 /** The settings `rules()` reads with: `markdownSettings` and a rule bar
  *  of 0, so every rule the decision step scored is kept. */

@@ -9,7 +9,7 @@ import { chat, CHAT_CASCADE, chatSettings } from '@curatejs/chat';
 import { git as gitSource, GIT_HISTORY_CASCADE } from '@curatejs/git';
 import { markdown, MARKDOWN_CASCADE } from '@curatejs/markdown';
 
-it('uses each real reader question set without a cascadesByKind map', async () => {
+it('uses each real reader question set with no question option', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'curate-memory-'));
   try {
     vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));

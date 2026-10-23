@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  memory, SourceReadError,
+  historySource, memory, SourceReadError,
   type CandidateReadResult, type CandidateSource, type CurateWrite, type MemoryCandidate,
   type PickCascade, type PickDecide,
 } from '../src/index.js';
@@ -100,18 +100,19 @@ describe('memory', () => {
     expect(write).not.toHaveBeenCalled();
   });
 
-  it.each([false, true])('uses reader questions and lets a caller override them (override %s)', async (override) => {
+  it('asks the questions each source carries', async () => {
     const questions: (string | undefined)[] = [];
     const recalled = await memory({
-      sources: [{ ...source(), kind: 'markdown', cascade: fitted('from-reader') }],
+      sources: [historySource({ reader: { ...source(), kind: 'markdown' }, rare: false, labels: false, bar: 0.0146,
+        questions: fitted('from-source') })],
       decide: async (batch, signal) => {
         questions.push(...batch.questions.map((question) => question.questionKey));
         return decide(batch, signal);
       },
       write: async () => LOG,
-      pick: override ? { cascadesByKind: { markdown: fitted('from-caller') } } : {},
     }).recall(TASK);
-    expect(questions).toEqual([override ? 'from-caller' : 'from-reader']);
+    expect(questions).toEqual(['from-source']);
+    expect(recalled.picked.record.levers.sources.notes?.questions).toEqual(fitted('from-source'));
     expect(recalled.rules).toBe('');
   });
 

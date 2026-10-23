@@ -86,7 +86,7 @@ const source = historySource({ reader: chat({ paths: ['transcripts'] }), ...chat
 See [core's measured reason](https://github.com/jonny981/curate/blob/main/packages/core/README.md#defaults-and-evidence) for the saved-decision sweep's answer-turn losses.
 
 - **Keyword settings:** `CHAT_KEYWORD_SETTINGS` exports the ranking defaults. Pass a partial `keyword` object to the reader to override them.
-- **Questions:** `chat()` carries `CHAT_CASCADE`, its fitted question set. Core's `memory()` uses it automatically; override it with `pick.cascadesByKind.chat`. With `pickFromSources()` or `pick()`, pass it through `cascade` or `cascadesByKind` explicitly.
+- **Questions:** `chatSettings` carries `CHAT_CASCADE`, the fitted question set `chat()` asks of each part. Core's `memory()` and `pickFromSources()` ask it. Change it with `historySource({ reader: chat(), ...chatSettings, questions: mySet })`.
 - **Labels:** `labels: true` asks core's seven `LABEL_KINDS` for transcript facts; a list of kinds asks your own set instead. See [core's label options](https://github.com/jonny981/curate/blob/main/packages/core/README.md#label-gate).
 - **Search wording:** `CHAT_SEARCH_LINE_REGISTER` describes the wording for host-written extra search lines. Copy or replace this text in your host; the package generates no lines.
 - **Kind phrases:** `CHAT_KIND_PHRASES` exports phrases in the chat register for `directions`, `decisions` and `corrections`. Pass one list to core's `kindLanes` option, for example `{ chat: CHAT_KIND_PHRASES.directions }`; kind lanes stay off by default.

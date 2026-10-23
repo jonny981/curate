@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   LABEL_KINDS,
   curate,
+  historySource,
   pick,
   pickFromSources,
   ROUTE_QUESTIONS,
@@ -379,24 +380,21 @@ describe('levers', () => {
       const counter = stubDecide(() => answered(0.9));
       const fitted = { bias: 0, questions: [{ key: 'q', instructions: 'i', true: 't', false: 'f', weight: 1 }] };
       await expect(pick([part], { task: 'task', decide: counter.decide,
-        cascadesByKind: { markdwon: fitted } as never }))
-        .rejects.toThrow('`cascadesByKind.markdwon` is not an option; allowed keys are `chat`, `git-history`, `markdown`');
-      await expect(pick([part], { task: 'task', decide: counter.decide,
         tagsByKind: { markdwn: [] } as never }))
         .rejects.toThrow('`tagsByKind.markdwn` is not an option; allowed keys are `chat`, `git-history`, `markdown`');
       await expect(pick([part], { task: 'task', decide: counter.decide,
         ranking: { knwledge: { score: 2 } } as never }))
         .rejects.toThrow('`ranking.knwledge` is not an option; allowed keys are `knowledge`, `docs`, `rules`, `instructions`');
       await expect(pick([part], { task: 'task', decide: counter.decide,
-        cascadesByKind: { markdown: { ...fitted, firstonly: { bias: 0, weight: 1 } } } as never }))
-        .rejects.toThrow('`cascadesByKind.markdown.firstonly` is not an option; allowed keys are `bias`, `questions`, `first`, `band`, `firstOnly`');
+        questionsBySource: { notes: { ...fitted, firstonly: { bias: 0, weight: 1 } } } as never }))
+        .rejects.toThrow('`questionsBySource.notes.firstonly` is not an option; allowed keys are `bias`, `questions`, `first`, `band`, `firstOnly`');
       await expect(pick([part], { task: 'task', decide: counter.decide,
         sourceKinds: { notes: 'markdwon' } as never }))
         .rejects.toThrow("`sourceKinds.notes` names a kind that is not 'chat', 'git-history' or 'markdown'.");
       expect(counter.calls).toHaveLength(0);
     });
 
-    it('rejects an unknown key inside a cascade or tag-set question, before any read or decide call', async () => {
+    it('rejects an unknown key inside a question set or tag-set question, before any read or decide call', async () => {
       const counter = stubDecide(() => answered(0.9));
       const fitted = { bias: 0, questions: [{ key: 'q', instructions: 'i', true: 't', false: 'f', weight: 1 }] };
       const tagSet = { key: 'importance', questions: [{ key: 'high', instructions: 'i', true: 't', false: 'f' }] };
@@ -409,15 +407,17 @@ describe('levers', () => {
         },
       };
       await expect(pick([part], { task: 'task', decide: counter.decide,
-        cascade: { ...fitted, questions: [{ ...fitted.questions[0]!, wieght: 2 }] } } as never))
-        .rejects.toThrow('`cascade.questions[0].wieght` is not an option; allowed keys are `key`, `instructions`, `true`, `false`, `weight`');
+        questionsBySource: { notes: { ...fitted, questions: [{ ...fitted.questions[0]!, wieght: 2 }] } } } as never))
+        .rejects.toThrow('`questionsBySource.notes.questions[0].wieght` is not an option; allowed keys are `key`, `instructions`, `true`, `false`, `weight`');
       await expect(pick([part], { task: 'task', decide: counter.decide,
-        cascade: { ...fitted, first: 'q', band: [0.4, 0.6], firstOnly: { bias: 0, wieght: 1 } } } as never))
-        .rejects.toThrow('`cascade.firstOnly.wieght` is not an option; allowed keys are `bias`, `weight`');
-      await expect(pickFromSources([source], { task: 'task' },
-        { task: 'task', decide: counter.decide,
-          cascadesByKind: { markdown: { ...fitted, questions: [{ ...fitted.questions[0]!, wieght: 2 }] } } } as never))
-        .rejects.toThrow('`cascadesByKind.markdown.questions[0].wieght` is not an option');
+        questionsBySource: { notes: { ...fitted, first: 'q', band: [0.4, 0.6], firstOnly: { bias: 0, wieght: 1 } } } } as never))
+        .rejects.toThrow('`questionsBySource.notes.firstOnly.wieght` is not an option; allowed keys are `bias`, `weight`');
+      const settings = { rare: false, labels: false, bar: 0.0146 } as const;
+      expect(() => historySource({ reader: source, ...settings,
+        questions: { ...fitted, questions: [{ ...fitted.questions[0]!, wieght: 2 }] } as never }))
+        .toThrow('`questions.questions[0].wieght` is not an option');
+      expect(() => historySource({ reader: source, ...settings, questions: { ...fitted, bias: Number.NaN } }))
+        .toThrow('a question set needs unique questions and finite fitted weights.');
       await expect(pick([part], { task: 'task', decide: counter.decide,
         tags: [{ ...tagSet, questions: [{ ...tagSet.questions[0]!, wieght: 2 }] }] } as never))
         .rejects.toThrow('`tags[0].questions[0].wieght` is not an option; allowed keys are `key`, `instructions`, `true`, `false`');

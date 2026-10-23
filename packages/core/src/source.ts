@@ -3,7 +3,7 @@ import { DEFAULT_MAX_QUESTION_TEXT, pick } from './pick.js';
 import { phraseCount, stripSearchInstructions } from './search.js';
 import { addMeaningRanks, type MeaningSearchOptions } from './meaning.js';
 import { cutLane, laneScoreOf, type SearchLaneReport } from './lanes.js';
-import { checkPickOptions, checkReadRequest } from './options.js';
+import { checkCascade, checkCascadeKeys, checkPickOptions, checkReadRequest } from './options.js';
 import { LABEL_KINDS, type LabelKind } from './labels.js';
 
 /** What a source is asked for, once per search. */
@@ -182,10 +182,10 @@ export interface CandidateReadContext {
 export interface CandidateSource {
   /** Stable identity, recorded on every candidate and in PickRecord. */
   readonly id: string;
-  /** Optional content kind for per-kind question sets. */
+  /** Optional content kind, recorded per source and used by tag sets keyed by kind. */
   readonly kind?: CandidateSourceKind;
-  /** Questions memory() uses for this source's kind unless the caller overrides them. */
-  readonly cascade?: PickCascade;
+  /** The decision questions asked of this source's reference parts; set by `historySource()`. */
+  readonly questions?: PickCascade;
   /** Kinds this source can add through the label lane. Omitted means none. */
   readonly labelKinds?: readonly LabelKind[];
   /** Run the rare-word round on this source's reference evidence by default. */
@@ -216,17 +216,23 @@ export interface HistorySettings {
   readonly bar: number;
   /** The bar for this source's rule parts; absent means 0. */
   readonly ruleBar?: number;
+  /** The decision questions asked of this source's reference parts.
+   *  Absent: the built-in question for the part's kind. */
+  readonly questions?: PickCascade;
 }
 
 /** A source that reads with these settings. `reader` is any source:
  *  what `chat()`, `git()` or `markdown()` return, or your own. Spread a
  *  reader package's settings object to start from its tuned values. */
 export function historySource(config: { readonly reader: CandidateSource } & HistorySettings): CandidateSource {
-  const { reader, rare, labels, bar, ruleBar } = config;
-  const { labelKinds: _labelKinds, ruleBar: _ruleBar, ...rest } = reader;
+  const { reader, rare, labels, bar, ruleBar, questions } = config;
+  checkCascadeKeys(questions, 'questions');
+  checkCascade(questions);
+  const { labelKinds: _labelKinds, ruleBar: _ruleBar, questions: _questions, ...rest } = reader;
   const labelKinds = labels === true ? LABEL_KINDS : labels === false ? [] : labels;
   return { ...rest, rare, bar,
-    ...(labelKinds.length ? { labelKinds } : {}), ...(ruleBar === undefined ? {} : { ruleBar }) };
+    ...(labelKinds.length ? { labelKinds } : {}), ...(ruleBar === undefined ? {} : { ruleBar }),
+    ...(questions === undefined ? {} : { questions }) };
 }
 
 /** A real read failure: permission denied, corrupt store, killed
@@ -706,7 +712,11 @@ export async function pickFromSources(
   const ruleBarBySource: Record<string, number> = Object.fromEntries(
     sources.flatMap((source) => source.ruleBar === undefined ? [] : [[source.id, source.ruleBar]]),
   );
-  checkPickOptions({ ...options, labelKindsBySource, rareBySource, barBySource, ruleBarBySource });
+  // No prototype, so a candidate's source id such as `__proto__` is stored as its own key.
+  const questionsBySource: Record<string, PickCascade> = Object.assign(Object.create(null), Object.fromEntries(
+    sources.flatMap((source) => source.questions === undefined ? [] : [[source.id, source.questions]]),
+  ));
+  checkPickOptions({ ...options, labelKindsBySource, rareBySource, barBySource, ruleBarBySource, questionsBySource });
   const reads = await Promise.all(sources.map((source) => readSearches(source, {
     ...request,
     maxQuestionText: options.limits?.maxQuestionText ?? request.maxQuestionText
@@ -733,9 +743,10 @@ export async function pickFromSources(
     for (const candidate of read.candidates) {
       labelKindsBySource[candidate.sourceId] = sources[index]!.labelKinds ?? [];
       rareBySource[candidate.sourceId] = sources[index]!.rare ?? false;
-      const { bar, ruleBar } = sources[index]!;
+      const { bar, ruleBar, questions } = sources[index]!;
       if (bar !== undefined) barBySource[candidate.sourceId] = bar;
       if (ruleBar !== undefined) ruleBarBySource[candidate.sourceId] = ruleBar;
+      if (questions !== undefined) questionsBySource[candidate.sourceId] = questions;
       const kind = sources[index]!.kind;
       if (kind !== undefined) sourceKinds[candidate.sourceId] = kind;
       candidates.push(
@@ -776,6 +787,7 @@ export async function pickFromSources(
   }
   const result = await pick(combined, {
     ...options, rulesEnumerationComplete, sourceKinds, labelKindsBySource, rareBySource, barBySource, ruleBarBySource,
+    questionsBySource,
   });
   // The read request's lever joins the pick's resolved set.
   // `meaning.wholeLanes` resolves the

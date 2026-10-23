@@ -402,7 +402,6 @@ export async function run(args = process.argv.slice(2), callSubscription = subsc
     const pickStart = Date.now();
     const request = { task: options.task, searchLines: Array.from({ length: count }, (_, i) => `curate-search:${i}`) };
     const pickOptions = { task: options.task, decide,
-      cascadesByKind: { chat: CHAT_CASCADE, 'git-history': GIT_HISTORY_CASCADE, markdown: MARKDOWN_CASCADE },
       limits: { maxBatchChars },
       ...(settings.threshold === undefined ? {} : { everyScored: { bar: settings.threshold } }) };
     const picked = await pickFullSources(sources.map((source) =>

@@ -78,7 +78,7 @@ mkdirSync('policy'); writeFileSync('policy/backup.md', '---\\napplies: always\\n
 execFileSync('git', ['init', '-q']);
 execFileSync('git', ['add', 'notes']);
 execFileSync('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'commit.gpgsign=false', '-c', 'user.name=Example', '-c', 'user.email=example@example.com', 'commit', '-qm', 'Document encrypted backups']);
-for (const [source, cascade] of [
+for (const [source, questions] of [
   [chat({ providers: ['claude-code'], paths: ['transcripts'] }), CHAT_CASCADE],
   [git('.'), GIT_HISTORY_CASCADE],
   [knowledgeBase('notes'), MARKDOWN_CASCADE],
@@ -86,8 +86,9 @@ for (const [source, cascade] of [
   [markdown({ paths: ['notes/*.md'], kind: 'docs' }), MARKDOWN_CASCADE],
   [markdown({ paths: ['policy'], kind: 'rules' }), MARKDOWN_CASCADE],
 ]) {
-  const result = await pickFromSources([source], { task: 'Recall encrypted backups' }, { task: 'Recall encrypted backups', decide, cascade });
+  const result = await pickFromSources([source], { task: 'Recall encrypted backups' }, { task: 'Recall encrypted backups', decide });
   assert.ok(result.selected.length > 0, source.kind);
+  assert.deepEqual(result.record.levers.sources[source.id].questions, questions, source.id);
   assert.equal(result.reads[0].status, 'read');
 }
 assert.deepEqual([chatSettings, gitSettings, markdownSettings, rulesSettings].map(s => [s.rare, s.labels, s.bar, s.ruleBar]),

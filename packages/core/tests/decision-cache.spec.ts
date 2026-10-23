@@ -79,7 +79,7 @@ afterEach(() => {
   while (directories.length) rmSync(directories.pop()!, { recursive: true, force: true });
 });
 
-const cascade: PickCascade = {
+const fitted: PickCascade = {
   bias: -1.7,
   first: 'relevant',
   band: [0.1, 0.9],
@@ -270,13 +270,13 @@ describe('pick decision cache', () => {
   it('asks again for that part only when its kind changes', async () => {
     const counter = counting(0.5);
     const options = { ...uncutPick,
-      task: 'Recall the plan', decide: counter.decide, cascade,
+      task: 'Recall the plan', decide: counter.decide, questionsBySource: { notes: fitted },
       cache: { store: countingStore().store, deciderId: 'test-decider' },
     };
     await pick(threeParts(), options);
     counter.calls.length = 0;
     const changed = threeParts();
-    // Under a cascade the kind changes no wording: only the kind field
+    // Under a question set the kind changes no wording: only the kind field
     // the question carries can tell this part from the stored one.
     changed[1] = candidate({ sourceId: 'notes', id: 'p2', kind: 'knowledge' });
     const second = await pick(changed, options);
@@ -387,17 +387,17 @@ describe('pick decision cache', () => {
     const counted = countingStore();
     const counter = counting();
     const options = { ...uncutPick,
-      task: 'Recall the plan', decide: counter.decide, cascade,
+      task: 'Recall the plan', decide: counter.decide, questionsBySource: { notes: fitted },
       cache: { store: counted.store, deciderId: 'test-decider' },
     };
     await pick(threeParts(), options);
     const asked = counter.calls.flatMap((batch) => batch.questions).length;
     counter.calls.length = 0;
     const reworded: PickCascade = {
-      ...cascade,
-      questions: cascade.questions.map((question) => ({ ...question, instructions: `${question.instructions} Still?` })),
+      ...fitted,
+      questions: fitted.questions.map((question) => ({ ...question, instructions: `${question.instructions} Still?` })),
     };
-    const second = await pick(threeParts(), { ...options, cascade: reworded });
+    const second = await pick(threeParts(), { ...options, questionsBySource: { notes: reworded } });
     expect(counter.calls.flatMap((batch) => batch.questions)).toHaveLength(asked);
     expect(second.record.cache).toMatchObject({ asked, reused: 0 });
   });
@@ -406,17 +406,17 @@ describe('pick decision cache', () => {
     const counted = countingStore();
     const counter = counting();
     const options = { ...uncutPick,
-      task: 'Recall the plan', decide: counter.decide, cascade,
+      task: 'Recall the plan', decide: counter.decide, questionsBySource: { notes: fitted },
       cache: { store: counted.store, deciderId: 'test-decider' },
     };
     await pick(threeParts(), options);
     const asked = counter.calls.flatMap((batch) => batch.questions).length;
     counter.calls.length = 0;
     const recriteria: PickCascade = {
-      ...cascade,
-      questions: cascade.questions.map((question) => ({ ...question, true: `${question.true} Still.` })),
+      ...fitted,
+      questions: fitted.questions.map((question) => ({ ...question, true: `${question.true} Still.` })),
     };
-    const second = await pick(threeParts(), { ...options, cascade: recriteria });
+    const second = await pick(threeParts(), { ...options, questionsBySource: { notes: recriteria } });
     expect(counter.calls.flatMap((batch) => batch.questions)).toHaveLength(asked);
     expect(second.record.cache).toMatchObject({ asked, reused: 0 });
   });
@@ -425,17 +425,17 @@ describe('pick decision cache', () => {
     const counted = countingStore();
     const counter = counting();
     const options = { ...uncutPick,
-      task: 'Recall the plan', decide: counter.decide, cascade,
+      task: 'Recall the plan', decide: counter.decide, questionsBySource: { notes: fitted },
       cache: { store: counted.store, deciderId: 'test-decider' },
     };
     await pick(threeParts(), options);
     const asked = counter.calls.flatMap((batch) => batch.questions).length;
     counter.calls.length = 0;
     const recriteria: PickCascade = {
-      ...cascade,
-      questions: cascade.questions.map((question) => ({ ...question, false: `${question.false} Still.` })),
+      ...fitted,
+      questions: fitted.questions.map((question) => ({ ...question, false: `${question.false} Still.` })),
     };
-    const second = await pick(threeParts(), { ...options, cascade: recriteria });
+    const second = await pick(threeParts(), { ...options, questionsBySource: { notes: recriteria } });
     expect(counter.calls.flatMap((batch) => batch.questions)).toHaveLength(asked);
     expect(second.record.cache).toMatchObject({ asked, reused: 0 });
   });
@@ -653,7 +653,7 @@ describe('pick decision cache', () => {
     const counted = countingStore();
     const counter = counting(0.5);
     const options = { ...uncutPick,
-      task: 'Recall the plan', decide: counter.decide, cascade,
+      task: 'Recall the plan', decide: counter.decide, questionsBySource: { notes: fitted },
       cache: { store: counted.store, deciderId: 'test-decider' },
     };
     const first = await pick(threeParts(), options);
@@ -747,7 +747,7 @@ describe('pick decision cache', () => {
       ],
     };
     const options = { ...uncutPick,
-      task: 'Recall the plan', decide, cascade: shared,
+      task: 'Recall the plan', decide, questionsBySource: { notes: shared },
       cache: { store: counted.store, deciderId: 'test-decider' },
     };
     // Identical wording under two question names keys two answers:

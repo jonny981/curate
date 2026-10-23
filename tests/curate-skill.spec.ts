@@ -8,7 +8,7 @@ import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { LABEL_KINDS, curate, historySource, pickFromSources, type CandidateReadRequest, type CandidateSource, type MemoryCandidate } from '@curatejs/core';
-import { chat, chatSettings } from '@curatejs/chat';
+import { chat, CHAT_CASCADE, chatSettings } from '@curatejs/chat';
 import { git as gitSource } from '@curatejs/git';
 // @ts-expect-error The standalone JavaScript command has no type declarations.
 import { allowedSession, curationEvidence, decisionAnswers, instructionsProfile, jevRequest, pickFullSources, rankMatches, parseArgs, parseSearches, parseSources, run, sandboxAvailable, searchSource, sessionHeader, snapshotCodex, subscription } from '../skills/curate/run.mjs';
@@ -300,7 +300,9 @@ it('sends every part when whole lanes are requested, including short-word correc
     asked.push(...batch.questions.map((question) => question.text));
     return Object.fromEntries(batch.questions.map((question) => [question.key, { status: 'answered', probability: 0.8 }]));
   } });
-  expect(asked).toHaveLength(302);
+  // The wrapped source keeps chat's question set: 0.8 sits inside its first-question band, so each part is asked all of it.
+  expect(asked).toHaveLength(302 * CHAT_CASCADE.questions.length);
+  expect(picked.record.levers.sources[source.id].questions).toEqual(CHAT_CASCADE);
   expect(asked).toContain('We need to keep everything.');
   expect((await searchSource(source, searches, [], directory).read({ task: 'We need orchard evidence', wholeLanes: true })).candidates[0].text)
     .toBe('We need to keep everything.');

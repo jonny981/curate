@@ -90,8 +90,8 @@ const replayed = picked.candidates.map((entry, index) => {
   return candidate;
 });
 
-// The options the saved pick ran with, read back off its record: the
-// fitted cascade, each source's bars, its link bar and limits, and the
+// The options the saved pick ran with, read back off its record: each
+// source's question set and bars, its link bar and limits, and the
 // dials the record echoes. A changed threshold on the replay reselects
 // from stored answers, so `appliedReference` (an output, not an input)
 // is dropped.
@@ -102,8 +102,8 @@ const options = {
   barBySource: Object.fromEntries(sources.map(([id, settings]) => [id, settings.bar])),
   ruleBarBySource: Object.fromEntries(sources.flatMap(([id, settings]) =>
     settings.ruleBar === undefined ? [] : [[id, settings.ruleBar]])),
-  ...(picked.cascade === undefined ? {} : { cascade: picked.cascade }),
-  ...(picked.cascadesByKind === undefined ? {} : { cascadesByKind: picked.cascadesByKind }),
+  questionsBySource: Object.fromEntries(sources.flatMap(([id, settings]) =>
+    settings.questions === undefined ? [] : [[id, settings.questions]])),
   ...(picked.sourceKinds === undefined ? {} : { sourceKinds: picked.sourceKinds }),
   ...(picked.ranking === undefined ? {} : { ranking: picked.ranking }),
   ...(picked.thresholds === undefined ? {} : {

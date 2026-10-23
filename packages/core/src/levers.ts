@@ -1,4 +1,4 @@
-import type { CandidateSourceKind } from './pick.js';
+import type { CandidateSourceKind, PickCascade } from './pick.js';
 
 /** Every cost-and-quality lever points one way: on adds evidence or
  *  guidance at the risk of more cost, and off spends less and may keep
@@ -68,6 +68,10 @@ export interface SourceSettings {
   /** The bar this source's rules were cut at, present when the source
    *  produced rules. */
   readonly ruleBar?: number;
+  /** The decision questions this source's reference parts were asked,
+   *  present when the source carries a set; absent, they were asked the
+   *  built-in question for their kind. */
+  readonly questions?: PickCascade;
 }
 
 /** The lever set a curate record carries: the pick's resolved states

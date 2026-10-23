@@ -3,7 +3,7 @@ import { pick, type MemoryCandidate, type PickCascade, type PickDecide } from '.
 
 const uncutPick = { everyRanked: true, everyScored: true, rare: false } as const;
 
-const cascade: PickCascade = {
+const fitted: PickCascade = {
   bias: -1.7305, first: 'relevant', band: [0.1, 0.9],
   firstOnly: { bias: -0.6674, weight: 1.2882 },
   questions: [
@@ -31,7 +31,7 @@ describe('fitted decision questions', () => {
       }]));
     };
     const result = await pick(['low', 'high', 'middle', 'edge'].map((id, i) => item(id, 4 - i)), { ...uncutPick,
-      task: 'Recall', cascade, decide, everyScored: { bar: 0 }, limits: { maxPerBatch: 2 },
+      task: 'Recall', questionsBySource: { chat: fitted }, decide, everyScored: { bar: 0 }, limits: { maxPerBatch: 2 },
     });
     expect(calls).toEqual([
       ['low:relevant', 'high:relevant'], ['middle:relevant', 'edge:relevant'],
@@ -42,7 +42,7 @@ describe('fitted decision questions', () => {
     expect(weights.low).toBe(sigmoid(-0.6674 + 1.2882 * logit(0)));
     expect(weights.high).toBe(sigmoid(-0.6674 + 1.2882 * logit(1)));
     expect(weights.middle).toBe(sigmoid(-1.7305 + 0.7031 * logit(0.5) + 0.8588 * logit(0.8) + 0.5134 * logit(0.8)));
-    expect(result.record.cascade).toEqual(cascade);
+    expect(result.record.levers.sources.chat?.questions).toEqual(fitted);
     expect(result.record.candidates[0]?.questions?.map((q) => q.status)).toEqual(['answered', 'missing', 'missing']);
   });
 
@@ -50,9 +50,9 @@ describe('fitted decision questions', () => {
     const decide: PickDecide = async ({ questions }) => Object.fromEntries(questions
       .filter((q) => q.questionKey !== 'needed')
       .map((q) => [q.key, { status: 'answered', probability: q.questionKey === 'own' ? 0.8 : 0.5 }]));
-    const result = await pick([item('a')], { ...uncutPick, task: 'Recall', cascade, decide, everyScored: { bar: 0 } });
+    const result = await pick([item('a')], { ...uncutPick, task: 'Recall', questionsBySource: { chat: fitted }, decide, everyScored: { bar: 0 } });
     expect(result.record.candidates[0]).toMatchObject({ probability: sigmoid(-1.7305 + 0.8588 * logit(0.8)) });
-    const missing = await pick([item('a')], { ...uncutPick, task: 'Recall', cascade, decide: async () => ({}) });
+    const missing = await pick([item('a')], { ...uncutPick, task: 'Recall', questionsBySource: { chat: fitted }, decide: async () => ({}) });
     expect(missing.record.candidates[0]).toMatchObject({ status: 'unanswered', answer: 'missing' });
   });
 
@@ -66,7 +66,7 @@ describe('fitted decision questions', () => {
       return Object.fromEntries(questions.map((q) => [q.key, { status: 'answered', probability: 0.8 }]));
     };
     await pick([item('same'), { ...item('same'), sourceId: 'other' }, { ...item('r'), role: 'rule' }], { ...uncutPick,
-      task: 'Recall', cascade, decide,
+      task: 'Recall', questionsBySource: { chat: fitted, other: fitted }, decide,
     });
     expect(new Set(keys).size).toBe(7);
     expect(keys).toContain(JSON.stringify(['chat', 'same', 'needed']));
@@ -79,7 +79,7 @@ describe('fitted decision questions', () => {
       return Object.fromEntries(questions.map((q) => [q.key, { status: 'answered', probability: 0.5 }]));
     };
     const result = await pick([item('a', 3), item('b', 2), item('c', 1)], { ...uncutPick,
-      task: 'Recall', cascade, decide, limits: { maxPerBatch: 2, maxCandidates: 2 },
+      task: 'Recall', questionsBySource: { chat: fitted }, decide, limits: { maxPerBatch: 2, maxCandidates: 2 },
     });
     expect(sizes).toEqual([2, 2, 2]);
     expect(result.record.candidates[2]).toMatchObject({ status: 'unassessed', reason: 'limits' });
@@ -89,28 +89,28 @@ describe('fitted decision questions', () => {
     const decide: PickDecide = async ({ questions }) => Object.fromEntries(questions.map((q) =>
       [q.key, { status: 'answered', probability: q.id === 'outside' ? 1 : 0.8 }]));
     const result = await pick([item('inside', 2), item('outside', 1)], { ...uncutPick,
-      task: 'Recall', cascade, decide, limits: { maxPerBatch: 2, maxBatches: 1 },
+      task: 'Recall', questionsBySource: { chat: fitted }, decide, limits: { maxPerBatch: 2, maxBatches: 1 },
     });
     expect(result.record.candidates[0]).toMatchObject({ status: 'unassessed', reason: 'limits' });
     expect(result.record.candidates[1]).toMatchObject({ status: 'selected' });
-    const full = await pick([item('inside')], { ...uncutPick, task: 'Recall', cascade, decide });
+    const full = await pick([item('inside')], { ...uncutPick, task: 'Recall', questionsBySource: { chat: fitted }, decide });
     expect(full.record.candidates[0]).toMatchObject({ status: 'selected' });
     const unstaged = await pick([item('inside')], { ...uncutPick,
-      task: 'Recall', cascade: { bias: cascade.bias, questions: cascade.questions }, decide,
+      task: 'Recall', questionsBySource: { chat: { bias: fitted.bias, questions: fitted.questions } }, decide,
       limits: { maxPerBatch: 1, maxBatches: 1 },
     });
     expect(unstaged.record.candidates[0]).toMatchObject({ status: 'unassessed', reason: 'limits' });
   });
 
   it.each([
-    { ...cascade, bias: NaN }, { ...cascade, first: 'unknown' },
-    { ...cascade, band: [0.9, 0.1] }, { ...cascade, firstOnly: undefined },
-    { ...cascade, questions: [cascade.questions[0], cascade.questions[0]] },
+    { ...fitted, bias: NaN }, { ...fitted, first: 'unknown' },
+    { ...fitted, band: [0.9, 0.1] }, { ...fitted, firstOnly: undefined },
+    { ...fitted, questions: [fitted.questions[0], fitted.questions[0]] },
   ])('rejects invalid fitted configuration before calling decide', async (invalid) => {
     let calls = 0;
     await expect(pick([item('a')], { ...uncutPick,
-      task: 'Recall', cascade: invalid as PickCascade, decide: async () => { calls++; return {}; },
-    })).rejects.toThrow('cascade');
+      task: 'Recall', questionsBySource: { chat: invalid as PickCascade }, decide: async () => { calls++; return {}; },
+    })).rejects.toThrow('question set');
     expect(calls).toBe(0);
   });
 });

@@ -68,7 +68,7 @@ const source = historySource({ reader: git('.'), ...gitSettings, rare: false });
 See [core's measured reason](https://github.com/jonny981/curate/blob/main/packages/core/README.md#defaults-and-evidence) for the saved-decision sweep's answer-turn losses.
 
 - **Keyword settings:** `GIT_KEYWORD_SETTINGS` exports the ranking defaults. Pass a partial `keyword` object to the reader to override them.
-- **Questions:** `git()` carries `GIT_HISTORY_CASCADE`, its fitted question set. Core's `memory()` uses it automatically; override it with `pick.cascadesByKind['git-history']`. With `pickFromSources()` or `pick()`, pass it through `cascade` or `cascadesByKind` explicitly.
+- **Questions:** `gitSettings` carries `GIT_HISTORY_CASCADE`, the fitted question set `git()` asks of each commit. Core's `memory()` and `pickFromSources()` ask it. Change it with `historySource({ reader: git('.'), ...gitSettings, questions: mySet })`. The git and Markdown sets were fitted on saved answers about commits and notes. No end-to-end score has measured them.
 - **Search wording:** `GIT_SEARCH_LINE_REGISTER` describes the wording for host-written extra search lines. Copy or replace this text in your host; the package generates no lines.
 - **Kind phrases:** `GIT_HISTORY_KIND_PHRASES` exports phrases in the commit register for `directions`, `decisions` and `corrections`. Pass one list to core's `kindLanes` option, for example `{ 'git-history': GIT_HISTORY_KIND_PHRASES.decisions }`; kind lanes stay off by default.
 

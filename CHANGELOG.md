@@ -11,7 +11,7 @@ Four packages:
 
 - **`@curatejs/core`** holds selection and curation: `pick`, `pickFromSources`
   and `curate`. Keyword search lanes, host-written search lines and phrases,
-  fitted question sets per source kind, decision tags, optional score cuts,
+  fitted question sets that each source carries as `questions`, decision tags, optional score cuts,
   rank and batch dials, and one log format repair. Optional local meaning
   search adds embedding ranks through a host-supplied function or the shipped
   `node-llama-cpp` adapter. An optional label gate labels every reference
@@ -32,8 +32,10 @@ Four packages:
   chosen for one kind of history never changes what Curate picks from
   another: `rare` (follow strong parts by their rare words to parts the first
   pass missed, within that source), `labels` (the label kinds asked of each
-  part), `bar` (the decision-score bar for its references) and `ruleBar` (the
-  bar for its rules). The presets `chat()`, `git()`, `markdown()`,
+  part), `bar` (the decision-score bar for its references), `ruleBar` (the
+  bar for its rules) and `questions` (the decision questions asked of its
+  references; the presets carry `CHAT_CASCADE`, `GIT_HISTORY_CASCADE` and
+  `MARKDOWN_CASCADE`). The presets `chat()`, `git()`, `markdown()`,
   `knowledgeBase()` and `rules()` carry their package's tuned settings
   objects, `chatSettings`, `gitSettings`, `markdownSettings` and
   `rulesSettings`. `historySource({ reader, ...settings })` builds a source

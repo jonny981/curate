@@ -298,7 +298,7 @@ describe('pick', () => {
   });
 
   it('marks a candidate unanswered when a later batch of its cascade fails after an earlier batch answered', async () => {
-    const cascade: PickCascade = {
+    const fitted: PickCascade = {
       bias: 0,
       first: 'gate',
       band: [0, 0.9],
@@ -318,7 +318,7 @@ describe('pick', () => {
     const failure = await pick([
       candidate({ sourceId: 'notes', id: 'a', signals: { score: 2 } }),
       candidate({ sourceId: 'notes', id: 'b', signals: { score: 1 } }),
-    ], { ...uncutPick, task: 't', decide, cascade }).then(
+    ], { ...uncutPick, task: 't', decide, questionsBySource: { notes: fitted } }).then(
       () => { throw new Error('the pick resolved'); },
       (reason: unknown) => reason as PickError,
     );
@@ -475,7 +475,7 @@ describe('pick', () => {
     // date; the task's 6 characters leave room for a + b (92) inside the
     // bound of 110, but even c's first question (115) would pass it.
     const result = await pick(candidates, { ...uncutPick,
-      task: 'fix it', decide, cascade: countingCascade, limits: { maxBatchChars: 110 },
+      task: 'fix it', decide, questionsBySource: { notes: countingCascade }, limits: { maxBatchChars: 110 },
     });
 
     expect(calls.map((batch) => batch.questions.map((question) => `${question.id}:${question.questionKey}`)))
@@ -485,7 +485,7 @@ describe('pick', () => {
   });
 
   it('counts an item once per batch however many of its questions the batch holds', async () => {
-    const cascade: PickCascade = {
+    const fitted: PickCascade = {
       bias: 0,
       questions: ['one', 'two', 'three'].map((key) => ({
         key, instructions: 'Is it?', true: 'yes', false: 'no', weight: 1,
@@ -497,7 +497,7 @@ describe('pick', () => {
     // 1 + 22 + 33 = 56 reaches the bound exactly. Counting the item per
     // question (1 + 66 = 67) would split its questions across batches.
     await pick([candidate({ sourceId: 'notes', id: 'a', title: 'a', text: 'x'.repeat(20) })], { ...uncutPick,
-      task: 't', decide, cascade, limits: { maxBatchChars: 56 },
+      task: 't', decide, questionsBySource: { notes: fitted }, limits: { maxBatchChars: 56 },
     });
 
     expect(calls.map((batch) => batch.questions.map((question) => question.questionKey)))
@@ -516,7 +516,7 @@ describe('pick', () => {
     // itself; the small items count 14 + 11 = 25 each and share a batch.
     const result = await pick(candidates, { ...uncutPick,
       task: 't', decide,
-      cascade: { bias: 0, questions: [countingCascade.questions[0]!] },
+      questionsBySource: { notes: { bias: 0, questions: [countingCascade.questions[0]!] } },
       limits: { maxBatchChars: 51 },
     });
 
@@ -539,7 +539,7 @@ describe('pick', () => {
     const counted = stubDecide((batch) => allAnswered(batch, 0.9));
     await pick(candidates, { ...uncutPick,
       task: 't', decide: counted.decide,
-      cascade: { bias: 0, questions: [countingCascade.questions[0]!] },
+      questionsBySource: { notes: { bias: 0, questions: [countingCascade.questions[0]!] } },
       limits: { maxPerBatch: 3, maxBatchChars: 1000 },
     });
     expect(counted.calls.map((batch) => batch.questions.map((question) => question.id)))
@@ -550,7 +550,7 @@ describe('pick', () => {
     const sized = stubDecide((batch) => allAnswered(batch, 0.9));
     await pick(candidates, { ...uncutPick,
       task: 't', decide: sized.decide,
-      cascade: { bias: 0, questions: [countingCascade.questions[0]!] },
+      questionsBySource: { notes: { bias: 0, questions: [countingCascade.questions[0]!] } },
       limits: { maxPerBatch: 150, maxBatchChars: 71 },
     });
     expect(sized.calls.map((batch) => batch.questions.map((question) => question.id)))

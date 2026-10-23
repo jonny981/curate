@@ -52,7 +52,7 @@ const { longMemEvalSource } = await import(pathToFileURL(join(benchDir, 'bench/l
 const { jevDecider } = await import(pathToFileURL(join(benchDir, 'bench/lib/curate-adapter.mjs')));
 const { hash } = await import(pathToFileURL(join(benchDir, 'bench/lib/state.mjs')));
 const { answerParts } = await import(pathToFileURL(join(coverageDir, 'funnel-eval/coverage.mjs')));
-const cascade = JSON.parse(readFileSync(join(benchDir, 'bench/questions/cascade.json'), 'utf8'));
+const fitted = JSON.parse(readFileSync(join(benchDir, 'bench/questions/cascade.json'), 'utf8'));
 const data = JSON.parse(readFileSync(join(coverageDir, 'keep-all-input/tuning.json'), 'utf8'));
 
 let questions = 0, lost = 0, recovered = 0, added = 0, asked = 0, pulled = 0;
@@ -72,10 +72,12 @@ for (const inst of data) {
     },
   });
   const candidates = await longMemEvalSource(inst, { packagePath: join(packagesDir, 'core'), maxSession: 0 });
+  // Every candidate gets the fitted set through its own source id.
+  const questionsBySource = Object.fromEntries(candidates.map((candidate) => [candidate.sourceId, fitted]));
   const picked = await pick(candidates, {
     task: `${inst.question} (asked ${inst.question_date})`,
     decide,
-    cascade,
+    questionsBySource,
     keepTop: 0,
     everyRanked: true,
     everyScored: { bar: 0.05 },
