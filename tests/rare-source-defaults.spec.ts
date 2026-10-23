@@ -33,7 +33,7 @@ describe('reader rare-word defaults', () => {
     const result = await pickFullSources([git, transcript], { task: 'one' }, { task: 'one', decide });
     expect(git.read).toHaveBeenCalledTimes(2);
     expect(transcript.read).toHaveBeenCalledTimes(1);
-    expect(result.record.levers.preset).toBe('default');
+    expect(result.record.levers.preset).toBe('agent-tasks');
     vi.mocked(git.read).mockClear();
     await pickFullSources([git], { task: 'one' }, { task: 'one', decide, rare: false });
     expect(git.read).toHaveBeenCalledTimes(1);

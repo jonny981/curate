@@ -69,12 +69,12 @@ const source = chat({ providers: ['claude-code', 'codex'], since: '14 days' });
 
 ## Defaults and overrides
 
-Core's default mode decides every ranked part and keeps references scored 0.0146 or more,
+Core's `agent-tasks` mode, which runs when no mode is chosen, decides every ranked part and keeps references scored 0.0146 or more,
 ordered and weighted by decision probability.
 Set `everyScored: true` to keep every scored reference.
 The curator receives exact scores. Its `tiers` instructions ask for less space for low-scored items.
 Use `preset: 'conversation-recall'` with `memory()` to answer questions about past conversations.
-It enables chat's seven label kinds; labels and the rare-word round are off for chat in the default mode.
+It enables chat's seven label kinds; labels and the rare-word round are off for chat in the `agent-tasks` mode.
 Rules keep every scored item; set `thresholds.rule` for an optional applicability cut.
 See [core's measured reason](https://github.com/jonny981/curate/blob/main/packages/core/README.md#defaults-and-evidence) for the saved-decision sweep's answer-turn losses.
 

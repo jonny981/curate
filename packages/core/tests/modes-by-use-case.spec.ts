@@ -33,12 +33,12 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllEnvs(); rmSync(directory, { recursive: true, force: true }); });
 
 describe('modes by use case', () => {
-  it('uses rare words for enabled sources and no labels in the default mode', async () => {
+  it('uses rare words for enabled sources and no labels in the agent-tasks mode', async () => {
     const git = source('git', true);
     const chat = source('chat');
     const calls = recorder();
     const result = await pickFromSources([git, chat], { task }, { task, decide: calls.decide });
-    expect(result.record.levers).toMatchObject({ preset: 'default', everyRanked: true,
+    expect(result.record.levers).toMatchObject({ preset: 'agent-tasks', everyRanked: true,
       everyScored: { bar: 0.0146 }, labels: false, route: false,
       rare: { share: 5 / 850, bar: 0.0146, sources: ['git'] } });
     expect(result.selected.map((c) => `${c.sourceId}/${c.id}`).sort()).toEqual(['chat/p0', 'git/p0', 'git/p399']);
@@ -47,7 +47,7 @@ describe('modes by use case', () => {
     expect(chat.read).toHaveBeenCalledTimes(1);
     expect(result.record.labels).toBeUndefined();
     const written = await curate(task, result, { write: async () => '[2026-01-12] A constraint (said 2026-01-12; E1)' });
-    expect(written.record.levers.preset).toBe('default');
+    expect(written.record.levers.preset).toBe('agent-tasks');
   });
 
   it('enables only declared source labels in conversation-recall', async () => {
@@ -72,8 +72,8 @@ describe('modes by use case', () => {
     const run = (sources: CandidateSource[], rare?: boolean) => pickFromSources(sources, { task }, {
       task, decide: recorder().decide, ...(rare === undefined ? {} : { rare }),
     });
-    expect((await run([source('git', true, 2)], true)).record.levers.preset).toBe('default');
-    expect((await run([source('chat', false, 2)], false)).record.levers.preset).toBe('default');
+    expect((await run([source('git', true, 2)], true)).record.levers.preset).toBe('agent-tasks');
+    expect((await run([source('chat', false, 2)], false)).record.levers.preset).toBe('agent-tasks');
     for (const rare of [false, true]) {
       const result = await run([source('git', true, 2), source('chat', false, 2)], rare);
       expect(result.record.levers.preset).toBe('custom');
@@ -81,7 +81,7 @@ describe('modes by use case', () => {
       expect(written.record.levers.preset).toBe('custom');
     }
     const disabled = { ...source('git', true, 2), rare: false };
-    expect((await run([disabled])).record.levers).toMatchObject({ preset: 'default', rare: false });
+    expect((await run([disabled])).record.levers).toMatchObject({ preset: 'agent-tasks', rare: false });
     expect(disabled.read).toHaveBeenCalledTimes(1);
   });
 
@@ -111,7 +111,7 @@ describe('modes by use case', () => {
       read: async () => ({ status: 'read', complete: true, candidates: [part('returned', 'p0')] }) };
     const read = await pickFromSources([empty, differentId], { task }, { task, decide: recorder().decide });
     expect(read.record.levers.rare).toMatchObject({ sources: ['empty', 'reader', 'returned'] });
-    expect(read.record.levers.preset).toBe('default');
+    expect(read.record.levers.preset).toBe('agent-tasks');
   });
 
   it('rejects invalid per-source defaults before reading', async () => {

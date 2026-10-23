@@ -1,7 +1,7 @@
 import { asSourceReadError } from '@curatejs/core/internal';
 import { describe, expect, it } from 'vitest';
 
-import { curate, decisionFileStore, DEFAULT_MAX_QUESTION_TEXT, defaultMode, conversationRecall, LABEL_KINDS, LABEL_LANE_BAR, LABEL_QUESTION_VERSION, pick, PICK_QUESTION_VERSION, pickFromSources, SourceReadError, type CandidateSource, type CurateOptions, type CurateRecord, type CurateResult, type CurateWrite, type DecisionStore, type LeverStates, type MemoryCandidate, type PickCache, type PickLabels, type PickOptions, type PickThresholds, type Preset } from '@curatejs/core';
+import { curate, decisionFileStore, DEFAULT_MAX_QUESTION_TEXT, agentTasks, conversationRecall, LABEL_KINDS, LABEL_LANE_BAR, LABEL_QUESTION_VERSION, pick, PICK_QUESTION_VERSION, pickFromSources, SourceReadError, type CandidateSource, type CurateOptions, type CurateRecord, type CurateResult, type CurateWrite, type DecisionStore, type LeverStates, type MemoryCandidate, type PickCache, type PickLabels, type PickOptions, type PickThresholds, type Preset } from '@curatejs/core';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -96,11 +96,11 @@ describe('package exports', () => {
     expect(PICK_QUESTION_VERSION).toContain('memory-pick');
   });
 
-  it('exports the default and conversation recall presets and their types', () => {
-    const modes: Preset[] = [defaultMode, conversationRecall];
-    expect(defaultMode.read).toEqual({ wholeLanes: false });
-    expect(defaultMode.pick).toEqual({ everyRanked: true, everyScored: { bar: 0.0146 }, labels: false });
-    expect(defaultMode.curate).toEqual({});
+  it('exports the agent-tasks and conversation recall presets and their types', () => {
+    const modes: Preset[] = [agentTasks, conversationRecall];
+    expect(agentTasks.read).toEqual({ wholeLanes: false });
+    expect(agentTasks.pick).toEqual({ everyRanked: true, everyScored: { bar: 0.0146 }, labels: false });
+    expect(agentTasks.curate).toEqual({});
     expect(conversationRecall.read).toEqual({ wholeLanes: false });
     expect(conversationRecall.pick).toEqual({ everyRanked: true, everyScored: { bar: 0.0146 }, labels: {} });
     expect(conversationRecall.curate).toEqual({});

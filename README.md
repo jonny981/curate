@@ -130,11 +130,11 @@ const { log, rules, picked, result } = await mem.recall('What billing constraint
 
 ### Choose a mode
 
-Use the default for agents working from any mix of chat, git and docs.
+Use `agent-tasks` for agents working from any mix of chat, git and docs. It is what runs when no mode is chosen.
 It decides every ranked part and keeps references scored 0.0146 or more.
 Labels and task routing are off.
 Git and Markdown sources also find unselected evidence through rare words shared with selected parts; chat leaves that round off.
-Omit `preset`, or set `preset: 'default'` explicitly.
+Omit `preset`, or set `preset: 'agent-tasks'` explicitly.
 
 Use `conversation-recall` to answer questions about past conversations:
 
@@ -348,7 +348,7 @@ Set `read.wholeLanes: true` to keep every part the readers return.
 ### Decide
 
 The decision function answers each reader's narrow questions.
-The default mode decides every ranked part and keeps references scored 0.0146 or more, strongest first.
+The `agent-tasks` mode decides every ranked part and keeps references scored 0.0146 or more, strongest first.
 Unanswered candidates and unfinished decisions stay visible in the record and stop `recall()`.
 Parts intentionally excluded by the label questions stay in the record without stopping recall.
 
@@ -382,7 +382,7 @@ LongMemEval tests whether a model can answer questions from a long chat history.
 Curate ran all 500 LongMemEval S questions with its packages at commit `aacb042`, at two settings:
 
 - **Every part decided and kept.** Every part of each history went to the decision model, every scored part went to the curator, and the curator wrote one log per question.
-- **References scored 0.0146 or more.** One option, `everyScored` off at `bar` 0.0146: only the parts the decision model scored 0.0146 or more went to the curator, about 70 of a history's 851. In a measurement on 249 of the 500 questions, 0.0146 was the highest cut that lost no answer message. The default mode uses this cut.
+- **References scored 0.0146 or more.** One option, `everyScored` off at `bar` 0.0146: only the parts the decision model scored 0.0146 or more went to the curator, about 70 of a history's 851. In a measurement on 249 of the 500 questions, 0.0146 was the highest cut that lost no answer message. The `agent-tasks` mode uses this cut.
 
 A second run used `conversation-recall`, the 0.0146 cut plus chat labels. Its answers, verdicts and build details are in [its proof files](benchmarks/longmemeval/2026-10-22/README.md).
 

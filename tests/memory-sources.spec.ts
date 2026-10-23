@@ -55,7 +55,7 @@ it('uses each real reader question set without a cascadesByKind map', async () =
         expect(q.question).toBe(cascade.questions.find((item) => item.key === q.questionKey)!.instructions);
       }
     }
-    expect(picked.record.levers.preset).toBe('default');
+    expect(picked.record.levers.preset).toBe('agent-tasks');
     expect(picked.record.levers.labels).toBe(false);
     expect(picked.record.thresholds.reference).toBe(0.0146);
     expect(picked.record.labels).toBeUndefined();

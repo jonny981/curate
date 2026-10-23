@@ -51,7 +51,7 @@ describe('memory', () => {
     expect(recalled.result.record.items).toHaveLength(1);
     expect(recalled.picked.selected).toHaveLength(3);
     expect(write.mock.calls[0]?.[0].body).not.toContain('Never round an order twice.');
-    expect(recalled.result.record.levers.preset).toBe('default');
+    expect(recalled.result.record.levers.preset).toBe('agent-tasks');
   });
 
   it('propagates a failed source read without calling either model', async () => {
@@ -118,7 +118,7 @@ describe('memory', () => {
 
   it.each([false, true])('applies the default preset and lets explicit levers win (override %s)', async (override) => {
     const recalled = await memory({
-      sources: [source([note(), note('weak')])], preset: 'default',
+      sources: [source([note(), note('weak')])], preset: 'agent-tasks',
       decide: async ({ questions }) => Object.fromEntries(questions.map((q) => [q.key, {
         status: 'answered', probability: q.id === 'weak' ? 0.001 : 0.8,
       }])),
@@ -126,7 +126,7 @@ describe('memory', () => {
       ...(override ? { pick: { everyScored: true as const } } : {}),
     }).recall(TASK);
     expect(recalled.picked.selected.map((item) => item.id)).toEqual(override ? ['billing', 'weak'] : ['billing']);
-    expect(recalled.result.record.levers.preset).toBe(override ? 'custom' : 'default');
+    expect(recalled.result.record.levers.preset).toBe(override ? 'custom' : 'agent-tasks');
   });
 
   it('passes read options, writer options and cancellation through the existing calls', async () => {

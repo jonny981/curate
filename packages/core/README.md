@@ -39,12 +39,12 @@ const { log, rules, picked, result } = await mem.recall('What billing constraint
 - **Incomplete collection:** Absent or incomplete reads, unanswered candidates and interrupted decisions throw before the writer runs. Parts intentionally excluded by the label questions are allowed. The error's `cause` holds `picked` for inspection. Source read errors propagate. A limit that leaves candidates unassessed also throws; use `pickFromSources()` directly if you need to accept a partial selection.
 - **Cancellation:** `mem.recall(task, { signal })` passes the signal to the readers and both model functions.
 
-Use the default for agents working from any mix of chat, git and docs.
+Use `agent-tasks` for agents working from any mix of chat, git and docs. It is what runs when no mode is chosen.
 It decides every ranked part and keeps references scored 0.0146 or more, with labels and routing off.
 Git and Markdown sources enable the rare-word round; chat leaves it off.
 Choose `preset: 'conversation-recall'` for questions about past conversations.
 It adds labels using each source's kinds: seven for chat, none for git or Markdown.
-Set `preset: 'default'` to choose the default explicitly.
+Set `preset: 'agent-tasks'` to choose it explicitly.
 Explicit `read`, `pick` and `curate` options override the preset:
 
 ```ts
@@ -1090,7 +1090,7 @@ off saves cost and can lose quality. Each lever lives in one of three
 places: the read request `pickFromSources` takes, the options `pick`
 takes, or the options `curate` takes. The pick's record keeps every
 lever's resolved state under `levers`, and `levers.preset` names the
-mode the states match: `default`, `conversation-recall` or `custom`. Its
+mode the states match: `agent-tasks`, `conversation-recall` or `custom`. Its
 `route` records the questions asked. The curate record carries the
 same lever set for the whole mode. Its `route` holds both states,
 `{ asked, applied }`, and its `preset` names the mode they make, so a
@@ -1114,7 +1114,7 @@ them. The cache is on whenever the caller passes one.
 
 ### Modes by use case
 
-`defaultMode` suits agents working from any mix of chat, git and docs.
+`agentTasks` suits agents working from any mix of chat, git and docs, and runs when no mode is chosen.
 `conversationRecall` adds labels for questions about past conversations.
 Both are exported plain objects with `{ read, pick, curate }` fragments:
 
@@ -1127,7 +1127,7 @@ const picked = await pickFromSources(sources,
 const curated = await curate(task, picked, { write, ...conversationRecall.curate });
 ```
 
-| Lever | `defaultMode` | `conversationRecall` |
+| Lever | `agentTasks` | `conversationRecall` |
 | --- | --- | --- |
 | `wholeLanes` | Off: cut each search lane | Off: cut each search lane |
 | `everyRanked` | On: decide every ranked part | On: decide every ranked part |
@@ -1136,8 +1136,8 @@ const curated = await curate(task, picked, { write, ...conversationRecall.curate
 | `route` | Off | Off |
 | `rare` | Use source defaults: git and Markdown on, chat off | Use source defaults: git and Markdown on, chat off |
 
-Omitting the settings runs the default mode and records `preset: 'default'`.
-`memory()` accepts `preset: 'default'` or `preset: 'conversation-recall'`.
+Omitting the settings runs `agentTasks` and records `preset: 'agent-tasks'`.
+`memory()` accepts `preset: 'agent-tasks'` or `preset: 'conversation-recall'`.
 The 0.0146 bar is the highest cut that lost no answer message on the tuning questions.
 
 Build your own mode by changing any lever:

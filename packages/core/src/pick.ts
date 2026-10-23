@@ -10,7 +10,7 @@ import {
   decisionKey, storedDecision, type DecisionStore,
 } from './decisions.js';
 import { ROUTE_QUESTIONS, routeOptions, type RouteKey, type RouteOption } from './task.js';
-import { defaultMode, presetName, type LeverStates, type PresetName } from './levers.js';
+import { agentTasks, presetName, type LeverStates, type PresetName } from './levers.js';
 import { checkPickOptions } from './options.js';
 
 export type MemoryCandidateRole = 'reference' | 'rule';
@@ -322,7 +322,7 @@ export interface PickRecord {
     /** The bar `referenceBySize` produced for this set's size. */
     readonly appliedReference?: number;
   };
-  /** The preset this pick's lever set resolved to — 'default',
+  /** The preset this pick's lever set resolved to — 'agent-tasks',
    *  'conversation-recall' or 'custom' — and every lever's state as resolved.
    *  `wholeLanes` lives on the read request, so only a record
    *  pickFromSources produced carries it. `route` records the
@@ -832,7 +832,7 @@ export async function pick(
   options: PickOptions,
 ): Promise<PickResult> {
   checkPickOptions(options);
-  const everyScored = options.everyScored ?? defaultMode.pick.everyScored;
+  const everyScored = options.everyScored ?? agentTasks.pick.everyScored;
   if (options.labels !== undefined && options.labels !== false
     && (typeof options.labels !== 'object' || options.labels === null || Array.isArray(options.labels))) {
     throw new TypeError('labels must be false or an options object.');

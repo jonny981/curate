@@ -33,9 +33,10 @@ Four packages:
   top round(c × N^0.8)), `everyScored` (keep every scored part), `labels`,
   `route: 'jev'` (the decision model chooses the curator's options per
   question) and the rare-word round (follow strong parts by their rare words
-  to parts the first pass missed). `defaultMode` supports agents working
-  from chat, git and docs; `conversationRecall` adds labels for questions
-  about past conversations. Spread one and flip any lever for your own mode.
+  to parts the first pass missed). `agentTasks`, which runs when no mode is
+  chosen, supports agents working from chat, git and docs;
+  `conversationRecall` adds labels for questions about past conversations.
+  Spread one and flip any lever for your own mode.
   The core README lists each lever's purpose and measured impact.
 - **Unknown options are rejected.** `pick`, `pickFromSources` and `curate`
   throw a `TypeError` before any model call when an options object, or a

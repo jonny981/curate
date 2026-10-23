@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   LABEL_KINDS,
   curate,
-  defaultMode,
+  agentTasks,
   pick,
   pickFromSources,
   ROUTE_QUESTIONS,
@@ -127,7 +127,7 @@ describe('levers and presets', () => {
       candidate({ sourceId: 'notes', id: `p${index}`, signals: { score: 1 }, text: `part ${probability}` }));
     const decide = async (batch: PickBatch) => Object.fromEntries(batch.questions.map((question) =>
       [question.key, answered(Number(question.id.slice(1)) === 0 ? 0.9 : Number(question.id.slice(1)) === 1 ? 0.05 : 0.01)]));
-    const preset = await pick(candidates, { task: 'Recall the plan', decide, ...defaultMode.pick });
+    const preset = await pick(candidates, { task: 'Recall the plan', decide, ...agentTasks.pick });
     const literal = await pick(candidates, {
       task: 'Recall the plan', decide, everyScored: { bar: 0.0146 }, labels: false,
     });
@@ -137,7 +137,7 @@ describe('levers and presets', () => {
     expect(preset.record.thresholds.reference).toBe(0.0146);
     expect(preset.selected.map((item) => item.id)).toEqual(['p0', 'p1']);
     expect(preset.record.levers).toEqual({
-      preset: 'default',
+      preset: 'agent-tasks',
       everyRanked: true,
       everyScored: { bar: 0.0146 },
       labels: false,
@@ -145,17 +145,17 @@ describe('levers and presets', () => {
       rare: false,
     });
 
-    const read = await pickFromSources([laneSource()], { task: 'task', ...defaultMode.read },
-      { task: 'task', decide, ...defaultMode.pick });
+    const read = await pickFromSources([laneSource()], { task: 'task', ...agentTasks.read },
+      { task: 'task', decide, ...agentTasks.pick });
     // The lane cut stays on: the curve keeps the head only.
     expect(read.reads[0]?.status === 'read' && read.reads[0].candidates).toHaveLength(1);
     expect(read.record.levers).toEqual({
-      preset: 'default', wholeLanes: false,
+      preset: 'agent-tasks', wholeLanes: false,
       everyRanked: true, everyScored: { bar: 0.0146 }, labels: false, route: false, rare: false,
     });
 
     const plain = await curate('Recall the plan', preset, { write: writer().write });
-    const routed = await curate('Recall the plan', preset, { write: writer().write, ...defaultMode.curate });
+    const routed = await curate('Recall the plan', preset, { write: writer().write, ...agentTasks.curate });
     expect(routed.record.working).toBe(plain.record.working);
     expect(plain.record.route).toBeUndefined();
     expect(plain.record.levers.route).toEqual({ asked: false, applied: false });
@@ -167,7 +167,7 @@ describe('levers and presets', () => {
     const counter = stubDecide(() => answered(0.9));
     const result = await pick(parts, {
       task: 'Recall the plan', decide: counter.decide,
-      ...defaultMode.pick, everyRanked: { c: 0.68 },
+      ...agentTasks.pick, everyRanked: { c: 0.68 },
     });
     // Only everyRanked changed: the decide step read the top 27, the
     // 0.0146 bar still stood, and the record names the mode custom.
@@ -452,15 +452,15 @@ describe('levers and presets', () => {
     it('lets a preset spread take added known keys', async () => {
       const counter = stubDecide(() => answered(0.9));
       const picked = await pick([part], { task: 'task', decide: counter.decide,
-        ...defaultMode.pick, keepTop: 1 });
+        ...agentTasks.pick, keepTop: 1 });
       expect(picked.record.levers.everyScored).toEqual({ bar: 0.0146 });
       const read = await pickFromSources([laneSource()],
-        { task: 'task', ...defaultMode.read, limit: 5 },
-        { task: 'task', decide: counter.decide, ...defaultMode.pick });
+        { task: 'task', ...agentTasks.read, limit: 5 },
+        { task: 'task', decide: counter.decide, ...agentTasks.pick });
       expect(read.reads[0]?.status).toBe('read');
       const written = writer();
       const result = await curate('task', picked,
-        { write: written.write, ...defaultMode.curate, working: true });
+        { write: written.write, ...agentTasks.curate, working: true });
       expect(result.record.working).toBe(true);
     });
 

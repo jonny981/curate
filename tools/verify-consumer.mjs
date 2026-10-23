@@ -23,7 +23,7 @@ try {
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { pick, pickFromSources, curate, addMeaningRanks, SourceReadError, defaultMode, conversationRecall } from '@curatejs/core';
+import { pick, pickFromSources, curate, addMeaningRanks, SourceReadError, agentTasks, conversationRecall } from '@curatejs/core';
 import { asSourceReadError } from '@curatejs/core/internal';
 import { chat, CHAT_CASCADE, CHAT_KEYWORD_SETTINGS, CHAT_SEARCH_LINE_REGISTER } from '@curatejs/chat';
 import { gitHistory, GIT_HISTORY_CASCADE, GIT_KEYWORD_SETTINGS, GIT_SEARCH_LINE_REGISTER } from '@curatejs/git';
@@ -47,11 +47,11 @@ const defaults = await pick(candidates, {
 });
 assert.deepEqual(defaults.selected.map(candidate => candidate.id), ['host-item-0', 'host-item-1']);
 assert.equal(defaults.record.thresholds.reference, 0.0146);
-assert.equal(defaults.record.levers.preset, 'default');
+assert.equal(defaults.record.levers.preset, 'agent-tasks');
 assert.equal(defaults.record.levers.labels, false);
 assert.equal(defaults.record.labels, undefined);
 assert.deepEqual(defaults.record.labelKindsBySource.host, []);
-assert.deepEqual(defaultMode.pick, { everyRanked: true, everyScored: { bar: 0.0146 }, labels: false });
+assert.deepEqual(agentTasks.pick, { everyRanked: true, everyScored: { bar: 0.0146 }, labels: false });
 assert.deepEqual(conversationRecall.pick, { everyRanked: true, everyScored: { bar: 0.0146 }, labels: {} });
 const uncutPick = { everyRanked: true, everyScored: true, labels: false, rare: false };
 const picked = await pick(candidates, { ...uncutPick, task: 'Recall backups', decide: weighted });

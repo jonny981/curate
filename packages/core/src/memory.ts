@@ -1,5 +1,5 @@
 import { curate, type CurateOptions, type CurateResult, type CurateWrite } from './curate.js';
-import { conversationRecall, defaultMode } from './levers.js';
+import { agentTasks, conversationRecall } from './levers.js';
 import type { CandidateSourceKind, PickCascade, PickDecide, PickOptions } from './pick.js';
 import { pickFromSources, type CandidateReadRequest, type CandidateSource, type PickSourcesResult } from './source.js';
 
@@ -7,7 +7,7 @@ export interface MemoryOptions {
   readonly sources: readonly CandidateSource[];
   readonly decide: PickDecide;
   readonly write: CurateWrite;
-  readonly preset?: 'default' | 'conversation-recall';
+  readonly preset?: 'agent-tasks' | 'conversation-recall';
   /** Read, pick and writer options override the chosen preset. */
   readonly read?: Omit<CandidateReadRequest, 'task' | 'signal'>;
   readonly pick?: Omit<PickOptions, 'task' | 'decide' | 'signal'>;
@@ -25,10 +25,10 @@ export interface RecallResult {
 /** Read, select and curate with the question sets carried by the sources.
  *  Incomplete collection throws before writing; its cause holds the pick. */
 export function memory(options: MemoryOptions) {
-  if (options.preset !== undefined && options.preset !== 'default' && options.preset !== 'conversation-recall') {
-    throw new TypeError(`Unknown preset: ${options.preset}. Use 'default' or 'conversation-recall'.`);
+  if (options.preset !== undefined && options.preset !== 'agent-tasks' && options.preset !== 'conversation-recall') {
+    throw new TypeError(`Unknown preset: ${options.preset}. Use 'agent-tasks' or 'conversation-recall'.`);
   }
-  const preset = options.preset === 'conversation-recall' ? conversationRecall : defaultMode;
+  const preset = options.preset === 'conversation-recall' ? conversationRecall : agentTasks;
   const cascadesByKind: Partial<Record<CandidateSourceKind, PickCascade>> = {};
   for (const source of options.sources) {
     if (source.kind !== undefined && source.cascade !== undefined) {

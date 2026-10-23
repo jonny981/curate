@@ -57,7 +57,7 @@ export interface LeverStates {
 
 /** The mode a resolved lever set matches: one of the two exported
  *  presets, or 'custom' for any other combination. */
-export type PresetName = 'default' | 'conversation-recall' | 'custom';
+export type PresetName = 'agent-tasks' | 'conversation-recall' | 'custom';
 
 /** The lever set a curate record carries: the pick's resolved states
  *  with `route` holding its two stages apart — `asked`, whether the
@@ -86,7 +86,7 @@ export function presetName(states: LeverStates, rareMatchesDefault = states.rare
     return 'custom';
   }
   if (states.everyScored !== true && states.everyScored.bySize === undefined && states.everyScored.bar === DEFAULT_BAR) {
-    return states.labels ? 'conversation-recall' : 'default';
+    return states.labels ? 'conversation-recall' : 'agent-tasks';
   }
   return 'custom';
 }
@@ -104,9 +104,10 @@ export interface Preset {
   readonly curate: Pick<CurateOptions, 'route'>;
 }
 
-/** Agent tasks over mixed sources: decide every ranked part, keep
- *  references scored 0.0146 or more, and use each reader's rare default. */
-export const defaultMode: Preset = {
+/** Agent tasks over any history (chat, git, Markdown), and what runs when
+ *  no mode is chosen: decide every ranked part, keep references scored
+ *  0.0146 or more, and use each reader's rare default. */
+export const agentTasks: Preset = {
   read: { wholeLanes: false },
   pick: { everyRanked: true, everyScored: { bar: DEFAULT_BAR }, labels: false },
   curate: {},
@@ -114,6 +115,6 @@ export const defaultMode: Preset = {
 
 /** Answer questions about past conversations with source label kinds. */
 export const conversationRecall: Preset = {
-  ...defaultMode,
-  pick: { ...defaultMode.pick, labels: {} },
+  ...agentTasks,
+  pick: { ...agentTasks.pick, labels: {} },
 };

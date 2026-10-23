@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  conversationRecall, defaultMode, LABEL_KINDS, memory, pick, pickFromSources,
+  conversationRecall, agentTasks, LABEL_KINDS, memory, pick, pickFromSources,
   type CandidateSource, type MemoryCandidate, type PickDecide,
 } from '../src/index.js';
 
@@ -28,7 +28,7 @@ const decide: PickDecide = async ({ questions }) => Object.fromEntries(questions
 let cacheRoot: string;
 
 beforeEach(() => {
-  cacheRoot = mkdtempSync(join(tmpdir(), 'curate-default-mode-'));
+  cacheRoot = mkdtempSync(join(tmpdir(), 'curate-agent-tasks-mode-'));
   vi.stubEnv('XDG_CACHE_HOME', cacheRoot);
 });
 afterEach(() => {
@@ -36,24 +36,24 @@ afterEach(() => {
   rmSync(cacheRoot, { recursive: true, force: true });
 });
 
-describe('default mode', () => {
+describe('agent-tasks mode', () => {
   it('cuts weak decisions and leaves labels off by default', async () => {
     const result = await pick(parts, { task, decide, labelKindsBySource });
     expect(result.record.levers).toEqual({
-      preset: 'default', everyRanked: true, everyScored: { bar: 0.0146 },
+      preset: 'agent-tasks', everyRanked: true, everyScored: { bar: 0.0146 },
       labels: false, route: false, rare: false,
     });
     expect(result.selected.map((part) => part.id)).toEqual(['billing']);
     expect(result.record.labels).toBeUndefined();
   });
 
-  it('exports the default preset and resolves it the same way as omitted settings', async () => {
+  it('exports agentTasks and resolves it the same way as omitted settings', async () => {
     const implicit = await pickFromSources([source], { task }, { task, decide });
-    const explicit = await pickFromSources([source], { task, ...defaultMode.read }, {
-      task, decide, ...defaultMode.pick,
+    const explicit = await pickFromSources([source], { task, ...agentTasks.read }, {
+      task, decide, ...agentTasks.pick,
     });
     expect(implicit.record.levers).toEqual({
-      preset: 'default', wholeLanes: false, everyRanked: true, everyScored: { bar: 0.0146 },
+      preset: 'agent-tasks', wholeLanes: false, everyRanked: true, everyScored: { bar: 0.0146 },
       labels: false, route: false, rare: false,
     });
     expect(explicit.record.levers).toEqual(implicit.record.levers);
@@ -61,12 +61,21 @@ describe('default mode', () => {
     expect(implicit.record.candidates.map((part) => part.id)).toEqual(['billing', 'weak']);
   });
 
-  it('recalls in default mode without enabling labels', async () => {
+  it('gives the same pick with no mode chosen and with preset agent-tasks', async () => {
+    const none = await memory({ sources: [source], decide, write: async () => log }).recall(task);
+    const named = await memory({ sources: [source], decide, write: async () => log, preset: 'agent-tasks' }).recall(task);
+    expect(named.picked.selected).toEqual(none.picked.selected);
+    expect(named.picked.record).toEqual(none.picked.record);
+    expect(named.result.record.levers).toEqual(none.result.record.levers);
+    expect(named.log).toBe(none.log);
+  });
+
+  it('recalls in agent-tasks mode without enabling labels', async () => {
     const result = await memory({ sources: [source], decide, write: async () => log }).recall(task);
     expect(result.log).toContain('billing');
-    expect(result.picked.record.levers.preset).toBe('default');
+    expect(result.picked.record.levers.preset).toBe('agent-tasks');
     expect(result.result.record.levers).toMatchObject({
-      preset: 'default', everyScored: { bar: 0.0146 }, labels: false,
+      preset: 'agent-tasks', everyScored: { bar: 0.0146 }, labels: false,
     });
     expect(result.picked.selected.map((part) => part.id)).toEqual(['billing']);
   });
@@ -119,13 +128,13 @@ describe('default mode', () => {
     const result = await memory({ sources: [source], decide, write: async () => log,
       pick: { labels: false },
     }).recall(task);
-    expect(result.picked.record.levers.preset).toBe('default');
+    expect(result.picked.record.levers.preset).toBe('agent-tasks');
     expect(result.picked.record.labels).toBeUndefined();
     expect(result.picked.selected.map((part) => part.id)).toEqual(['billing']);
     expect(readdirSync(cacheRoot)).toEqual([]);
   });
 
-  it.each(['default', 'conversation-recall'] as const)('honours the explicit %s preset', async (preset) => {
+  it.each(['agent-tasks', 'conversation-recall'] as const)('honours the explicit %s preset', async (preset) => {
     const result = await memory({ sources: [source], decide, write: async () => log, preset }).recall(task);
     expect(result.result.record.levers.preset).toBe(preset);
     expect(result.picked.record.levers.labels).toBe(preset === 'conversation-recall');

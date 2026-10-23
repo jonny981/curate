@@ -75,7 +75,7 @@ export interface CurateRecord {
   readonly route?: 'jev';
   /** The whole mode's lever set as applied, carried from the pick's
    *  record: the read, pick and curator states in one place, and
-   *  `levers.preset` the mode they match — 'default', 'conversation-recall' or
+   *  `levers.preset` the mode they match — 'agent-tasks', 'conversation-recall' or
    *  'custom'. `route` holds the lever's two stages apart: `asked`,
    *  whether the pick ran the route questions, and `applied`, whether
    *  `route: 'jev'` ran here. Asked alone already spent the questions,
