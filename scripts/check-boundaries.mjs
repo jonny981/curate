@@ -14,7 +14,10 @@
 // from its package's dependencies, peerDependencies or
 // optionalDependencies; a test file may also use devDependencies, its own
 // package's and the workspace root's (the root provisions vitest for every
-// package). Relative imports must resolve inside the owning package. Node
+// package). A package's test never gets a workspace package from the root's
+// devDependencies, because that package's CI job builds only the workspace
+// packages its own manifest declares. Relative imports must resolve inside
+// the owning package. Node
 // builtins pass. Comments are stripped before specifiers are read; a
 // specifier that is not a plain quoted string is out of scope by
 // construction, as is one inside a template interpolation.
@@ -145,7 +148,9 @@ for (const file of files) {
   const devDeclared = new Set([
     ...declared,
     ...Object.keys(manifest.devDependencies ?? {}),
-    ...Object.keys(rootManifest.devDependencies ?? {}),
+    ...Object.entries(rootManifest.devDependencies ?? {})
+      .filter(([, range]) => !range.startsWith('workspace:'))
+      .map(([name]) => name),
   ]);
   const code = stripComments(readFileSync(file, 'utf8'));
   for (const specifier of specifiers(code)) {

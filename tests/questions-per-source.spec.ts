@@ -10,7 +10,7 @@ import { markdownSettings } from '@curatejs/markdown';
 import {
   historySource, memory, pick, pickFromSources, type CandidateSource, type PickCascade, type PickDecide,
   type PickQuestion,
-} from '../src/index.js';
+} from '@curatejs/core';
 import { decide, fixtureSource, parts, task } from './fixtures/source-settings.js';
 
 // The picks the build before questions moved to the sources made on this fixture, asked with
