@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -19,20 +19,26 @@ describe('runGit', () => {
     temporaryDirectories.push(repo);
     execFileSync('git', ['-C', repo, 'init', '-b', 'main']);
     // About 2 MiB, past execFile's default maxBuffer of 1 MiB. The message
-    // goes through stdin because an argument this long exceeds the
-    // operating system's command-line limit.
+    // goes in a file because an argument this long exceeds the operating
+    // system's command-line limit. The two settings keep the person's hooks
+    // and commit signing out of the commit.
     const message = `a large commit\n\n${`${'word '.repeat(15)}words\n`.repeat(26_000)}`.trimEnd();
     expect(message.length).toBeGreaterThan(2 * 1024 * 1024);
-    execFileSync('git', ['-C', repo, 'commit', '--allow-empty', '-F', '-'], {
-      input: message,
-      env: {
-        ...process.env,
-        GIT_AUTHOR_NAME: 'Test',
-        GIT_AUTHOR_EMAIL: 'test@example.com',
-        GIT_COMMITTER_NAME: 'Test',
-        GIT_COMMITTER_EMAIL: 'test@example.com',
+    const messageFile = join(repo, 'message.txt');
+    await writeFile(messageFile, message);
+    execFileSync(
+      'git',
+      ['-C', repo, '-c', 'core.hooksPath=/dev/null', '-c', 'commit.gpgsign=false', 'commit', '--allow-empty', '-F', messageFile],
+      {
+        env: {
+          ...process.env,
+          GIT_AUTHOR_NAME: 'Test',
+          GIT_AUTHOR_EMAIL: 'test@example.com',
+          GIT_COMMITTER_NAME: 'Test',
+          GIT_COMMITTER_EMAIL: 'test@example.com',
+        },
       },
-    });
+    );
 
     const output = await runGit(repo, ['log', '-1', '--format=%B']);
 
