@@ -45,6 +45,56 @@ export const ROUTE_QUESTIONS = [
 
 export type RouteKey = (typeof ROUTE_QUESTIONS)[number]['key'];
 
+/** The kinds of answer a task can need, asked of the task itself when
+ *  `answerTypes` is on: one yes/no question each, all in one decide
+ *  request per pick. `phrase` names the type in the curator's hint
+ *  line (`answerHint`); `question` asks it of the task, `trueCriterion`
+ *  and `falseCriterion` are the answer criteria. */
+export const ANSWER_TYPES = [
+  { key: 'date', phrase: 'a date',
+    question: 'Is the answer a point in time?',
+    trueCriterion: 'The answer names when something happened or will happen: a calendar date, a day of the week, a month, a year or a time of day.',
+    falseCriterion: 'The answer is not a point in time.' },
+  { key: 'duration', phrase: 'a length of time',
+    question: 'Is the answer a length of time?',
+    trueCriterion: 'The answer is how long something lasted or took, or how much time passed between two events or since an event (days, weeks, months, years).',
+    falseCriterion: 'The answer is not a length of time.' },
+  { key: 'order', phrase: 'the order of events',
+    question: 'Does the answer depend on the order of two or more events?',
+    trueCriterion: 'The question asks which happened first, last, before or after, or asks for events in sequence.',
+    falseCriterion: 'The question does not ask about the order of events.' },
+  { key: 'number', phrase: 'a number',
+    question: 'Is the answer a number?',
+    trueCriterion: 'The answer is a number: a quantity, a count, an amount of money, a measurement, an age, a score or a percentage.',
+    falseCriterion: 'The answer is not a number.' },
+  { key: 'entity', phrase: 'a specific name',
+    question: 'Is the answer a specific named thing?',
+    trueCriterion: 'The answer is a particular person, place, product, brand, organisation, pet, or title of a book, film, show or song.',
+    falseCriterion: 'The answer is not a particular named person, place, product or title.' },
+  { key: 'yesno', phrase: 'a yes or no',
+    question: 'Can the question be answered with yes or no?',
+    trueCriterion: 'The question asks whether something is true, happened or holds, so a yes or a no answers it.',
+    falseCriterion: 'A yes or a no does not answer the question.' },
+  { key: 'list', phrase: 'a full count or list',
+    question: 'Does the answer need every instance of something gathered?',
+    trueCriterion: 'The answer is a count of items or events, or a complete list of them, so every instance must be found.',
+    falseCriterion: 'The answer does not need instances counted or listed.' },
+  { key: 'advice', phrase: 'a recommendation',
+    question: 'Does the question ask for a recommendation, a suggestion or an opinion?',
+    trueCriterion: 'The user asks what they should do, choose, try or think, rather than asking for a fact from their past.',
+    falseCriterion: 'The user asks for a fact, not for a recommendation or an opinion.' },
+  { key: 'preference', phrase: 'the user\'s own tastes',
+    question: 'Does the answer depend on the user\'s own preferences?',
+    trueCriterion: 'The user\'s stated likes, dislikes, tastes, wants or limits shape what a good answer is.',
+    falseCriterion: 'The user\'s preferences do not shape the answer.' },
+  { key: 'latest', phrase: 'the latest value',
+    question: 'Does the question ask for the current or most recent value of something that can change?',
+    trueCriterion: 'The answer is the most recent value or state of something that may have changed over time; an earlier value would be out of date.',
+    falseCriterion: 'The question does not ask for a current or latest value.' },
+] as const;
+
+export type AnswerType = (typeof ANSWER_TYPES)[number]['key'];
+
 /** The curator options each route answer switches on: a stated taste
  *  needs both preference lines; a count, a date or a latest value
  *  needs worked notes, which carry each fact's date so the curator

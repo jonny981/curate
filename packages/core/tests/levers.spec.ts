@@ -387,7 +387,7 @@ describe('levers', () => {
         .rejects.toThrow('`ranking.knwledge` is not an option; allowed keys are `knowledge`, `docs`, `rules`, `instructions`');
       await expect(pick([part], { task: 'task', decide: counter.decide,
         questionsBySource: { notes: { ...fitted, firstonly: { bias: 0, weight: 1 } } } as never }))
-        .rejects.toThrow('`questionsBySource.notes.firstonly` is not an option; allowed keys are `bias`, `questions`, `first`, `band`, `firstOnly`');
+        .rejects.toThrow('`questionsBySource.notes.firstonly` is not an option; allowed keys are `bias`, `questions`, `typed`, `first`, `band`, `firstOnly`');
       await expect(pick([part], { task: 'task', decide: counter.decide,
         sourceKinds: { notes: 'markdwon' } as never }))
         .rejects.toThrow("`sourceKinds.notes` names a kind that is not 'chat', 'git-history' or 'markdown'.");

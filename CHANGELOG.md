@@ -54,6 +54,14 @@ Four packages:
   parts it looked at, the kept parts it brought in or kept out, and one plain
   sentence that says why when it changed nothing. A read with `wholeLanes`
   on marks the parts past the lane cut with `pastLaneCut`.
+- **Answer types.** `pick.answerTypes` asks the task the ten questions in
+  `ANSWER_TYPES` (a date, a number, a specific name and so on) in one
+  request per pick and records the types it needs in
+  `record.answerTypes`. A source's question set can carry `typed`
+  questions, asked of its parts only when the task needs their type, and
+  `curate.answerHint` names the needed types to the curator in one line
+  under the task. All of it is off by default, and no preset carries a
+  typed question.
 - **Unknown options are rejected.** `pick`, `pickFromSources` and `curate`
   throw a `TypeError` before any model call when an options object, or a
   nested one such as `thresholds` or `everyRanked`, holds a key Curate does

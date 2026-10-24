@@ -505,6 +505,84 @@ the score when an item is about a different subject. These sets ask
 neither `own` nor `preference` of commits or notes. Fitted scores order
 evidence; they do not measure the chance of a correct final answer.
 
+### Answer types
+
+`answerTypes: true` on `pick` or `pickFromSources` asks the task what
+kind of answer it needs. Your `decide` function gets the ten yes/no
+questions in `ANSWER_TYPES` in one request per pick. They ride in the
+request that asks the task its label kinds or route questions when
+either runs, and go alone otherwise. A type answered at 0.5 or more is
+needed; `answerTypes: { bar }` sets another bar. It is off by default,
+and `memory()` passes it through `pick` like any pick option.
+
+| Key | Phrase in the hint | Question | True when | False when |
+| --- | --- | --- | --- | --- |
+| `date` | a date | Is the answer a point in time? | The answer names when something happened or will happen: a calendar date, a day of the week, a month, a year or a time of day. | The answer is not a point in time. |
+| `duration` | a length of time | Is the answer a length of time? | The answer is how long something lasted or took, or how much time passed between two events or since an event (days, weeks, months, years). | The answer is not a length of time. |
+| `order` | the order of events | Does the answer depend on the order of two or more events? | The question asks which happened first, last, before or after, or asks for events in sequence. | The question does not ask about the order of events. |
+| `number` | a number | Is the answer a number? | The answer is a number: a quantity, a count, an amount of money, a measurement, an age, a score or a percentage. | The answer is not a number. |
+| `entity` | a specific name | Is the answer a specific named thing? | The answer is a particular person, place, product, brand, organisation, pet, or title of a book, film, show or song. | The answer is not a particular named person, place, product or title. |
+| `yesno` | a yes or no | Can the question be answered with yes or no? | The question asks whether something is true, happened or holds, so a yes or a no answers it. | A yes or a no does not answer the question. |
+| `list` | a full count or list | Does the answer need every instance of something gathered? | The answer is a count of items or events, or a complete list of them, so every instance must be found. | The answer does not need instances counted or listed. |
+| `advice` | a recommendation | Does the question ask for a recommendation, a suggestion or an opinion? | The user asks what they should do, choose, try or think, rather than asking for a fact from their past. | The user asks for a fact, not for a recommendation or an opinion. |
+| `preference` | the user's own tastes | Does the answer depend on the user's own preferences? | The user's stated likes, dislikes, tastes, wants or limits shape what a good answer is. | The user's preferences do not shape the answer. |
+| `latest` | the latest value | Does the question ask for the current or most recent value of something that can change? | The answer is the most recent value or state of something that may have changed over time; an earlier value would be out of date. | The question does not ask for a current or latest value. |
+
+The true and false columns are each entry's `trueCriterion` and
+`falseCriterion`. `AnswerType` is the type of the keys.
+
+`record.answerTypes` holds the `bar`, one entry in `answers` per type
+with its answer, and `needed`, the types answered at or above the bar
+in `ANSWER_TYPES` order. An answer a stop left unasked records
+`unassessed` with the stop's reason.
+
+A source's question set can carry `typed` questions beside its
+`questions`. Each has an `answerType` and a fitted `weight`. It is
+asked of the source's reference parts only when `needed` holds its
+type, in the same request as the set's other questions. In a set with
+`first` and `band`, it is asked only when the other questions are,
+that is when the first answer is inside the band. Its answer adds
+`weight × logit(p)` to the part's score like the others, and a typed
+question that is not asked adds nothing. A part's record entry lists
+the typed questions it was asked beside the others. Keys must be
+unique across `questions` and `typed`.
+
+```ts
+import { historySource, memory } from '@curatejs/core';
+import { git, gitSettings, GIT_HISTORY_CASCADE } from '@curatejs/git';
+
+const DATED = {
+  ...GIT_HISTORY_CASCADE,
+  typed: [{
+    answerType: 'date',
+    key: 'when-decided',
+    instructions: 'Does this commit say when this was decided?',
+    true: 'It gives the date or time of the decision',
+    false: 'It gives no date for the decision',
+    weight: 1,
+  }],
+};
+const mem = memory({
+  sources: [historySource({ reader: git('.'), ...gitSettings, questions: DATED })],
+  decide,
+  write,
+  pick: { answerTypes: true },
+  curate: { answerHint: true },
+});
+```
+
+No preset carries a typed question. A pick whose sources carry typed
+questions while `answerTypes` is off throws a `TypeError` that names
+the source, before any read.
+
+`answerHint: true` on `curate` adds one line under the task line of the
+curator's `TASK:` block. It names the needed types by their phrases, in
+`ANSWER_TYPES` order: "The answer likely needs: a date, a number." When
+no type cleared the bar it adds no line. `CurateRecord.answerHint`
+holds the line. It reads `record.answerTypes` on the pick's record, and
+throws a `TypeError` when the pick did not record one. It is off by
+default.
+
 ### Decision tags
 
 `tags` asks extra yes/no questions of each reference that passes
@@ -1195,6 +1273,7 @@ A search line that repeats the task opens no lane, and its entry says so.
 | `ruleBar` | The source has rule parts and a bar above 0 | The source's scored rules | 0 | Rules below the bar |
 | `everyScored` | The call gave the override | As `bar`; it replaces the source's `bar` entry | 0 | As `bar` |
 | `everyRanked` | The call gave `{ c }` | Ranked parts | 0 | `null`. The summary says how many parts the cut left undecided |
+| `typed` | The source's question set has typed questions | Parts asked at least one typed question | Kept parts whose score reaches the source's bar only with the typed terms | Parts below the bar only because of the typed terms that no later pass kept |
 
 Labels, extra lanes and `wholeLanes` also change the order of the decide feed.
 That order matters only when something ends the feed early: an `everyRanked: { c }` cut or a stopping limit.
@@ -1251,6 +1330,7 @@ A curate record's `effects` covers `curate`'s own options; the pick's entries st
 | `preferenceAdvice`, `preferenceChange` | On | Preference lines in the log. Both options write them, so with both on each entry gives the total and says so |
 | `contextLimit` | Set | `null`. The summary gives the log's length before and after, or says the log was within the limit |
 | `context`, `taskDate` | On or set | `null`. They change what the curator is told, and one call cannot count which lines that changed |
+| `answerHint` | On | `null`. The summary quotes the line it added to the curator's task, or says no answer type cleared the bar |
 
 ```json
 {
@@ -1266,6 +1346,8 @@ A curate record's `effects` covers `curate`'s own options; the pick's entries st
 - **`PickSettingEffect`:** `setting`, the setting's name as a caller writes it; `source`, the source the counts are for; `actedOn`, the parts it looked at; `added`, the kept parts kept only because of it; `dropped`, the parts kept out only because of it, or `null` when one pick cannot tell; and `summary`, one plain sentence.
 - **`CurateRecord.effects`:** a `CurateSettingEffect[]` for `curate`'s own options.
 - **`CurateSettingEffect`:** `setting`; `lines`, the log lines the option wrote, or `null` when one curate call cannot tell; and `summary`.
+- **`PickRecord.answerTypes`:** present when `answerTypes` was on: `bar`, `answers` with one answer per type, and `needed`, the types at or above the bar.
+- **`CurateRecord.answerHint`:** the line `answerHint` added to the curator's task, absent when it added none.
 - **`pastLaneCut`:** on a part and its `PickRecordEntry`, true when a read with `wholeLanes` on returned the part although the lane cut would have dropped it.
 
 `pickFromSources` tells `pick` how each source was read through the `readsBySource` option: the option each `searchRanks` position came from, the extra-lane options the read request gave, and whether the read kept whole lanes.

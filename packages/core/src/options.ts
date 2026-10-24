@@ -5,6 +5,7 @@ import type {
 } from './pick.js';
 import type { CandidateReadRequest } from './source.js';
 import type { MeaningSearchOptions } from './meaning.js';
+import { ANSWER_TYPES } from './task.js';
 
 /** Option names the levers change renamed, in one place: each old
  *  dotted path a caller could still pass names the option that took
@@ -20,7 +21,7 @@ const RENAMED_OPTIONS: Readonly<Record<string, string>> = {
 const PICK_OPTION_KEYS: readonly (keyof PickOptions)[] = [
   'ranking', 'task', 'decide', 'questionsBySource', 'sourceKinds', 'labelKindsBySource',
   'keepTop', 'rankProtection', 'bestPartFirst', 'tags', 'tagsByKind',
-  'labels', 'cache', 'route', 'everyRanked', 'everyScored', 'rare', 'rareBySource',
+  'labels', 'cache', 'route', 'answerTypes', 'everyRanked', 'everyScored', 'rare', 'rareBySource',
   'barBySource', 'ruleBarBySource', 'rulesEnumerationComplete', 'readsBySource', 'limits', 'thresholds', 'signal',
 ];
 const THRESHOLD_KEYS: readonly (keyof PickThresholds)[] = ['linkedPathBar'];
@@ -39,18 +40,21 @@ const READ_REQUEST_KEYS: readonly (keyof CandidateReadRequest)[] = [
 const MEANING_KEYS: readonly (keyof MeaningSearchOptions)[] = ['embed', 'nearest', 'wholeLanes'];
 const CURATE_KEYS: readonly (keyof CurateOptions)[] = [
   'write', 'working', 'context', 'routeByTask', 'route', 'preferenceAdvice',
-  'preferenceChange', 'taskDate', 'contextLimit', 'batchTokens', 'signal',
+  'preferenceChange', 'taskDate', 'answerHint', 'contextLimit', 'batchTokens', 'signal',
 ];
 /** The fixed keys of the maps keyed by source kind — tagsByKind and
  *  the read request's kindLanes — and the values sourceKinds maps to. */
 const SOURCE_KIND_KEYS: readonly CandidateSourceKind[] = ['chat', 'git-history', 'markdown'];
 /** The fixed keys of `ranking`, keyed by candidate kind. */
 const MEMORY_KIND_KEYS: readonly MemoryKind[] = ['knowledge', 'docs', 'rules', 'instructions'];
-const CASCADE_KEYS: readonly (keyof PickCascade)[] = ['bias', 'questions', 'first', 'band', 'firstOnly'];
+const CASCADE_KEYS: readonly (keyof PickCascade)[] = ['bias', 'questions', 'typed', 'first', 'band', 'firstOnly'];
 const TAG_SET_KEYS: readonly (keyof PickTagSet)[] = ['key', 'questions'];
 const CRITERION_KEYS: readonly (keyof PickCriterion)[] = ['key', 'instructions', 'true', 'false'];
 const CASCADE_QUESTION_KEYS: readonly (keyof PickCascade['questions'][number])[] = [
   ...CRITERION_KEYS, 'weight',
+];
+const TYPED_QUESTION_KEYS: readonly (keyof NonNullable<PickCascade['typed']>[number])[] = [
+  ...CASCADE_QUESTION_KEYS, 'answerType',
 ];
 const FIRST_ONLY_KEYS: readonly (keyof NonNullable<PickCascade['firstOnly']>)[] = ['bias', 'weight'];
 
@@ -72,24 +76,38 @@ function checkKeys(value: unknown, allowed: readonly string[], path: string): vo
 }
 
 /** One question set's own keys, then its firstOnly weights and each
- *  fitted question's keys: an extra key beside the fitted fields would
- *  otherwise go unread. */
+ *  fitted and typed question's keys: an extra key beside the fitted
+ *  fields would otherwise go unread. */
 export function checkCascadeKeys(set: PickCascade | undefined, path: string): void {
   checkKeys(set, CASCADE_KEYS, path);
   checkKeys(set?.firstOnly, FIRST_ONLY_KEYS, `${path}.firstOnly`);
   for (const [index, question] of (set?.questions ?? []).entries()) {
     checkKeys(question, CASCADE_QUESTION_KEYS, `${path}.questions[${index}]`);
   }
+  for (const [index, question] of (set?.typed ?? []).entries()) {
+    checkKeys(question, TYPED_QUESTION_KEYS, `${path}.typed[${index}]`);
+  }
 }
 
 /** A question set's values: unique, complete questions with finite
- *  weights, and first, band and firstOnly together or not at all. */
+ *  weights, typed questions whose keys no other question in the set
+ *  shares and whose answer type is one of ANSWER_TYPES, and first, band
+ *  and firstOnly together or not at all. */
 export function checkCascade(set: PickCascade | undefined): void {
   if (set === undefined) return;
   const keys = set.questions.map((q) => q.key);
   if (!Number.isFinite(set.bias) || !keys.length || new Set(keys).size !== keys.length
     || set.questions.some((q) => !q.key || !q.instructions || !q.true || !q.false || !Number.isFinite(q.weight))) {
     throw new TypeError('a question set needs unique questions and finite fitted weights.');
+  }
+  if (set.typed !== undefined) {
+    const all = Array.isArray(set.typed) ? [...keys, ...set.typed.map((q) => q.key)] : [];
+    if (!Array.isArray(set.typed) || new Set(all).size !== all.length
+      || set.typed.some((q) => !q.key || !q.instructions || !q.true || !q.false || !Number.isFinite(q.weight)
+        || !ANSWER_TYPES.some((type) => type.key === q.answerType))) {
+      throw new TypeError('a question set\'s typed questions need keys unique across questions and typed, '
+        + 'finite weights and a known answerType.');
+    }
   }
   if (set.first !== undefined || set.band !== undefined || set.firstOnly !== undefined) {
     if (!keys.includes(set.first!) || !set.band || set.band.length !== 2
@@ -134,6 +152,7 @@ export function checkPickOptions(options: PickOptions): void {
   checkKeys(options.everyRanked, ['c'], 'everyRanked');
   checkKeys(options.everyScored, ['bar', 'bySize'], 'everyScored');
   checkKeys(options.rare, ['share', 'bar'], 'rare');
+  checkKeys(options.answerTypes, ['bar'], 'answerTypes');
   for (const [id, enabled] of Object.entries(options.rareBySource ?? {})) {
     if (typeof enabled !== 'boolean') throw new TypeError(`rareBySource.${id} must be a boolean.`);
   }
@@ -148,6 +167,11 @@ export function checkPickOptions(options: PickOptions): void {
   checkKeys(options.tagsByKind, SOURCE_KIND_KEYS, 'tagsByKind');
   for (const [id, set] of Object.entries(options.questionsBySource ?? {})) {
     checkCascadeKeys(set, `questionsBySource.${id}`);
+    // A typed question is asked only when the task needs its answer
+    // type, so with answerTypes off it would sit unread.
+    if ((set?.typed?.length ?? 0) > 0 && (options.answerTypes === undefined || options.answerTypes === false)) {
+      throw new TypeError(`${id}'s questions include typed questions, which are asked only when answerTypes is on.`);
+    }
   }
   for (const [index, set] of (options.tags ?? []).entries()) {
     checkTagSetKeys(set, `tags[${index}]`);

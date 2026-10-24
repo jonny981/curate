@@ -9,7 +9,9 @@ import {
 import {
   decisionKey, storedDecision, type DecisionStore,
 } from './decisions.js';
-import { ROUTE_QUESTIONS, routeOptions, type RouteKey, type RouteOption } from './task.js';
+import {
+  ANSWER_TYPES, ROUTE_QUESTIONS, routeOptions, type AnswerType, type RouteKey, type RouteOption,
+} from './task.js';
 import type { LeverStates } from './levers.js';
 import { checkCascade, checkPickOptions } from './options.js';
 
@@ -305,6 +307,8 @@ export interface PickTagSet {
 export interface PickCascade {
   readonly bias: number;
   readonly questions: readonly (PickCriterion & { readonly weight: number })[];
+  /** Questions asked of a part only when the task needs their answer type. */
+  readonly typed?: readonly (PickCriterion & { readonly answerType: AnswerType; readonly weight: number })[];
   readonly first?: string;
   readonly band?: readonly [number, number];
   readonly firstOnly?: { readonly bias: number; readonly weight: number };
@@ -313,7 +317,7 @@ export interface PickCascade {
 /** What one setting did in one pick, for one source. */
 export interface PickSettingEffect {
   /** The setting's name as a caller writes it: 'labels', 'rare', 'bar', 'ruleBar', 'searchLines',
-   *  'searchPhrases', 'meaning', 'wholeLanes', 'linkedPathBar', 'everyScored' or 'everyRanked'. */
+   *  'searchPhrases', 'meaning', 'wholeLanes', 'linkedPathBar', 'everyScored', 'everyRanked' or 'typed'. */
   readonly setting: string;
   /** The source the counts are for. A setting given for the whole call gets one entry per source. */
   readonly source: string;
@@ -429,6 +433,16 @@ export interface PickRecord {
   readonly route?: {
     readonly answers: readonly ({ readonly key: RouteKey } & PickAnswer)[];
     readonly on: readonly RouteOption[];
+  };
+  /** Present when `answerTypes` asked the ten questions in
+   *  `ANSWER_TYPES` of the task: the bar, every answer, and the types
+   *  that cleared it. An answer a stop left unasked records
+   *  'unassessed' with the stop reason. */
+  readonly answerTypes?: {
+    readonly bar: number;
+    readonly answers: readonly ({ readonly key: AnswerType } & PickAnswer)[];
+    /** Types answered at or above the bar, in ANSWER_TYPES order. */
+    readonly needed: readonly AnswerType[];
   };
   /** Present when a decide-feed dial ran — `everyRanked: { c }` or the
    *  rare-word round: the history's size N in reference parts (every
@@ -565,6 +579,15 @@ export interface PickOptions {
    *  'yes' at the shared label bar switches on; `curate`'s own
    *  `route: 'jev'` applies them. Off by default. */
   readonly route?: 'jev';
+  /** Ask the ten questions in `ANSWER_TYPES` of the task once per pick,
+   *  through the decide port, in the same request as the task's kind
+   *  labels or the route questions when either asks the task, alone
+   *  otherwise. `true` uses a bar of 0.5; `{ bar }` sets it. A type
+   *  answered at or above the bar is needed: `record.answerTypes`
+   *  lists the needed types, each source's typed questions for them are
+   *  asked of its reference parts, and `curate`'s own `answerHint` can
+   *  name them to the curator. Off by default. */
+  readonly answerTypes?: boolean | { readonly bar: number };
   /** Read every ranked part, the default. `{ c }` turns the lever off
    *  and keeps only the top `round(c × N^0.8)` reference parts of the
    *  ranking the decide step reads — the label gate's fused order when
@@ -668,6 +691,8 @@ const DEFAULT_LINKED_PATH_BAR = 0.4;
  *  pulled part joins the selection at or above `bar`. */
 const RARE_SHARE = 5 / 850;
 const RARE_BAR = 0.0146;
+/** The bar `answerTypes: true` asks the answer types at. */
+const ANSWER_TYPE_BAR = 0.5;
 const TIMED_OUT = Symbol('timed out');
 
 const PICK_QUESTIONS: Record<
@@ -910,6 +935,13 @@ interface EffectInput {
   readonly topK: number | undefined;
   /** What ended the feed early: a feed cut, a stop, or both. */
   readonly ended: readonly string[];
+  /** Each source whose set has typed questions, and whether the task
+   *  needed any of their answer types. */
+  readonly typedSources: ReadonlyMap<string, boolean>;
+  /** The parts asked at least one typed question. */
+  readonly typedAsked: ReadonlySet<MemoryCandidate>;
+  /** Each part's score without its typed terms, for the parts that have them. */
+  readonly untyped: ReadonlyMap<MemoryCandidate, number>;
 }
 
 const count = (n: number, noun = 'part') => `${n} ${noun}${n === 1 ? '' : 's'}`;
@@ -950,6 +982,26 @@ function settingEffects(input: EffectInput): PickSettingEffect[] {
   const reachedOrEnded = (head: string, through: string, reached: number, added: number, order: string) =>
     `${head}; ${reached === 0 ? `none ${through}` : `${reached} ${through}, and ${keptOf(added)}`}. `
       + `${ended}, and ${order}, so ${order.startsWith('the whole') ? 'it' : 'they'} may also have changed which parts were decided.`;
+  // One entry per source whose set has typed questions, a source that
+  // returned no part included.
+  const typedEffect = (id: string, own: readonly MemoryCandidate[]): PickSettingEffect => {
+    const needed = input.typedSources.get(id);
+    const bar = input.bar(id);
+    // The score without the typed terms is the same sum without them,
+    // so both sides of the bar come from this one pick.
+    const without = (candidate: MemoryCandidate) => input.untyped.get(candidate);
+    const acted = own.filter((candidate) => input.typedAsked.has(candidate)).length;
+    const added = own.filter((candidate) => input.scored.has(candidate) && !input.belowBar.has(candidate)
+      && (without(candidate) ?? bar) < bar && statuses.get(candidate)?.status === 'selected').length;
+    const dropped = own.filter((candidate) => input.belowBar.has(candidate)
+      && (without(candidate) ?? -1) >= bar && statuses.get(candidate)?.status !== 'selected').length;
+    return { setting: 'typed', source: id, actedOn: acted, added, dropped,
+      summary: !needed
+        ? `typed on ${id}: the task needed none of its answer types, so no typed question was asked. It added no part and kept out no part.`
+        : added === 0 && dropped === 0
+          ? `typed on ${id}: ${count(acted)} ${acted === 1 ? 'was' : 'were'} asked typed questions, but no part crossed the bar because of them. It added no part and kept out no part.`
+          : `typed on ${id}: ${count(acted)} ${acted === 1 ? 'was' : 'were'} asked typed questions; ${count(added)} reached the bar ${bar} only with them, and ${count(dropped)} fell below it only because of them.` };
+  };
   const effects: PickSettingEffect[] = [];
   for (const id of new Set(input.candidates.map((candidate) => candidate.sourceId))) {
     const own = input.candidates.filter((candidate) => candidate.sourceId === id);
@@ -1007,6 +1059,8 @@ function settingEffects(input: EffectInput): PickSettingEffect[] {
             ? `${setting} on ${id}: no scored part of ${scored.length} fell below the bar ${bar}, so the bar kept out none. It kept out no part.`
             : `${setting} on ${id}: of ${count(scored.length, 'scored part')}, ${below.length} fell below the bar ${bar}, but a later pass kept each of them, so the bar kept out none. It kept out no part.` });
     }
+
+    if (input.typedSources.has(id)) effects.push(typedEffect(id, own));
 
     const rules = own.filter((candidate) => candidate.role === 'rule');
     if (rules.length > 0 && input.ruleBar(id) > 0) {
@@ -1077,6 +1131,9 @@ function settingEffects(input: EffectInput): PickSettingEffect[] {
           : `everyRanked on ${id}: the cut (c ${input.topK}) kept every one of ${count(ranked, 'ranked part')}, so it left 0 undecided.` });
     }
   }
+  for (const id of input.typedSources.keys()) {
+    if (!input.candidates.some((candidate) => candidate.sourceId === id)) effects.push(typedEffect(id, []));
+  }
   return effects;
 }
 
@@ -1119,6 +1176,13 @@ export async function pick(
   if (options.route !== undefined && options.route !== 'jev') {
     throw new TypeError(`route must be 'jev'.`);
   }
+  if (options.answerTypes !== undefined && typeof options.answerTypes !== 'boolean'
+    && (!isRecord(options.answerTypes) || typeof options.answerTypes.bar !== 'number'
+      || !Number.isFinite(options.answerTypes.bar) || options.answerTypes.bar < 0 || options.answerTypes.bar > 1)) {
+    throw new TypeError('answerTypes must be a boolean or hold a bar between 0 and 1.');
+  }
+  const answerTypesBar = options.answerTypes === true ? ANSWER_TYPE_BAR
+    : isRecord(options.answerTypes) ? options.answerTypes.bar : undefined;
   for (const set of options.tags ?? []) checkTagSet(set);
   for (const sets of Object.values(options.tagsByKind ?? {})) for (const set of sets ?? []) checkTagSet(set);
   const kindFor = (candidate: MemoryCandidate) => options.sourceKinds && Object.hasOwn(options.sourceKinds, candidate.sourceId)
@@ -1300,10 +1364,15 @@ export async function pick(
   // them. Declared beside `answered` so `ask` can tell the two sinks
   // apart.
   const labelAnswers = new Map<MemoryCandidate, Map<string, CheckedAnswer>>();
+  // The answer types the task needed, once the task's questions are
+  // answered; a source's typed questions for them join its set.
+  let neededTypes: ReadonlySet<AnswerType> = new Set();
+  const typedFor = (candidate: MemoryCandidate) => candidate.role !== 'reference' ? []
+    : (cascadeFor(candidate)?.typed ?? []).filter((q) => neededTypes.has(q.answerType));
   const specsFor = (candidate: MemoryCandidate) => {
     const cascade = cascadeFor(candidate);
     return candidate.role === 'reference' && cascade
-      ? cascade.questions.map((q) => ({ key: q.key, question: q.instructions, trueCriterion: q.true, falseCriterion: q.false }))
+      ? [...cascade.questions, ...typedFor(candidate)].map((q) => ({ key: q.key, question: q.instructions, trueCriterion: q.true, falseCriterion: q.false }))
       : [{ key: candidate.role, ...(candidate.kind === undefined || (candidate.role === 'rule' && candidate.kind !== 'instructions')
         ? PICK_QUESTIONS[candidate.role] : KIND_QUESTIONS[candidate.kind]) }];
   };
@@ -1518,7 +1587,27 @@ export async function pick(
       title: taskItem.title, text: taskItem.text,
     },
   });
+  // The answer types have their own answer item: a route or kind key
+  // can match a type's key.
+  const answerItem: MemoryCandidate = { ...taskItem };
+  const answerPending = (type: (typeof ANSWER_TYPES)[number]): Pending => ({
+    candidate: answerItem,
+    spec: {
+      key: type.key, question: type.question,
+      trueCriterion: type.trueCriterion, falseCriterion: type.falseCriterion,
+    },
+    question: {
+      key: JSON.stringify([taskItem.sourceId, taskItem.id, 'answerType', type.key]),
+      questionKey: type.key,
+      role: 'reference' as const,
+      question: type.question,
+      trueCriterion: type.trueCriterion, falseCriterion: type.falseCriterion,
+      sourceId: taskItem.sourceId, id: taskItem.id,
+      title: taskItem.title, text: taskItem.text,
+    },
+  });
   let routeAskedWithLabels = false;
+  let typesAskedWithLabels = false;
   if (labelsOn) {
     if (typeof labelOptions.directory !== 'string' || !labelOptions.directory.trim()) {
       throw new TypeError('labels.directory must be a nonempty path.');
@@ -1584,6 +1673,7 @@ export async function pick(
       }
       if (!stop && misses.some(({ items }) => items[0] === set.task)) {
         const withRoute: boolean = options.route === 'jev' && !routeAskedWithLabels;
+        const withTypes: boolean = answerTypesBar !== undefined && !typesAskedWithLabels;
         await ask([
           ...set.kinds.map((kind) => ({
             candidate: set.task,
@@ -1599,8 +1689,10 @@ export async function pick(
           })),
           // Routes have their own answer item, even when a kind has the same key.
           ...(withRoute ? ROUTE_QUESTIONS.map(routePending) : []),
-        ], labelAnswers, labelQuestionTask(options.task), withRoute);
+          ...(withTypes ? ANSWER_TYPES.map(answerPending) : []),
+        ], labelAnswers, labelQuestionTask(options.task), withRoute || withTypes);
         routeAskedWithLabels ||= withRoute;
+        typesAskedWithLabels ||= withTypes;
       }
       const partMisses = misses.filter(({ items }) => items[0] !== set.task);
       if (!stop && partMisses.length > 0) {
@@ -1657,12 +1749,18 @@ export async function pick(
     };
   }
 
-  // The route questions, alone when the task's label ask did not run —
-  // labels unset, or the task's set reused from the store.
+  // The route and answer-type questions, together in one request when
+  // the task's label ask did not carry them — labels unset, or the
+  // task's set reused from the store.
+  const routeAlone = options.route === 'jev' && !routeAskedWithLabels;
+  const typesAlone = answerTypesBar !== undefined && !typesAskedWithLabels;
+  if (!stop && (routeAlone || typesAlone)) {
+    await ask([
+      ...(routeAlone ? ROUTE_QUESTIONS.map(routePending) : []),
+      ...(typesAlone ? ANSWER_TYPES.map(answerPending) : []),
+    ], labelAnswers, labelQuestionTask(options.task), true);
+  }
   if (options.route === 'jev') {
-    if (!stop && !routeAskedWithLabels) {
-      await ask(ROUTE_QUESTIONS.map(routePending), labelAnswers, labelQuestionTask(options.task), true);
-    }
     const got = labelAnswers.get(taskItem);
     const answers: ({ readonly key: RouteKey } & PickAnswer)[] = ROUTE_QUESTIONS.map((route) => ({
       key: route.key,
@@ -1674,6 +1772,19 @@ export async function pick(
       on: routeOptions(Object.fromEntries(answers.flatMap((answer) =>
         answer.status === 'answered' ? [[answer.key, answer.probability] as const] : []))),
     };
+  }
+  let answerTypesRecord: PickRecord['answerTypes'];
+  if (answerTypesBar !== undefined) {
+    const got = labelAnswers.get(answerItem);
+    const answers: ({ readonly key: AnswerType } & PickAnswer)[] = ANSWER_TYPES.map((type) => ({
+      key: type.key,
+      ...(got?.get(type.key)
+        ?? { status: 'unassessed' as const, ...(stop === undefined ? {} : { detail: stop }) }),
+    }));
+    const needed = answers.filter((answer) => answer.status === 'answered' && answer.probability >= answerTypesBar)
+      .map((answer) => answer.key);
+    neededTypes = new Set(needed);
+    answerTypesRecord = { bar: answerTypesBar, answers, needed };
   }
 
   // With `everyRanked` off the decide step reads only the top
@@ -1716,6 +1827,8 @@ export async function pick(
   }
 
   const combined = new Map<MemoryCandidate, CheckedAnswer>();
+  // Each part's score without its typed terms, for the record's `effects`.
+  const untyped = new Map<MemoryCandidate, number>();
   // Candidates a stop left half-assessed inside a cascade.
   const curtailed = new Map<MemoryCandidate, 'limits' | 'time' | 'cancelled' | 'error'>();
   const evaluate = async (phase: readonly MemoryCandidate[]) => {
@@ -1746,18 +1859,21 @@ export async function pick(
         } else {
           // A returned missing answer contributes nothing, as in the prototype.
           // A question never attempted because a limit stopped us is unassessed.
-          if (stop && cascade.questions.some((q) => !got.has(q.key))
+          const typed = typedFor(candidate);
+          const asked = [...cascade.questions, ...typed];
+          if (stop && asked.some((q) => !got.has(q.key))
             && (!cascade.first || first?.status === 'answered')) {
             curtailed.set(candidate, stop);
             continue;
           }
-          const probabilities = cascade.questions.map((q) => got.get(q.key));
+          const probabilities = asked.map((q) => got.get(q.key));
           if (probabilities.some((a) => a?.status === 'answered')) {
-            const z = cascade.bias + cascade.questions.reduce((sum, q, i) => {
-              const a = probabilities[i];
-              return sum + (a?.status === 'answered' ? q.weight * logit(a.probability) : 0);
-            }, 0);
-            answer = { status: 'answered', probability: 1 / (1 + Math.exp(-z)),
+            const term = (q: { readonly weight: number }, a: CheckedAnswer | undefined) =>
+              a?.status === 'answered' ? q.weight * logit(a.probability) : 0;
+            const z = cascade.bias + cascade.questions.reduce((sum, q, i) => sum + term(q, probabilities[i]), 0);
+            const typedZ = typed.reduce((sum, q, i) => sum + term(q, probabilities[cascade.questions.length + i]), 0);
+            if (typed.length > 0) untyped.set(candidate, 1 / (1 + Math.exp(-z)));
+            answer = { status: 'answered', probability: 1 / (1 + Math.exp(-(z + typedZ))),
               // The verdict reused the store only when every answer
               // behind it did: a question this pick asked — even one
               // that came back unanswered — keeps it fresh.
@@ -2017,6 +2133,11 @@ export async function pick(
       ...(cutBySource.size > 0 ? [`a feed cut (everyRanked c ${topK})`] : []),
       ...(feedStop === undefined ? [] : [`a stop (${feedStop})`]),
     ],
+    typedSources: new Map(Object.entries(options.questionsBySource ?? {}).flatMap(([id, set]) =>
+      (set.typed?.length ?? 0) > 0 ? [[id, set.typed!.some((q) => neededTypes.has(q.answerType))] as const] : [])),
+    typedAsked: new Set(candidates.filter((candidate) =>
+      typedFor(candidate).some((q) => answered.get(candidate)?.has(q.key) === true))),
+    untyped,
   });
 
   // Decision tags run on the kept references once relevance has
@@ -2100,7 +2221,8 @@ export async function pick(
       ...(candidate.repository === undefined ? {} : { repository: candidate.repository }),
       ...(wasTruncated === undefined ? {} : { truncated: wasTruncated }),
       ...(cascade && candidate.role === 'reference' && answered.has(candidate) ? {
-        questions: cascade.questions.map((q) => ({ key: q.key, ...(answered.get(candidate)!.get(q.key) ?? { status: 'missing' as const }) })),
+        questions: [...cascade.questions, ...typedFor(candidate)]
+          .map((q) => ({ key: q.key, ...(answered.get(candidate)!.get(q.key) ?? { status: 'missing' as const }) })),
       } : {}),
       ...(tags === undefined ? {} : { tags }),
     };
@@ -2148,6 +2270,7 @@ export async function pick(
       },
     }),
     ...(routeRecord === undefined ? {} : { route: routeRecord }),
+    ...(answerTypesRecord === undefined ? {} : { answerTypes: answerTypesRecord }),
     ...(pickRecord === undefined ? {} : { pick: pickRecord }),
     levers: { ...levers, sources: Object.fromEntries([...new Set([
       ...Object.keys(labelKindsBySource), ...rareSourceIds,

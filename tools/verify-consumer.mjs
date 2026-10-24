@@ -23,13 +23,14 @@ try {
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { pick, pickFromSources, curate, addMeaningRanks, historySource, SourceReadError, LABEL_KINDS } from '@curatejs/core';
+import { pick, pickFromSources, curate, addMeaningRanks, historySource, SourceReadError, LABEL_KINDS, ANSWER_TYPES } from '@curatejs/core';
 import { asSourceReadError } from '@curatejs/core/internal';
 import { chat, chatSettings, CHAT_CASCADE, CHAT_KEYWORD_SETTINGS, CHAT_SEARCH_LINE_REGISTER } from '@curatejs/chat';
 import { git, gitSettings, GIT_HISTORY_CASCADE, GIT_KEYWORD_SETTINGS, GIT_SEARCH_LINE_REGISTER } from '@curatejs/git';
 import { markdown, knowledgeBase, rules, markdownSettings, rulesSettings, MARKDOWN_CASCADE, MARKDOWN_KEYWORD_SETTINGS, MARKDOWN_SEARCH_LINE_REGISTER } from '@curatejs/markdown';
 const cancelled = new SourceReadError('cancelled', 'Stopped');
 assert.equal(asSourceReadError(cancelled), cancelled);
+assert.equal(ANSWER_TYPES.length, 10);
 const decide = async ({ questions }) => Object.fromEntries(questions.map(q => [q.key, { status: 'answered', probability: q.questionKey === 'offtopic' ? 0 : 1 }]));
 const candidates = [1, 0.049, 0].map((probability, index) => ({
   sourceId: 'host', role: 'reference', id: 'host-item-' + index, title: 'Backup',

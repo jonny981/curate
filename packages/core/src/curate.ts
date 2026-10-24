@@ -1,6 +1,6 @@
 import type { MemoryCandidate, PickRecordEntry, PickResult } from './pick.js';
 import type { CurateLeverStates } from './levers.js';
-import { classifyTask, type RouteOption, type TaskKind } from './task.js';
+import { ANSWER_TYPES, classifyTask, type RouteOption, type TaskKind } from './task.js';
 import { checkCurateOptions } from './options.js';
 
 export interface CuratePrompt {
@@ -44,6 +44,12 @@ export interface CurateOptions {
   readonly preferenceChange?: boolean;
   /** The question’s own date label, retained exactly in the task. */
   readonly taskDate?: string;
+  /** Add one line under the task line naming the answer types the pick
+   *  found the task needs (`answerTypes` on pick), as "The answer
+   *  likely needs: a date, a number." No line when no type cleared the
+   *  pick's bar. Needs `record.answerTypes` on the pick's record. Off
+   *  by default. */
+  readonly answerHint?: boolean;
   /** Condense once if the log exceeds this positive character budget.
    *  Cannot combine with `batchTokens`: a condensing pass cannot
    *  preserve a chained log's line ids. */
@@ -90,6 +96,9 @@ export interface CurateRecord {
   readonly preferenceAdvice?: boolean;
   readonly preferenceChange?: boolean;
   readonly taskDate?: string;
+  /** The hint line `answerHint` added under the task line; absent when
+   *  it added none. */
+  readonly answerHint?: string;
   /** First checked or recovered log's length; in a chained write,
    *  the layered log's length. */
   readonly logLength: number;
@@ -426,6 +435,7 @@ function curateEffects(log: string, input: {
   readonly routed: readonly RouteOption[] | undefined;
   readonly taskKinds: readonly TaskKind[] | undefined;
   readonly logLength: number;
+  readonly answerHint: string | undefined;
 }): CurateSettingEffect[] {
   const { options } = input;
   const lines = log.split('\n').map((line) => line.trim().replace(/^L\d+ /, '')).filter(Boolean);
@@ -478,6 +488,11 @@ function curateEffects(log: string, input: {
     effects.push({ setting: 'taskDate', lines: null,
       summary: 'taskDate: it adds the date to the task the curator reads, and one curate call cannot count which log lines that changed.' });
   }
+  if (options.answerHint === true) {
+    effects.push({ setting: 'answerHint', lines: null, summary: input.answerHint === undefined
+      ? 'answerHint: no answer type cleared the bar, so the curator\'s task carried no hint and it added no line.'
+      : `answerHint: it adds "${input.answerHint}" to the task the curator reads, and one curate call cannot count which log lines that changed.` });
+  }
   return effects;
 }
 
@@ -519,7 +534,14 @@ export async function curate(
   if (taskDate !== undefined && !taskDate.trim()) {
     throw new TypeError('curate: taskDate must be a nonempty date label.');
   }
-  const datedTask = taskDate === undefined ? task : `${task} (asked ${taskDate})`;
+  const needed = options.answerHint === true ? picked.record.answerTypes?.needed : undefined;
+  if (options.answerHint === true && needed === undefined) {
+    throw new TypeError('curate: answerHint needs the answer types a pick records when it runs with answerTypes on.');
+  }
+  const answerHint = needed === undefined || needed.length === 0 ? undefined
+    : `The answer likely needs: ${ANSWER_TYPES.filter((type) => needed.includes(type.key)).map((type) => type.phrase).join(', ')}.`;
+  const datedTask = (taskDate === undefined ? task : `${task} (asked ${taskDate})`)
+    + (answerHint === undefined ? '' : `\n${answerHint}`);
   const preferences = (preferenceAdvice
     ? '\nIf the task asks for advice, suggestions or recommendations (including whether something is a good idea): end the log with one or two short lines starting "Advice preferences:" naming the user\'s stated tastes, relevant experiences and constraints, with source ids. Tell the reader these apply to related requests even when this exact activity was never discussed. Do not invent preferences or confirmed event dates; absent schedules do not prevent suggesting suitable event types and ways to find them. Otherwise add no advice line.'
     : '') + (preferenceChange
@@ -784,7 +806,8 @@ export async function curate(
       ...(taskKinds === undefined ? {} : { taskKinds }),
       ...(options.route === undefined ? {} : { route: options.route }),
       levers,
-      ...(taskDate === undefined ? {} : { taskDate }), items, logLength, condensed,
+      ...(taskDate === undefined ? {} : { taskDate }),
+      ...(answerHint === undefined ? {} : { answerHint }), items, logLength, condensed,
       ...(batchTokens === undefined ? {} : { batchTokens }),
       ...(recordBatches === undefined ? {} : { batches: recordBatches }),
       ...(condensed ? { condensedLength: log.length } : {}),
@@ -795,7 +818,7 @@ export async function curate(
       ...(emptyRetries ? { emptyRetries } : {}),
       ...(recovered ? { formatRecovery: { keptAsWritten: [...keptAsWritten], dropped: [...dropped] } } : {}),
       effects: curateEffects(log, {
-        options, working, preferenceAdvice, preferenceChange, routed: routed?.on, taskKinds, logLength,
+        options, working, preferenceAdvice, preferenceChange, routed: routed?.on, taskKinds, logLength, answerHint,
       }),
     },
   };

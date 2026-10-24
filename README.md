@@ -233,6 +233,44 @@ Limits that leave a read incomplete or decisions unfinished make `recall()` thro
 Labels are stored in `$XDG_CACHE_HOME/curate/labels`, or `~/.cache/curate/labels` when `XDG_CACHE_HOME` is unset.
 Use `pick.labels: { directory: 'my-labels' }` to choose a folder.
 
+### Answer types
+
+The decision model can say, from the task's words alone, what kind of answer the task needs: a date, a number, a name, the order of events and so on.
+`pick.answerTypes` asks the task the ten questions in `ANSWER_TYPES`, in one request per pick.
+Two options use the types it finds:
+
+- **Typed questions:** a source's question set can hold `typed` questions. Each is asked of the source's parts only when the task needs its answer type, and its answer counts toward the part's score like the set's other questions.
+- **The hint line:** `curate.answerHint` adds one line under the task the curator reads, such as "The answer likely needs: a date, a number."
+
+Both are off by default, and no preset carries a typed question.
+Turn both on:
+
+```js
+const mem = memory({ sources, decide, write, pick: { answerTypes: true }, curate: { answerHint: true } });
+```
+
+Add a typed question to git's set through `historySource()`:
+
+```js
+import { historySource } from '@curatejs/core';
+import { git, gitSettings, GIT_HISTORY_CASCADE } from '@curatejs/git';
+
+const DATED = {
+  ...GIT_HISTORY_CASCADE,
+  typed: [{
+    answerType: 'date',
+    key: 'when-decided',
+    instructions: 'Does this commit say when this was decided?',
+    true: 'It gives the date or time of the decision',
+    false: 'It gives no date for the decision',
+    weight: 1,
+  }],
+};
+const commits = historySource({ reader: git('.'), ...gitSettings, questions: DATED });
+```
+
+A pick whose sources carry typed questions while `pick.answerTypes` is off throws a `TypeError` before it reads, so a typed question never sits unread.
+
 ## Sources
 
 Combine any of these readers in the `sources` array.
