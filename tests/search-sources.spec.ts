@@ -69,7 +69,14 @@ describe('extra source searches', () => {
     const baseline = await pickSource(reader, { task: 'original', wholeLanes: true });
     for (const searchLines of [[], ['', 'original', 'original']]) {
       const disabled = await pickSource(reader, { task: 'original', searchLines, stripSearchInstructions: false, wholeLanes: true });
-      expect(disabled).toEqual(baseline);
+      // Lines that only repeat the task open no lane, and the record's effects say so.
+      const lines = disabled.record.effects.filter((entry) => entry.setting === 'searchLines');
+      expect({ ...disabled, record: { ...disabled.record, effects: disabled.record.effects.filter((entry) => !lines.includes(entry)) } })
+        .toEqual(baseline);
+      expect(lines).toEqual(searchLines.length === 0 ? [] : [{
+        setting: 'searchLines', source: 'notes', actedOn: 0, added: 0, dropped: 0,
+        summary: 'searchLines on notes: every line was blank or repeated the task or an earlier line, so no extra lane opened and they added none. It added no part.',
+      }]);
       expect(disabled.reads[0]).toEqual({
         ...read, lanes: [{ task: 'original', lane: 'search', read: 2, kept: 2 }],
       });

@@ -72,6 +72,10 @@ export interface MemoryCandidate {
    *  carries its pre-merge keyword score here. Unused when `signals`
    *  already carry match scores. */
   readonly laneScore?: number;
+  /** True when a read with `wholeLanes` on returned this part although
+   *  the lane cut would have dropped it in every lane that holds it.
+   *  Only a read with `wholeLanes` on sets it. */
+  readonly pastLaneCut?: true;
   readonly applies?: 'always';
 }
 
@@ -240,6 +244,9 @@ export type PickRecordEntry = {
    *  no lane membership, so only the label lane or the rare-word round
    *  could admit it. */
   readonly poolOnly?: boolean;
+  /** Echoed from the input: a read with `wholeLanes` on returned the
+   *  part although the lane cut would have dropped it. */
+  readonly pastLaneCut?: true;
   /** Final ordering score; the decision probability remains separate. */
   readonly orderScore?: number;
   /** The first part judged for this document, within this entry's source. */
@@ -301,6 +308,40 @@ export interface PickCascade {
   readonly first?: string;
   readonly band?: readonly [number, number];
   readonly firstOnly?: { readonly bias: number; readonly weight: number };
+}
+
+/** What one setting did in one pick, for one source. */
+export interface PickSettingEffect {
+  /** The setting's name as a caller writes it: 'labels', 'rare', 'bar', 'ruleBar', 'searchLines',
+   *  'searchPhrases', 'meaning', 'wholeLanes', 'linkedPathBar', 'everyScored' or 'everyRanked'. */
+  readonly setting: string;
+  /** The source the counts are for. A setting given for the whole call gets one entry per source. */
+  readonly source: string;
+  /** Parts the setting looked at. */
+  readonly actedOn: number;
+  /** Kept parts that are kept only because of this setting. */
+  readonly added: number;
+  /** Parts kept out only because of this setting; null when one pick cannot tell. */
+  readonly dropped: number | null;
+  /** One plain sentence. */
+  readonly summary: string;
+}
+
+/** Where a source's read found its parts: the read request option each
+ *  `searchRanks` position came from, 'task' for the task's own keyword
+ *  lane. */
+export type SearchLaneOrigin = 'task' | 'searchLines' | 'searchPhrases' | 'kindLanes' | 'meaning';
+
+/** How one source was read, for the record's `effects`. */
+export interface PickSourceRead {
+  /** The option each `searchRanks` position came from, in position order. */
+  readonly lanes: readonly SearchLaneOrigin[];
+  /** The extra-lane options the read request gave with a non-blank
+   *  entry, whether or not each opened a lane: a search line that
+   *  repeats the task opens none. Defaults to those `lanes` names. */
+  readonly given?: readonly ('searchLines' | 'searchPhrases' | 'meaning')[];
+  /** The read kept whole lanes (`wholeLanes` on the read request). */
+  readonly wholeLanes: boolean;
 }
 
 export interface PickRecord {
@@ -425,6 +466,10 @@ export interface PickRecord {
   readonly tags?: readonly PickTagSet[];
   /** Extra tag sets asked only of references from that source kind. */
   readonly tagsByKind?: Readonly<Partial<Record<CandidateSourceKind, readonly PickTagSet[]>>>;
+  /** What each setting that was on did, one entry per source it
+   *  applied to, counted from this pick alone. A setting that was off
+   *  has no entry. */
+  readonly effects: readonly PickSettingEffect[];
 }
 
 export interface PickResult {
@@ -591,6 +636,12 @@ export interface PickOptions {
    *  coverage can then never report a complete applicable-rule set, even
    *  when every rule supplied was answered. Defaults to true. */
   readonly rulesEnumerationComplete?: boolean;
+  /** How each source was read, by source ID: the read request option
+   *  each `searchRanks` position came from and whether the read kept
+   *  whole lanes. Only the record's `effects` reads it; a source
+   *  without an entry has no extra-lane or `wholeLanes` entries there.
+   *  pickFromSources supplies these. */
+  readonly readsBySource?: Readonly<Record<string, PickSourceRead>>;
   readonly limits?: PickLimits;
   readonly thresholds?: PickThresholds;
   readonly signal?: AbortSignal;
@@ -823,6 +874,212 @@ function logit(p: number): number {
   return Math.log(Math.max(p, 1e-4) / Math.max(1 - p, 1e-4));
 }
 
+/** What `settingEffects` reads from one pick. */
+interface EffectInput {
+  /** The parts the record holds. */
+  readonly candidates: readonly MemoryCandidate[];
+  readonly queue: readonly MemoryCandidate[];
+  /** The parts that reached the decide step, after any feed cut. */
+  readonly feed: readonly MemoryCandidate[];
+  readonly statuses: ReadonlyMap<MemoryCandidate, PickEntryStatus>;
+  /** The parts a keyword lane held inside its candidate limit, with
+   *  the `searchRanks` positions of the lanes that held each one there. */
+  readonly laneHeld: ReadonlyMap<MemoryCandidate, ReadonlySet<number>>;
+  readonly labelLane: ReadonlySet<MemoryCandidate>;
+  /** The label kinds the task needed, by source. */
+  readonly labelNeeds: ReadonlyMap<string, readonly string[]>;
+  readonly labels: ReadonlyMap<MemoryCandidate, PartLabels>;
+  readonly labelKindsBySource: Readonly<Record<string, readonly LabelKind[]>>;
+  /** The rare words each source the round ran on contributed. */
+  readonly rareSeeds: ReadonlyMap<string, ReadonlySet<string>>;
+  readonly rareTaken: readonly MemoryCandidate[];
+  readonly rareAdded: ReadonlySet<MemoryCandidate>;
+  /** The parts the selection pass scored, and those it scored below their bar. */
+  readonly scored: ReadonlySet<MemoryCandidate>;
+  readonly belowBar: ReadonlySet<MemoryCandidate>;
+  /** The parts the link pass looked at. */
+  readonly linkActed: ReadonlySet<MemoryCandidate>;
+  readonly rankedBySource: ReadonlyMap<string, number>;
+  readonly cutBySource: ReadonlyMap<string, number>;
+  readonly reads: Readonly<Record<string, PickSourceRead>>;
+  readonly bar: (id: string) => number;
+  readonly ruleBar: (id: string) => number;
+  readonly everyScored: boolean;
+  readonly linkedPathBar: number;
+  readonly rareBar: number;
+  readonly topK: number | undefined;
+  /** What ended the feed early: a feed cut, a stop, or both. */
+  readonly ended: readonly string[];
+}
+
+const count = (n: number, noun = 'part') => `${n} ${noun}${n === 1 ? '' : 's'}`;
+const keptOf = (n: number) => `${n} of them ${n === 1 ? 'was' : 'were'} kept`;
+
+/** One entry per setting that was on, per source it applied to, counted
+ *  from the pick that ran. A part reaches the decide step by one or
+ *  more ways in: each lane that held it inside its candidate limit, the whole-lane
+ *  read when every lane held it past the cut, and the label lane. A
+ *  setting that opens a way in is credited with a kept part only when
+ *  that was the part's only way in and neither the link nor the
+ *  rare-word round kept it. */
+function settingEffects(input: EffectInput): PickSettingEffect[] {
+  const { statuses, reads } = input;
+  const feed = new Set(input.feed);
+  const ended = input.ended.length === 0 ? undefined
+    : `${input.ended.join(' and ').replace(/^a/, 'A')} ended the feed early`;
+  const ways = (candidate: MemoryCandidate): Set<string> => {
+    const found = new Set<string>();
+    const held = input.laneHeld.get(candidate);
+    if (held !== undefined) {
+      if (candidate.pastLaneCut === true) found.add('wholeLanes');
+      else if (candidate.searchRanks === undefined) found.add('task');
+      else {
+        const lanes = reads[candidate.sourceId]?.lanes ?? [];
+        for (const index of held) found.add(lanes[index] ?? 'task');
+      }
+    }
+    if (input.labelLane.has(candidate)) found.add('labels');
+    return found;
+  };
+  const credited = (candidate: MemoryCandidate) => {
+    const status = statuses.get(candidate);
+    return status?.status === 'selected' && status.link === undefined && !input.rareAdded.has(candidate);
+  };
+  // A setting's order changes the feed, so with the feed ended early it
+  // may also have swapped which parts were decided.
+  const reachedOrEnded = (head: string, through: string, reached: number, added: number, order: string) =>
+    `${head}; ${reached === 0 ? `none ${through}` : `${reached} ${through}, and ${keptOf(added)}`}. `
+      + `${ended}, and ${order}, so ${order.startsWith('the whole') ? 'it' : 'they'} may also have changed which parts were decided.`;
+  const effects: PickSettingEffect[] = [];
+  for (const id of new Set(input.candidates.map((candidate) => candidate.sourceId))) {
+    const own = input.candidates.filter((candidate) => candidate.sourceId === id);
+    const opened = (way: string) => {
+      const reached = own.filter((candidate) => {
+        const found = ways(candidate);
+        return feed.has(candidate) && found.size === 1 && found.has(way);
+      });
+      return { reached: reached.length, added: reached.filter(credited).length };
+    };
+    const read = reads[id];
+
+    if ((input.labelKindsBySource[id]?.length ?? 0) > 0) {
+      const queued = input.queue.filter((candidate) => candidate.sourceId === id && candidate.role === 'reference');
+      const labelled = queued.filter((candidate) => input.labels.has(candidate)).length;
+      const { reached, added } = opened('labels');
+      const head = `labels on ${id}: labelled ${count(labelled)}`;
+      const through = 'reached the decide step only through the label lane';
+      const reason = queued.every((candidate) => input.laneHeld.has(candidate))
+        ? 'every part was already going to the decide step'
+        : (input.labelNeeds.get(id) ?? []).length === 0 ? 'the task needed none of its label kinds'
+          : !queued.some((candidate) => input.labelLane.has(candidate) && !input.laneHeld.has(candidate))
+            ? 'no part outside the lanes cleared the label bar' : undefined;
+      effects.push({ setting: 'labels', source: id, actedOn: labelled, added, dropped: ended ? null : 0,
+        summary: ended ? reachedOrEnded(head, through, reached, added, 'labels change its order')
+          : added > 0 ? `${head}; ${reached} ${through}, and ${keptOf(added)}.`
+            : reason === undefined ? `${head}; ${reached} ${through}, but none of them were kept. It added no part.`
+              : `${head}, but ${reason}, so labels added none. It added no part.` });
+    }
+
+    const seeds = input.rareSeeds.get(id);
+    if (seeds !== undefined) {
+      const pulled = input.rareTaken.filter((candidate) => candidate.sourceId === id);
+      const added = pulled.filter((candidate) => input.rareAdded.has(candidate)).length;
+      effects.push({ setting: 'rare', source: id, actedOn: pulled.length, added, dropped: 0,
+        summary: added > 0
+          ? `rare on ${id}: pulled in ${count(pulled.length)} that share a rare word with a kept part, and ${keptOf(added)}.`
+          : `rare on ${id}: ${seeds.size === 0 ? 'no kept part had a word that is rare in this source'
+            : pulled.length === 0 ? 'no other part shared a rare word with a kept part'
+              : `pulled in ${count(pulled.length)}, but none answered at or above the rare bar ${input.rareBar}`
+          }, so the round added none. It added no part.` });
+    }
+
+    const references = own.filter((candidate) => candidate.role === 'reference');
+    if (references.length > 0) {
+      const setting = input.everyScored ? 'everyScored' : 'bar';
+      const bar = input.bar(id);
+      const scored = references.filter((candidate) => input.scored.has(candidate));
+      const below = scored.filter((candidate) => input.belowBar.has(candidate));
+      const dropped = below.filter((candidate) => statuses.get(candidate)?.status !== 'selected').length;
+      effects.push({ setting, source: id, actedOn: scored.length, added: 0, dropped,
+        summary: dropped > 0
+          ? `${setting} on ${id}: of ${count(scored.length, 'scored part')}, ${dropped} fell below the bar ${bar} and no later pass kept them.`
+          : below.length === 0
+            ? `${setting} on ${id}: no scored part of ${scored.length} fell below the bar ${bar}, so the bar kept out none. It kept out no part.`
+            : `${setting} on ${id}: of ${count(scored.length, 'scored part')}, ${below.length} fell below the bar ${bar}, but a later pass kept each of them, so the bar kept out none. It kept out no part.` });
+    }
+
+    const rules = own.filter((candidate) => candidate.role === 'rule');
+    if (rules.length > 0 && input.ruleBar(id) > 0) {
+      const bar = input.ruleBar(id);
+      const scored = rules.filter((candidate) => input.scored.has(candidate));
+      const dropped = scored.filter((candidate) => input.belowBar.has(candidate)).length;
+      effects.push({ setting: 'ruleBar', source: id, actedOn: scored.length, added: 0, dropped,
+        summary: dropped > 0
+          ? `ruleBar on ${id}: of ${count(scored.length, 'scored rule')}, ${dropped} fell below the bar ${bar}.`
+          : `ruleBar on ${id}: no scored rule of ${scored.length} fell below the bar ${bar}, so the bar kept out none. It kept out no part.` });
+    }
+
+    for (const setting of ['searchLines', 'searchPhrases', 'meaning'] as const) {
+      if (read === undefined || !(read.given ?? read.lanes).includes(setting)) continue;
+      const held = own.filter((candidate) => candidate.searchRanks?.some((rank, index) =>
+        rank !== null && read.lanes[index] === setting) === true).length;
+      // The parts these lanes held inside their candidate limit, the only ones they could bring in.
+      const inLimit = own.filter((candidate) => [...input.laneHeld.get(candidate) ?? []]
+        .some((index) => read.lanes[index] === setting)).length;
+      const { reached, added } = opened(setting);
+      const head = `${setting} on ${id}: the lanes held ${count(held)}`;
+      const through = 'reached the decide step only through them';
+      effects.push({ setting, source: id, actedOn: held, added, dropped: ended ? null : 0,
+        summary: ended ? reachedOrEnded(head, through, reached, added, 'these lanes change its order')
+          : added > 0 ? `${head}; ${reached} ${through}, and ${keptOf(added)}.`
+            : reached > 0 ? `${head}; ${reached} ${through}, but none of them were kept. It added no part.`
+              : !read.lanes.includes(setting) ? `${setting} on ${id}: ${setting === 'searchLines'
+                ? 'every line was blank or repeated the task or an earlier line' : 'there was no text to search'
+              }, so no extra lane opened and they added none. It added no part.`
+                : held === 0 ? `${setting} on ${id}: the lanes held no part, so they added none. It added no part.`
+                : `${head}, but every part they held${inLimit < held ? ' inside the candidate limit' : ''} was also in another lane, so they added none. It added no part.` });
+    }
+
+    if (read?.wholeLanes === true) {
+      const past = own.filter((candidate) => candidate.pastLaneCut === true).length;
+      const pastInLimit = own.filter((candidate) => candidate.pastLaneCut === true && input.laneHeld.has(candidate)).length;
+      const { reached, added } = opened('wholeLanes');
+      const head = `wholeLanes on ${id}: read ${count(past)} past the lane cut`;
+      const through = 'reached the decide step only through the whole-lane read';
+      effects.push({ setting: 'wholeLanes', source: id, actedOn: past, added, dropped: ended ? null : 0,
+        summary: ended ? reachedOrEnded(head, through, reached, added, 'the whole-lane read changes its order')
+          : added > 0 ? `${head}; ${reached} ${through}, and ${keptOf(added)}.`
+            : reached > 0 ? `${head}; ${reached} ${through}, but none of them were kept. It added no part.`
+              : past === 0 ? `wholeLanes on ${id}: the read held no part past the lane cut, so it added none. It added no part.`
+                : pastInLimit === 0 ? `${head}, but every one of them lay past the candidate limit, so it added none. It added no part.`
+                  : `${head}, but each of them${pastInLimit < past ? ' inside the candidate limit' : ''} also had another way in, so it added none. It added no part.` });
+    }
+
+    // The link checks a part's role, repository and path, never its source's kind.
+    if (references.some((candidate) => candidate.path !== undefined && candidate.repository !== undefined)) {
+      const acted = own.filter((candidate) => input.linkActed.has(candidate)).length;
+      const added = own.filter((candidate) => {
+        const status = statuses.get(candidate);
+        return status?.status === 'selected' && status.link !== undefined;
+      }).length;
+      effects.push({ setting: 'linkedPathBar', source: id, actedOn: acted, added, dropped: 0,
+        summary: added > 0
+          ? `linkedPathBar on ${id}: ${count(acted)} fell below the bar but answered at or above the link bar ${input.linkedPathBar}, and ${keptOf(added)} through a selected part that changed its path.`
+          : `linkedPathBar on ${id}: no selected part's changed paths include the path of a part rejected at or above the link bar ${input.linkedPathBar}, so the link added none. It added no part.` });
+    }
+
+    if (input.topK !== undefined) {
+      const ranked = input.rankedBySource.get(id) ?? 0;
+      const left = input.cutBySource.get(id) ?? 0;
+      effects.push({ setting: 'everyRanked', source: id, actedOn: ranked, added: 0, dropped: null,
+        summary: left > 0
+          ? `everyRanked on ${id}: the cut (c ${input.topK}) kept ${ranked - left} of ${count(ranked, 'ranked part')} and left ${left} undecided.`
+          : `everyRanked on ${id}: the cut (c ${input.topK}) kept every one of ${count(ranked, 'ranked part')}, so it left 0 undecided.` });
+    }
+  }
+  return effects;
+}
+
 export async function pick(
   candidates: readonly MemoryCandidate[],
   options: PickOptions,
@@ -1014,6 +1271,8 @@ export async function pick(
 
   const lanes = queue.reduce((count, candidate) => Math.max(count, candidate.searchRanks?.length ?? 1), 1);
   const eligible = new Set<MemoryCandidate>();
+  // The lanes that held each eligible part inside their limit, for the record's `effects`.
+  const laneHeld = new Map<MemoryCandidate, Set<number>>();
   // With the label gate on, lane members a lane's candidate limit cut
   // are tracked, so the reason they were never asked stays 'limits'.
   const laneCut = new Set<MemoryCandidate>();
@@ -1024,7 +1283,10 @@ export async function pick(
       ...rankAndInterleave(rules.filter((c) => c.applies !== 'always' && present(c)), new Map(), lane, options.ranking),
       ...rankAndInterleave(references.filter(present), new Map(), lane, options.ranking),
     ];
-    for (const candidate of laneQueue.slice(0, limits.maxCandidates)) eligible.add(candidate);
+    for (const candidate of laneQueue.slice(0, limits.maxCandidates)) {
+      eligible.add(candidate);
+      laneHeld.set(candidate, (laneHeld.get(candidate) ?? new Set()).add(lane));
+    }
     if (labelsOn) {
       for (const candidate of laneQueue.slice(limits.maxCandidates)) laneCut.add(candidate);
     }
@@ -1223,6 +1485,10 @@ export async function pick(
   // decides what the decide step sees first.
   let labelRecord: PickRecord['labels'];
   let routeRecord: PickRecord['route'];
+  // The label lane and the kinds the task needed, by source, for the
+  // record's `effects`.
+  let labelLane: ReadonlySet<MemoryCandidate> = new Set();
+  const labelNeeds = new Map<string, readonly string[]>();
   // Label sets the store held or the decide port answered this pick.
   // The lane check below reads them; so does the unassessed reason at
   // the end, where a part with no entry was never resolved by the gate.
@@ -1372,6 +1638,8 @@ export async function pick(
     };
     const inLane = new Set(queue.filter((candidate) =>
       candidate.role === 'reference' && strength(candidate) >= LABEL_LANE_BAR));
+    labelLane = inLane;
+    for (const [id, set] of sourceSets) labelNeeds.set(id, set.needs);
     for (const candidate of inLane) eligible.add(candidate);
     feed = queue.filter((candidate) => eligible.has(candidate));
     if ([...sets.values()].some((set) => set.needs.length > 0)) {
@@ -1417,6 +1685,10 @@ export async function pick(
   // below the keep count is never asked and records 'unassessed' with
   // reason 'pick'.
   let pickRecord: PickRecord['pick'];
+  // Each source's ranked reference parts and how many the cut left
+  // undecided, for the record's `effects`.
+  const rankedBySource = new Map<string, number>();
+  const cutBySource = new Map<string, number>();
   if (dial) {
     const n = references.length;
     let kept: number;
@@ -1426,7 +1698,9 @@ export async function pick(
       feed = feed.filter((candidate) => {
         if (candidate.role !== 'reference') return true;
         rank += 1;
+        rankedBySource.set(candidate.sourceId, (rankedBySource.get(candidate.sourceId) ?? 0) + 1);
         if (rank <= bound) return true;
+        cutBySource.set(candidate.sourceId, (cutBySource.get(candidate.sourceId) ?? 0) + 1);
         statuses.set(candidate, { status: 'unassessed', reason: 'pick' });
         return false;
       });
@@ -1538,6 +1812,10 @@ export async function pick(
   const appliedReference = thresholds.referenceBySize === undefined
     ? undefined : sizeBar(thresholds.referenceBySize, decided);
   const referenceBar = (id: string) => appliedReference ?? barFor(id);
+  // The parts the selection pass scored, and those it scored below
+  // their bar, for the record's `effects`.
+  const scoredParts = new Set<MemoryCandidate>();
+  const belowBar = new Set<MemoryCandidate>();
   for (const candidate of feed) {
     // A failed decision batch leaves its candidates unanswered even
     // when an earlier batch answered some of their questions: a
@@ -1557,12 +1835,16 @@ export async function pick(
     if (answer.status === 'answered') {
       const threshold = candidate.role === 'rule' ? ruleBarFor(candidate.sourceId) : referenceBar(candidate.sourceId);
       const reused = answer.reused === true ? { reused: true } : {};
+      scoredParts.add(candidate);
+      if (answer.probability < threshold) belowBar.add(candidate);
       if (answer.probability >= threshold) {
         selected.push(candidate);
         statuses.set(candidate, { status: 'selected', asked: true, probability: answer.probability, ...reused });
       } else statuses.set(candidate, { status: 'rejected', probability: answer.probability, ...reused });
     } else statuses.set(candidate, { status: 'unanswered', answer: answer.status, detail: answer.detail });
   }
+  // A stop before this point left some of the feed undecided.
+  const feedStop = stop;
   // A queued part the feed never held was never asked a question. The
   // 'gate' reason names only the gate's own call: a reference part the
   // keyword lanes never held — not one a lane's candidate limit cut —
@@ -1586,6 +1868,8 @@ export async function pick(
   // never carry another; there is no recursion. The pass only adds: it never
   // demotes an ordinary selection and never lowers a threshold.
   const chosen = new Set(selected);
+  // Parts the link pass looked at, for the record's `effects`.
+  const linkActed = new Set<MemoryCandidate>();
   for (const candidate of candidates.filter(admitted)) {
     const status = statuses.get(candidate)!;
     if (status.status !== 'rejected'
@@ -1593,6 +1877,7 @@ export async function pick(
       || candidate.role !== 'reference'
       || candidate.path === undefined
       || candidate.repository === undefined) continue;
+    linkActed.add(candidate);
     const carrier = candidates.find((other) =>
       other !== candidate
       && other.role === 'reference'
@@ -1624,6 +1909,11 @@ export async function pick(
   // cleared the link bar, not the selection bar — and a pulled-in part
   // can never carry a link.
   const rarePulled = new Set<MemoryCandidate>();
+  // The round's rare words and pulled parts by source, and the parts it
+  // added, for the record's `effects`.
+  const rareSeeds = new Map<string, ReadonlySet<string>>();
+  let rareTaken: readonly MemoryCandidate[] = [];
+  const rareAdded = new Set<MemoryCandidate>();
   if (rareOn && !stop) {
     const wordSets = new Map<MemoryCandidate, ReadonlySet<string>>();
     const wordSet = (candidate: MemoryCandidate): ReadonlySet<string> => {
@@ -1656,6 +1946,7 @@ export async function pick(
         }
       }
       seedsBySource.set(id, seeds);
+      rareSeeds.set(id, seeds);
       rareRecord[id] = { n: own.length, words: [...seeds].sort() };
     }
     const pulled = references.filter((candidate) => {
@@ -1663,6 +1954,7 @@ export async function pick(
       return seeds !== undefined && statuses.get(candidate)?.status !== 'selected'
         && [...wordSet(candidate)].some((word) => seeds.has(word));
     });
+    rareTaken = pulled;
     // A pool member the queue never held carries no status; pulling one
     // in gives it the never-asked state a queued part starts from, and
     // `rarePulled` keeps it for the record the queue's members keep.
@@ -1701,6 +1993,7 @@ export async function pick(
       if (answer.probability >= rareBar) {
         selected.push(candidate);
         statuses.set(candidate, { status: 'selected', asked: true, probability: answer.probability, ...reused });
+        rareAdded.add(candidate);
         added += 1;
       } else if (status.status === 'unassessed') {
         statuses.set(candidate, { status: 'rejected', probability: answer.probability, ...reused });
@@ -1712,6 +2005,19 @@ export async function pick(
       asked, added,
     } };
   }
+
+  const effects = settingEffects({
+    candidates: candidates.filter((candidate) => admitted(candidate) || rarePulled.has(candidate)),
+    queue, feed, statuses, laneHeld, labelLane, labelNeeds, labels, labelKindsBySource,
+    rareSeeds, rareTaken, rareAdded, scored: scoredParts, belowBar, linkActed, rankedBySource, cutBySource,
+    reads: options.readsBySource ?? {},
+    bar: referenceBar, ruleBar: ruleBarFor, everyScored: options.everyScored !== undefined,
+    linkedPathBar: thresholds.linkedPathBar, rareBar, topK,
+    ended: [
+      ...(cutBySource.size > 0 ? [`a feed cut (everyRanked c ${topK})`] : []),
+      ...(feedStop === undefined ? [] : [`a stop (${feedStop})`]),
+    ],
+  });
 
   // Decision tags run on the kept references once relevance has
   // decided: they label the kept pieces for curation and never change
@@ -1783,6 +2089,7 @@ export async function pick(
       signals: candidate.signals,
       ...(candidate.searchRanks === undefined ? {} : { searchRanks: candidate.searchRanks }),
       ...(candidate.poolOnly === true ? { poolOnly: true } : {}),
+      ...(candidate.pastLaneCut === true ? { pastLaneCut: true as const } : {}),
       ...(options.rankProtection && candidate.role === 'reference' && status.status === 'selected'
         ? { orderScore: weight(candidate) } : {}),
       ...(representatives.has(candidate) ? { representative: representatives.get(candidate)!.id } : {}),
@@ -1852,6 +2159,7 @@ export async function pick(
       ...(candidates.some((c) => c.sourceId === id && c.role === 'rule') ? { ruleBar: ruleBarFor(id) } : {}),
       ...(questionsFor(id) === undefined ? {} : { questions: questionsFor(id) }),
     }])) },
+    effects,
   };
   if (decideFailure !== undefined) {
     throw new PickError(

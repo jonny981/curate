@@ -49,6 +49,11 @@ Four packages:
   chooses the curator's options per question). `everyScored` and `rare` set
   one value for every source in place of their own.
   The core README lists each lever's purpose and measured impact.
+- **Records say what each setting did.** Each pick and curate record
+  carries `effects`: one entry per setting that was on, per source, with the
+  parts it looked at, the kept parts it brought in or kept out, and one plain
+  sentence that says why when it changed nothing. A read with `wholeLanes`
+  on marks the parts past the lane cut with `pastLaneCut`.
 - **Unknown options are rejected.** `pick`, `pickFromSources` and `curate`
   throw a `TypeError` before any model call when an options object, or a
   nested one such as `thresholds` or `everyRanked`, holds a key Curate does

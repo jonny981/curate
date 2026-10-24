@@ -497,6 +497,35 @@ describe('streaming read', () => {
     expect(cut.candidates.every((candidate) => candidate.laneScore !== undefined)).toBe(true);
   });
 
+  it('marks the parts the cut would drop when a read keeps whole lanes', async () => {
+    const directory = await transcript('codex', [
+      message('codex', 'user', 'we said battery backup schedule decided'),
+      message('codex', 'assistant', 'we said unrelated breakfast'),
+      message('codex', 'user', 'we said battery cells degrade'),
+      message('codex', 'assistant', 'we said a fourth note'),
+    ]);
+    const embed = async (texts: readonly string[]) => texts.map((text) => (text.includes('battery') ? [1, 0] : [0, 1]));
+    const source = chat({ providers: ['codex'], paths: [directory] });
+    const lanes: CandidateReadRequest[] = [
+      { task: 'battery' },
+      { task: 'we said', phraseLane: true, topic: 'battery' },
+      { task: 'battery', meaningLane: { embed } },
+    ];
+    for (const lane of lanes) {
+      const [bare, cut, whole] = await Promise.all([undefined, false, true].map((wholeLanes) =>
+        source.read({ ...lane, ...(wholeLanes === undefined ? {} : { wholeLanes }) })));
+      if (bare?.status !== 'read' || cut?.status !== 'read' || whole?.status !== 'read') throw new Error('Expected a read');
+      // The same parts as a plain read, with the parts a cut read leaves out marked.
+      expect(whole.candidates.map((candidate) => candidate.id)).toEqual(bare.candidates.map((candidate) => candidate.id));
+      expect(bare.candidates.filter((candidate) => candidate.pastLaneCut !== undefined)).toEqual([]);
+      const kept = new Set(cut.candidates.map((candidate) => candidate.id));
+      expect(kept.size).toBeGreaterThan(0);
+      expect(kept.size).toBeLessThan(whole.candidates.length);
+      expect(whole.candidates.filter((candidate) => candidate.pastLaneCut === true).map((candidate) => candidate.id))
+        .toEqual(whole.candidates.filter((candidate) => !kept.has(candidate.id)).map((candidate) => candidate.id));
+    }
+  });
+
   it('serves a phrase lane by matching the exact phrase without scoring', async () => {
     const directory = await transcript('codex', [
       message('codex', 'user', 'we need to ship Friday'),

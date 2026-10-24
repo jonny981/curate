@@ -1,6 +1,6 @@
 import type { MemoryCandidate, PickRecordEntry, PickResult } from './pick.js';
 import type { CurateLeverStates } from './levers.js';
-import { classifyTask, type TaskKind } from './task.js';
+import { classifyTask, type RouteOption, type TaskKind } from './task.js';
 import { checkCurateOptions } from './options.js';
 
 export interface CuratePrompt {
@@ -64,6 +64,14 @@ export interface CurateOptions {
   readonly signal?: AbortSignal;
 }
 
+/** What one curate option did to the log. */
+export interface CurateSettingEffect {
+  readonly setting: string;
+  /** Log lines the option wrote; null when one curate call cannot tell. */
+  readonly lines: number | null;
+  readonly summary: string;
+}
+
 export interface CurateRecord {
   readonly promptVersion: 'v4';
   readonly weights: 'tiers';
@@ -115,6 +123,10 @@ export interface CurateRecord {
     readonly candidate: MemoryCandidate;
     readonly weight: number;
   }[];
+  /** What each curate option that was on did to the log. The pick's
+   *  own entries stay in the pick record. An option that was off has no
+   *  entry. */
+  readonly effects: readonly CurateSettingEffect[];
 }
 
 export interface CurateResult {
@@ -396,6 +408,77 @@ function reconcile(
   }
   const observations = before.flatMap((line, index) => [...slots[index]!, line.line]);
   return { log: [...observations, ...slots[before.length]!, ...rest].join('\n'), added, marks };
+}
+
+const lineCount = (n: number) => `${n} line${n === 1 ? '' : 's'}`;
+const listed = (names: readonly string[]) =>
+  names.length < 2 ? names.join('') : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`;
+
+/** One entry per curate option that was on, counted from the returned
+ *  log: worked-notes lines under the working heading, and preference
+ *  lines. `switched` names the options a route turned on that no
+ *  explicit option overrode. */
+function curateEffects(log: string, input: {
+  readonly options: CurateOptions;
+  readonly working: boolean;
+  readonly preferenceAdvice: boolean;
+  readonly preferenceChange: boolean;
+  readonly routed: readonly RouteOption[] | undefined;
+  readonly taskKinds: readonly TaskKind[] | undefined;
+  readonly logLength: number;
+}): CurateSettingEffect[] {
+  const { options } = input;
+  const lines = log.split('\n').map((line) => line.trim().replace(/^L\d+ /, '')).filter(Boolean);
+  const preference = (line: string) => line.startsWith('Advice preferences:') || line.startsWith('Changed preference:');
+  const heading = lines.findIndex((line) => line.replace(/^#{1,6}\s+/, '') === WORKING_HEADING);
+  const worked = heading === -1 ? 0 : lines.slice(heading + 1).filter((line) => !preference(line)).length;
+  const preferences = lines.filter(preference).length;
+  const wrote = (option: RouteOption) => option === 'working' ? worked : preferences;
+  const effects: CurateSettingEffect[] = [];
+  const routeEntry = (setting: 'route' | 'routeByTask', switched: readonly RouteOption[], by: string) => {
+    const written = (switched.includes('working') ? worked : 0)
+      + (switched.some((option) => option !== 'working') ? preferences : 0);
+    effects.push({ setting, lines: written, summary: switched.length === 0
+      ? `${setting}: ${by} switched on no option, so it added no line.`
+      : `${setting}: ${by} switched on ${listed(switched)}, which wrote ${lineCount(written)}.` });
+  };
+  if (input.routed !== undefined) {
+    routeEntry('route', input.routed.filter((option) => options[option] === undefined), 'the route answers');
+  }
+  if (input.taskKinds !== undefined) {
+    routeEntry('routeByTask', [
+      ...(options.working === undefined && input.taskKinds.some((kind) => kind === 'count' || kind === 'date')
+        ? ['working' as const] : []),
+      ...(options.preferenceAdvice === undefined && input.taskKinds.includes('advice') ? ['preferenceAdvice' as const] : []),
+    ], 'the task\'s words');
+  }
+  if (input.working) {
+    effects.push({ setting: 'working', lines: worked, summary: worked === 0
+      ? 'working: the curator wrote no worked notes, so it added no line.'
+      : `working: the curator wrote ${lineCount(worked)} of worked notes.` });
+  }
+  for (const setting of ['preferenceAdvice', 'preferenceChange'] as const) {
+    if (!input[setting]) continue;
+    effects.push({ setting, lines: wrote(setting), summary: preferences === 0
+      ? `${setting}: the curator wrote no preference lines, so it added no line.`
+      : `${setting}: the curator wrote ${preferences} preference line${preferences === 1 ? '' : 's'}`
+        + (input.preferenceAdvice && input.preferenceChange
+          ? '; preferenceAdvice and preferenceChange both write them, so this is their total.' : '.') });
+  }
+  if (options.contextLimit !== undefined) {
+    effects.push({ setting: 'contextLimit', lines: null, summary: input.logLength > options.contextLimit
+      ? `contextLimit: the log was ${input.logLength} characters, over the limit of ${options.contextLimit}, and ${log.length} after condensing.`
+      : `contextLimit: the log was ${input.logLength} characters, within the limit of ${options.contextLimit}, so it was not condensed.` });
+  }
+  if (options.context === true) {
+    effects.push({ setting: 'context', lines: null,
+      summary: 'context: it changes the curator\'s instructions, and one curate call cannot count which log lines that changed.' });
+  }
+  if (options.taskDate !== undefined) {
+    effects.push({ setting: 'taskDate', lines: null,
+      summary: 'taskDate: it adds the date to the task the curator reads, and one curate call cannot count which log lines that changed.' });
+  }
+  return effects;
 }
 
 /** Write the reference log. Selected rules remain the caller's instructions. */
@@ -711,6 +794,9 @@ export async function curate(
       ...(repairs ? { repairs } : {}),
       ...(emptyRetries ? { emptyRetries } : {}),
       ...(recovered ? { formatRecovery: { keptAsWritten: [...keptAsWritten], dropped: [...dropped] } } : {}),
+      effects: curateEffects(log, {
+        options, working, preferenceAdvice, preferenceChange, routed: routed?.on, taskKinds, logLength,
+      }),
     },
   };
 }

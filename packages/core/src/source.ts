@@ -1,8 +1,10 @@
-import type { CandidateSourceKind, MemoryCandidate, PickCascade, PickOptions, PickResult } from './pick.js';
+import type {
+  CandidateSourceKind, MemoryCandidate, PickCascade, PickOptions, PickResult, PickSourceRead, SearchLaneOrigin,
+} from './pick.js';
 import { DEFAULT_MAX_QUESTION_TEXT, pick } from './pick.js';
 import { phraseCount, stripSearchInstructions } from './search.js';
 import { addMeaningRanks, type MeaningSearchOptions } from './meaning.js';
-import { cutLane, laneScoreOf, type SearchLaneReport } from './lanes.js';
+import { cutLane, laneBend, laneScoreOf, type SearchLaneReport } from './lanes.js';
 import { checkCascade, checkCascadeKeys, checkPickOptions, checkReadRequest } from './options.js';
 import { LABEL_KINDS, type LabelKind } from './labels.js';
 
@@ -282,6 +284,59 @@ function searchTasks(request: CandidateReadRequest, kind: CandidateSource['kind'
   return tasks;
 }
 
+/** What a read with `wholeLanes` on returns for one source's lane: every
+ *  candidate, in its own order, with each one the lane cut would drop
+ *  marked `pastLaneCut`. The cut is `cutLane`'s, and a lane with no
+ *  positive score keeps nothing under the cut, so all of it is marked.
+ *  A mark the reader already set stays. */
+function markLaneCut(group: readonly MemoryCandidate[]): MemoryCandidate[] {
+  const matched = group.some((candidate) => laneScoreOf(candidate) > 0);
+  const bend = matched ? laneBend(group.map(laneScoreOf)) : undefined;
+  return group.map((candidate) => !matched || (bend !== undefined && laneScoreOf(candidate) <= bend)
+    ? { ...candidate, pastLaneCut: true } : candidate);
+}
+
+/** The candidate without a `pastLaneCut` mark. */
+function unmarked(candidate: MemoryCandidate): MemoryCandidate {
+  const { pastLaneCut: _pastLaneCut, ...rest } = candidate;
+  return rest;
+}
+
+/** The read request option each `searchRanks` position of a source's
+ *  read comes from: its search tasks, then one meaning lane per distinct
+ *  non-kind search text. */
+function laneOrigins(request: CandidateReadRequest, kind: CandidateSource['kind']): SearchLaneOrigin[] {
+  const tasks = searchTasks(request, kind);
+  const origins = tasks.map(({ lane }, index): SearchLaneOrigin => lane === 'search'
+    ? (index === 0 ? 'task' : 'searchLines') : lane === 'phrase' ? 'searchPhrases' : 'kindLanes');
+  const queries = new Set(tasks.filter(({ lane }) => lane !== 'kind').map(({ task }) => task.trim()).filter(Boolean));
+  return request.meaning ? [...origins, ...[...queries].map((): SearchLaneOrigin => 'meaning')] : origins;
+}
+
+/** One lane's candidates with their `pastLaneCut` marks settled. Only a
+ *  reference source read with `wholeLanes` on keeps marks (`marking`).
+ *  A search lane the reader did not cut itself is marked here, keeping
+ *  any mark the reader set; a phrase lane is never cut, so it holds no
+ *  mark; a kind lane keeps the reader's marks. */
+function laneMarks(
+  candidates: readonly MemoryCandidate[],
+  marking: boolean,
+  lane: SearchTask['lane'],
+  readerCut: boolean,
+): MemoryCandidate[] {
+  if (!marking || lane === 'phrase') return candidates.map(unmarked);
+  if (lane === 'kind' || readerCut) return [...candidates];
+  const groups = new Map<string, MemoryCandidate[]>();
+  for (const candidate of candidates) {
+    const group = groups.get(candidate.sourceId);
+    if (group === undefined) groups.set(candidate.sourceId, [candidate]);
+    else group.push(candidate);
+  }
+  const marked = new Map([...groups.values()].flatMap((group) =>
+    markLaneCut(group).map((candidate, index) => [group[index]!, candidate] as const)));
+  return candidates.map((candidate) => marked.get(candidate)!);
+}
+
 /** Exact-match filter shared by phrase and kind lanes: candidates
  *  whose text or title contains the lane's phrase at least once. In a
  *  kind lane with `speakerOnly`, chat candidates also need the 'user'
@@ -325,6 +380,7 @@ async function readKeywordSearches(
   const tasks = searchTasks(request, source.kind);
   // The cut applies to keyword lanes on reference sources only.
   const laneCut = request.wholeLanes !== true && source.role === 'reference';
+  const marking = request.wholeLanes === true && source.role === 'reference';
   if (tasks.length === 1) {
     const read = await source.read({ ...request, task: tasks[0]!.task, wholeLanes: !laneCut }, context);
     const report = {
@@ -334,6 +390,7 @@ async function readKeywordSearches(
     if (read.status !== 'read') return read;
     if (!laneCut || read.laneCutApplied === true) {
       return { ...read, lanes: [{ ...report, kept: read.candidates.length }],
+        candidates: laneMarks(read.candidates, marking, 'search', read.laneCutApplied === true),
         ...(laneCut && read.candidates.length === 0 ? { noSearchMatch: true } : {}) };
     }
     const groups = new Map<string, MemoryCandidate[]>();
@@ -353,7 +410,8 @@ async function readKeywordSearches(
       ...(kept.length === 0 ? { noSearchMatch: true } : {}) };
   }
 
-  const union = new Map<string, { candidate: MemoryCandidate; ranks: (number | null)[]; best: number }>();
+  // `past` holds while every lane that holds the candidate holds it past the lane cut.
+  const union = new Map<string, { candidate: MemoryCandidate; ranks: (number | null)[]; best: number; past: boolean }>();
   const reasons = new Set<string>();
   const absent = new Set<string>();
   const reports: SearchLaneReport[] = [];
@@ -396,7 +454,7 @@ async function readKeywordSearches(
       reasons.add(read.partial ?? `search ${lane + 1} did not enumerate completely`);
     }
     const groups = new Map<string, MemoryCandidate[]>();
-    for (const candidate of read.candidates) {
+    for (const candidate of laneMarks(read.candidates, marking, kind, read.laneCutApplied === true)) {
       const group = groups.get(candidate.sourceId);
       if (group === undefined) groups.set(candidate.sourceId, [candidate]);
       else group.push(candidate);
@@ -425,12 +483,14 @@ async function readKeywordSearches(
         const value = read.revision === undefined || candidate.sourceRevision !== undefined
           ? candidate : { ...candidate, sourceRevision: read.revision };
         const existing = union.get(key);
+        const past = candidate.pastLaneCut === true;
         if (existing === undefined) {
           const ranks = Array<number | null>(tasks.length).fill(null);
           ranks[lane] = rank;
-          union.set(key, { candidate: value, ranks, best: rank });
+          union.set(key, { candidate: value, ranks, best: rank, past });
         } else {
           existing.ranks[lane] = rank;
+          existing.past &&= past;
           if (rank < existing.best) {
             existing.best = rank;
             existing.candidate = value;
@@ -448,7 +508,8 @@ async function readKeywordSearches(
   return {
     status: 'read', complete,
     ...(resolvedRevision === undefined ? {} : { revision: resolvedRevision }),
-    candidates: [...union.values()].map(({ candidate, ranks }) => ({ ...candidate, searchRanks: ranks })),
+    candidates: [...union.values()].map(({ candidate, ranks, past }) =>
+      ({ ...unmarked(candidate), searchRanks: ranks, ...(past ? { pastLaneCut: true as const } : {}) })),
     lanes: reports,
     ...(noSearchMatch ? { noSearchMatch: true } : {}),
     ...(reasons.size === 0 ? {} : { partial: [...reasons].join('; ') }),
@@ -464,6 +525,7 @@ async function readSearches(
   if (found.status !== 'read' || (!request.meaning && request.labelPool === undefined)) return found;
   const tasks = searchTasks(request, source.kind);
   const laneCut = request.wholeLanes !== true && source.role === 'reference';
+  const marking = request.wholeLanes === true && source.role === 'reference';
   // The uncut, unlimited primary-search pool, fetched at most once and
   // shared by the label pool merge and the scored meaning path: a lane
   // cut or a read limit must not hide candidates from either.
@@ -493,7 +555,7 @@ async function readSearches(
     for (const candidate of full.candidates) {
       const key = JSON.stringify([candidate.sourceId, candidate.id]);
       if (!union.has(key) && candidate.role === 'reference') {
-        union.set(key, { ...candidate, searchRanks: undefined, poolOnly: true });
+        union.set(key, { ...unmarked(candidate), searchRanks: undefined, poolOnly: true });
       }
     }
     const partial = [read.partial, full.partial].filter(Boolean).join('; ');
@@ -599,7 +661,11 @@ async function readSearches(
           ranks[lane] = rank;
           const value = laneRead.revision === undefined || candidate.sourceRevision !== undefined
             ? candidate : { ...candidate, sourceRevision: laneRead.revision };
-          union.set(key, { ...(existing !== undefined && bestRank(existing.searchRanks) <= rank ? existing : value), searchRanks: ranks });
+          // Past the cut only while every lane holding it holds it past the cut; a pool member holds no lane.
+          const past = marking && candidate.pastLaneCut === true
+            && (existing === undefined || existing.poolOnly === true || existing.pastLaneCut === true);
+          union.set(key, { ...unmarked(existing !== undefined && bestRank(existing.searchRanks) <= rank ? existing : value),
+            searchRanks: ranks, ...(past ? { pastLaneCut: true as const } : {}) });
           kept += 1;
         });
       }
@@ -643,17 +709,19 @@ async function readSearches(
     }
     for (const candidate of full.candidates) {
       const key = JSON.stringify([candidate.sourceId, candidate.id]);
-      if (!keyword.has(key)) keyword.set(key, { ...candidate, searchRanks: Array(tasks.length).fill(null) });
+      if (!keyword.has(key)) keyword.set(key, { ...unmarked(candidate), searchRanks: Array(tasks.length).fill(null) });
     }
     candidates = [...keyword.values()];
     complete = read.complete && full.complete;
     if (full.partial) partial = [partial, full.partial].filter(Boolean).join('; ');
   }
-  const meaningful = await addMeaningRanks(candidates, tasks[0]!.task, {
+  const scoredMeaning = await addMeaningRanks(candidates, tasks[0]!.task, {
     ...request.meaning, wholeLanes: request.meaning.wholeLanes ?? !laneCut,
     searchLines: queries.filter((query) => query !== tasks[0]!.task.trim()),
     ...(request.signal === undefined ? {} : { signal: request.signal }),
   });
+  // Only a reference source read with `wholeLanes` on keeps the meaning lanes' marks.
+  const meaningful = marking ? scoredMeaning : scoredMeaning.map(unmarked);
   const pool = new Set(candidates.map((candidate) => JSON.stringify([candidate.sourceId, candidate.id]))).size;
   for (const [offset, query] of queries.entries()) {
     lanes.push({ task: query, lane: 'meaning', read: pool,
@@ -778,16 +846,28 @@ export async function pickFromSources(
         return left === null ? right : right === null ? left : Math.min(left, right);
       });
       const chosen = bestRank(candidate) < bestRank(existing) ? candidate : existing;
+      const past = existing.pastLaneCut === true && candidate.pastLaneCut === true ? { pastLaneCut: true as const } : {};
       // A merged candidate still needs at least one lane rank.
       unique.set(key, ranks.some((rank) => rank !== null)
-        ? { ...chosen, searchRanks: ranks }
-        : { ...chosen, searchRanks: undefined });
+        ? { ...unmarked(chosen), searchRanks: ranks, ...past }
+        : { ...unmarked(chosen), searchRanks: undefined, ...past });
     }
     combined = [...unique.values()];
   }
+  const readsBySource: Record<string, PickSourceRead> = Object.create(null);
+  for (const [index, read] of reads.entries()) {
+    if (read.status !== 'read') continue;
+    // A source whose role is not 'reference' is never cut, so whole lanes do not apply to it.
+    const sourceRead = { lanes: laneOrigins(request, sources[index]!.kind),
+      given: (['searchLines', 'searchPhrases', 'meaning'] as const).filter((option) =>
+        option === 'meaning' ? Boolean(request.meaning) : (request[option] ?? []).some((line) => line.trim() !== '')),
+      wholeLanes: request.wholeLanes === true && sources[index]!.role === 'reference' };
+    readsBySource[sources[index]!.id] = sourceRead;
+    for (const candidate of read.candidates) readsBySource[candidate.sourceId] = sourceRead;
+  }
   const result = await pick(combined, {
     ...options, rulesEnumerationComplete, sourceKinds, labelKindsBySource, rareBySource, barBySource, ruleBarBySource,
-    questionsBySource,
+    questionsBySource, readsBySource,
   });
   // The read request's lever joins the pick's resolved set.
   // `meaning.wholeLanes` resolves the

@@ -278,6 +278,9 @@ export function git(
         const pathspec = named.map((name) => (name === '' ? '.' : name));
         const now = Date.now();
         const cut = request.wholeLanes === false;
+        // With `wholeLanes` on a lane read keeps every commit and marks
+        // each one the cut would have dropped.
+        const mark = request.wholeLanes === true;
 
         // With no exclusions the log pages carry bodies: a bare read keeps
         // them for its candidates, a lane-cut read measures each page's
@@ -376,12 +379,12 @@ export function git(
           const order = admitted.map((_, index) => index)
             .sort((a, b) => (similarities[b] ?? 0) - (similarities[a] ?? 0)
               || `commit ${admitted[a]!.short}`.localeCompare(`commit ${admitted[b]!.short}`));
-          const bend = cut ? laneBend(order.map((index) => similarities[index]!)) : undefined;
+          const bend = cut || mark ? laneBend(order.map((index) => similarities[index]!)) : undefined;
           // A cut lane where nothing scored above zero matched nothing:
           // it keeps no parts rather than fetch every body.
-          const kept = bend === undefined
-            ? (cut && !order.some((index) => similarities[index]! > 0) ? [] : order)
-            : order.filter((index) => similarities[index]! > bend);
+          const matched = order.some((index) => similarities[index]! > 0);
+          const passes = (index: number) => bend === undefined ? matched : similarities[index]! > bend;
+          const kept = cut ? order.filter(passes) : order;
           // `limit` carries the caller's `nearest` cap: it slices the
           // kept set after the curve, not the enumeration before it.
           const limited = request.limit === undefined ? kept : kept.slice(0, request.limit);
@@ -408,6 +411,7 @@ export function git(
               repository: options.repository ?? toplevel,
               signals: { similarity: similarities[index]! },
               laneScore: similarities[index]!,
+              ...(mark && !passes(index) ? { pastLaneCut: true as const } : {}),
             })),
             complete: !limitedReads,
             matched: admitted.length,
@@ -459,8 +463,9 @@ export function git(
             .sort((left, right) => laneSum(right) - laneSum(left)
               || `commit ${left.commit.short}`.localeCompare(`commit ${right.commit.short}`));
           // The curve sees every match; `limit` slices what it keeps.
-          const bend = cut ? laneBend(ranked.map(laneSum)) : undefined;
-          const curveKept = bend === undefined ? ranked : ranked.filter((entry) => laneSum(entry) > bend);
+          const bend = cut || mark ? laneBend(ranked.map(laneSum)) : undefined;
+          const passes = (entry: (typeof ranked)[number]) => bend === undefined || laneSum(entry) > bend;
+          const curveKept = cut ? ranked.filter(passes) : ranked;
           const limitedByCount = request.limit !== undefined && curveKept.length > request.limit;
           const kept = limitedByCount ? curveKept.slice(0, request.limit) : curveKept;
           for (let start = 0; start < kept.length; start += BODY_PAGE) {
@@ -484,6 +489,7 @@ export function git(
               repository: options.repository ?? toplevel,
               signals: { ...entry.signals, phrase: entry.count },
               laneScore: laneSum(entry),
+              ...(mark && !passes(entry) ? { pastLaneCut: true as const } : {}),
             })),
             complete: !limitedByCount,
             ...(cut ? { laneCutApplied: true as const, matched: phrases.length } : {}),
@@ -676,10 +682,16 @@ export function git(
           };
         }
 
+        // With `wholeLanes` on, each commit the signal-sum cut would have
+        // dropped is marked; the read still keeps commit order.
+        const scopedSignals = scoped.map(signals);
+        const sums = scopedSignals.map((commitSignals) => signalSum({ signals: commitSignals }));
+        const bend = mark ? laneBend(sums) : undefined;
         return {
           status: 'read' as const,
           revision: sha,
-          candidates: scoped.map((commit) => emit(commit, signals(commit))),
+          candidates: scoped.map((commit, index) => ({ ...emit(commit, scopedSignals[index]!),
+            ...(bend !== undefined && sums[index]! <= bend ? { pastLaneCut: true as const } : {}) })),
           complete: !truncated,
           ...(partial === undefined ? {} : { partial }),
         };

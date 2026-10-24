@@ -91,6 +91,11 @@ for (const [source, questions] of [
   assert.deepEqual(result.record.levers.sources[source.id].questions, questions, source.id);
   assert.equal(result.reads[0].status, 'read');
 }
+const effectSources = [chat({ providers: ['claude-code'], paths: ['transcripts'] }), git('.'), knowledgeBase('notes')];
+const effects = await pickFromSources(effectSources, { task: 'Recall encrypted backups' }, { task: 'Recall encrypted backups', decide });
+assert.ok(Array.isArray(effects.record.effects));
+assert.deepEqual(effectSources.map(source => effects.record.effects
+  .filter(entry => entry.setting === 'bar' && entry.source === source.id).length), effectSources.map(() => 1));
 assert.deepEqual([chatSettings, gitSettings, markdownSettings, rulesSettings].map(s => [s.rare, s.labels, s.bar, s.ruleBar]),
   [[false, true, 0.0146, undefined], [true, false, 0.0146, undefined], [true, false, 0.0146, undefined], [true, false, 0.0146, 0]]);
 assert.deepEqual(chat({ paths: ['transcripts'] }).labelKinds, LABEL_KINDS);

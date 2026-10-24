@@ -17,14 +17,17 @@ export function parts(sourceId: string, rareWord: string, crowd = ''): MemoryCan
   }));
 }
 
-/** A source with the given settings; its keyword lanes return the first 60 parts, a whole-lane read all 400. */
+/** A source with the given settings; its keyword lanes return the first 60 parts, a whole-lane read all 400,
+ *  with the parts past the first 60 marked as past the lane cut. */
 export function fixtureSource(id: 'chat' | 'git' | 'markdown', pool: readonly MemoryCandidate[],
   settings: { rare: boolean; labelKinds?: readonly LabelKind[] }): CandidateSource {
   return {
     id, kind: id === 'git' ? 'git-history' : id, role: 'reference', rare: settings.rare,
     ...(settings.labelKinds === undefined ? {} : { labelKinds: settings.labelKinds }),
     read: async (request) => ({ status: 'read', complete: true, laneCutApplied: true,
-      candidates: request.wholeLanes ? pool : pool.slice(0, 60) }),
+      candidates: request.wholeLanes
+        ? pool.map((part, index) => index < 60 ? part : { ...part, pastLaneCut: true as const })
+        : pool.slice(0, 60) }),
   };
 }
 

@@ -855,6 +855,31 @@ describe('git', () => {
   });
 });
 
+it('marks the commits the cut would drop when a read keeps whole lanes', async () => {
+  const directory = await repository(['battery backup decided', 'unrelated breakfast', 'battery cells degrade', 'a fourth note']
+    .map((subject, index) => ({ subject: `we said ${subject}`, date: '2026-10-01T10:00:00Z', files: { [`f${index}.md`]: subject } })));
+  const embed = async (texts: readonly string[]) => texts.map((text) => (text.includes('battery') ? [1, 0] : [0, 1]));
+  const source = gitSource(directory);
+  const lanes = [
+    { task: 'battery' },
+    { task: 'we said', phraseLane: true, topic: 'battery' },
+    { task: 'battery', meaningLane: { embed } },
+  ];
+  for (const lane of lanes) {
+    const [bare, cut, whole] = await Promise.all([undefined, false, true].map((wholeLanes) =>
+      source.read({ ...lane, ...(wholeLanes === undefined ? {} : { wholeLanes }) })));
+    if (bare?.status !== 'read' || cut?.status !== 'read' || whole?.status !== 'read') throw new Error('Expected a read');
+    // The same parts as a plain read, with the parts a cut read leaves out marked.
+    expect(whole.candidates.map((candidate) => candidate.id)).toEqual(bare.candidates.map((candidate) => candidate.id));
+    expect(bare.candidates.filter((candidate) => candidate.pastLaneCut !== undefined)).toEqual([]);
+    const kept = new Set(cut.candidates.map((candidate) => candidate.id));
+    expect(kept.size).toBeGreaterThan(0);
+    expect(kept.size).toBeLessThan(whole.candidates.length);
+    expect(whole.candidates.filter((candidate) => candidate.pastLaneCut === true).map((candidate) => candidate.id))
+      .toEqual(whole.candidates.filter((candidate) => !kept.has(candidate.id)).map((candidate) => candidate.id));
+  }
+});
+
 it('allows a host to override commit keyword weights', async () => {
   const directory = await repository([{ subject: 'backup evidence', files: { 'backup.md': 'backup' } }]);
   const result = await read(gitSource(directory, { keyword: { sharedWordCap: 0 } }), { task: 'backup evidence' });

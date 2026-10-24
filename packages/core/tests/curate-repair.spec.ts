@@ -15,6 +15,7 @@ function picked(items: MemoryCandidate[]): PickResult {
       questionVersion: 'test', limits: {},
       thresholds: { linkedPathBar: 0 }, rulesCoverage: 'complete',
       levers: { everyRanked: true, everyScored: true, route: false, rare: false, sources: {} },
+      effects: [],
       candidates: items.map((item, index) => ({
         sourceId: item.sourceId, id: item.id, role: item.role, priority: index,
         signals: item.signals, status: 'selected' as const, asked: true, probability: 0.9,

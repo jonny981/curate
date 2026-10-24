@@ -1141,12 +1141,15 @@ function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 'rules'
           .sort((left, right) => (simOf.get(right) ?? 0) - (simOf.get(left) ?? 0)
             || (parts[left]!.id < parts[right]!.id ? -1 : parts[left]!.id > parts[right]!.id ? 1 : 0));
         const cut = request.wholeLanes === false;
-        const bend = cut ? laneBend(order.map((index) => simOf.get(index) ?? 0)) : undefined;
+        // With `wholeLanes` on the read keeps every part and marks each
+        // one the cut would have dropped.
+        const mark = request.wholeLanes === true;
+        const bend = cut || mark ? laneBend(order.map((index) => simOf.get(index) ?? 0)) : undefined;
         // A cut lane where nothing scored above zero matched nothing:
         // it keeps no parts rather than read back every body.
-        const keptAll = bend === undefined
-          ? (cut && !order.some((index) => (simOf.get(index) ?? 0) > 0) ? [] : order)
-          : order.filter((index) => (simOf.get(index) ?? 0) > bend);
+        const matched = order.some((index) => (simOf.get(index) ?? 0) > 0);
+        const passes = (index: number) => bend === undefined ? matched : (simOf.get(index) ?? 0) > bend;
+        const keptAll = cut ? order.filter(passes) : order;
         // `limit` carries the caller's `nearest` cap: it slices the kept
         // set after the curve, not the enumeration before it.
         const kept = limit === undefined ? keptAll : keptAll.slice(0, limit);
@@ -1173,6 +1176,7 @@ function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 'rules'
               byIndex.set(index, {
                 ...emit(meta, part, { similarity }),
                 laneScore: similarity,
+                ...(mark && !passes(index) ? { pastLaneCut: true as const } : {}),
               });
             }
           }
@@ -1303,13 +1307,16 @@ function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 'rules'
       // caps what the score curve keeps.
       const pool = kindLane || limit === undefined ? laneRanked : laneRanked.slice(0, limit);
       const cut = request.wholeLanes === false;
-      const bend = cut ? laneBend(pool.map((index) => sums[index]!)) : undefined;
+      // With `wholeLanes` on the read keeps every part and marks each one
+      // the cut would have dropped.
+      const mark = request.wholeLanes === true;
+      const bend = cut || mark ? laneBend(pool.map((index) => sums[index]!)) : undefined;
       // A cut keyword lane where nothing scored above zero matched
       // nothing: it keeps no parts rather than read back every body. A
       // kind lane still keeps its phrase matches, scored or not.
-      const curveKept = bend === undefined
-        ? (cut && !kindLane && !pool.some((index) => sums[index]! > 0) ? [] : pool)
-        : pool.filter((index) => sums[index]! > bend);
+      const matched = kindLane || pool.some((index) => sums[index]! > 0);
+      const passes = (index: number) => bend === undefined ? matched : sums[index]! > bend;
+      const curveKept = cut ? pool.filter(passes) : pool;
       const kept = kindLane && limit !== undefined ? curveKept.slice(0, limit) : curveKept;
       const limitBase = kindLane ? curveKept.length : laneRanked.length;
 
@@ -1344,7 +1351,10 @@ function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 'rules'
             if (meta.location > 0) signals['instruction-location'] = meta.location;
             if (scores[index] !== 0) signals['bm25'] = scores[index]!;
             if (kindLane) signals['phrase'] = descriptor.phrased!;
-            const candidate = emit(meta, part, signals);
+            const candidate = {
+              ...emit(meta, part, signals),
+              ...(mark && !passes(index) ? { pastLaneCut: true as const } : {}),
+            };
             byIndex.set(index, kindLane ? { ...candidate, laneScore: sums[index]! } : candidate);
           }
         }

@@ -21,7 +21,7 @@ const PICK_OPTION_KEYS: readonly (keyof PickOptions)[] = [
   'ranking', 'task', 'decide', 'questionsBySource', 'sourceKinds', 'labelKindsBySource',
   'keepTop', 'rankProtection', 'bestPartFirst', 'tags', 'tagsByKind',
   'labels', 'cache', 'route', 'everyRanked', 'everyScored', 'rare', 'rareBySource',
-  'barBySource', 'ruleBarBySource', 'rulesEnumerationComplete', 'limits', 'thresholds', 'signal',
+  'barBySource', 'ruleBarBySource', 'rulesEnumerationComplete', 'readsBySource', 'limits', 'thresholds', 'signal',
 ];
 const THRESHOLD_KEYS: readonly (keyof PickThresholds)[] = ['linkedPathBar'];
 const LIMIT_KEYS: readonly (keyof PickLimits)[] = [

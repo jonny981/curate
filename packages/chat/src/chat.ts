@@ -325,12 +325,15 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           const order = ids.map((_, index) => index)
             .sort((a, b) => (similarities[b] ?? 0) - (similarities[a] ?? 0) || ids[a]!.localeCompare(ids[b]!));
           const cut = request.wholeLanes === false;
-          const bend = cut ? laneBend(order.map((index) => similarities[index]!)) : undefined;
+          // With `wholeLanes` on the read keeps every part and marks each
+          // one the cut would have dropped.
+          const mark = request.wholeLanes === true;
+          const bend = cut || mark ? laneBend(order.map((index) => similarities[index]!)) : undefined;
           // A cut lane where nothing scored above zero matched nothing:
           // it keeps no parts rather than read back every body.
-          const kept = bend === undefined
-            ? (cut && !order.some((index) => similarities[index]! > 0) ? [] : order)
-            : order.filter((index) => similarities[index]! > bend);
+          const matched = order.some((index) => similarities[index]! > 0);
+          const passes = (index: number) => bend === undefined ? matched : similarities[index]! > bend;
+          const kept = cut ? order.filter(passes) : order;
           // `limit` carries the caller's `nearest` cap: it slices the
           // kept set after the curve, not the enumeration before it.
           const limited = request.limit === undefined ? kept : kept.slice(0, request.limit);
@@ -355,6 +358,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
                 chat: { provider: part.provider, sessionId: part.sessionId, role: part.role },
                 date: { value: new Date(part.date).toISOString(), meaning: 'recorded' },
                 signals: { similarity: similarities[index]! }, laneScore: similarities[index]!,
+                ...(mark && !passes(index) ? { pastLaneCut: true as const } : {}),
               });
             }
           }
@@ -423,9 +427,13 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           const order = matchedIndexes
             .sort((a, b) => base[at.get(b)!]! - base[at.get(a)!]! || ids[a]!.localeCompare(ids[b]!));
           const cut = request.wholeLanes === false;
+          // With `wholeLanes` on the read keeps every match and marks each
+          // one the cut would have dropped.
+          const mark = request.wholeLanes === true;
           // The curve sees every match; `limit` slices what it keeps.
-          const bend = cut ? laneBend(order.map((index) => base[at.get(index)!]!)) : undefined;
-          const curveKept = bend === undefined ? order : order.filter((index) => base[at.get(index)!]! > bend);
+          const bend = cut || mark ? laneBend(order.map((index) => base[at.get(index)!]!)) : undefined;
+          const passes = (index: number) => bend === undefined || base[at.get(index)!]! > bend;
+          const curveKept = cut ? order.filter(passes) : order;
           const kept = request.limit === undefined ? curveKept : curveKept.slice(0, request.limit);
           const wanted = new Map<number, Set<number>>();
           for (const index of kept) {
@@ -450,6 +458,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
                 date: { value: new Date(part.date).toISOString(), meaning: 'recorded' },
                 signals: { keyword: scores[position]!, phrase: matchOf.get(index)! },
                 laneScore: base[position]!,
+                ...(mark && !passes(index) ? { pastLaneCut: true as const } : {}),
               });
             }
           }
@@ -534,10 +543,13 @@ export function chat(options: ChatOptions = {}): CandidateSource {
         // cut lane where nothing scored above zero matched nothing: it
         // keeps no parts rather than read back every body.
         const cut = request.wholeLanes === false;
-        const bend = cut ? laneBend(limited.map((index) => base[index]!)) : undefined;
-        const kept = bend === undefined
-          ? (cut && !limited.some((index) => base[index]! > 0) ? [] : limited)
-          : limited.filter((index) => base[index]! > bend);
+        // With `wholeLanes` on the read keeps every part and marks each
+        // one the cut would have dropped.
+        const mark = request.wholeLanes === true;
+        const bend = cut || mark ? laneBend(limited.map((index) => base[index]!)) : undefined;
+        const matched = limited.some((index) => base[index]! > 0);
+        const passes = (index: number) => bend === undefined ? matched : base[index]! > bend;
+        const kept = cut ? limited.filter(passes) : limited;
         const wanted = new Map<number, Set<number>>();
         for (const index of kept) {
           const file = partFile[index]!;
@@ -559,6 +571,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
               chat: { provider: part.provider, sessionId: part.sessionId, role: part.role },
               date: { value: new Date(part.date).toISOString(), meaning: 'recorded' },
               signals: { keyword: scores[index]! }, laneScore: base[index]!,
+              ...(mark && !passes(index) ? { pastLaneCut: true as const } : {}),
             });
           }
         }

@@ -1169,6 +1169,108 @@ const picked = await pickFromSources(sources, { task }, { task, decide });
 
 A direct `pick()` takes the same settings by source id: `labelKindsBySource`, `rareBySource`, `barBySource`, `ruleBarBySource` and `questionsBySource`.
 
+## What each setting did
+
+`levers` says which settings were on. `effects` says what each one did.
+Each pick record and each curate record carries an `effects` list.
+A pick entry names one setting that was on and the source it acted on.
+It counts the parts the setting looked at and the kept parts it brought in or kept out.
+When the setting brought in nothing and kept out nothing, its sentence says why.
+A setting that was off has no entry, and every count comes from the one pick that ran.
+
+A part reaches the decide step by one or more ways in: the task's own keyword lane, an extra lane (a search line, a phrase or a meaning query), the label lane, a whole-lane read past the lane cut, the rare-word round, or the commit-to-note link.
+A setting that opens a way in counts a kept part as `added` only when that was the part's only way in and neither the link nor the rare-word round kept it.
+A part two ways brought in counts for neither.
+A lane is a way in only for the parts inside its candidate limit (`maxCandidates`).
+A search line that repeats the task opens no lane, and its entry says so.
+
+| Setting | Entry when | `actedOn` | `added` | `dropped` |
+| --- | --- | --- | --- | --- |
+| `labels` | The source carries label kinds | The source's parts labelled this pick, asked or reused from the store | Kept parts whose only way in was the label lane | 0. The gate never removes a part a lane holds. `null` when a feed cut or a stop ended the feed early |
+| `rare` | The round ran on the source | Parts the round pulled in | Pulled parts that joined the selection | 0 |
+| `searchLines`, `searchPhrases`, `meaning` | The read request gave that option | Parts those lanes held | Kept parts whose only way in was those lanes | 0, or `null` when a feed cut or a stop ended the feed early |
+| `wholeLanes` | `read.wholeLanes` is on | Parts read past the lane cut | Kept parts whose only way in was the whole-lane read | 0, or `null` when a feed cut or a stop ended the feed early |
+| `linkedPathBar` | The pick holds a reference part with a `path` and a `repository` | Reference parts rejected below their bar but at or above the link bar, with a `path` and a `repository` | Parts kept through the link | 0 |
+| `bar` | Always, for a source with reference parts | The source's scored reference parts | 0 | Scored parts below the bar that no later pass kept. The changed-path link and the rare-word round can still keep a part below the bar |
+| `ruleBar` | The source has rule parts and a bar above 0 | The source's scored rules | 0 | Rules below the bar |
+| `everyScored` | The call gave the override | As `bar`; it replaces the source's `bar` entry | 0 | As `bar` |
+| `everyRanked` | The call gave `{ c }` | Ranked parts | 0 | `null`. The summary says how many parts the cut left undecided |
+
+Labels, extra lanes and `wholeLanes` also change the order of the decide feed.
+That order matters only when something ends the feed early: an `everyRanked: { c }` cut or a stopping limit.
+Then one of these settings can swap one kept part for another even when every part had two ways in.
+One pick cannot say which parts would have been decided without the setting, so `dropped` is `null` and the summary says the feed ended early.
+
+To know which parts lie past the lane cut, a read with `wholeLanes` on still finds the cut.
+It marks each part that every lane holding it holds past the cut with `pastLaneCut: true`.
+The mark is on the part and on its pick entry, and the read returns the same parts as before.
+
+### Reading a record
+
+A direct `pick()` over every part of a 400-part chat history, with labels on, decides every part.
+Labels had nothing to add:
+
+```json
+{
+  "setting": "labels",
+  "source": "chat",
+  "actedOn": 400,
+  "added": 0,
+  "dropped": 0,
+  "summary": "labels on chat: labelled 400 parts, but every part was already going to the decide step, so labels added none. It added no part."
+}
+```
+
+The same history through `pickFromSources`, where the keyword lane holds 60 parts, gives the label lane parts to add:
+
+```json
+{
+  "setting": "labels",
+  "source": "chat",
+  "actedOn": 400,
+  "added": 56,
+  "dropped": 0,
+  "summary": "labels on chat: labelled 400 parts; 70 reached the decide step only through the label lane, and 56 of them were kept."
+}
+```
+
+A benchmark or tuning run should check `effects` before it pays for answers.
+A setting with `added` and `dropped` both 0, not `null`, brought in no part and kept out none.
+It may still have changed the order of the kept parts, and the curator sees that order.
+To prove that two arms gave the curator the same input, compare their kept parts in order, or their curator prompts.
+
+### Curate's entries
+
+A curate record's `effects` covers `curate`'s own options; the pick's entries stay in the pick record.
+
+| Option | Entry when | `lines` |
+| --- | --- | --- |
+| `route` | `route: 'jev'` applied | Lines written by the options it switched on; the summary names them |
+| `routeByTask` | It is on | As `route` |
+| `working` | On, set directly or by a route | Lines in the worked-notes section |
+| `preferenceAdvice`, `preferenceChange` | On | Preference lines in the log. Both options write them, so with both on each entry gives the total and says so |
+| `contextLimit` | Set | `null`. The summary gives the log's length before and after, or says the log was within the limit |
+| `context`, `taskDate` | On or set | `null`. They change what the curator is told, and one call cannot count which lines that changed |
+
+```json
+{
+  "setting": "working",
+  "lines": 3,
+  "summary": "working: the curator wrote 3 lines of worked notes."
+}
+```
+
+### Record fields
+
+- **`PickRecord.effects`:** a `PickSettingEffect[]`, one entry per setting that was on, per source it applied to.
+- **`PickSettingEffect`:** `setting`, the setting's name as a caller writes it; `source`, the source the counts are for; `actedOn`, the parts it looked at; `added`, the kept parts kept only because of it; `dropped`, the parts kept out only because of it, or `null` when one pick cannot tell; and `summary`, one plain sentence.
+- **`CurateRecord.effects`:** a `CurateSettingEffect[]` for `curate`'s own options.
+- **`CurateSettingEffect`:** `setting`; `lines`, the log lines the option wrote, or `null` when one curate call cannot tell; and `summary`.
+- **`pastLaneCut`:** on a part and its `PickRecordEntry`, true when a read with `wholeLanes` on returned the part although the lane cut would have dropped it.
+
+`pickFromSources` tells `pick` how each source was read through the `readsBySource` option: the option each `searchRanks` position came from, the extra-lane options the read request gave, and whether the read kept whole lanes.
+A direct `pick` without it gets no extra-lane or `wholeLanes` entries.
+
 ## Optional evidence limits
 
 The defaults decide every candidate admitted by keyword matches and show its full text.

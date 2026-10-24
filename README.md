@@ -164,6 +164,7 @@ A setting on one source never changes what Curate picks from another, with one e
 - **Questions:** the yes/no questions the decision model answers about each reference part, with fitted weights that combine the answers into its score.
 
 The pick record names the settings each source ran with under `levers.sources`, such as `{ kind: 'chat', labels: true, rare: false, bar: 0.0146 }`, with `questions` holding the question set its parts were asked.
+Each pick and curate record's `effects` list says what each setting changed: the parts it brought in or kept out, and why when it changed nothing ([what each setting did](packages/core/README.md#what-each-setting-did)).
 
 These levers act on the whole call:
 

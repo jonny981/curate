@@ -33,6 +33,7 @@ function picked(items = [candidate('notes#2', '2023-05-20')], weights = [0.9]): 
       questionVersion: 'test', limits: {},
       thresholds: { linkedPathBar: 0 }, rulesCoverage: 'complete',
       levers: { everyRanked: true, everyScored: true, route: false, rare: false, sources: {} },
+      effects: [],
       candidates: items.map((item, index) => ({
         sourceId: item.sourceId, id: item.id, role: item.role, priority: index,
         signals: item.signals, status: 'selected', asked: true, probability: weights[index]!,

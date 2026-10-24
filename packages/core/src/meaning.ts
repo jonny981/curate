@@ -59,6 +59,9 @@ export async function addMeaningRanks(
   const keywordLanes = unique.reduce((count, candidate) => Math.max(count, candidate.searchRanks?.length ?? 1), 1);
   const ranks = unique.map((candidate) => Array.from({ length: keywordLanes + queries.length }, (_, lane) =>
     lane < keywordLanes ? candidate.searchRanks?.[lane] ?? null : null));
+  // With `wholeLanes` on, whether every meaning lane that holds a part
+  // holds it past the cut; undefined while no meaning lane holds it.
+  const pastMeaning: (boolean | undefined)[] = unique.map(() => undefined);
   const groups = new Map<string, number[]>();
   unique.forEach((candidate, index) => {
     const group = groups.get(candidate.sourceId);
@@ -82,6 +85,7 @@ export async function addMeaningRanks(
       const kept = options.wholeLanes === true ? order.length : curve;
       order.slice(0, Math.min(options.nearest ?? kept, kept)).forEach((index, rank) => {
         ranks[index]![keywordLanes + lane] = rank;
+        if (options.wholeLanes === true) pastMeaning[index] = (pastMeaning[index] ?? true) && rank >= curve;
       });
     });
   }
@@ -90,8 +94,11 @@ export async function addMeaningRanks(
       // A pool member no lane ranked stays pool-only for the label lane.
       return candidate.poolOnly === true ? [candidate] : [];
     }
-    // A lane rank ends pool-only membership.
-    const { poolOnly: _poolOnly, ...rest } = candidate;
-    return [{ ...rest, searchRanks: ranks[index]! }];
+    // A lane rank ends pool-only membership. A part is past the cut
+    // while every lane holding it, keyword or meaning, holds it past.
+    const { poolOnly: _poolOnly, pastLaneCut: keywordPast, ...rest } = candidate;
+    const keywordHeld = ranks[index]!.slice(0, keywordLanes).some((rank) => rank !== null);
+    const past = keywordHeld ? keywordPast === true && pastMeaning[index] !== false : pastMeaning[index] === true;
+    return [{ ...rest, searchRanks: ranks[index]!, ...(past ? { pastLaneCut: true as const } : {}) }];
   });
 }
