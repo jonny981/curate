@@ -2,7 +2,7 @@ import { asSourceReadError } from '@curatejs/core/internal';
 import { describe, expect, it } from 'vitest';
 
 import { curate, decisionFileStore, DEFAULT_MAX_QUESTION_TEXT, historySource, LABEL_KINDS, LABEL_LANE_BAR, LABEL_QUESTION_VERSION, pick, PICK_QUESTION_VERSION, pickFromSources, SourceReadError, type CandidateSource, type CurateOptions, type CurateRecord, type CurateResult, type CurateWrite, type DecisionStore, type HistorySettings, type LeverStates, type MemoryCandidate, type PickCache, type PickLabels, type PickOptions, type PickThresholds, type SourceSettings } from '@curatejs/core';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { chat, CHAT_CASCADE, chatSettings, type ChatOptions, type ChatProvider } from '@curatejs/chat';
@@ -149,6 +149,14 @@ describe('package exports', () => {
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
+  });
+
+  it('exports the one Jev request builder, which the skill imports instead of keeping its own', async () => {
+    const { jevRequest } = await import('@curatejs/core');
+    expect(jevRequest({ task: 'task', questions: [] })).toEqual({ model: 'jev-latest', state: 'task', questions: {} });
+    const skill = readFileSync(join(__dirname, '../skills/curate/run.mjs'), 'utf8');
+    expect(skill).not.toContain('function jevRequest');
+    expect(skill.split('\n').find((line) => line.includes("from '@curatejs/core'"))).toContain('jevRequest');
   });
 });
 

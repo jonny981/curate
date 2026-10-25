@@ -72,7 +72,10 @@ const decide = jev({ apiKey: process.env.TYPESAFE_API_KEY });
 const write = chatWriter({ apiKey: process.env.CHAT_API_KEY, model: 'gpt-5-mini' });
 ```
 
-- **Jev:** `jev({ apiKey, model? })` returns a `PickDecide` function for TypeSafe's System One endpoint, with `deciderId: typesafe:${model}`. The model defaults to `'jev-latest'`. Missing or invalid probabilities become missing answers.
+- **Jev:** `jev({ apiKey, model? })` returns a `PickDecide` function for TypeSafe's System One endpoint, with `deciderId: typesafe:${model}:items-once`. The model defaults to `'jev-latest'`. Missing or invalid probabilities become missing answers.
+- **What a Jev request holds:** the request's state is the batch's task, then each item once, numbered, with its id, date, title and text. Each question's instructions are its wording, then the number of its item, so an item asked seven questions is sent once. `jevRequest(batch, model?)`, exported from `@curatejs/core`, builds that body.
+- **Jev request size:** Jev documents its limits in tokens: 32,000 for the state plus the longest question, and 64,000 for the whole request. At an estimate of three characters a token, `jev()` splits a batch into several requests so that in each one the state plus its longest question's instructions and criteria is at most 96,000 characters, and the whole request body at most 192,000. An item's questions always go in its item's request, and an item larger than those bounds goes alone. The answers come back as one map for the batch, and a failed request fails the batch.
+- **Labels and decisions stored by an older `jev()`:** they are keyed by its earlier ID, `typesafe:${model}`, so `jev()` asks for them once more. A pick that sets `labels.deciderId`, or a decision cache with its own `deciderId`, keeps its stored entries.
 - **OpenAI Decisions:** `openAIDecisions({ apiKey, model? })` returns a `PickDecide` function for the [Decisions API](https://developers.openai.com/api/docs/guides/decisions), with `deciderId: openai:${model}`. The model defaults to `'gpt-6-luna'`. Predicate answers become probabilities; refusals become `{ status: 'refused' }`. Missing or invalid probabilities become missing answers.
 - **Chat writer:** `chatWriter({ apiKey, model, url? })` returns a `CurateWrite` function. The URL defaults to OpenAI's Chat Completions endpoint. Set `url` for another provider using that format. Empty text passes through for later batches that add no observations; Curate checks the log itself.
 - **Errors:** All factories reject a missing API key. HTTP failures and missing writer text throw. Cancellation reaches `fetch`.
@@ -711,7 +714,7 @@ const picked = await pick(candidates, {
 ```
 
 `PickDecide` accepts an optional `deciderId` property.
-The built-in helpers use `typesafe:${model}` and `openai:${model}`.
+The built-in helpers use `typesafe:${model}:items-once` and `openai:${model}`.
 An explicit `labels.deciderId` overrides the function's ID.
 A handwritten function without an ID uses `'custom'`.
 Different handwritten decision functions must supply different IDs to keep their saved labels apart.
@@ -726,6 +729,16 @@ part text reuses the stored set and asks nothing. A changed part,
 labelled again. A missing, corrupt or wrong-shaped
 file is a miss, and a refused, missing or errored answer is never
 stored.
+
+Picks running at the same time in one Node process share label work.
+When a pick needs a part's labels that another pick is already asking for,
+from the same label directory, kind set, `questionVersion` and `deciderId`,
+it waits for that answer instead of asking again. When that answer fails,
+a stop leaves the part unasked, or the asking pick's `signal` aborts
+while its decide call is still running, one waiting pick asks for the
+part itself and any other waiting pick waits for it. A wait ends at the waiting pick's own `signal` and `maxElapsedMs`.
+Picks in separate processes do not share: each asks for the labels it
+has not found in the store.
 
 The task answers each distinct kind set once, and its sets are stored the
 same way under the task's own keys: a later pick over the same task text
@@ -748,7 +761,8 @@ The record's `labelKindsBySource` lists the full kind definitions applied
 to each source, or `[]` when it carries none.
 The record's `labels` field keeps the question-set version, the
 `deciderId`, how many items' labels the decide port was asked, how many
-were reused from the store, the gate's size, and `failedWrites`, how
+were reused from the store, `waited`, how many parts' labels came from
+another pick's request in flight (left out when 0), the gate's size, and `failedWrites`, how
 many label sets the store could not write. A failed write keeps the
 answers for this pick, adds one `warning` to `labels`, and the next pick
 asks for that set again. A reference part the keyword lanes never

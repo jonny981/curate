@@ -6,7 +6,7 @@
 // would send. The script prints that request for the first three
 // questions and ends with a standalone `input tokens: N` line for the
 // whole file. N sums each captured request's Jev wire JSON, built by
-// the repo's adapter (jevRequest in skills/curate/run.mjs) and
+// core's request builder (jevRequest in @curatejs/core) and
 // estimated at four characters per token.
 //
 //   node tools/prove-route.mjs --dry-run <questions.jsonl>
@@ -30,8 +30,7 @@ if (flag !== '--dry-run' || !questionsFile || process.argv.length !== 4) {
   process.exit(2);
 }
 const root = dirname(fileURLToPath(import.meta.url));
-const { pick, ROUTE_QUESTIONS } = await import(pathToFileURL(join(root, '../packages/core/dist/index.js')).href);
-const { jevRequest } = await import(pathToFileURL(join(root, '../skills/curate/run.mjs')).href);
+const { jevRequest, pick, ROUTE_QUESTIONS } = await import(pathToFileURL(join(root, '../packages/core/dist/index.js')).href);
 const routeKeys = new Set(ROUTE_QUESTIONS.map((route) => route.key));
 
 const questions = [];

@@ -7,11 +7,11 @@ import { join, resolve } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { LABEL_KINDS, curate, historySource, pickFromSources, type CandidateReadRequest, type CandidateSource, type MemoryCandidate } from '@curatejs/core';
+import { LABEL_KINDS, curate, historySource, jevRequest, pickFromSources, type CandidateReadRequest, type CandidateSource, type MemoryCandidate } from '@curatejs/core';
 import { chat, CHAT_CASCADE, chatSettings } from '@curatejs/chat';
 import { git as gitSource } from '@curatejs/git';
 // @ts-expect-error The standalone JavaScript command has no type declarations.
-import { allowedSession, curationEvidence, decisionAnswers, instructionsProfile, jevRequest, pickFullSources, rankMatches, parseArgs, parseSearches, parseSources, run, sandboxAvailable, searchSource, sessionHeader, snapshotCodex, subscription } from '../skills/curate/run.mjs';
+import { allowedSession, curationEvidence, decisionAnswers, instructionsProfile, pickFullSources, rankMatches, parseArgs, parseSearches, parseSources, run, sandboxAvailable, searchSource, sessionHeader, snapshotCodex, subscription } from '../skills/curate/run.mjs';
 
 const uncutPick = { everyRanked: true, everyScored: true, rare: false } as const;
 
@@ -359,7 +359,7 @@ it('passes caller decision limits such as maxBatchChars through to the pick', as
 it('sends each item’s evidence in the Jev state once and names the item in each question', () => {
   const question = (key: string, id: string, text: string, wording: string) => ({
     key, sourceId: 'commits', id, title: `title of ${id}`, text,
-    date: { value: '2026-01-01', meaning: 'recorded' }, role: 'reference',
+    date: { value: '2026-01-01', meaning: 'recorded' as const }, role: 'reference' as const,
     question: wording, trueCriterion: 'yes', falseCriterion: 'no',
   });
   const batch = {

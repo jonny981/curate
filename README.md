@@ -336,7 +336,7 @@ import { openAIDecisions } from '@curatejs/core/models';
 const decide = openAIDecisions({ apiKey: process.env.OPENAI_API_KEY });
 ```
 
-The helpers identify their label answers as `typesafe:${model}` and `openai:${model}`.
+The helpers identify their label answers as `typesafe:${model}:items-once` and `openai:${model}`.
 For a handwritten `decide`, set its `deciderId` property.
 An explicit `pick.labels.deciderId` overrides the function's ID.
 Without an ID it uses `'custom'`, so different handwritten decision functions must supply different IDs to keep their saved labels apart.

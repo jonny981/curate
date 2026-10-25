@@ -67,6 +67,12 @@ Four packages:
   nested one such as `thresholds` or `everyRanked`, holds a key Curate does
   not know. The error names the key's path and the keys allowed there, and a
   key from an earlier draft of the levers names the option that replaced it.
+- **Labels cost one copy of each part.** `jev()` sends each item once per
+  request, in the state, and each question names its item by number. It
+  splits a batch into several requests to keep each one inside Jev's
+  documented limits, estimated at three characters a token. Picks running at the same time in one process ask for
+  each part's labels once, and `labels.waited` counts the parts a pick took
+  from another pick's request in flight.
 - **An optional decision cache** stores each answered decision per part, so
   a resumed run, a rerun or a repeated question asks only for what changed.
 - **Short item ids in curator prompts.** The curator sees and cites short

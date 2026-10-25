@@ -4,7 +4,7 @@ import { copyFile, mkdir, readFile, readdir, realpath, writeFile } from 'node:fs
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { curate, pickFromSources } from '@curatejs/core';
+import { curate, jevRequest, pickFromSources } from '@curatejs/core';
 import { chat, CHAT_CASCADE, CHAT_SEARCH_LINE_REGISTER } from '@curatejs/chat';
 import { git, GIT_HISTORY_CASCADE, GIT_SEARCH_LINE_REGISTER } from '@curatejs/git';
 import { knowledgeBase, MARKDOWN_CASCADE, MARKDOWN_SEARCH_LINE_REGISTER } from '@curatejs/markdown';
@@ -115,31 +115,6 @@ export function parseSearches(value) {
     }
   }
   return value;
-}
-
-// The request's state carries each item's evidence once, however many
-// of the item's questions the batch holds; a question names the item it
-// asks about by its number in the state.
-export function jevRequest(batch) {
-  const items = new Map();
-  for (const question of batch.questions) {
-    const key = `${question.sourceId}\n${question.id}`;
-    if (!items.has(key)) items.set(key, question);
-  }
-  const numbers = new Map([...items.keys()].map((key, index) => [key, index + 1]));
-  const number = (question) => numbers.get(`${question.sourceId}\n${question.id}`);
-  const state = [batch.task, ...[...items.values()].map((question) =>
-    `Item ${number(question)}: ${question.id}${question.date === undefined ? ''
-      : ` (${question.date.meaning} ${question.date.value})`}\n${question.title}\n\n${question.text}`)].join('\n\n');
-  return {
-    model: 'jev-latest',
-    state,
-    questions: Object.fromEntries(batch.questions.map((question, index) => [`q${index}`, {
-      type: 'noul',
-      instructions: `${question.question}\n\nItem ${number(question)}`,
-      criteria: { true: question.trueCriterion, false: question.falseCriterion },
-    }])),
-  };
 }
 
 export function decisionAnswers(batch, raw) {

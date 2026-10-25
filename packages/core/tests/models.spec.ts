@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { jev, openAIDecisions, chatWriter } from '../src/models.js';
-import type { PickBatch } from '../src/pick.js';
+import { LABEL_KINDS, labelPartQuestion } from '../src/labels.js';
+import type { PickBatch, PickQuestion } from '../src/pick.js';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -29,7 +30,7 @@ const batch: PickBatch = {
 
 describe('decider identity', () => {
   it.each([
-    { name: 'Jev', create: jev, model: 'jev-latest', id: 'typesafe:jev-latest' },
+    { name: 'Jev', create: jev, model: 'jev-latest', id: 'typesafe:jev-latest:items-once' },
     { name: 'OpenAI Decisions', create: openAIDecisions, model: 'gpt-6-luna', id: 'openai:gpt-6-luna' },
   ])('keeps $name identity across API keys and changes it with the model', ({ create, model, id }) => {
     const fetch = reply({});
@@ -53,7 +54,7 @@ describe('decider identity', () => {
 });
 
 describe('jev', () => {
-  it('sends evidence and criteria under safe question names and restores the caller keys', async () => {
+  it('sends the item in the state, criteria under safe question names, and restores the caller keys', async () => {
     const fetch = reply({ model: 'jev-latest', answers: { q0: { type: 'noul', noul: 0.8 } } });
     const signal = new AbortController().signal;
     const answers = await jev({ apiKey: 'test-key' })(batch, signal);
@@ -67,11 +68,11 @@ describe('jev', () => {
     });
     expect(JSON.parse(String(fetch.mock.calls[0]![1]!.body))).toEqual({
       model: 'jev-latest',
-      state: 'What billing constraint applies?',
+      state: 'What billing constraint applies?\n\nItem 1: /docs/billing.md#1 (recorded 2026-01-12)\nBilling\n\nPreserve the order currency.',
       questions: {
         q0: {
           type: 'noul',
-          instructions: 'Does this help?\n\nEvidence: {"sourceId":"docs","id":"/docs/billing.md#1","role":"reference","kind":"docs","date":{"value":"2026-01-12","meaning":"recorded"},"title":"Billing","text":"Preserve the order currency."}',
+          instructions: 'Does this help?\n\nItem 1',
           criteria: { true: 'It helps.', false: 'It does not help.' },
         },
       },
@@ -107,6 +108,103 @@ describe('jev', () => {
     reply(body);
     await expect(jev({ apiKey: 'test-key' })(batch, new AbortController().signal))
       .resolves.toEqual({ '/docs/billing.md#1:relevant': { status: 'missing' } });
+  });
+});
+
+/** A fetch stub that keeps each request body and answers every question it names. */
+function answering() {
+  const bodies: string[] = [];
+  vi.stubGlobal('fetch', vi.fn<typeof globalThis.fetch>().mockImplementation(async (_url, init) => {
+    const body = String(init!.body);
+    bodies.push(body);
+    const sent = JSON.parse(body) as { questions: Record<string, unknown> };
+    return Response.json({ answers: Object.fromEntries(Object.keys(sent.questions).map((name) => [name, { noul: 0.5 }])) });
+  }));
+  return bodies;
+}
+
+/** A part asked the seven label kinds, as a pick asks it. */
+function labelled(index: number, text: string): PickQuestion[] {
+  const id = `chat:claude-code:/sessions/${String(index).padStart(4, '0')}`.padEnd(120, 'x');
+  return LABEL_KINDS.map((kind) => ({
+    key: JSON.stringify(['chat', id, kind.key]), questionKey: kind.key, role: 'reference' as const,
+    ...labelPartQuestion(kind), sourceId: 'chat', id, title: `part ${index}`, text,
+    date: { value: '2026-01-12', meaning: 'recorded' },
+  }));
+}
+
+type JevBody = {
+  state: string;
+  questions: Record<string, { instructions: string; criteria: { true: string; false: string } }>;
+};
+
+describe('jev request size', () => {
+  it('sends each part once, in the state, and each question names its item', async () => {
+    const texts = [0, 1].map((index) => `text of part ${index} `.repeat(50).slice(0, 700));
+    const bodies = answering();
+    await jev({ apiKey: 'test' })({ task: 'Label the parts.', questions: texts.flatMap((text, index) => labelled(index, text)) },
+      new AbortController().signal);
+
+    expect(bodies).toHaveLength(1);
+    const body = JSON.parse(bodies[0]!) as JevBody;
+    for (const text of texts) {
+      expect(bodies[0]!.split(text)).toHaveLength(2);
+      expect(body.state).toContain(text);
+    }
+    const questions = Object.values(body.questions);
+    expect(questions).toHaveLength(14);
+    for (const [index, question] of questions.entries()) {
+      for (const text of texts) expect(question.instructions).not.toContain(text);
+      expect(question.instructions).toMatch(new RegExp(`\\nItem ${index < 7 ? 1 : 2}$`));
+    }
+
+    const twenty = answering();
+    await jev({ apiKey: 'test' })({ task: 'Label the parts.', questions: Array.from({ length: 20 }, (_, index) =>
+      labelled(index, `text of part ${index} `.repeat(50).slice(0, 700))).flat() }, new AbortController().signal);
+    console.log(`20 parts asked seven label kinds: ${twenty.length} request(s), body ${twenty.reduce((sum, body) => sum + body.length, 0)} characters`);
+  });
+
+  /** What a request's state plus its longest question hold, in characters. */
+  const stateAndLongest = (body: JevBody) => body.state.length + Math.max(...Object.values(body.questions)
+    .map((q) => q.instructions.length + q.criteria.true.length + q.criteria.false.length));
+
+  it('splits a batch so each request stays inside the bounds and keeps an item with its questions', async () => {
+    const texts = Array.from({ length: 20 }, (_, index) => `${String(index).padStart(2, '0')} ${'long part text '.repeat(700)}`.slice(0, 10_000));
+    expect(texts.join('').length).toBe(200_000);
+    const batch: PickBatch = { task: 'Label the parts.', questions: texts.flatMap((text, index) => labelled(index, text)) };
+    const bodies = answering();
+    const answers = await jev({ apiKey: 'test' })(batch, new AbortController().signal);
+
+    expect(bodies.length).toBeGreaterThanOrEqual(3);
+    for (const raw of bodies) {
+      const body = JSON.parse(raw) as JevBody;
+      expect(stateAndLongest(body)).toBeLessThanOrEqual(96_000);
+      expect(raw.length).toBeLessThanOrEqual(192_000);
+    }
+    for (const [index, text] of texts.entries()) {
+      const holding = bodies.filter((raw) => (JSON.parse(raw) as JevBody).state.includes(text));
+      expect(holding).toHaveLength(1);
+      const body = JSON.parse(holding[0]!) as JevBody;
+      const segments = body.state.split('\n\n');
+      const item = /^Item (\d+):/.exec(segments[segments.indexOf(text) - 1]!)![1];
+      const named = Object.values(body.questions).filter((q) => q.instructions.endsWith(`\nItem ${item}`));
+      expect(named.map((q) => q.instructions.split('\n\n')[0]), `part ${index}`)
+        .toEqual(LABEL_KINDS.map((kind) => labelPartQuestion(kind).question));
+    }
+    expect(Object.keys(answers).sort()).toEqual(batch.questions.map((q) => q.key).sort());
+    expect(Object.values(answers).every((answer) => answer.status === 'answered')).toBe(true);
+  });
+
+  it('sends an item larger than the bound alone', async () => {
+    const big = 'x'.repeat(120_000);
+    const bodies = answering();
+    await jev({ apiKey: 'test' })({ task: 'Label the parts.', questions: [...labelled(0, big), ...labelled(1, 'small')] },
+      new AbortController().signal);
+    expect(bodies).toHaveLength(2);
+    const first = JSON.parse(bodies[0]!) as JevBody;
+    expect(first.state).toContain(big);
+    expect(first.state).not.toContain('small');
+    expect(Object.keys(first.questions)).toHaveLength(7);
   });
 });
 

@@ -1,5 +1,5 @@
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
 import {
   LABEL_KINDS, LABEL_LANE_BAR, LABEL_PARTS_TASK, LABEL_QUESTION_VERSION,
@@ -401,6 +401,9 @@ export interface PickRecord {
     readonly deciderId: string;
     readonly asked: number;
     readonly reused: number;
+    /** Parts whose labels came from another pick in this process that
+     *  was asking for them at the same time. Absent when 0. */
+    readonly waited?: number;
     readonly gate: number;
     readonly failedWrites: number;
     readonly warning?: string;
@@ -676,6 +679,15 @@ export const PICK_QUESTION_VERSION = 'memory-pick-questions-1';
  *  tens of thousands of parts, and an open per part in one moment can
  *  pass the process's file limit; reads run in groups of this size. */
 const LABEL_STORE_READ_GROUP = 64;
+/** Part labels a pick in this process is asking for, by the label
+ *  store's directory and the part's label key. A pick that needs a
+ *  part another pick is asking for waits for that answer instead of
+ *  asking again. An entry settles with nothing when the store already
+ *  held the labels, its answer failed, a stop left it unasked or its
+ *  pick was cancelled, and the waiter then reads the store or asks
+ *  itself. It is removed once
+ *  settled. */
+const labelsInFlight = new Map<string, Promise<PartLabels | undefined>>();
 const DEFAULT_MAX_PER_BATCH = 150;
 /** The bar for a source that declares none cuts scored references below
  *  0.0146: the highest cut that lost no answer message in the
@@ -1644,6 +1656,7 @@ export async function pick(
     }
     let asked = 0;
     let reused = 0;
+    let waited = 0;
     let failedWrites = 0;
     let writeError: unknown;
     for (const set of sets.values()) {
@@ -1659,67 +1672,126 @@ export async function pick(
         else group.push(item);
       }
       const misses: { key: string; items: MemoryCandidate[] }[] = [];
-      const keyed = [...byKey];
-      for (let index = 0; index < keyed.length; index += LABEL_STORE_READ_GROUP) {
-        const entries = await Promise.all(keyed.slice(index, index + LABEL_STORE_READ_GROUP)
-          .map(async ([key, items]) => ({ key, items, stored: storedLabels(await store.get(key), set.kinds) })));
-        for (const { key, items, stored } of entries) {
-          if (stored === undefined) misses.push({ key, items });
-          else {
-            reused += 1;
-            for (const item of items) labels.set(item, stored);
+      const flight = (key: string) => `${resolve(labelOptions.directory)}\n${key}`;
+      const settles = new Map<string, (value: PartLabels | undefined) => void>();
+      const askParts = (partMisses: typeof misses) => ask(partMisses.flatMap(({ items }) => set.kinds.map((kind) => {
+        const candidate = items[0]!;
+        const item = pending(candidate, { key: kind.key, ...labelPartQuestion(kind) });
+        return { ...item, question: { ...item.question,
+          key: JSON.stringify([candidate.sourceId, candidate.id, kind.key]),
+          questionKey: kind.key, text: candidate.text } };
+      })), labelAnswers, chat ? LABEL_PARTS_TASK
+        : 'Label short excerpts from source material. Each question names one item.');
+      const keep = async (answeredMisses: typeof misses) => {
+        for (const { key, items } of answeredMisses) {
+          const answers = set.kinds.map((kind) => labelAnswers.get(items[0]!)?.get(kind.key));
+          // Incomplete sets are retried, never stored as complete labels.
+          if (!answers.every((answer) => answer?.status === 'answered')) continue;
+          const value = Object.fromEntries(set.kinds.map((kind, index) =>
+            [kind.key, (answers[index] as { readonly probability: number }).probability]));
+          for (const item of items) labels.set(item, value);
+          try {
+            await store.set(key, { labels: value });
+          } catch (error) {
+            failedWrites += 1;
+            writeError ??= error;
           }
         }
-      }
-      if (!stop && misses.some(({ items }) => items[0] === set.task)) {
-        const withRoute: boolean = options.route === 'jev' && !routeAskedWithLabels;
-        const withTypes: boolean = answerTypesBar !== undefined && !typesAskedWithLabels;
-        await ask([
-          ...set.kinds.map((kind) => ({
-            candidate: set.task,
-            spec: { key: kind.key, ...labelTaskQuestion(kind, chat) },
-            question: {
-              key: JSON.stringify(chat ? [set.task.sourceId, set.task.id, kind.key]
-                : [set.task.sourceId, set.task.id, 'label', set.key, kind.key]),
-              questionKey: kind.key, role: 'reference' as const,
-              ...labelTaskQuestion(kind, chat),
-              sourceId: set.task.sourceId, id: set.task.id,
-              title: set.task.title, text: set.task.text,
-            },
-          })),
-          // Routes have their own answer item, even when a kind has the same key.
-          ...(withRoute ? ROUTE_QUESTIONS.map(routePending) : []),
-          ...(withTypes ? ANSWER_TYPES.map(answerPending) : []),
-        ], labelAnswers, labelQuestionTask(options.task), withRoute || withTypes);
-        routeAskedWithLabels ||= withRoute;
-        typesAskedWithLabels ||= withTypes;
-      }
-      const partMisses = misses.filter(({ items }) => items[0] !== set.task);
-      if (!stop && partMisses.length > 0) {
-        await ask(partMisses.flatMap(({ items }) => set.kinds.map((kind) => {
-          const candidate = items[0]!;
-          const item = pending(candidate, { key: kind.key, ...labelPartQuestion(kind) });
-          return { ...item, question: { ...item.question,
-            key: JSON.stringify([candidate.sourceId, candidate.id, kind.key]),
-            questionKey: kind.key, text: candidate.text } };
-        })), labelAnswers, chat ? LABEL_PARTS_TASK
-          : 'Label short excerpts from source material. Each question names one item.');
+      };
+      const keyed = [...byKey].map(([key, items]) => ({ key, items }));
+      let round = keyed;
+      while (round.length > 0) {
+        // Before any wait, a part another pick is asking for is joined and
+        // every other part is entered as this pick's, so no pick that
+        // finishes meanwhile is asked again. A part whose entry settled
+        // with nothing goes round again and is joined or entered afresh.
+        const waits: { key: string; items: MemoryCandidate[]; labels: Promise<PartLabels | undefined> }[] = [];
+        const own = round.filter(({ key, items }) => {
+          if (items[0] === set.task) return true;
+          const asking = labelsInFlight.get(flight(key));
+          if (asking !== undefined) {
+            waits.push({ key, items, labels: asking });
+            return false;
+          }
+          labelsInFlight.set(flight(key), new Promise((settle) => settles.set(key, (value) => {
+            settles.delete(key);
+            labelsInFlight.delete(flight(key));
+            settle(value);
+          })));
+          return true;
+        });
+        const roundMisses: typeof misses = [];
+        // A cancelled pick releases its entries at once, even while a
+        // decide call that ignores the signal is still running.
+        const release = () => { for (const settle of [...settles.values()]) settle(undefined); };
+        signal.addEventListener('abort', release, { once: true });
+        try {
+          for (let index = 0; index < own.length; index += LABEL_STORE_READ_GROUP) {
+            const entries = await Promise.all(own.slice(index, index + LABEL_STORE_READ_GROUP)
+              .map(async ({ key, items }) => ({ key, items, stored: storedLabels(await store.get(key), set.kinds) })));
+            for (const { key, items, stored } of entries) {
+              if (stored === undefined) roundMisses.push({ key, items });
+              else {
+                reused += 1;
+                for (const item of items) labels.set(item, stored);
+                // A waiter reads the stored labels itself and counts them as reused.
+                settles.get(key)?.(undefined);
+              }
+            }
+          }
+          misses.push(...roundMisses);
+          if (!stop && roundMisses.some(({ items }) => items[0] === set.task)) {
+            const withRoute: boolean = options.route === 'jev' && !routeAskedWithLabels;
+            const withTypes: boolean = answerTypesBar !== undefined && !typesAskedWithLabels;
+            await ask([
+              ...set.kinds.map((kind) => ({
+                candidate: set.task,
+                spec: { key: kind.key, ...labelTaskQuestion(kind, chat) },
+                question: {
+                  key: JSON.stringify(chat ? [set.task.sourceId, set.task.id, kind.key]
+                    : [set.task.sourceId, set.task.id, 'label', set.key, kind.key]),
+                  questionKey: kind.key, role: 'reference' as const,
+                  ...labelTaskQuestion(kind, chat),
+                  sourceId: set.task.sourceId, id: set.task.id,
+                  title: set.task.title, text: set.task.text,
+                },
+              })),
+              // Routes have their own answer item, even when a kind has the same key.
+              ...(withRoute ? ROUTE_QUESTIONS.map(routePending) : []),
+              ...(withTypes ? ANSWER_TYPES.map(answerPending) : []),
+            ], labelAnswers, labelQuestionTask(options.task), withRoute || withTypes);
+            routeAskedWithLabels ||= withRoute;
+            typesAskedWithLabels ||= withTypes;
+          }
+          const partMisses = roundMisses.filter(({ items }) => items[0] !== set.task);
+          if (!stop && partMisses.length > 0) await askParts(partMisses);
+          await keep(roundMisses);
+        } finally {
+          signal.removeEventListener('abort', release);
+          for (const { key, items } of own) settles.get(key)?.(labels.get(items[0]!));
+        }
+        // The waits honour this pick's own stopping dials.
+        if (stop || waits.length === 0) break;
+        const remaining = limits.maxElapsedMs - (Date.now() - started);
+        const until = Number.isFinite(remaining)
+          ? AbortSignal.any([signal, AbortSignal.timeout(Math.max(0, Math.ceil(remaining)))]) : signal;
+        const got = until.aborted ? undefined : await Promise.race([
+          Promise.all(waits.map((wait) => wait.labels)),
+          new Promise<undefined>((settle) => until.addEventListener('abort', () => settle(undefined), { once: true })),
+        ]);
+        if (got === undefined) {
+          stop = signal.aborted ? 'cancelled' : 'time';
+          break;
+        }
+        round = waits.filter((wait, index) => {
+          const value = got[index];
+          if (value === undefined) return true;
+          waited += 1;
+          for (const item of wait.items) labels.set(item, value);
+          return false;
+        });
       }
       asked += misses.filter(({ items }) => labelAnswers.has(items[0]!)).length;
-      for (const { key, items } of misses) {
-        const answers = set.kinds.map((kind) => labelAnswers.get(items[0]!)?.get(kind.key));
-        // Incomplete sets are retried, never stored as complete labels.
-        if (!answers.every((answer) => answer?.status === 'answered')) continue;
-        const value = Object.fromEntries(set.kinds.map((kind, index) =>
-          [kind.key, (answers[index] as { readonly probability: number }).probability]));
-        for (const item of items) labels.set(item, value);
-        try {
-          await store.set(key, { labels: value });
-        } catch (error) {
-          failedWrites += 1;
-          writeError ??= error;
-        }
-      }
       set.needs = set.kinds.filter((kind) => (labels.get(set.task)?.[kind.key] ?? 0) >= LABEL_LANE_BAR)
         .map((kind) => kind.key);
     }
@@ -1740,6 +1812,7 @@ export async function pick(
     }
     labelRecord = {
       questionVersion, deciderId: labelOptions.deciderId, asked, reused,
+      ...(waited === 0 ? {} : { waited }),
       gate: feed.length, failedWrites,
       ...(failedWrites === 0 ? {} : {
         warning: `${failedWrites} label set(s) could not be stored `

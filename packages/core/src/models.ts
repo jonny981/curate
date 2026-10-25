@@ -1,5 +1,5 @@
 import type { CurateWrite } from './curate.js';
-import type { PickAnswer, PickDecide, PickQuestion } from './pick.js';
+import type { PickAnswer, PickBatch, PickDecide, PickQuestion } from './pick.js';
 
 function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === 'object' ? value as Record<string, unknown> : {};
@@ -27,6 +27,65 @@ async function post(url: string, apiKey: string, body: unknown, signal: AbortSig
   return response.json();
 }
 
+/** Jev's request body for a batch. The state is the batch's task, then
+ *  each distinct item once, numbered; each question's instructions are
+ *  its wording, then the number of the item it asks about. */
+export function jevRequest(batch: PickBatch, model = 'jev-latest') {
+  const items = new Map<string, PickQuestion>();
+  for (const question of batch.questions) {
+    const key = `${question.sourceId}\n${question.id}`;
+    if (!items.has(key)) items.set(key, question);
+  }
+  const numbers = new Map([...items.keys()].map((key, index) => [key, index + 1]));
+  const number = (question: PickQuestion) => numbers.get(`${question.sourceId}\n${question.id}`);
+  const state = [batch.task, ...[...items.values()].map((question) =>
+    `Item ${number(question)}: ${question.id}${question.date === undefined ? ''
+      : ` (${question.date.meaning} ${question.date.value})`}\n${question.title}\n\n${question.text}`)].join('\n\n');
+  return {
+    model,
+    state,
+    questions: Object.fromEntries(batch.questions.map((question, index) => [`q${index}`, {
+      type: 'noul',
+      instructions: `${question.question}\n\nItem ${number(question)}`,
+      criteria: { true: question.trueCriterion, false: question.falseCriterion },
+    }])),
+  };
+}
+
+/** Jev's limits are 32,000 tokens for the state plus the longest
+ *  question and 64,000 for the whole request, at an estimate of three
+ *  characters a token. */
+const JEV_STATE_CHARS = 32_000 * 3;
+const JEV_REQUEST_CHARS = 64_000 * 3;
+
+function fitsJev(body: ReturnType<typeof jevRequest>): boolean {
+  const longest = Math.max(0, ...Object.values(body.questions).map((question) =>
+    question.instructions.length + question.criteria.true.length + question.criteria.false.length));
+  return body.state.length + longest <= JEV_STATE_CHARS && JSON.stringify(body).length <= JEV_REQUEST_CHARS;
+}
+
+/** The batch split into requests inside Jev's limits. Whole items join a
+ *  request in order until the next would pass a limit; an item's
+ *  questions always go with it, and an item too large alone goes alone. */
+function jevBatches(batch: PickBatch, model: string): PickBatch[] {
+  const items = new Map<string, PickQuestion[]>();
+  for (const question of batch.questions) {
+    const key = `${question.sourceId}\n${question.id}`;
+    items.set(key, [...(items.get(key) ?? []), question]);
+  }
+  const batches: PickBatch[] = [];
+  let questions: PickQuestion[] = [];
+  for (const own of items.values()) {
+    const next = { task: batch.task, questions: [...questions, ...own] };
+    if (questions.length > 0 && !fitsJev(jevRequest(next, model))) {
+      batches.push({ task: batch.task, questions });
+      questions = own;
+    } else questions = next.questions;
+  }
+  if (questions.length > 0) batches.push({ task: batch.task, questions });
+  return batches;
+}
+
 /** Create a decision function using TypeSafe's yes/no probabilities. */
 export function jev({ apiKey, model = 'jev-latest' }: {
   readonly apiKey: string | undefined;
@@ -34,20 +93,15 @@ export function jev({ apiKey, model = 'jev-latest' }: {
 }): PickDecide {
   if (!apiKey) throw new Error('Jev requires an API key.');
   const decide: PickDecide = async (batch, signal) => {
-    const raw = await post('https://api.typesafe.ai/v1/systemone', apiKey, {
-      model,
-      state: batch.task,
-      questions: Object.fromEntries(batch.questions.map((q, index) => [`q${index}`, {
-        type: 'noul',
-        instructions: `${q.question}\n\nEvidence: ${itemText(q)}`,
-        criteria: { true: q.trueCriterion, false: q.falseCriterion },
-      }])),
-    }, signal);
-    const answers = record(record(raw).answers);
-    return Object.fromEntries(batch.questions.map((q, index): [string, PickAnswer] =>
-      [q.key, probabilityAnswer(record(answers[`q${index}`]).noul)]));
+    const answered = await Promise.all(jevBatches(batch, model).map(async (part) => {
+      const answers = record(record(await post('https://api.typesafe.ai/v1/systemone', apiKey,
+        jevRequest(part, model), signal)).answers);
+      return part.questions.map((q, index): [string, PickAnswer] =>
+        [q.key, probabilityAnswer(record(answers[`q${index}`]).noul)]);
+    }));
+    return Object.fromEntries(answered.flat());
   };
-  return Object.assign(decide, { deciderId: `typesafe:${model}` });
+  return Object.assign(decide, { deciderId: `typesafe:${model}:items-once` });
 }
 
 /** Create a decision function using OpenAI's named predicate answers. */
