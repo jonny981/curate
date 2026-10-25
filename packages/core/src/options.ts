@@ -21,7 +21,7 @@ const RENAMED_OPTIONS: Readonly<Record<string, string>> = {
 const PICK_OPTION_KEYS: readonly (keyof PickOptions)[] = [
   'ranking', 'task', 'decide', 'questionsBySource', 'sourceKinds', 'labelKindsBySource', 'labelBarBySource',
   'keepTop', 'rankProtection', 'bestPartFirst', 'tags', 'tagsByKind',
-  'labels', 'cache', 'route', 'answerTypes', 'everyRanked', 'everyScored', 'rare', 'rareBySource',
+  'labels', 'cache', 'route', 'answerTypes', 'writeQuestions', 'everyRanked', 'everyScored', 'rare', 'rareBySource',
   'barBySource', 'ruleBarBySource', 'rulesEnumerationComplete', 'readsBySource', 'limits', 'thresholds', 'signal',
 ];
 const THRESHOLD_KEYS: readonly (keyof PickThresholds)[] = ['linkedPathBar'];
@@ -47,16 +47,19 @@ const CURATE_KEYS: readonly (keyof CurateOptions)[] = [
 const SOURCE_KIND_KEYS: readonly CandidateSourceKind[] = ['chat', 'git-history', 'markdown'];
 /** The fixed keys of `ranking`, keyed by candidate kind. */
 const MEMORY_KIND_KEYS: readonly MemoryKind[] = ['knowledge', 'docs', 'rules', 'instructions'];
-const CASCADE_KEYS: readonly (keyof PickCascade)[] = ['bias', 'questions', 'typed', 'first', 'band', 'firstOnly'];
+const CASCADE_KEYS: readonly (keyof PickCascade)[] = ['bias', 'questions', 'typed', 'first', 'band', 'firstOnly', 'written'];
 const TAG_SET_KEYS: readonly (keyof PickTagSet)[] = ['key', 'questions'];
 const CRITERION_KEYS: readonly (keyof PickCriterion)[] = ['key', 'instructions', 'true', 'false'];
 const CASCADE_QUESTION_KEYS: readonly (keyof PickCascade['questions'][number])[] = [
   ...CRITERION_KEYS, 'weight',
 ];
 const TYPED_QUESTION_KEYS: readonly (keyof NonNullable<PickCascade['typed']>[number])[] = [
-  ...CASCADE_QUESTION_KEYS, 'answerType',
+  ...CASCADE_QUESTION_KEYS, 'answerType', 'keepAt',
 ];
 const FIRST_ONLY_KEYS: readonly (keyof NonNullable<PickCascade['firstOnly']>)[] = ['bias', 'weight'];
+const WRITTEN_KEYS: readonly (keyof NonNullable<PickCascade['written']>)[] = ['highest', 'second'];
+/** The keys Curate gives the written questions, in order. */
+export const WRITTEN_QUESTION_KEYS = ['task1', 'task2', 'task3', 'task4'] as const;
 
 /** Reject one key the object does not declare, naming its dotted path.
  *  A renamed key names the option that replaced it; any other lists
@@ -81,6 +84,7 @@ function checkKeys(value: unknown, allowed: readonly string[], path: string): vo
 export function checkCascadeKeys(set: PickCascade | undefined, path: string): void {
   checkKeys(set, CASCADE_KEYS, path);
   checkKeys(set?.firstOnly, FIRST_ONLY_KEYS, `${path}.firstOnly`);
+  checkKeys(set?.written, WRITTEN_KEYS, `${path}.written`);
   for (const [index, question] of (set?.questions ?? []).entries()) {
     checkKeys(question, CASCADE_QUESTION_KEYS, `${path}.questions[${index}]`);
   }
@@ -91,8 +95,10 @@ export function checkCascadeKeys(set: PickCascade | undefined, path: string): vo
 
 /** A question set's values: unique, complete questions with finite
  *  weights, typed questions whose keys no other question in the set
- *  shares and whose answer type is one of ANSWER_TYPES, and first, band
- *  and firstOnly together or not at all. */
+ *  shares, whose answer type is one of ANSWER_TYPES and whose keepAt is
+ *  between 0 and 1, first, band and firstOnly together or not at all,
+ *  and finite written weights beside keys that leave `task1` to `task4`
+ *  free. */
 export function checkCascade(set: PickCascade | undefined): void {
   if (set === undefined) return;
   const keys = set.questions.map((q) => q.key);
@@ -107,6 +113,19 @@ export function checkCascade(set: PickCascade | undefined): void {
         || !ANSWER_TYPES.some((type) => type.key === q.answerType))) {
       throw new TypeError('a question set\'s typed questions need keys unique across questions and typed, '
         + 'finite weights and a known answerType.');
+    }
+    if (set.typed.some((q) => q.keepAt !== undefined
+      && (typeof q.keepAt !== 'number' || !Number.isFinite(q.keepAt) || q.keepAt < 0 || q.keepAt > 1))) {
+      throw new TypeError('a typed question\'s keepAt must be a number between 0 and 1.');
+    }
+  }
+  if (set.written !== undefined) {
+    const all = [...keys, ...(set.typed ?? []).map((q) => q.key)];
+    if (typeof set.written !== 'object' || set.written === null
+      || !Number.isFinite(set.written.highest) || !Number.isFinite(set.written.second)
+      || all.some((key) => (WRITTEN_QUESTION_KEYS as readonly string[]).includes(key))) {
+      throw new TypeError('a question set\'s written weights must be finite, and its own question keys '
+        + 'cannot be task1 to task4.');
     }
   }
   if (set.first !== undefined || set.band !== undefined || set.firstOnly !== undefined) {
@@ -173,6 +192,14 @@ export function checkPickOptions(options: PickOptions): void {
     if ((set?.typed?.length ?? 0) > 0 && (options.answerTypes === undefined || options.answerTypes === false)) {
       throw new TypeError(`${id}'s questions include typed questions, which are asked only when answerTypes is on.`);
     }
+    // Written weights were fitted with the written terms in the score,
+    // so the score without them would be wrong.
+    if (set?.written !== undefined && options.writeQuestions === undefined) {
+      throw new TypeError(`${id}'s questions weigh written questions, which need writeQuestions.`);
+    }
+  }
+  if (options.writeQuestions !== undefined && typeof options.writeQuestions !== 'function') {
+    throw new TypeError('writeQuestions must be a function.');
   }
   for (const [index, set] of (options.tags ?? []).entries()) {
     checkTagSetKeys(set, `tags[${index}]`);
@@ -186,6 +213,15 @@ export function checkPickOptions(options: PickOptions): void {
     if (kind !== undefined && !SOURCE_KIND_KEYS.includes(kind)) {
       throw new TypeError(`\`sourceKinds.${id}\` names a kind that is not 'chat', 'git-history' or 'markdown'.`);
     }
+  }
+}
+
+/** A writer no source's set weighs would be paid for and never read.
+ *  Run once every source's set is known. */
+export function checkWriteQuestions(options: PickOptions): void {
+  if (options.writeQuestions !== undefined
+    && !Object.values(options.questionsBySource ?? {}).some((set) => set?.written !== undefined)) {
+    throw new TypeError('writeQuestions is set, but no source\'s question set has written weights.');
   }
 }
 

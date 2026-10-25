@@ -586,6 +586,92 @@ holds the line. It reads `record.answerTypes` on the pick's record, and
 throws a `TypeError` when the pick did not record one. It is off by
 default.
 
+### Keeping a part on one typed answer
+
+A typed question can carry `keepAt`, a number from 0 to 1. When the
+question is asked and its answer is at or above `keepAt`, the part is
+kept even when its score is below the source's bar. Its record entry
+then has `keptBy`, the key of the typed question that kept it.
+
+`COUNT_MARKER` is a typed question for tasks that count or list. It
+asks whether the part reports at least one actual instance of the thing
+the task counts. A total, a question, a suggestion, a hypothetical, or
+the assistant repeating something does not count. Its answer type is
+`list`, its weight is 0 and its `keepAt` is 0.5. With weight 0 it never
+moves a score: it only keeps a part that answers 0.5 or more. No preset
+carries it. Add it to a set with `answerTypes` on:
+
+```ts
+import { COUNT_MARKER, historySource, memory } from '@curatejs/core';
+import { chatWriter, jev } from '@curatejs/core/models';
+import { chat, chatSettings, CHAT_CASCADE } from '@curatejs/chat';
+
+const decide = jev({ apiKey: process.env.TYPESAFE_API_KEY });
+const write = chatWriter({ apiKey: process.env.CHAT_API_KEY, model: 'gpt-5-mini' });
+
+const mem = memory({
+  sources: [historySource({ reader: chat(), ...chatSettings, questions: { ...CHAT_CASCADE, typed: [COUNT_MARKER] } })],
+  decide,
+  write,
+  pick: { answerTypes: true },
+});
+```
+
+### Questions written for each task
+
+`writeQuestions` on `pick` or `pickFromSources` writes two to four
+yes/no questions about the task, once per pick, before any decide
+request. `memory()` passes it through `pick`. It takes the task and the
+pick's signal and returns `PickCriterion` questions. Curate keys them
+`task1` to `task4` and asks them of the reference parts of every source
+whose question set has `written` weights. It is off by default.
+
+`taskQuestionWriter(write)` builds the option from the same `write`
+function the curator uses. It sends `TASK_QUESTION_PROMPT` as the
+instructions, with the task in the body, and reads the JSON array in
+the reply.
+
+A set's `written: { highest, second }` adds
+`highest × logit(best written answer) + second × logit(second-best
+written answer)` to a part's score. Each answer is clamped to 0.0001
+to 0.9999 before the logit. A written answer that comes back missing
+adds nothing. In a set with `first` and `band`, written questions are
+asked only when the other questions are, and a part outside the band
+keeps the `firstOnly` score.
+
+```ts
+import { historySource, memory, taskQuestionWriter } from '@curatejs/core';
+import { chatWriter, jev } from '@curatejs/core/models';
+import { chat, chatSettings, PERSONAL_CHAT_WRITTEN_CASCADE } from '@curatejs/chat';
+
+const decide = jev({ apiKey: process.env.TYPESAFE_API_KEY });
+const write = chatWriter({ apiKey: process.env.CHAT_API_KEY, model: 'gpt-5-mini' });
+
+const mem = memory({
+  sources: [historySource({ reader: chat(), ...chatSettings, questions: PERSONAL_CHAT_WRITTEN_CASCADE })],
+  decide,
+  write,
+  pick: { writeQuestions: taskQuestionWriter(write) },
+});
+```
+
+Each mistake throws before any decide request:
+
+- **A writer no set reads:** `writeQuestions` while no source's set has
+  `written` throws a `TypeError`.
+- **Weights with no writer:** a set with `written` while
+  `writeQuestions` is unset throws a `TypeError` that names the source.
+  Its weights were fitted with the written terms, so the score without
+  them would be wrong.
+- **A failed writer:** a writer that throws, or returns anything but 2
+  to 4 questions each with nonempty `instructions`, `true` and `false`,
+  stops the pick with the reason.
+
+`record.writtenQuestions` holds the `questions` the writer wrote, with
+their keys. A part's record entry lists the written questions it was
+asked beside the others. A set with `written` cannot use the keys
+`task1` to `task4` for its own questions.
+
 ### Decision tags
 
 `tags` asks extra yes/no questions of each reference that passes
@@ -1304,11 +1390,12 @@ A search line that repeats the task opens no lane, and its entry says so.
 | `searchLines`, `searchPhrases`, `meaning` | The read request gave that option | Parts those lanes held | Kept parts whose only way in was those lanes | 0, or `null` when a feed cut or a stop ended the feed early |
 | `wholeLanes` | `read.wholeLanes` is on | Parts read past the lane cut | Kept parts whose only way in was the whole-lane read | 0, or `null` when a feed cut or a stop ended the feed early |
 | `linkedPathBar` | The pick holds a reference part with a `path` and a `repository` | Reference parts rejected below their bar but at or above the link bar, with a `path` and a `repository` | Parts kept through the link | 0 |
-| `bar` | Always, for a source with reference parts | The source's scored reference parts | 0 | Scored parts below the bar that no later pass kept. The changed-path link and the rare-word round can still keep a part below the bar |
+| `bar` | Always, for a source with reference parts | The source's scored reference parts | 0 | Scored parts below the bar that no later pass kept. The changed-path link, the rare-word round and a typed question's `keepAt` can still keep a part below the bar |
 | `ruleBar` | The source has rule parts and a bar above 0 | The source's scored rules | 0 | Rules below the bar |
 | `everyScored` | The call gave the override | As `bar`; it replaces the source's `bar` entry | 0 | As `bar` |
 | `everyRanked` | The call gave `{ c }` | Ranked parts | 0 | `null`. The summary says how many parts the cut left undecided |
-| `typed` | The source's question set has typed questions | Parts asked at least one typed question | Kept parts whose score reaches the source's bar only with the typed terms | Parts below the bar only because of the typed terms that no later pass kept |
+| `typed` | The source's question set has typed questions | Parts asked at least one typed question | Kept parts whose score reaches the source's bar only with the typed terms, and parts a typed question's `keepAt` kept | Parts below the bar only because of the typed terms that no later pass kept |
+| `written` | The source's question set has `written` weights | Parts asked at least one written question | Kept parts whose score reaches the source's bar only with the written terms, other than parts a typed question's `keepAt` keeps | Parts below the bar only because of the written terms that no later pass kept |
 
 Labels, extra lanes and `wholeLanes` also change the order of the decide feed.
 That order matters only when something ends the feed early: an `everyRanked: { c }` cut or a stopping limit.
@@ -1384,6 +1471,8 @@ A curate record's `effects` covers `curate`'s own options; the pick's entries st
 - **`CurateRecord.effects`:** a `CurateSettingEffect[]` for `curate`'s own options.
 - **`CurateSettingEffect`:** `setting`; `lines`, the log lines the option wrote, or `null` when one curate call cannot tell; and `summary`.
 - **`PickRecord.answerTypes`:** present when `answerTypes` was on: `bar`, `answers` with one answer per type, and `needed`, the types at or above the bar.
+- **`PickRecord.writtenQuestions`:** present when `writeQuestions` ran: `questions`, the questions it wrote, keyed `task1` to `task4`.
+- **`keptBy`:** on a selected `PickRecordEntry`, the key of the typed question whose `keepAt` kept the part below its bar.
 - **`CurateRecord.answerHint`:** the line `answerHint` added to the curator's task, absent when it added none.
 - **`pastLaneCut`:** on a part and its `PickRecordEntry`, true when a read with `wholeLanes` on returned the part although the lane cut would have dropped it.
 

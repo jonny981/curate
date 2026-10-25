@@ -13,7 +13,7 @@ import {
   ANSWER_TYPES, ROUTE_QUESTIONS, routeOptions, type AnswerType, type RouteKey, type RouteOption,
 } from './task.js';
 import type { LeverStates } from './levers.js';
-import { checkCascade, checkPickOptions } from './options.js';
+import { WRITTEN_QUESTION_KEYS, checkCascade, checkPickOptions, checkWriteQuestions } from './options.js';
 
 export type MemoryCandidateRole = 'reference' | 'rule';
 export type MemoryKind = 'knowledge' | 'docs' | 'rules' | 'instructions';
@@ -212,6 +212,9 @@ export type PickEntryStatus =
        *  named this candidate's path. An entry that passed on threshold
        *  alone carries none. */
       readonly link?: { readonly sourceId: string; readonly id: string };
+      /** Present when a typed question's `keepAt`, not the bar, kept
+       *  the part: that typed question's key. */
+      readonly keptBy?: string;
     }
   | {
       readonly status: 'rejected';
@@ -308,16 +311,28 @@ export interface PickCascade {
   readonly bias: number;
   readonly questions: readonly (PickCriterion & { readonly weight: number })[];
   /** Questions asked of a part only when the task needs their answer type. */
-  readonly typed?: readonly (PickCriterion & { readonly answerType: AnswerType; readonly weight: number })[];
+  readonly typed?: readonly (PickCriterion & {
+    readonly answerType: AnswerType;
+    readonly weight: number;
+    /** A part whose answer reaches this is kept, whatever its combined score. */
+    readonly keepAt?: number;
+  })[];
   readonly first?: string;
   readonly band?: readonly [number, number];
   readonly firstOnly?: { readonly bias: number; readonly weight: number };
+  /** Weights for the questions `writeQuestions` writes for the task:
+   *  `highest` × logit(best written answer) + `second` ×
+   *  logit(second-best written answer) join the score. Each answer is
+   *  clamped to 0.0001 to 0.9999 first. With a first question and a
+   *  band, written questions are asked only of parts whose first answer
+   *  is inside the band. */
+  readonly written?: { readonly highest: number; readonly second: number };
 }
 
 /** What one setting did in one pick, for one source. */
 export interface PickSettingEffect {
   /** The setting's name as a caller writes it: 'labels', 'rare', 'bar', 'ruleBar', 'searchLines',
-   *  'searchPhrases', 'meaning', 'wholeLanes', 'linkedPathBar', 'everyScored', 'everyRanked' or 'typed'. */
+   *  'searchPhrases', 'meaning', 'wholeLanes', 'linkedPathBar', 'everyScored', 'everyRanked', 'typed' or 'written'. */
   readonly setting: string;
   /** The source the counts are for. A setting given for the whole call gets one entry per source. */
   readonly source: string;
@@ -447,6 +462,9 @@ export interface PickRecord {
     /** Types answered at or above the bar, in ANSWER_TYPES order. */
     readonly needed: readonly AnswerType[];
   };
+  /** Present when `writeQuestions` ran: the questions it wrote for the
+   *  task, keyed `task1` to `task4`. */
+  readonly writtenQuestions?: { readonly questions: readonly PickCriterion[] };
   /** Present when a decide-feed dial ran — `everyRanked: { c }` or the
    *  rare-word round: the history's size N in reference parts (every
    *  reference part the pick received, including pool members the
@@ -596,6 +614,14 @@ export interface PickOptions {
    *  asked of its reference parts, and `curate`'s own `answerHint` can
    *  name them to the curator. Off by default. */
   readonly answerTypes?: boolean | { readonly bar: number };
+  /** Write two to four questions for the task, once per pick, before any
+   *  decide request. Curate keys them `task1` to `task4` and asks them
+   *  of the reference parts of each source whose question set has
+   *  `written` weights. A writer that throws, or returns anything but 2
+   *  to 4 questions each with nonempty `instructions`, `true` and
+   *  `false`, stops the pick. `taskQuestionWriter(write)` builds one.
+   *  Off by default. */
+  readonly writeQuestions?: (task: string, signal?: AbortSignal) => Promise<readonly PickCriterion[]>;
   /** Read every ranked part, the default. `{ c }` turns the lever off
    *  and keeps only the top `round(c × N^0.8)` reference parts of the
    *  ranking the decide step reads — the label gate's fused order when
@@ -916,6 +942,12 @@ function logit(p: number): number {
   return Math.log(Math.max(p, 1e-4) / Math.max(1 - p, 1e-4));
 }
 
+/** The logit of a written answer, clamped to 0.0001 to 0.9999 first. */
+function writtenLogit(p: number): number {
+  const value = Math.min(Math.max(p, 1e-4), 1 - 1e-4);
+  return Math.log(value / (1 - value));
+}
+
 /** What `settingEffects` reads from one pick. */
 interface EffectInput {
   /** The parts the record holds. */
@@ -960,6 +992,14 @@ interface EffectInput {
   readonly typedAsked: ReadonlySet<MemoryCandidate>;
   /** Each part's score without its typed terms, for the parts that have them. */
   readonly untyped: ReadonlyMap<MemoryCandidate, number>;
+  /** Each source whose set has written weights. */
+  readonly writtenSources: ReadonlySet<string>;
+  /** The parts asked at least one written question. */
+  readonly writtenAsked: ReadonlySet<MemoryCandidate>;
+  /** Each part's score without its written terms, for the parts that have them. */
+  readonly unwritten: ReadonlyMap<MemoryCandidate, number>;
+  /** The parts a typed answer at or above its keepAt keeps, whatever their score. */
+  readonly keepReached: ReadonlySet<MemoryCandidate>;
 }
 
 const count = (n: number, noun = 'part') => `${n} ${noun}${n === 1 ? '' : 's'}`;
@@ -1000,25 +1040,48 @@ function settingEffects(input: EffectInput): PickSettingEffect[] {
   const reachedOrEnded = (head: string, through: string, reached: number, added: number, order: string) =>
     `${head}; ${reached === 0 ? `none ${through}` : `${reached} ${through}, and ${keptOf(added)}`}. `
       + `${ended}, and ${order}, so ${order.startsWith('the whole') ? 'it' : 'they'} may also have changed which parts were decided.`;
+  // The parts on each side of the bar only because of the terms a
+  // score `without` leaves out. That score is the same sum without
+  // them, so both sides of the bar come from this one pick.
+  const crossings = (own: readonly MemoryCandidate[], without: ReadonlyMap<MemoryCandidate, number>, bar: number) => ({
+    added: own.filter((candidate) => input.scored.has(candidate) && !input.belowBar.has(candidate)
+      && (without.get(candidate) ?? bar) < bar && statuses.get(candidate)?.status === 'selected').length,
+    dropped: own.filter((candidate) => input.belowBar.has(candidate)
+      && (without.get(candidate) ?? -1) >= bar && statuses.get(candidate)?.status !== 'selected').length,
+  });
   // One entry per source whose set has typed questions, a source that
   // returned no part included.
   const typedEffect = (id: string, own: readonly MemoryCandidate[]): PickSettingEffect => {
     const needed = input.typedSources.get(id);
     const bar = input.bar(id);
-    // The score without the typed terms is the same sum without them,
-    // so both sides of the bar come from this one pick.
-    const without = (candidate: MemoryCandidate) => input.untyped.get(candidate);
     const acted = own.filter((candidate) => input.typedAsked.has(candidate)).length;
-    const added = own.filter((candidate) => input.scored.has(candidate) && !input.belowBar.has(candidate)
-      && (without(candidate) ?? bar) < bar && statuses.get(candidate)?.status === 'selected').length;
-    const dropped = own.filter((candidate) => input.belowBar.has(candidate)
-      && (without(candidate) ?? -1) >= bar && statuses.get(candidate)?.status !== 'selected').length;
+    const { added: crossed, dropped } = crossings(own, input.untyped, bar);
+    const kept = own.filter((candidate) => {
+      const status = statuses.get(candidate);
+      return status?.status === 'selected' && status.keptBy !== undefined;
+    }).length;
+    const added = crossed + kept;
     return { setting: 'typed', source: id, actedOn: acted, added, dropped,
       summary: !needed
         ? `typed on ${id}: the task needed none of its answer types, so no typed question was asked. It added no part and kept out no part.`
         : added === 0 && dropped === 0
           ? `typed on ${id}: ${count(acted)} ${acted === 1 ? 'was' : 'were'} asked typed questions, but no part crossed the bar because of them. It added no part and kept out no part.`
-          : `typed on ${id}: ${count(acted)} ${acted === 1 ? 'was' : 'were'} asked typed questions; ${count(added)} reached the bar ${bar} only with them, and ${count(dropped)} fell below it only because of them.` };
+          : `typed on ${id}: ${count(acted)} ${acted === 1 ? 'was' : 'were'} asked typed questions; ${count(crossed)} reached the bar ${bar} only with them, ${
+            kept === 0 ? '' : `${count(kept)} ${kept === 1 ? 'was' : 'were'} kept by a typed answer at or above its keepAt, `
+          }and ${count(dropped)} fell below it only because of them.` };
+  };
+  // One entry per source whose set has written weights, a source that
+  // returned no part included.
+  const writtenEffect = (id: string, own: readonly MemoryCandidate[]): PickSettingEffect => {
+    const bar = input.bar(id);
+    const acted = own.filter((candidate) => input.writtenAsked.has(candidate)).length;
+    // A part a typed answer's keepAt keeps would be kept without the written terms too.
+    const { added, dropped } = crossings(own.filter((candidate) => !input.keepReached.has(candidate)), input.unwritten, bar);
+    const head = `written on ${id}: ${count(acted)} ${acted === 1 ? 'was' : 'were'} asked the task's written questions`;
+    return { setting: 'written', source: id, actedOn: acted, added, dropped,
+      summary: added === 0 && dropped === 0
+        ? `${head}, but no part crossed the bar because of them. It added no part and kept out no part.`
+        : `${head}; ${count(added)} reached the bar ${bar} only with them, and ${count(dropped)} fell below it only because of them.` };
   };
   const effects: PickSettingEffect[] = [];
   for (const id of new Set(input.candidates.map((candidate) => candidate.sourceId))) {
@@ -1075,10 +1138,14 @@ function settingEffects(input: EffectInput): PickSettingEffect[] {
           ? `${setting} on ${id}: of ${count(scored.length, 'scored part')}, ${dropped} fell below the bar ${bar} and no later pass kept them.`
           : below.length === 0
             ? `${setting} on ${id}: no scored part of ${scored.length} fell below the bar ${bar}, so the bar kept out none. It kept out no part.`
-            : `${setting} on ${id}: of ${count(scored.length, 'scored part')}, ${below.length} fell below the bar ${bar}, but a later pass kept each of them, so the bar kept out none. It kept out no part.` });
+            : `${setting} on ${id}: of ${count(scored.length, 'scored part')}, ${below.length} fell below the bar ${bar}, but ${
+              below.some((candidate) => { const status = statuses.get(candidate); return status?.status === 'selected' && status.keptBy !== undefined; })
+                ? 'a typed question\'s keepAt or a later pass' : 'a later pass'
+            } kept each of them, so the bar kept out none. It kept out no part.` });
     }
 
     if (input.typedSources.has(id)) effects.push(typedEffect(id, own));
+    if (input.writtenSources.has(id)) effects.push(writtenEffect(id, own));
 
     const rules = own.filter((candidate) => candidate.role === 'rule');
     if (rules.length > 0 && input.ruleBar(id) > 0) {
@@ -1152,6 +1219,9 @@ function settingEffects(input: EffectInput): PickSettingEffect[] {
   for (const id of input.typedSources.keys()) {
     if (!input.candidates.some((candidate) => candidate.sourceId === id)) effects.push(typedEffect(id, []));
   }
+  for (const id of input.writtenSources) {
+    if (!input.candidates.some((candidate) => candidate.sourceId === id)) effects.push(writtenEffect(id, []));
+  }
   return effects;
 }
 
@@ -1192,6 +1262,7 @@ export async function pick(
     }
   }
   for (const set of Object.values(options.questionsBySource ?? {})) checkCascade(set);
+  checkWriteQuestions(options);
   if (options.route !== undefined && options.route !== 'jev') {
     throw new TypeError(`route must be 'jev'.`);
   }
@@ -1319,6 +1390,25 @@ export async function pick(
   // added part cannot stale an unchanged part's stored answer. The pick
   // records its own question-set version separately on `questionVersion`.
   const cacheVersion = cache?.questionVersion ?? PICK_QUESTION_VERSION;
+  // The task's written questions, once per pick and before any decide
+  // request, so a writer that fails stops the pick before one is paid for.
+  let writtenQuestions: readonly PickCriterion[] = [];
+  if (options.writeQuestions !== undefined) {
+    let returned: unknown;
+    try {
+      returned = await options.writeQuestions(options.task, signal);
+    } catch (error) {
+      throw new Error(`writeQuestions failed: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+    }
+    if (!Array.isArray(returned) || returned.length < 2 || returned.length > 4
+      || returned.some((q) => !isRecord(q)
+        || [q.instructions, q.true, q.false].some((text) => typeof text !== 'string' || !text.trim()))) {
+      throw new TypeError('writeQuestions must return 2 to 4 questions, each with nonempty instructions, true and false.');
+    }
+    writtenQuestions = (returned as PickCriterion[]).map((q, index) => ({
+      key: WRITTEN_QUESTION_KEYS[index]!, instructions: q.instructions, true: q.true, false: q.false,
+    }));
+  }
   let cacheAsked = 0;
   let cacheReused = 0;
   let cacheFailedWrites = 0;
@@ -1388,10 +1478,12 @@ export async function pick(
   let neededTypes: ReadonlySet<AnswerType> = new Set();
   const typedFor = (candidate: MemoryCandidate) => candidate.role !== 'reference' ? []
     : (cascadeFor(candidate)?.typed ?? []).filter((q) => neededTypes.has(q.answerType));
+  const writtenFor = (candidate: MemoryCandidate) =>
+    candidate.role === 'reference' && cascadeFor(candidate)?.written !== undefined ? writtenQuestions : [];
   const specsFor = (candidate: MemoryCandidate) => {
     const cascade = cascadeFor(candidate);
     return candidate.role === 'reference' && cascade
-      ? [...cascade.questions, ...typedFor(candidate)].map((q) => ({ key: q.key, question: q.instructions, trueCriterion: q.true, falseCriterion: q.false }))
+      ? [...cascade.questions, ...typedFor(candidate), ...writtenFor(candidate)].map((q) => ({ key: q.key, question: q.instructions, trueCriterion: q.true, falseCriterion: q.false }))
       : [{ key: candidate.role, ...(candidate.kind === undefined || (candidate.role === 'rule' && candidate.kind !== 'instructions')
         ? PICK_QUESTIONS[candidate.role] : KIND_QUESTIONS[candidate.kind]) }];
   };
@@ -1910,8 +2002,12 @@ export async function pick(
   }
 
   const combined = new Map<MemoryCandidate, CheckedAnswer>();
-  // Each part's score without its typed terms, for the record's `effects`.
+  // Each part's score without its typed terms, and without its written
+  // terms, for the record's `effects`.
   const untyped = new Map<MemoryCandidate, number>();
+  const unwritten = new Map<MemoryCandidate, number>();
+  // The typed question whose answer reached its keepAt, by part.
+  const keptBy = new Map<MemoryCandidate, string>();
   // Candidates a stop left half-assessed inside a cascade.
   const curtailed = new Map<MemoryCandidate, 'limits' | 'time' | 'cancelled' | 'error'>();
   const evaluate = async (phase: readonly MemoryCandidate[]) => {
@@ -1943,7 +2039,8 @@ export async function pick(
           // A returned missing answer contributes nothing, as in the prototype.
           // A question never attempted because a limit stopped us is unassessed.
           const typed = typedFor(candidate);
-          const asked = [...cascade.questions, ...typed];
+          const written = writtenFor(candidate);
+          const asked = [...cascade.questions, ...typed, ...written];
           if (stop && asked.some((q) => !got.has(q.key))
             && (!cascade.first || first?.status === 'answered')) {
             curtailed.set(candidate, stop);
@@ -1955,8 +2052,22 @@ export async function pick(
               a?.status === 'answered' ? q.weight * logit(a.probability) : 0;
             const z = cascade.bias + cascade.questions.reduce((sum, q, i) => sum + term(q, probabilities[i]), 0);
             const typedZ = typed.reduce((sum, q, i) => sum + term(q, probabilities[cascade.questions.length + i]), 0);
-            if (typed.length > 0) untyped.set(candidate, 1 / (1 + Math.exp(-z)));
-            answer = { status: 'answered', probability: 1 / (1 + Math.exp(-(z + typedZ))),
+            // The best and second-best written answers; a missing one adds nothing.
+            const [highest, second] = written.flatMap((q) => {
+              const reply = got.get(q.key);
+              return reply?.status === 'answered' ? [reply.probability] : [];
+            }).sort((left, right) => right - left);
+            const writtenZ = cascade.written === undefined ? 0
+              : (highest === undefined ? 0 : cascade.written.highest * writtenLogit(highest))
+                + (second === undefined ? 0 : cascade.written.second * writtenLogit(second));
+            if (typed.length > 0) untyped.set(candidate, 1 / (1 + Math.exp(-(z + writtenZ))));
+            if (written.length > 0) unwritten.set(candidate, 1 / (1 + Math.exp(-(z + typedZ))));
+            const keeper = typed.find((q) => {
+              const reply = got.get(q.key);
+              return q.keepAt !== undefined && reply?.status === 'answered' && reply.probability >= q.keepAt;
+            });
+            if (keeper !== undefined) keptBy.set(candidate, keeper.key);
+            answer = { status: 'answered', probability: 1 / (1 + Math.exp(-(z + typedZ + writtenZ))),
               // The verdict reused the store only when every answer
               // behind it did: a question this pick asked — even one
               // that came back unanswered — keeps it fresh.
@@ -2036,9 +2147,12 @@ export async function pick(
       const reused = answer.reused === true ? { reused: true } : {};
       scoredParts.add(candidate);
       if (answer.probability < threshold) belowBar.add(candidate);
-      if (answer.probability >= threshold) {
+      // A typed answer at or above its keepAt keeps a reference below the bar.
+      const kept = candidate.role === 'rule' || answer.probability >= threshold ? undefined : keptBy.get(candidate);
+      if (answer.probability >= threshold || kept !== undefined) {
         selected.push(candidate);
-        statuses.set(candidate, { status: 'selected', asked: true, probability: answer.probability, ...reused });
+        statuses.set(candidate, { status: 'selected', asked: true, probability: answer.probability, ...reused,
+          ...(kept === undefined ? {} : { keptBy: kept }) });
       } else statuses.set(candidate, { status: 'rejected', probability: answer.probability, ...reused });
     } else statuses.set(candidate, { status: 'unanswered', answer: answer.status, detail: answer.detail });
   }
@@ -2189,9 +2303,11 @@ export async function pick(
         continue;
       }
       const reused = answer.reused === true ? { reused: true } : {};
-      if (answer.probability >= rareBar) {
+      const kept = answer.probability >= rareBar ? undefined : keptBy.get(candidate);
+      if (answer.probability >= rareBar || kept !== undefined) {
         selected.push(candidate);
-        statuses.set(candidate, { status: 'selected', asked: true, probability: answer.probability, ...reused });
+        statuses.set(candidate, { status: 'selected', asked: true, probability: answer.probability, ...reused,
+          ...(kept === undefined ? {} : { keptBy: kept }) });
         rareAdded.add(candidate);
         added += 1;
       } else if (status.status === 'unassessed') {
@@ -2221,6 +2337,12 @@ export async function pick(
     typedAsked: new Set(candidates.filter((candidate) =>
       typedFor(candidate).some((q) => answered.get(candidate)?.has(q.key) === true))),
     untyped,
+    writtenSources: new Set(Object.entries(options.questionsBySource ?? {})
+      .flatMap(([id, set]) => set.written === undefined ? [] : [id])),
+    writtenAsked: new Set(candidates.filter((candidate) =>
+      writtenFor(candidate).some((q) => answered.get(candidate)?.has(q.key) === true))),
+    unwritten,
+    keepReached: new Set(keptBy.keys()),
   });
 
   // Decision tags run on the kept references once relevance has
@@ -2304,7 +2426,8 @@ export async function pick(
       ...(candidate.repository === undefined ? {} : { repository: candidate.repository }),
       ...(wasTruncated === undefined ? {} : { truncated: wasTruncated }),
       ...(cascade && candidate.role === 'reference' && answered.has(candidate) ? {
-        questions: [...cascade.questions, ...typedFor(candidate)]
+        questions: [...cascade.questions, ...typedFor(candidate),
+          ...writtenFor(candidate).filter((q) => answered.get(candidate)!.has(q.key))]
           .map((q) => ({ key: q.key, ...(answered.get(candidate)!.get(q.key) ?? { status: 'missing' as const }) })),
       } : {}),
       ...(tags === undefined ? {} : { tags }),
@@ -2354,6 +2477,7 @@ export async function pick(
     }),
     ...(routeRecord === undefined ? {} : { route: routeRecord }),
     ...(answerTypesRecord === undefined ? {} : { answerTypes: answerTypesRecord }),
+    ...(options.writeQuestions === undefined ? {} : { writtenQuestions: { questions: writtenQuestions } }),
     ...(pickRecord === undefined ? {} : { pick: pickRecord }),
     levers: { ...levers, sources: Object.fromEntries([...new Set([
       ...Object.keys(labelKindsBySource), ...rareSourceIds,

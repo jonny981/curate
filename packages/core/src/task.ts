@@ -1,4 +1,6 @@
+import type { CurateWrite } from './curate.js';
 import { LABEL_LANE_BAR } from './labels.js';
+import type { PickCriterion, PickOptions } from './pick.js';
 
 export type TaskKind = 'count' | 'date' | 'advice' | 'changed' | 'named' | 'other';
 
@@ -94,6 +96,40 @@ export const ANSWER_TYPES = [
 ] as const;
 
 export type AnswerType = (typeof ANSWER_TYPES)[number]['key'];
+
+/** A typed question for count and list tasks: does the part report one
+ *  actual instance of what the task counts? It has no fitted weight, so
+ *  it acts only through `keepAt`: a part answered 0.5 or more is kept
+ *  whatever its score. Add it to a set's `typed` questions with
+ *  `answerTypes` on. */
+export const COUNT_MARKER = {
+  answerType: 'list',
+  key: 'instance',
+  instructions: 'Does this part report at least one actual instance of the thing the task counts or lists? A total, a question, a suggestion, a hypothetical, or the assistant repeating something is not a new instance.',
+  true: 'It reports at least one actual instance',
+  false: 'It reports no actual instance',
+  weight: 0,
+  keepAt: 0.5,
+} as const;
+
+/** The instructions `taskQuestionWriter` sends with the task. */
+export const TASK_QUESTION_PROMPT = 'Write 2 to 4 narrow yes/no questions for a decision model reading one part of a history (a chat message, a commit or a note), with its date, for the task below. Any part holding one piece of the evidence should get true on at least one question; merely sharing a topic should get false. Name the concrete thing the task asks about. For counts ask about one instance; for time ask about dates or durations; for advice ask about the user\'s own preferences and limits; for assistant content ask about what the assistant said. Do not guess an answer. Return only a JSON array of objects with string fields instructions, true, false. Answer from the task text only. Do not run any command and do not read any file.';
+
+/** A `writeQuestions` option built from the same `write` function the
+ *  curator uses: it sends `TASK_QUESTION_PROMPT` with the task, reads
+ *  the JSON array in the reply and keys its questions `task1` onward.
+ *  The pick checks the count and the fields. */
+export function taskQuestionWriter(write: CurateWrite): NonNullable<PickOptions['writeQuestions']> {
+  return async (task, signal) => {
+    const reply = await write({ instructions: TASK_QUESTION_PROMPT, body: `TASK:\n${task}` },
+      signal ?? new AbortController().signal);
+    const list: unknown = JSON.parse(reply.slice(reply.indexOf('['), reply.lastIndexOf(']') + 1));
+    if (!Array.isArray(list)) throw new TypeError('the task question reply holds no JSON array.');
+    return list.map((q: PickCriterion, index) => ({
+      key: `task${index + 1}`, instructions: q?.instructions, true: q?.true, false: q?.false,
+    }));
+  };
+}
 
 /** The curator options each route answer switches on: a stated taste
  *  needs both preference lines; a count, a date or a latest value

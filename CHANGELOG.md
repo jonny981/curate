@@ -68,6 +68,13 @@ Four packages:
   `curate.answerHint` names the needed types to the curator in one line
   under the task. All of it is off by default, and no preset carries a
   typed question.
+- **More decision questions, all optional.** `PERSONAL_CHAT_CASCADE` is a
+  chat question set for histories of a person's own life. `COUNT_MARKER` is
+  a typed question that keeps a part reporting one instance of what a count
+  task counts, through the new `keepAt`. `pick.writeQuestions` writes two to
+  four questions for each task, `taskQuestionWriter(write)` builds it, and a
+  set's `written` weights fold their answers into the score, as
+  `PERSONAL_CHAT_WRITTEN_CASCADE` does. No preset's default questions change.
 - **Unknown options are rejected.** `pick`, `pickFromSources` and `curate`
   throw a `TypeError` before any model call when an options object, or a
   nested one such as `thresholds` or `everyRanked`, holds a key Curate does

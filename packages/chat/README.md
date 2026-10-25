@@ -95,6 +95,31 @@ See [core's measured reason](https://github.com/jonny981/curate/blob/main/packag
 
   const source = historySource({ reader: chat(), ...chatSettings, questions: { ...CHAT_CASCADE, band: [0.05, 0.95] } });
   ```
+- **Personal questions:** `PERSONAL_CHAT_CASCADE` is a question set for histories of a person's own life: events, purchases, people, ages, places and numbers. It asks first whether the user says something about their own life that bears on the task, then `needed`, `aside` and `preference` inside the 0.1 to 0.9 band. On saved answers for chat-history tasks, it ranked the parts holding an answer above the hard non-answers of their own task more often than `CHAT_CASCADE` did: 0.815 against 0.778. It is not the default because `chat()` mostly reads coding-agent transcripts. A clear "no" to its first question settles a part with no further question, so a coding decision such as "we'll use Postgres" would likely be dropped. Use it through `historySource`:
+
+  ```ts
+  import { historySource } from '@curatejs/core';
+  import { chat, chatSettings, PERSONAL_CHAT_CASCADE } from '@curatejs/chat';
+
+  const source = historySource({ reader: chat(), ...chatSettings, questions: PERSONAL_CHAT_CASCADE });
+  ```
+- **Personal questions with written ones:** `PERSONAL_CHAT_WRITTEN_CASCADE` holds the same questions, fitted together with two to four questions a model writes for each task. It needs core's `writeQuestions` pick option; `taskQuestionWriter(write)` builds one from your curator's `write` function. A pick with this set and no writer throws. See [core's written questions](https://github.com/jonny981/curate/blob/main/packages/core/README.md#questions-written-for-each-task).
+
+  ```ts
+  import { historySource, memory, taskQuestionWriter } from '@curatejs/core';
+  import { chatWriter, jev } from '@curatejs/core/models';
+  import { chat, chatSettings, PERSONAL_CHAT_WRITTEN_CASCADE } from '@curatejs/chat';
+
+  const decide = jev({ apiKey: process.env.TYPESAFE_API_KEY });
+  const write = chatWriter({ apiKey: process.env.CHAT_API_KEY, model: 'gpt-5-mini' });
+
+  const mem = memory({
+    sources: [historySource({ reader: chat(), ...chatSettings, questions: PERSONAL_CHAT_WRITTEN_CASCADE })],
+    decide,
+    write,
+    pick: { writeQuestions: taskQuestionWriter(write) },
+  });
+  ```
 - **Label bar:** `labelBar` sets how sure a label must be, 0.5 when absent. A higher bar brings fewer parts in through the label lane: `historySource({ reader: chat(), ...chatSettings, labelBar: 0.7 })`.
 - **Labels:** `labels: true` asks core's seven `LABEL_KINDS` for transcript facts; a list of kinds asks your own set instead. See [core's label options](https://github.com/jonny981/curate/blob/main/packages/core/README.md#label-gate).
 - **Search wording:** `CHAT_SEARCH_LINE_REGISTER` describes the wording for host-written extra search lines. Copy or replace this text in your host; the package generates no lines.

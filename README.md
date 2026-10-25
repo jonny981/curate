@@ -218,6 +218,7 @@ const commits = historySource({ reader: git('.'), ...gitSettings, questions: myS
 ```
 
 A source without `questions` asks each part one built-in question.
+Other question options: `PERSONAL_CHAT_CASCADE` for histories of a person's own life, `COUNT_MARKER` for count tasks, and `pick.writeQuestions` for questions written for each task (see [core's options](packages/core/README.md#questions-written-for-each-task)).
 `reader` can also be your own source; see [core's options](packages/core/README.md#levers-and-source-settings).
 
 Pass reader options under `read`, selection options under `pick`, and writer options under `curate`:

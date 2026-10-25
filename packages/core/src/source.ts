@@ -5,7 +5,7 @@ import { DEFAULT_MAX_QUESTION_TEXT, pick } from './pick.js';
 import { phraseCount, stripSearchInstructions } from './search.js';
 import { addMeaningRanks, type MeaningSearchOptions } from './meaning.js';
 import { cutLane, laneBend, laneScoreOf, type SearchLaneReport } from './lanes.js';
-import { checkCascade, checkCascadeKeys, checkPickOptions, checkReadRequest } from './options.js';
+import { checkCascade, checkCascadeKeys, checkPickOptions, checkReadRequest, checkWriteQuestions } from './options.js';
 import { LABEL_KINDS, type LabelKind } from './labels.js';
 
 /** What a source is asked for, once per search. */
@@ -801,6 +801,7 @@ export async function pickFromSources(
   ));
   checkPickOptions({ ...options, labelKindsBySource, labelBarBySource, rareBySource, barBySource, ruleBarBySource,
     questionsBySource });
+  checkWriteQuestions({ ...options, questionsBySource });
   const reads = await Promise.all(sources.map((source) => readSearches(source, {
     ...request,
     maxQuestionText: options.limits?.maxQuestionText ?? request.maxQuestionText
