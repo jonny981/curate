@@ -56,6 +56,7 @@ export const EXPECTED_FILES = {
     'package/dist/source.d.ts',
     'package/dist/tags.d.ts',
     'package/dist/task.d.ts',
+    'package/dist/time.d.ts',
     'package/dist/vectors.d.ts',
     'package/package.json',
   ],

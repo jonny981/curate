@@ -100,7 +100,7 @@ describe('levers', () => {
       batch.questions.map((question) => [question.key, answered(0.8)]));
     const plain = await pick(candidates, { task: 'Recall the plan', decide, everyScored: true });
     const uncut = await pick(candidates, { task: 'Recall the plan', decide, ...uncutPick });
-    expect(uncut.record).toEqual(plain.record);
+    expect({ ...uncut.record, asOf: plain.record.asOf }).toEqual(plain.record);
     expect(uncut.selected).toEqual(plain.selected);
     expect(plain.record.levers).toEqual({
       everyRanked: true,
@@ -114,7 +114,7 @@ describe('levers', () => {
       { task: 'task', decide, everyScored: true });
     const readUncut = await pickFromSources([laneSource()], { task: 'task', wholeLanes: false },
       { task: 'task', decide, ...uncutPick });
-    expect(readUncut.record).toEqual(readPlain.record);
+    expect({ ...readUncut.record, asOf: readPlain.record.asOf }).toEqual(readPlain.record);
     expect(readPlain.record.levers).toEqual({
       wholeLanes: false, everyRanked: true, everyScored: true, route: false, rare: false, sources: { notes: { labels: false, rare: false, bar: 0 } },
     });

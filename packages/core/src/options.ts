@@ -22,7 +22,8 @@ const PICK_OPTION_KEYS: readonly (keyof PickOptions)[] = [
   'ranking', 'task', 'decide', 'questionsBySource', 'sourceKinds', 'labelKindsBySource', 'labelBarBySource',
   'keepTop', 'rankProtection', 'bestPartFirst', 'tags', 'tagsByKind',
   'labels', 'cache', 'route', 'answerTypes', 'writeQuestions', 'everyRanked', 'everyScored', 'rare', 'rareBySource',
-  'barBySource', 'ruleBarBySource', 'rulesEnumerationComplete', 'readsBySource', 'limits', 'thresholds', 'signal',
+  'barBySource', 'ruleBarBySource', 'rulesEnumerationComplete', 'readsBySource', 'limits', 'thresholds',
+  'taskDate', 'timeZone', 'taskPeriod', 'signal',
 ];
 const THRESHOLD_KEYS: readonly (keyof PickThresholds)[] = ['linkedPathBar'];
 const LIMIT_KEYS: readonly (keyof PickLimits)[] = [
@@ -35,7 +36,7 @@ const READ_REQUEST_KEYS: readonly (keyof CandidateReadRequest)[] = [
   'task', 'searchLines', 'searchPhrases', 'meaning', 'kindLanes', 'wholeLanes',
   'speakerOnly', 'phraseLane', 'topic', 'meaningLane', 'labelPool',
   'stripSearchInstructions', 'paths', 'exclude', 'revision', 'limit',
-  'maxQuestionText', 'signal',
+  'maxQuestionText', 'taskDate', 'timeZone', 'asOf', 'taskPeriod', 'signal',
 ];
 const MEANING_KEYS: readonly (keyof MeaningSearchOptions)[] = ['embed', 'nearest', 'wholeLanes'];
 const CURATE_KEYS: readonly (keyof CurateOptions)[] = [
@@ -172,6 +173,9 @@ export function checkPickOptions(options: PickOptions): void {
   checkKeys(options.everyScored, ['bar', 'bySize'], 'everyScored');
   checkKeys(options.rare, ['share', 'bar'], 'rare');
   checkKeys(options.answerTypes, ['bar'], 'answerTypes');
+  if (options.taskPeriod !== undefined && typeof options.taskPeriod !== 'boolean') {
+    throw new TypeError('taskPeriod must be a boolean.');
+  }
   for (const [id, enabled] of Object.entries(options.rareBySource ?? {})) {
     if (typeof enabled !== 'boolean') throw new TypeError(`rareBySource.${id} must be a boolean.`);
   }

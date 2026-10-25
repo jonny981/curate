@@ -393,6 +393,68 @@ The line gains use keyword and phrase search, not vector search. The rank sample
 answers, rather than a complete decision feed. The document check uses
 a 0.4 continuation gate. No continuation gate is used by the package.
 
+## Time
+
+Every read measures from one moment, the task's date.
+Two fields set it, on the read request and in `pick`'s options:
+
+- **`taskDate`:** an ISO 8601 date or date-time, such as `2025-06-02` or `2025-06-02T09:15:00+01:00`. A date without a time means the end of that day in `timeZone`. A time without an offset is a time in `timeZone`. Anything else throws a `TypeError` before any read. Absent means now.
+- **`timeZone`:** the IANA time zone of the person asking, such as `Europe/London`. Absent means the system's own zone. A name the runtime does not know throws a `TypeError`.
+
+`pickFromSources` takes both from the read request, or from `pick`'s options when the request has none, and passes them to every read and to `pick`.
+Without `taskDate`, it reads now once and passes that moment to every read as the request's `asOf`, the moment the record's `asOf` names.
+A reader measures from `taskDate`, else `asOf`, else now. It leaves out records dated after the moment only when `taskDate` is given.
+`memory().recall(task, { taskDate, timeZone })` passes them the same way.
+It also gives `taskDate` to `curate` as the task's date label, unless `curate.taskDate` is set.
+
+The readers use them:
+
+- **Git:** the `recency` signal is measured from the task date.
+- **Chat:** a `since` duration counts back from the task date, and each date carries the zone's offset, such as `2025-06-02T00:30:00.000+01:00`.
+- **After the task date:** with `taskDate` given, a chat message or a git commit dated after it is not read. Without it nothing is left out for its date. Markdown keeps notes dated after it, since a note can declare an `effective` date ahead. A `revision` pin reads a knowledge base as it stood.
+
+### The task's period
+
+`taskPeriod(task, { asOf, timeZone })` returns the period a task names as `{ from, to }`, or `undefined`.
+`from` is the start of the first day and `to` the end of the last, each an ISO date-time with the zone's offset.
+`asOf` takes the forms `taskDate` takes and defaults to now.
+It reads only these English forms:
+
+- **A month:** after "in", "during" or "of", or with a year or a day: "in March", "March 2024", "3 March", "March 3".
+- **A year:** after "in" or "during": "in 2024".
+- **A named day, week, month or year:** "today", "yesterday", "this week", "last week", "this month", "last month", "this year", "last year".
+- **A count back:** "N days ago", "N weeks ago", "N months ago".
+- **An ISO date:** "on 2025-03-04".
+
+A month or a day with no year is its latest occurrence on or before `asOf`.
+Weeks start on Monday.
+Several periods in one task give one span, from the earliest start to the latest end.
+A month name counts only in the forms above, so "May I ask what we chose?" names no period.
+
+`pick`'s `taskPeriod` option is on by default and acts only when the task names a period.
+`pickFromSources` then reads each source once more with the read request's `taskPeriod` set to that period.
+It adds the parts dated inside it that no lane kept, marked `dateWindow: 'task-period'` and `poolOnly`.
+`pick` admits a part with a `dateWindow` to the decide step as it admits a lane member.
+A rule source is not read again: its parts are never cut.
+`taskPeriod: false` turns it off.
+
+Nothing is removed for its date.
+A part is dated when it was written, not when the thing it describes happened.
+A message in April that recalls March is dated April, so a filter on March would drop the very answer.
+
+Each reader serves the period read in its own way.
+Chat keeps the parts dated inside the period as they stream past.
+Git reads the period with `git log --since --until`.
+Markdown keeps the parts of notes dated inside it.
+A reader that ignores the request's `taskPeriod` answers a whole-lane read, and `pickFromSources` keeps the parts it returned that are dated inside the period.
+
+The pick record names what was used:
+
+- **`asOf`:** the moment used, as an ISO date-time in `timeZone`. Pass it back as `taskDate` with the same `timeZone` to replay the pick.
+- **`timeZone`:** the zone dates were read in.
+- **`taskPeriod`:** `{ from, to }`, present when the option was on and the task named a period.
+- **`dateWindow`:** on a part and its `PickRecordEntry`, `'task-period'` when the period, not a lane, brought it in.
+
 ## Picking
 
 `pick(candidates, { task, decide })` ranks the candidates, asks `decide`
@@ -1378,7 +1440,7 @@ It counts the parts the setting looked at and the kept parts it brought in or ke
 When the setting brought in nothing and kept out nothing, its sentence says why.
 A setting that was off has no entry, and every count comes from the one pick that ran.
 
-A part reaches the decide step by one or more ways in: the task's own keyword lane, an extra lane (a search line, a phrase or a meaning query), the label lane, a whole-lane read past the lane cut, the rare-word round, or the commit-to-note link.
+A part reaches the decide step by one or more ways in: the task's own keyword lane, an extra lane (a search line, a phrase or a meaning query), the label lane, a whole-lane read past the lane cut, the task's period, the rare-word round, or the commit-to-note link.
 A setting that opens a way in counts a kept part as `added` only when that was the part's only way in and neither the link nor the rare-word round kept it.
 A part two ways brought in counts for neither.
 A lane is a way in only for the parts inside its candidate limit (`maxCandidates`).
@@ -1390,6 +1452,7 @@ A search line that repeats the task opens no lane, and its entry says so.
 | `rare` | The round ran on the source | Parts the round pulled in | Pulled parts that joined the selection | 0 |
 | `searchLines`, `searchPhrases`, `meaning` | The read request gave that option | Parts those lanes held | Kept parts whose only way in was those lanes | 0, or `null` when a feed cut or a stop ended the feed early |
 | `wholeLanes` | `read.wholeLanes` is on | Parts read past the lane cut | Kept parts whose only way in was the whole-lane read | 0, or `null` when a feed cut or a stop ended the feed early |
+| `taskPeriod` | `taskPeriod` is on, the default | Reference parts dated inside the period; 0 when the task names none | Kept parts whose only way in was the period | 0, or `null` when the task named a period and a feed cut or a stop ended the feed early. When it added none, the summary says the task names no period, that none of the parts only the period brought in were kept, that every part from the period was already in a search lane, or that each part from the period also had another way in |
 | `linkedPathBar` | The pick holds a reference part with a `path` and a `repository` | Reference parts rejected below their bar but at or above the link bar, with a `path` and a `repository` | Parts kept through the link | 0 |
 | `bar` | Always, for a source with reference parts | The source's scored reference parts | 0 | Scored parts below the bar that no later pass kept. The changed-path link, the rare-word round and a typed question's `keepAt` can still keep a part below the bar |
 | `ruleBar` | The source has rule parts and a bar above 0; the summary says how many rules were asked, picked and dropped | The source's rules asked | 0 | Rules below the bar |
@@ -1399,7 +1462,7 @@ A search line that repeats the task opens no lane, and its entry says so.
 | `typed` | The source's question set has typed questions | Parts asked at least one typed question | Kept parts whose score reaches the source's bar only with the typed terms, and parts a typed question's `keepAt` kept | Parts below the bar only because of the typed terms that no later pass kept |
 | `written` | The source's question set has `written` weights | Parts asked at least one written question | Kept parts whose score reaches the source's bar only with the written terms, other than parts a typed question's `keepAt` keeps | Parts below the bar only because of the written terms that no later pass kept |
 
-Labels, extra lanes and `wholeLanes` also change the order of the decide feed.
+Labels, extra lanes, `wholeLanes` and the task's period also change the order of the decide feed.
 That order matters only when something ends the feed early: an `everyRanked: { c }` cut or a stopping limit.
 Then one of these settings can swap one kept part for another even when every part had two ways in.
 One pick cannot say which parts would have been decided without the setting, so `dropped` is `null` and the summary says the feed ended early.
@@ -1477,6 +1540,8 @@ A curate record's `effects` covers `curate`'s own options; the pick's entries st
 - **`keptBy`:** on a selected `PickRecordEntry`, the key of the typed question whose `keepAt` kept the part below its bar.
 - **`CurateRecord.answerHint`:** the line `answerHint` added to the curator's task, absent when it added none.
 - **`pastLaneCut`:** on a part and its `PickRecordEntry`, true when a read with `wholeLanes` on returned the part although the lane cut would have dropped it.
+- **`PickRecord.asOf`, `PickRecord.timeZone`, `PickRecord.taskPeriod`:** the moment and zone the pick read dates in, and the period the task named ([Time](#time)).
+- **`dateWindow`:** on a part and its `PickRecordEntry`, `'task-period'` when the task's period brought it in.
 
 `pickFromSources` tells `pick` how each source was read through the `readsBySource` option: the option each `searchRanks` position came from, the extra-lane options the read request gave, and whether the read kept whole lanes.
 A direct `pick` without it gets no extra-lane or `wholeLanes` entries.

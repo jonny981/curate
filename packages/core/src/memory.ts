@@ -25,8 +25,17 @@ export interface RecallResult {
  *  Incomplete collection throws before writing; its cause holds the pick. */
 export function memory(options: MemoryOptions) {
   return {
-    async recall(task: string, { signal }: { readonly signal?: AbortSignal } = {}): Promise<RecallResult> {
-      const picked = await pickFromSources(options.sources, { ...options.read, task, signal }, {
+    /** `taskDate` is the moment every read measures from, and `timeZone`
+     *  the zone dates are read in (see the read request's fields of the
+     *  same names). With `taskDate` and no `curate.taskDate`, the curator
+     *  gets `taskDate` as the task's date label. */
+    async recall(task: string, { taskDate, timeZone, signal }: {
+      readonly taskDate?: string;
+      readonly timeZone?: string;
+      readonly signal?: AbortSignal;
+    } = {}): Promise<RecallResult> {
+      const time = { ...(taskDate === undefined ? {} : { taskDate }), ...(timeZone === undefined ? {} : { timeZone }) };
+      const picked = await pickFromSources(options.sources, { ...options.read, ...time, task, signal }, {
         ...options.pick, task, decide: options.decide, signal,
       });
       if (picked.reads.some((read) => read.status !== 'read' || !read.complete)
@@ -34,7 +43,9 @@ export function memory(options: MemoryOptions) {
           || (item.status === 'unassessed' && item.reason !== 'gate'))) {
         throw new Error('Context collection did not finish; inspect the source and decision records.', { cause: picked });
       }
-      const result = await curate(task, picked, { ...options.curate, write: options.write, signal });
+      const result = await curate(task, picked, {
+        ...(taskDate === undefined ? {} : { taskDate }), ...options.curate, write: options.write, signal,
+      });
       const rules = picked.selected.filter((item) => item.role === 'rule').map((item) => item.text).join('\n\n');
       return { log: result.log, rules, picked, result };
     },

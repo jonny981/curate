@@ -150,3 +150,63 @@ describe('memory', () => {
     expect(recalled.result.record.levers.wholeLanes).toBe(true);
   });
 });
+
+describe('the task date', () => {
+  it('names the moment in the pick record and gives it to the curator as the task date label', async () => {
+    const requests: string[] = [];
+    const reads: { taskDate?: string; timeZone?: string }[] = [];
+    const reader: CandidateSource = { ...source(), read: async (request) => {
+      reads.push({ taskDate: request.taskDate, timeZone: request.timeZone });
+      return { status: 'read', complete: true, candidates: [note()] };
+    } };
+    const write: CurateWrite = async ({ body }) => { requests.push(body); return LOG; };
+    const { picked } = await memory({ sources: [reader], decide, write })
+      .recall(TASK, { taskDate: '2025-06-02', timeZone: 'Europe/London' });
+    expect(reads[0]).toEqual({ taskDate: '2025-06-02', timeZone: 'Europe/London' });
+    expect(picked.record).toMatchObject({ asOf: '2025-06-02T23:59:59.999+01:00', timeZone: 'Europe/London' });
+    expect(requests[0]).toContain(`${TASK} (asked 2025-06-02)`);
+  });
+
+  it('keeps the curator\'s own task date label', async () => {
+    const requests: string[] = [];
+    const write: CurateWrite = async ({ body }) => { requests.push(body); return LOG; };
+    await memory({ sources: [source()], decide, write, curate: { taskDate: 'Monday' } })
+      .recall(TASK, { taskDate: '2025-06-02', timeZone: 'UTC' });
+    expect(requests[0]).toContain(`${TASK} (asked Monday)`);
+  });
+
+  it('gives every read of one recall the same moment when no task date is given', async () => {
+    const reads: { taskDate?: string; asOf?: string }[] = [];
+    const reader = (id: string): CandidateSource => ({ ...source(), id, read: async (request) => {
+      reads.push({ taskDate: request.taskDate, asOf: request.asOf });
+      // The clock moves a year while the first source reads.
+      if (reads.length === 1) vi.setSystemTime(new Date('2026-06-02T12:00:00Z'));
+      return { status: 'read', complete: true, candidates: [{ ...note(), sourceId: id }] };
+    } });
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2025-06-02T12:00:00Z'));
+    try {
+      const { picked } = await memory({ sources: [reader('notes'), reader('more-notes')], decide, write: async () => LOG })
+        .recall(TASK, { timeZone: 'UTC' });
+      expect(picked.record.asOf).toBe('2025-06-02T12:00:00.000+00:00');
+      expect(reads).toEqual([{ taskDate: undefined, asOf: picked.record.asOf }, { taskDate: undefined, asOf: picked.record.asOf }]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    ['taskDate', { taskDate: 'last Tuesday' }],
+    ['taskDate offset hour', { taskDate: '2025-06-02T09:15:00+24:00' }],
+    ['taskDate offset minute', { taskDate: '2025-06-02T09:15:00+01:60' }],
+    ['taskDate offset', { taskDate: '2025-06-02T09:15:00+99:99' }],
+    ['timeZone', { timeZone: 'Mars/Olympus' }],
+  ] as const)(
+    'throws a TypeError for a bad %s before any read', async (_name, time) => {
+      let reads = 0;
+      const reader: CandidateSource = { ...source(), read: async () => { reads += 1; return { status: 'read', complete: true, candidates: [] }; } };
+      await expect(memory({ sources: [reader], decide, write: async () => LOG }).recall(TASK, time))
+        .rejects.toThrow(TypeError);
+      expect(reads).toBe(0);
+    });
+});

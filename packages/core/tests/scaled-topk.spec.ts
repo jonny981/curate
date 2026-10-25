@@ -77,7 +77,7 @@ describe('pick scaled top-k', () => {
     expect(plain.record).not.toHaveProperty('pick');
     const absent = await pick(candidates, { ...uncutPick, task, decide: allAnswered.decide, everyRanked: undefined });
     expect(absent.selected).toEqual(plain.selected);
-    expect(absent.record).toEqual(plain.record);
+    expect({ ...absent.record, asOf: plain.record.asOf }).toEqual(plain.record);
   });
 
   it.each([

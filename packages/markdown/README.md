@@ -24,8 +24,10 @@ body) keeps its candidates at a negative
 signal: ranked lower, never hidden. A note's declared date (frontmatter `date`, `written`,
 `effective` or `applies-from`) is carried with its meaning. When the
 corpus sits inside a work tree and the note declares none, its last
-committed change date is carried with meaning `changed` instead; outside
-a repository, or for a note git has never tracked, there is no date.
+committed change date is carried with meaning `changed` instead. A note
+with no commit yet or with uncommitted changes, and an undeclared note
+outside a repository, carries its file's modified time with meaning
+`modified`.
 Notes inside a work tree also carry `path` (their repository-relative
 file) and `repository`, which is what lets a selected commit link them
 in. A `revision` pin on `knowledgeBase` reads the tree that revision
@@ -117,11 +119,21 @@ const sources = [
 - **Locations:** Instructions record their real directory. Named task files
   give closer parent instruction files a stronger `instruction-location`
   signal. Other directories receive no location signal.
-- **Dates:** Inside git, the last committed change supplies meaning `changed`,
-  ahead of frontmatter. Untracked files have no commit date. Outside git,
-  `date` supplies `recorded`, `updated` supplies `changed`, and file modification
-  time supplies `modified` when no date field is declared. Existing `written`,
-  `effective`, and `applies-from` meanings remain supported.
+- **Dates:** Every file gets a date. Each reader chooses it in its own
+  order, and the date's `meaning` records which source it came from:
+  - **`markdown()` inside git:** the last committed change, `changed`,
+    ahead of frontmatter. A file with no commit yet, or with uncommitted
+    changes, gets its modified time, `modified`.
+  - **`markdown()` outside git:** a declared date (`date` supplies
+    `recorded`, `updated` supplies `changed`, and `written`, `effective`
+    and `applies-from` keep their meanings), else the file's modified
+    time, `modified`.
+  - **`knowledgeBase()` and `rules()`:** a declared date, else the last
+    committed change, `changed`, else the modified time, `modified`, for
+    a file with no commit yet, with uncommitted changes, or outside a
+    repository. `rules()` reads no git history, so a rule with no
+    declared date gets its modified time.
+  - **A pinned read:** the revision's commit dates, never a modified time.
 - **Pins:** Every kind reads the requested revision's contents and dates.
   Explicit exclusions still apply before content is opened.
 - **Ranking:** `pick` accepts `ranking: { docs: { bm25: 2 } }` to weight signals

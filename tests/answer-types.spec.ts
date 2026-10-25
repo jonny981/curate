@@ -70,11 +70,12 @@ interface Baseline {
 const sha256 = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const baseline = (): Baseline => JSON.parse(readFileSync(BASELINE, 'utf8'));
 /** The record as the baseline build wrote it: without each source's `labelBar` and the bar the labels
- *  summary names, which the label bar setting added. */
-const asBaseline = (record: PickRecord): PickRecord => ({ ...record,
+ *  summary names, which the label bar setting added, and without the moment, the time zone and the
+ *  task-period entries, which the task date added. */
+const asBaseline = ({ asOf: _asOf, timeZone: _timeZone, ...record }: PickRecord): PickRecord => ({ ...record,
   levers: { ...record.levers, sources: Object.fromEntries(Object.entries(record.levers.sources)
     .map(([id, { labelBar: _labelBar, ...settings }]) => [id, settings])) },
-  effects: record.effects.map((entry) => entry.setting !== 'labels' ? entry
+  effects: record.effects.filter((entry) => entry.setting !== 'taskPeriod').map((entry) => entry.setting !== 'labels' ? entry
     : { ...entry, summary: entry.summary.replace(` at the label bar ${LABEL_LANE_BAR}:`, ':') }) });
 
 async function snapshot(): Promise<Baseline> {

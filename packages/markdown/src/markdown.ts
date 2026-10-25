@@ -9,6 +9,7 @@ import {
   sharedFileStore,
   embedQuery,
   embedSimilarities,
+  datedIn,
 } from '@curatejs/core/internal';
 import { lstat, readdir, readFile, realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -504,6 +505,21 @@ async function logDates(
     }
   }
   return dates;
+}
+
+/** The files under `prefix` with uncommitted changes, staged or not, and
+ *  the files with no commit yet, as repository paths, from one `git
+ *  status` pass. */
+async function uncommitted(
+  toplevel: string,
+  prefix: string,
+  signal: AbortSignal | undefined,
+): Promise<ReadonlySet<string>> {
+  const args = ['status', '--porcelain', '-z', '--no-renames', '--untracked-files=all'];
+  if (prefix !== '') args.push('--', prefix);
+  const output = await runGit(toplevel, args, { signal });
+  // Each entry is two status letters, a space and the path.
+  return new Set(output.split('\0').filter((entry) => entry.length > 3).map((entry) => entry.slice(3)));
 }
 
 /** The corpus root rebuilt on the deepest existing ancestor directory,
@@ -1051,10 +1067,12 @@ function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 'rules'
           for (const target of links) inbound.set(target, (inbound.get(target) ?? 0) + 1);
         }
         let lastChanged: ReadonlyMap<string, string> = new Map();
+        let dirty: ReadonlySet<string> = new Set();
         group.repo = state.repo;
         if (state.repo !== undefined && (legacy === undefined || anyUndeclared)) {
           try {
             lastChanged = await logDates(state.repo.toplevel, state.repo.prefix, state.pinned?.revision, request.signal);
+            if (state.pinned === undefined) dirty = await uncommitted(state.repo.toplevel, state.repo.prefix, request.signal);
           } catch (error) {
             if (state.pinned !== undefined || isCancel(error)) throw asSourceReadError(error);
             group.repo = undefined;
@@ -1075,10 +1093,15 @@ function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 'rules'
           meta.repository = meta.repoPath === undefined ? undefined
             : options.repository ?? group.repo!.toplevel;
           const changed = meta.repoPath === undefined ? undefined : lastChanged.get(meta.repoPath);
-          meta.date = legacy !== undefined
-            ? meta.declared ?? (changed === undefined ? undefined : { value: changed, meaning: 'changed' })
-            : group.repo === undefined
-            ? meta.declared ?? { value: (await stat(meta.file)).mtime.toISOString(), meaning: 'modified' }
+          // A declared date wins outside a repository and for the older
+          // readers. Otherwise the last commit dates the file, unless the
+          // file sits outside a repository, has no commit yet or has
+          // uncommitted changes: then its modified time does. A pinned
+          // read never uses a modified time.
+          const modified = state.pinned === undefined
+            && (meta.repoPath === undefined || changed === undefined || dirty.has(meta.repoPath));
+          meta.date = (legacy !== undefined || group.repo === undefined) && meta.declared !== undefined ? meta.declared
+            : modified ? { value: (await stat(meta.file)).mtime.toISOString(), meaning: 'modified' }
             : changed === undefined ? undefined : { value: changed, meaning: 'changed' };
           meta.location = options.kind === 'instructions'
             ? instructionLocation(meta.directory, request.paths ?? [], group.repo?.toplevel ?? group.state.root) : 0;
@@ -1334,12 +1357,16 @@ function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 'rules'
       const ranked = parts.map((_, index) => index)
         .sort((left, right) => sums[right]! - sums[left]!
           || (parts[left]!.id < parts[right]!.id ? -1 : parts[left]!.id > parts[right]!.id ? 1 : 0));
+      // A period read keeps only the parts of notes dated inside the task's period.
+      const period = request.taskPeriod;
+      const dated = (index: number) => period === undefined
+        || datedIn(metas[parts[index]!.file]!.date?.value ?? '', period);
       // A kind lane's lane is its exact-phrase matches, ranked by the
       // topic's signal sum — never by how often the phrase occurs, so a
       // direction said once survives a phrase everyone says.
       const laneRanked = kindLane
-        ? ranked.filter((index) => (parts[index]!.phrased ?? 0) > 0)
-        : ranked;
+        ? ranked.filter((index) => (parts[index]!.phrased ?? 0) > 0 && dated(index))
+        : ranked.filter(dated);
       // A keyword read's limit bounds the read itself; a kind lane's
       // caps what the score curve keeps.
       const pool = kindLane || limit === undefined ? laneRanked : laneRanked.slice(0, limit);

@@ -104,13 +104,13 @@ describe.each(['claude-code', 'codex'] as const)('chat %s', (provider) => {
 
   it('preserves message parts, roles, session ids and dates', async () => {
     const directory = await transcript(provider, [message(provider, 'user', 'A user request'), message(provider, 'assistant', 'An assistant reply')]);
-    const result = await read(provider, directory);
+    const result = await read(provider, directory, {}, { task: 'find useful evidence', timeZone: 'UTC' });
     expect(result.complete).toBe(true);
     expect(result.candidates.map((candidate) => candidate.chat?.role).sort()).toEqual(['assistant', 'user']);
     for (const candidate of result.candidates) {
       expect(candidate.chat).toMatchObject({ provider, sessionId: 'session-one' });
       expect(candidate.role).toBe('reference');
-      expect(candidate.date).toEqual({ value: '2026-10-02T12:00:00.000Z', meaning: 'recorded' });
+      expect(candidate.date).toEqual({ value: '2026-10-02T12:00:00.000+00:00', meaning: 'recorded' });
     }
     expect(result.candidates.map((candidate) => candidate.text).sort()).toEqual(['A user request', 'An assistant reply']);
   });

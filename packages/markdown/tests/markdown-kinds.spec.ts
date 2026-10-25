@@ -188,18 +188,20 @@ describe('Markdown dates, pins, and decisions', () => {
     expect(candidates.find((c) => c.title.startsWith('modified.md'))!.date).toEqual({ value: (await stat(join(directory, 'modified.md'))).mtime.toISOString(), meaning: 'modified' });
   });
 
-  it.each(['knowledge', 'docs', 'rules', 'instructions'] as const)('uses committed dates and pinned bytes for %s', async (kind) => {
+  it.each(['knowledge', 'docs', 'rules', 'instructions'] as const)('uses modified times for uncommitted files, and committed dates and pinned bytes for %s', async (kind) => {
     const directory = await tree({ 'guide.md': '---\ndate: 2024-01-01\n---\nOriginal.' });
     git(directory, 'init', '-b', 'main'); git(directory, 'add', '.'); git(directory, '-c', 'commit.gpgsign=false', 'commit', '-m', 'Record guide');
     const revision = git(directory, 'rev-parse', 'HEAD').trim();
     await writeFile(join(directory, 'guide.md'), 'Later.'); await writeFile(join(directory, 'untracked.md'), 'Untracked.');
     const current = await read([directory], kind);
-    expect(current.candidates.find((c) => c.title.startsWith('guide.md'))!.date).toEqual({ value: '2025-02-03T12:00:00+00:00', meaning: 'changed' });
-    expect(current.candidates.find((c) => c.title.startsWith('untracked.md'))!.date).toBeUndefined();
+    const modified = async (name: string) => ({ value: (await stat(join(directory, name))).mtime.toISOString(), meaning: 'modified' });
+    expect(current.candidates.find((c) => c.title.startsWith('guide.md'))!.date).toEqual(await modified('guide.md'));
+    expect(current.candidates.find((c) => c.title.startsWith('untracked.md'))!.date).toEqual(await modified('untracked.md'));
     const pinned = await read([directory], kind, { revision });
     expect(pinned.revision).toBe(revision);
     expect(pinned.candidates).toHaveLength(1);
     expect(pinned.candidates[0]!.text).toBe('Original.');
+    expect(pinned.candidates[0]!.date).toEqual({ value: '2025-02-03T12:00:00+00:00', meaning: 'changed' });
   });
 
   it('uses kind-specific questions and records kinds while retaining low-score evidence and full curator text', async () => {

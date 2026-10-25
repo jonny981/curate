@@ -450,7 +450,7 @@ describe('pick labels', () => {
       ...labelOptions(store()),
     });
     const { labels: _labels, levers, effects, ...record } = gated.record;
-    expect({ ...record, effects: effects.filter((entry) => entry.setting !== 'labels'),
+    expect({ ...record, asOf: plain.record.asOf, effects: effects.filter((entry) => entry.setting !== 'labels'),
       labelKindsBySource: plain.record.labelKindsBySource,
       levers: { ...levers, sources: plain.record.levers.sources } }).toEqual(plain.record);
     expect(gated.selected).toEqual(plain.selected);

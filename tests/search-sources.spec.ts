@@ -71,7 +71,8 @@ describe('extra source searches', () => {
       const disabled = await pickSource(reader, { task: 'original', searchLines, stripSearchInstructions: false, wholeLanes: true });
       // Lines that only repeat the task open no lane, and the record's effects say so.
       const lines = disabled.record.effects.filter((entry) => entry.setting === 'searchLines');
-      expect({ ...disabled, record: { ...disabled.record, effects: disabled.record.effects.filter((entry) => !lines.includes(entry)) } })
+      expect({ ...disabled, record: { ...disabled.record, asOf: baseline.record.asOf,
+        effects: disabled.record.effects.filter((entry) => !lines.includes(entry)) } })
         .toEqual(baseline);
       expect(lines).toEqual(searchLines.length === 0 ? [] : [{
         setting: 'searchLines', source: 'notes', actedOn: 0, added: 0, dropped: 0,
@@ -140,7 +141,7 @@ describe('extra source searches', () => {
     const reader = source(async () => readResult([candidate('same')]));
     const baseline = await pickFromSources([reader, reader], { task: 'original' }, { ...uncutPick, task: 'original', decide: yes });
     const disabled = await pickFromSources([reader, reader], { task: 'original', searchLines: [] }, { ...uncutPick, task: 'original', decide: yes });
-    expect(disabled).toEqual(baseline);
+    expect({ ...disabled, record: { ...disabled.record, asOf: baseline.record.asOf } }).toEqual(baseline);
     expect(disabled.selected).toHaveLength(2);
     expect(disabled.record.candidates).toHaveLength(2);
     const asked: string[] = [];

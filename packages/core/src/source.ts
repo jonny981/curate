@@ -7,6 +7,7 @@ import { addMeaningRanks, type MeaningSearchOptions } from './meaning.js';
 import { cutLane, laneBend, laneScoreOf, type SearchLaneReport } from './lanes.js';
 import { checkCascade, checkCascadeKeys, checkPickOptions, checkReadRequest, checkWriteQuestions } from './options.js';
 import { LABEL_KINDS, type LabelKind } from './labels.js';
+import { datedIn, taskMoment, taskPeriod, timeZoneOf, zonedIso, type TaskPeriod } from './time.js';
 
 /** What a source is asked for, once per search. */
 export interface CandidateReadRequest {
@@ -119,6 +120,27 @@ export interface CandidateReadRequest {
    *  `pickFromSources` uses a caller's text cut or the default reader size;
    *  pick shows each part whole when its text cut is omitted. */
   readonly maxQuestionText?: number;
+  /** The task's date: the moment every read measures from. An ISO 8601
+   *  date or date-time, such as `2025-06-02` or
+   *  `2025-06-02T09:15:00+01:00`; a date without a time means the end of
+   *  that day in `timeZone`. Git recency and chat's `since` count back
+   *  from it, and a chat message or git commit dated after it is not
+   *  read. Absent means now, and nothing is left out for its date. */
+  readonly taskDate?: string;
+  /** The IANA time zone of the person asking, such as `Europe/London`:
+   *  chat dates carry its offset, and a task date without an offset is
+   *  read in it. Absent means the system's own zone. */
+  readonly timeZone?: string;
+  /** Internal to pickFromSources: the moment it read once when no
+   *  `taskDate` is given, as an ISO date-time. Readers measure from it in
+   *  place of now, so every read of one pick shares it, and still read
+   *  records dated after it. Leave unset otherwise. */
+  readonly asOf?: string;
+  /** Internal to pickFromSources: the read serves the task's period.
+   *  Return the parts dated from `from` to `to`, whatever their match;
+   *  pickFromSources keeps only those dated inside the period, so a
+   *  reader that ignores it still works. Leave unset otherwise. */
+  readonly taskPeriod?: TaskPeriod;
   /** Cancellation reaches file reads and child processes. */
   readonly signal?: AbortSignal;
 }
@@ -751,6 +773,42 @@ async function readSearches(
     ...(partial === undefined ? {} : { partial }) };
 }
 
+/** The parts dated inside the task's period that no lane kept, added to
+ *  a read beside its own, marked `dateWindow` and absent from every
+ *  lane, so the pick admits them to the decide step. A pool member dated
+ *  inside the period gains the mark; a lane member is left as it is.
+ *  Nothing is removed. A rule source is never cut, so it is not read
+ *  again. */
+async function addTaskPeriod(
+  source: CandidateSource,
+  request: CandidateReadRequest,
+  period: TaskPeriod,
+  found: CandidateReadResult,
+  context: CandidateReadContext,
+): Promise<CandidateReadResult> {
+  if (found.status !== 'read' || source.role === 'rule') return found;
+  const read = await source.read({
+    ...request, task: searchTasks(request, source.kind)[0]!.task, taskPeriod: period,
+    searchLines: undefined, searchPhrases: undefined, kindLanes: undefined, meaning: undefined, limit: undefined,
+    wholeLanes: true, phraseLane: undefined, topic: undefined, meaningLane: undefined, labelPool: undefined,
+    ...(found.revision === undefined ? {} : { revision: found.revision }),
+  }, context);
+  if (read.status !== 'read') throw new SourceReadError('failed', `The task's period could not be read: ${read.reason}`);
+  const union = new Map(found.candidates.map((candidate) =>
+    [JSON.stringify([candidate.sourceId, candidate.id]), candidate] as const));
+  for (const candidate of read.candidates) {
+    if (candidate.role !== 'reference' || candidate.date === undefined || !datedIn(candidate.date.value, period)) continue;
+    const key = JSON.stringify([candidate.sourceId, candidate.id]);
+    const existing = union.get(key);
+    if (existing !== undefined && existing.poolOnly !== true) continue;
+    union.set(key, { ...unmarked(existing ?? candidate), searchRanks: undefined, poolOnly: true,
+      dateWindow: 'task-period' });
+  }
+  const partial = [found.partial, read.partial].filter(Boolean).join('; ');
+  return { ...found, candidates: [...union.values()], complete: found.complete && read.complete,
+    ...(partial === '' ? {} : { partial }) };
+}
+
 /**
  * Read every source, then pick over the combined candidates. The read
  * revision is copied onto candidates that do not carry their own
@@ -785,6 +843,11 @@ export async function pickFromSources(
   if (request.speakerOnly !== undefined && typeof request.speakerOnly !== 'boolean') {
     throw new TypeError('speakerOnly must be a boolean.');
   }
+  // One moment for every read: the task date, or now when none is given.
+  const timeZone = timeZoneOf(request.timeZone ?? options.timeZone);
+  const taskDate = request.taskDate ?? options.taskDate;
+  const asOf = zonedIso(taskMoment(taskDate, timeZone), timeZone);
+  const period = options.taskPeriod === false ? undefined : taskPeriod(options.task, { asOf, timeZone });
   const context: CandidateReadContext = { files: new Map() };
   const labelKindsBySource: Record<string, readonly LabelKind[]> = Object.fromEntries(
     sources.map((source) => [source.id, source.labelKinds ?? []]),
@@ -808,15 +871,19 @@ export async function pickFromSources(
   checkPickOptions({ ...options, labelKindsBySource, labelBarBySource, rareBySource, barBySource, ruleBarBySource,
     questionsBySource });
   checkWriteQuestions({ ...options, questionsBySource });
-  const reads = await Promise.all(sources.map((source) => readSearches(source, {
-    ...request,
-    maxQuestionText: options.limits?.maxQuestionText ?? request.maxQuestionText
-      ?? (source.maxQuestionText === Number.POSITIVE_INFINITY ? undefined : source.maxQuestionText ?? DEFAULT_MAX_QUESTION_TEXT),
-    labelPool: (source.labelKinds?.length ?? 0) > 0 ? 'gate'
-      : (options.everyRanked !== undefined && options.everyRanked !== true)
-        || (options.rare ?? source.rare ?? false) !== false
-        ? 'count' : undefined,
-  }, context)));
+  const reads = await Promise.all(sources.map(async (source) => {
+    const sourceRequest: CandidateReadRequest = {
+      ...request, ...(taskDate === undefined ? { asOf } : { taskDate }), timeZone, taskPeriod: undefined,
+      maxQuestionText: options.limits?.maxQuestionText ?? request.maxQuestionText
+        ?? (source.maxQuestionText === Number.POSITIVE_INFINITY ? undefined : source.maxQuestionText ?? DEFAULT_MAX_QUESTION_TEXT),
+      labelPool: (source.labelKinds?.length ?? 0) > 0 ? 'gate'
+        : (options.everyRanked !== undefined && options.everyRanked !== true)
+          || (options.rare ?? source.rare ?? false) !== false
+          ? 'count' : undefined,
+    };
+    const found = await readSearches(source, sourceRequest, context);
+    return period === undefined ? found : addTaskPeriod(source, sourceRequest, period, found, context);
+  }));
   const candidates: MemoryCandidate[] = [];
   const sourceKinds: Record<string, CandidateSourceKind> = Object.assign(Object.create(null), options.sourceKinds);
   let rulesEnumerationComplete = options.rulesEnumerationComplete !== false;
@@ -891,7 +958,8 @@ export async function pickFromSources(
     for (const candidate of read.candidates) readsBySource[candidate.sourceId] = sourceRead;
   }
   const result = await pick(combined, {
-    ...options, rulesEnumerationComplete, sourceKinds, labelKindsBySource, labelBarBySource, rareBySource, barBySource,
+    ...options, taskDate: asOf, timeZone,
+    rulesEnumerationComplete, sourceKinds, labelKindsBySource, labelBarBySource, rareBySource, barBySource,
     ruleBarBySource, questionsBySource, readsBySource,
   });
   // The read request's lever joins the pick's resolved set.

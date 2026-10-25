@@ -105,7 +105,7 @@ describe('rank protection', () => {
     const actual = await pick(candidates, { ...uncutPick,
       task: 'Find evidence', decide: disabled.decide, rankProtection: false, bestPartFirst: false,
     });
-    expect(actual).toEqual(expected);
+    expect({ ...actual, record: { ...actual.record, asOf: expected.record.asOf } }).toEqual(expected);
     expect(disabled.calls).toEqual(ordinary.calls);
     expect(actual.record).not.toHaveProperty('rankProtection');
     expect(actual.record).not.toHaveProperty('bestPartFirst');

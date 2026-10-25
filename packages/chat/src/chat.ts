@@ -2,7 +2,9 @@ import { lstat, readdir, readFile, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, join, relative, resolve, sep } from 'node:path';
 
-import { canonicalPath, phraseCount, laneBend, embedQuery, embedSimilarities } from '@curatejs/core/internal';
+import {
+  canonicalPath, phraseCount, laneBend, embedQuery, embedSimilarities, taskMoment, timeZoneOf, zonedIso,
+} from '@curatejs/core/internal';
 import { startChatRank, type ChatKeywordSettings } from './chat-rank.js';
 import { scrubChat } from './chat-scrub.js';
 import { DEFAULT_MAX_QUESTION_TEXT, type MemoryCandidate } from '@curatejs/core';
@@ -19,8 +21,10 @@ export interface ChatOptions {
   readonly providers?: readonly ChatProvider[];
   /** Folders to scan instead of each provider's default folder. */
   readonly paths?: readonly string[];
-  /** Include messages at or after an ISO date or a duration before read
-   * start (for example, '14 days'). Omitted means all messages. */
+  /** Include messages at or after an ISO date or a duration before the
+   * task date (for example, '14 days'); the task date is the read
+   * request's `taskDate`, else its `asOf`, else now. Omitted means all
+   * messages. */
   readonly since?: string;
   readonly includeTools?: boolean;
   /** Tightens the 700-character part size, as does the read request. */
@@ -54,6 +58,9 @@ interface RawPart {
 interface WalkContext {
   readonly size: number;
   readonly since: number;
+  /** The latest date read: the task date when the request gives one,
+   *  narrowed to the task's period on a period read. */
+  readonly until: number;
   readonly includeTools: boolean;
   readonly signal?: AbortSignal;
   /** Counts skipped symlinks and undated messages on the pass that
@@ -176,8 +183,8 @@ function split(text: string, size: number): string[] {
 
 const partId = (part: RawPart) =>
   scrubChat(`${part.provider}:${part.root}:${relative(part.root, part.file)}:${part.line}:${part.block}:${part.piece}`);
-const partTitle = (part: RawPart) =>
-  `${part.provider} ${part.sessionId} ${part.role} ${new Date(part.date).toISOString()}`;
+const partTitle = (part: RawPart, zone: string) =>
+  `${part.provider} ${part.sessionId} ${part.role} ${zonedIso(part.date, zone)}`;
 
 /** The parts of one transcript, decoded and split but never kept. Each
  *  pass over the history reads the file again rather than holding the
@@ -201,7 +208,7 @@ async function* fileParts(
     const date = Date.parse(decoded.date ?? '');
     if (!decoded.parts.length) continue;
     if (!Number.isFinite(date)) { if (walk.countSkips) walk.countSkips.n += 1; continue; }
-    if (date < walk.since) continue;
+    if (date < walk.since || date > walk.until) continue;
     for (const [block, part] of decoded.parts.entries()) {
       const text = scrubChat(part.text);
       if (!text.trim()) continue;
@@ -266,7 +273,15 @@ export function chat(options: ChatOptions = {}): CandidateSource {
       const size = Math.min(DEFAULT_MAX_QUESTION_TEXT, budget, positive(request.maxQuestionText ?? DEFAULT_MAX_QUESTION_TEXT, 'maxQuestionText'));
       if (request.limit !== undefined) positive(request.limit, 'limit');
       if (request.revision !== undefined) return { status: 'absent', reason: 'chat-does-not-support-revisions' };
-      const since = cutoff(options.since, Date.now());
+      const zone = timeZoneOf(request.timeZone);
+      const moment = taskMoment(request.taskDate ?? request.asOf, zone);
+      // A period read keeps only the parts dated inside the task's period.
+      const period = request.taskPeriod;
+      const since = Math.max(cutoff(options.since, moment),
+        period === undefined ? Number.NEGATIVE_INFINITY : Date.parse(period.from));
+      const until = Math.min(request.taskDate === undefined ? Number.POSITIVE_INFINITY : moment,
+        period === undefined ? Number.POSITIVE_INFINITY : Date.parse(period.to));
+      const dated = (part: RawPart) => ({ value: zonedIso(part.date, zone), meaning: 'recorded' as const });
       const reasons: string[] = [];
       let folders = 0;
       const skips = { n: 0 };
@@ -290,7 +305,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
         }
         if (!folders && reasons.length) return { status: 'absent', reason: 'no-chat-folders' };
         const ctx: WalkContext = {
-          size, since, includeTools: options.includeTools === true,
+          size, since, until, includeTools: options.includeTools === true,
           ...(request.signal === undefined ? {} : { signal: request.signal }),
         };
 
@@ -318,7 +333,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
             }
             partFile.push(fileRanges.length - 1);
             ids.push(partId(part));
-            pending.push(/[^\s\p{Cf}]/u.test(part.text) ? part.text : partTitle(part));
+            pending.push(/[^\s\p{Cf}]/u.test(part.text) ? part.text : partTitle(part, zone));
             if (pending.length === 32) await flush();
           }
           await flush();
@@ -353,10 +368,10 @@ export function chat(options: ChatOptions = {}): CandidateSource {
               if (!indexes.has(index)) continue;
               byIndex.set(index, {
                 sourceId: id, role: 'reference',
-                id: ids[index]!, title: partTitle(part), text: part.text,
+                id: ids[index]!, title: partTitle(part, zone), text: part.text,
                 contentRef: `${part.provider}:${part.sessionId}:${part.line}:${part.block}:${part.piece}`,
                 chat: { provider: part.provider, sessionId: part.sessionId, role: part.role },
-                date: { value: new Date(part.date).toISOString(), meaning: 'recorded' },
+                date: dated(part),
                 signals: { similarity: similarities[index]! }, laneScore: similarities[index]!,
                 ...(mark && !passes(index) ? { pastLaneCut: true as const } : {}),
               });
@@ -395,8 +410,8 @@ export function chat(options: ChatOptions = {}): CandidateSource {
             }
             partFile.push(fileRanges.length - 1);
             ids.push(partId(part));
-            rank.observe(`${partTitle(part)} ${part.text}`);
-            const count = phraseCount(part.text, request.task) + phraseCount(partTitle(part), request.task);
+            rank.observe(`${partTitle(part, zone)} ${part.text}`);
+            const count = phraseCount(part.text, request.task) + phraseCount(partTitle(part, zone), request.task);
             if (count > 0 && (request.speakerOnly !== true || part.role === 'user')) {
               matchOf.set(ids.length - 1, count);
             }
@@ -415,7 +430,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
             for await (const part of fileParts(range.provider, range.root, range.file, ctx)) {
               if (index >= end) break;
               if (matchOf.has(index)) {
-                rank.score(`${partTitle(part)} ${part.text}`, { heading: '', name: '', front: '' });
+                rank.score(`${partTitle(part, zone)} ${part.text}`, { heading: '', name: '', front: '' });
                 matchedIndexes.push(index);
                 matchedIds.push(ids[index]!);
               }
@@ -452,10 +467,10 @@ export function chat(options: ChatOptions = {}): CandidateSource {
               const position = at.get(index)!;
               byIndex.set(index, {
                 sourceId: id, role: 'reference',
-                id: ids[index]!, title: partTitle(part), text: part.text,
+                id: ids[index]!, title: partTitle(part, zone), text: part.text,
                 contentRef: `${part.provider}:${part.sessionId}:${part.line}:${part.block}:${part.piece}`,
                 chat: { provider: part.provider, sessionId: part.sessionId, role: part.role },
-                date: { value: new Date(part.date).toISOString(), meaning: 'recorded' },
+                date: dated(part),
                 signals: { keyword: scores[position]!, phrase: matchOf.get(index)! },
                 laneScore: base[position]!,
                 ...(mark && !passes(index) ? { pastLaneCut: true as const } : {}),
@@ -481,7 +496,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
         if (request.phraseLane === true) {
           const matched: MemoryCandidate[] = [];
           for await (const part of eachPart(walkable, exclusions, { ...ctx, countSkips: skips })) {
-            const title = partTitle(part);
+            const title = partTitle(part, zone);
             const count = phraseCount(part.text, request.task) + phraseCount(title, request.task);
             if (count > 0) {
               matched.push({
@@ -489,7 +504,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
                 id: partId(part), title, text: part.text,
                 contentRef: `${part.provider}:${part.sessionId}:${part.line}:${part.block}:${part.piece}`,
                 chat: { provider: part.provider, sessionId: part.sessionId, role: part.role },
-                date: { value: new Date(part.date).toISOString(), meaning: 'recorded' },
+                date: dated(part),
                 signals: { phrase: count }, laneScore: count,
               });
             }
@@ -518,7 +533,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           }
           partFile.push(fileRanges.length - 1);
           ids.push(partId(part));
-          rank.observe(`${partTitle(part)} ${part.text}`);
+          rank.observe(`${partTitle(part, zone)} ${part.text}`);
         }
         // Pass two scores each part against the first pass's statistics.
         // Files are walked per transcript so a file grown mid-read can
@@ -529,7 +544,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           let index = range.start;
           for await (const part of fileParts(range.provider, range.root, range.file, ctx)) {
             if (index >= end) break;
-            rank.score(`${partTitle(part)} ${part.text}`, { heading: '', name: '', front: '' });
+            rank.score(`${partTitle(part, zone)} ${part.text}`, { heading: '', name: '', front: '' });
             index += 1;
           }
         }
@@ -566,10 +581,10 @@ export function chat(options: ChatOptions = {}): CandidateSource {
             if (!indexes.has(index)) continue;
             byIndex.set(index, {
               sourceId: id, role: 'reference',
-              id: ids[index]!, title: partTitle(part), text: part.text,
+              id: ids[index]!, title: partTitle(part, zone), text: part.text,
               contentRef: `${part.provider}:${part.sessionId}:${part.line}:${part.block}:${part.piece}`,
               chat: { provider: part.provider, sessionId: part.sessionId, role: part.role },
-              date: { value: new Date(part.date).toISOString(), meaning: 'recorded' },
+              date: dated(part),
               signals: { keyword: scores[index]! }, laneScore: base[index]!,
               ...(mark && !passes(index) ? { pastLaneCut: true as const } : {}),
             });

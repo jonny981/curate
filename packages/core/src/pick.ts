@@ -14,6 +14,7 @@ import {
 } from './task.js';
 import type { LeverStates } from './levers.js';
 import { WRITTEN_QUESTION_KEYS, checkCascade, checkPickOptions, checkWriteQuestions } from './options.js';
+import { datedIn, taskMoment, taskPeriod, timeZoneOf, zonedIso, type TaskPeriod } from './time.js';
 
 export type MemoryCandidateRole = 'reference' | 'rule';
 export type MemoryKind = 'knowledge' | 'docs' | 'rules' | 'instructions';
@@ -41,8 +42,14 @@ export interface MemoryCandidate {
    *  rare-word round pulls it in; with no dial it records 'unassessed'
    *  like any part no lane held. pickFromSources sets it for parts the
    *  lanes or the read limit dropped; a direct pick caller may set it
-   *  the same way. */
+   *  the same way. A part that also carries `dateWindow` is admitted to
+   *  the decide step as a lane member is. */
   readonly poolOnly?: boolean;
+  /** 'task-period' when the part is dated inside the period the task
+   *  names and no lane kept it: pickFromSources adds it beside the lane
+   *  members, with `poolOnly`, and the pick admits it to the decide step
+   *  as it admits a lane member, unless `taskPeriod` is false. */
+  readonly dateWindow?: 'task-period';
   /** Transcript metadata; separate from the candidate's reference role. */
   readonly chat?: {
     readonly provider: 'claude-code' | 'codex';
@@ -246,9 +253,12 @@ export type PickRecordEntry = {
   readonly priority: number;
   readonly searchRanks?: readonly (number | null)[];
   /** Echoed from the input: the part came from the uncut pool and holds
-   *  no lane membership, so only the label lane or the rare-word round
-   *  could admit it. */
+   *  no lane membership, so only the label lane, the task's period or
+   *  the rare-word round could admit it. */
   readonly poolOnly?: boolean;
+  /** Echoed from the input: the part reached the pick through the
+   *  task's period, not a lane. */
+  readonly dateWindow?: 'task-period';
   /** Echoed from the input: a read with `wholeLanes` on returned the
    *  part although the lane cut would have dropped it. */
   readonly pastLaneCut?: true;
@@ -332,7 +342,8 @@ export interface PickCascade {
 /** What one setting did in one pick, for one source. */
 export interface PickSettingEffect {
   /** The setting's name as a caller writes it: 'labels', 'rare', 'bar', 'ruleBar', 'searchLines',
-   *  'searchPhrases', 'meaning', 'wholeLanes', 'linkedPathBar', 'everyScored', 'everyRanked', 'typed' or 'written'.
+   *  'searchPhrases', 'meaning', 'wholeLanes', 'linkedPathBar', 'everyScored', 'everyRanked', 'typed',
+   *  'taskPeriod' or 'written'.
    *  'alwaysOnSkipped' is no setting: it reports the always-on files a rule read skipped. */
   readonly setting: string;
   /** The source the counts are for. A setting given for the whole call gets one entry per source. */
@@ -367,6 +378,16 @@ export interface PickSourceRead {
 }
 
 export interface PickRecord {
+  /** The moment the pick measured dates from, as an ISO date-time in
+   *  `timeZone`: the task date, or now when none was given. Pass it back
+   *  as `taskDate` with the same `timeZone` to replay the pick. `pick`
+   *  writes it on every record. */
+  readonly asOf?: string;
+  /** The time zone the pick read dates in. `pick` writes it on every record. */
+  readonly timeZone?: string;
+  /** The period the task names, when `taskPeriod` was on and the task
+   *  named one. */
+  readonly taskPeriod?: TaskPeriod;
   /** Applied label definitions by source identity; [] means no label work. */
   readonly labelKindsBySource?: Readonly<Record<string, readonly LabelKind[]>>;
   readonly ranking?: PickOptions['ranking'];
@@ -704,6 +725,21 @@ export interface PickOptions {
   readonly readsBySource?: Readonly<Record<string, PickSourceRead>>;
   readonly limits?: PickLimits;
   readonly thresholds?: PickThresholds;
+  /** The task's date, as the read request's `taskDate` takes it: the
+   *  moment the record's `asOf` names and the task's period counts
+   *  from. Absent means now. pickFromSources fills it from the read
+   *  request. */
+  readonly taskDate?: string;
+  /** The IANA time zone dates are read in; absent means the system's
+   *  own. pickFromSources fills it from the read request. */
+  readonly timeZone?: string;
+  /** Let the parts dated inside the period the task names reach the
+   *  decide step, on by default. It acts only when the task names a
+   *  period (see `taskPeriod()`): pickFromSources then reads the parts
+   *  from that period of every source but a rule source, and the pick
+   *  admits the ones no lane kept (`dateWindow`). Nothing is removed for its date. `false`
+   *  turns it off. */
+  readonly taskPeriod?: boolean;
   readonly signal?: AbortSignal;
 }
 
@@ -980,6 +1016,10 @@ interface EffectInput {
   readonly rankedBySource: ReadonlyMap<string, number>;
   readonly cutBySource: ReadonlyMap<string, number>;
   readonly reads: Readonly<Record<string, PickSourceRead>>;
+  /** `taskPeriod` was on, the period the task named, and which parts it brought in. */
+  readonly taskPeriod: boolean;
+  readonly period: TaskPeriod | undefined;
+  readonly windowed: (candidate: MemoryCandidate) => boolean;
   readonly bar: (id: string) => number;
   readonly ruleBar: (id: string) => number;
   readonly everyScored: boolean;
@@ -1011,7 +1051,8 @@ const keptOf = (n: number) => `${n} of them ${n === 1 ? 'was' : 'were'} kept`;
 /** One entry per setting that was on, per source it applied to, counted
  *  from the pick that ran. A part reaches the decide step by one or
  *  more ways in: each lane that held it inside its candidate limit, the whole-lane
- *  read when every lane held it past the cut, and the label lane. A
+ *  read when every lane held it past the cut, the label lane, and the
+ *  task's period. A
  *  setting that opens a way in is credited with a kept part only when
  *  that was the part's only way in and neither the link nor the
  *  rare-word round kept it. */
@@ -1032,6 +1073,7 @@ function settingEffects(input: EffectInput): PickSettingEffect[] {
       }
     }
     if (input.labelLane.has(candidate)) found.add('labels');
+    if (input.windowed(candidate)) found.add('taskPeriod');
     return found;
   };
   const credited = (candidate: MemoryCandidate) => {
@@ -1202,6 +1244,24 @@ function settingEffects(input: EffectInput): PickSettingEffect[] {
                   : `${head}, but each of them${pastInLimit < past ? ' inside the candidate limit' : ''} also had another way in, so it added none. It added no part.` });
     }
 
+    if (input.taskPeriod) {
+      const period = input.period;
+      const dated = period === undefined ? 0 : own.filter((candidate) => candidate.role === 'reference'
+        && candidate.date !== undefined && datedIn(candidate.date.value, period)).length;
+      const { reached, added } = opened('taskPeriod');
+      const head = period === undefined ? '' : `taskPeriod on ${id}: ${count(dated)} dated from ${period.from} to ${period.to}`;
+      const through = 'reached the decide step only through the period';
+      effects.push({ setting: 'taskPeriod', source: id, actedOn: dated, added,
+        dropped: period !== undefined && ended ? null : 0,
+        summary: period === undefined ? `taskPeriod on ${id}: the task names no period, so it added none. It added no part.`
+          : ended ? reachedOrEnded(head, through, reached, added, "the period's parts change its order")
+            : added > 0 ? `${head}; ${reached} ${through}, and ${keptOf(added)}.`
+              : reached > 0 ? `${head}; ${reached} ${through}, but none of them were kept. It added no part.`
+                : !own.some(input.windowed)
+                  ? `${head}, but every part from the period was already in a search lane, so it added none. It added no part.`
+                  : `${head}, but each of them also had another way in, so it added none. It added no part.` });
+    }
+
     // The link checks a part's role, repository and path, never its source's kind.
     if (references.some((candidate) => candidate.path !== undefined && candidate.repository !== undefined)) {
       const acted = own.filter((candidate) => input.linkActed.has(candidate)).length;
@@ -1248,6 +1308,10 @@ export async function pick(
   options: PickOptions,
 ): Promise<PickResult> {
   checkPickOptions(options);
+  // The moment the record names, and the period the task names counted from it.
+  const timeZone = timeZoneOf(options.timeZone);
+  const asOf = zonedIso(taskMoment(options.taskDate, timeZone), timeZone);
+  const period = options.taskPeriod === false ? undefined : taskPeriod(options.task, { asOf, timeZone });
   const everyScored = options.everyScored;
   if (options.labels !== undefined
     && (typeof options.labels !== 'object' || options.labels === null || Array.isArray(options.labels))) {
@@ -1455,9 +1519,11 @@ export async function pick(
   // true — the rare-word round can still pull one in, and only then
   // does it join the record. With no dial it keeps the record it
   // always had: unasked, 'unassessed' with reason 'limits'.
+  // A part the task's period brought in is admitted like a lane member.
+  const windowed = (candidate: MemoryCandidate) => candidate.dateWindow !== undefined && options.taskPeriod !== false;
   const admitted = (candidate: MemoryCandidate) =>
     kindsFor(candidate).length > 0 || (topK === undefined && !rareForSource(candidate.sourceId))
-      || candidate.poolOnly !== true;
+      || candidate.poolOnly !== true || windowed(candidate);
   queue.push(...references.filter(admitted));
 
   const lanes = queue.reduce((count, candidate) => Math.max(count, candidate.searchRanks?.length ?? 1), 1);
@@ -1482,6 +1548,7 @@ export async function pick(
       for (const candidate of laneQueue.slice(limits.maxCandidates)) laneCut.add(candidate);
     }
   }
+  for (const candidate of queue) if (windowed(candidate)) eligible.add(candidate);
   let feed = queue.filter((candidate) => eligible.has(candidate));
   // Set when the label gate fused its lane into the keyword order: the
   // ranking the record's pick field then names as 'fusion'.
@@ -2344,6 +2411,7 @@ export async function pick(
     queue, feed, statuses, laneHeld, labelLane, labelNeeds, labelBar: labelBarFor, labels, labelKindsBySource,
     rareSeeds, rareTaken, rareAdded, scored: scoredParts, belowBar, linkActed, rankedBySource, cutBySource,
     reads: options.readsBySource ?? {},
+    taskPeriod: options.taskPeriod !== false, period, windowed,
     bar: referenceBar, ruleBar: ruleBarFor, everyScored: options.everyScored !== undefined,
     linkedPathBar: thresholds.linkedPathBar, rareBar, topK,
     ended: [
@@ -2433,6 +2501,7 @@ export async function pick(
       signals: candidate.signals,
       ...(candidate.searchRanks === undefined ? {} : { searchRanks: candidate.searchRanks }),
       ...(candidate.poolOnly === true ? { poolOnly: true } : {}),
+      ...(candidate.dateWindow === undefined ? {} : { dateWindow: candidate.dateWindow }),
       ...(candidate.pastLaneCut === true ? { pastLaneCut: true as const } : {}),
       ...(options.rankProtection && candidate.role === 'reference' && status.status === 'selected'
         ? { orderScore: weight(candidate) } : {}),
@@ -2461,6 +2530,8 @@ export async function pick(
     : 'complete' as const;
 
   const record: PickRecord = {
+    asOf, timeZone,
+    ...(period === undefined ? {} : { taskPeriod: period }),
     labelKindsBySource,
     questionVersion,
     limits: recordedLimits,

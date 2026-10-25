@@ -72,7 +72,7 @@ describe('phrase searches', () => {
     const reader: CandidateSource = { id: 'chat', role: 'reference', read: async () => read };
     const base = await pickFromSources([reader], { task: 'albums' }, { ...uncutPick, task: 'albums', decide: yes });
     const empty = await pickFromSources([reader], { task: 'albums', searchPhrases: ['', ' '] }, { ...uncutPick, task: 'albums', decide: yes });
-    expect(empty).toEqual(base);
+    expect({ ...empty, record: { ...empty.record, asOf: base.record.asOf } }).toEqual(base);
     expect(empty.reads[0]).toEqual({ ...read,
       lanes: [{ task: 'albums', lane: 'search', read: 1, kept: 1 }] });
   });

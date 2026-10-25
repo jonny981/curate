@@ -603,14 +603,14 @@ describe('pick decision cache', () => {
     const bypassed = await pick(threeParts(), { ...uncutPick,
       task: 'Recall the plan', decide: counter.decide, cache: false,
     });
-    expect(bypassed.record).toEqual(plain.record);
+    expect({ ...bypassed.record, asOf: plain.record.asOf }).toEqual(plain.record);
     const cached = await pick(threeParts(), { ...uncutPick,
       task: 'Recall the plan', decide: counter.decide,
       cache: { store: counted.store, deciderId: 'test-decider' },
     });
     expect(cached.selected.map((item) => item.id)).toEqual(plain.selected.map((item) => item.id));
     const { cache: _cache, ...rest } = cached.record;
-    expect(rest).toEqual(plain.record);
+    expect({ ...rest, asOf: plain.record.asOf }).toEqual(plain.record);
   });
 
   it('needs a working store port and a nonempty deciderId', async () => {

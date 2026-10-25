@@ -12,6 +12,7 @@ import {
   probeWorkTree,
   resolveCommit,
   runGit,
+  taskMoment,
 } from '@curatejs/core/internal';
 import { hits, taskTerms, phraseCount, laneBend, embedQuery, embedSimilarities } from '@curatejs/core/internal';
 import type { MemoryCandidate } from '@curatejs/core';
@@ -202,6 +203,8 @@ export function git(
         && (!Number.isSafeInteger(request.limit) || request.limit < 1)) {
         throw new TypeError('limit must be a positive safe integer.');
       }
+      // Recency counts back from the task date, else the pick's moment, else now.
+      const now = taskMoment(request.taskDate ?? request.asOf, request.timeZone);
       let info;
       try {
         info = await stat(resolved);
@@ -276,7 +279,16 @@ export function git(
         // '' (a hint that named the root) is not a pathspec git accepts;
         // '.' under `git -C <toplevel>` names the same whole tree.
         const pathspec = named.map((name) => (name === '' ? '.' : name));
-        const now = Date.now();
+        // With a task date, a commit dated after it is not read; a period
+        // read keeps only the commits dated inside the task's period.
+        const period = request.taskPeriod;
+        const until = Math.min(request.taskDate === undefined ? Number.POSITIVE_INFINITY : now,
+          period === undefined ? Number.POSITIVE_INFINITY : Date.parse(period.to));
+        // Git reads `@<seconds>` exactly; commit dates hold whole seconds.
+        const range = [
+          ...(period === undefined ? [] : [`--since=@${Math.ceil(Date.parse(period.from) / 1000)}`]),
+          ...(Number.isFinite(until) ? [`--until=@${Math.floor(until / 1000)}`] : []),
+        ];
         const cut = request.wholeLanes === false;
         // With `wholeLanes` on a lane read keeps every commit and marks
         // each one the cut would have dropped.
@@ -316,7 +328,7 @@ export function git(
             await runGit(toplevel, [
               'log', '--no-merges', '--no-renames', '-z',
               `--format=${excluded.size === 0 ? FULL_FORMAT : META_FORMAT}`,
-              '--name-only', '-n', String(page),
+              '--name-only', '-n', String(page), ...range,
               ...(offset === 0 ? [] : ['--skip', String(offset)]), sha,
             ], { signal }),
             excluded.size === 0,

@@ -177,6 +177,7 @@ These levers act on the whole call:
 | `pick.route` and `curate.route` | Off |
 | `pick.everyScored` | Unset: each source's bar. When set, one bar for every source |
 | `pick.rare` | Unset: each source's setting. When set, one setting for every source |
+| `pick.taskPeriod` | On: a task that names a period lets in the parts dated inside it |
 | `curate.weightBands` | `[0.1, 0.6]`: the low and high weights the curator's instructions name |
 | `curate.batchTokens` | Unset: one call up to 150,000 estimated tokens of evidence, layered batches of 150,000 above |
 
@@ -277,6 +278,20 @@ const commits = historySource({ reader: git('.'), ...gitSettings, questions: DAT
 ```
 
 A pick whose sources carry typed questions while `pick.answerTypes` is off throws a `TypeError` before it reads, so a typed question never sits unread.
+
+### Time
+
+Every read measures from one moment: the task date.
+Give it with each call, beside the person's time zone:
+
+```js
+const { log } = await mem.recall('What did I decide in March?', { taskDate: '2025-06-02', timeZone: 'Europe/London' });
+```
+
+- **The task date:** an ISO 8601 date or date-time, such as `2025-06-02` or `2025-06-02T09:15:00+01:00`. A date alone means the end of that day. Without one, the task date is now. Git recency and a chat `since` duration count back from it. The pick record names the moment as `asOf`, so a replay with the same values reads the same history.
+- **Nothing from after it:** with `taskDate`, a chat message or a git commit dated after it is not read. Markdown keeps notes dated after it: a note can declare an `effective` date ahead, and a rule that takes effect next month is still a rule. To read notes as they stood, pin the read to a revision with `read: { revision }`.
+- **The person's time zone:** chat dates carry the zone's offset, so a message sent at 00:30 in London in summer is dated that day, not the day before. `timeZone` is an IANA name such as `Europe/London`. Without it, the system's own zone applies.
+- **The task's period:** a task that names a period, such as "in March", "last week" or "on 2025-03-04", lets the parts dated inside it reach the decision step even when no search kept them. Nothing is dropped for its date. A part is dated when it was written, so a message in April that recalls March is dated April, and a filter on March would drop the answer. `pick: { taskPeriod: false }` turns it off.
 
 ## Sources
 

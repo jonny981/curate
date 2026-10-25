@@ -380,9 +380,35 @@ describe('the record says what each pick setting did', () => {
     });
   });
 
+  describe('taskPeriod', () => {
+    // m is dated in March and no search lane held it: the period and the label lane both bring it in.
+    const periodPick = (labels: boolean) => pick([part('notes', 'a', { searchRanks: [0] }),
+      part('notes', 'm', { poolOnly: true, dateWindow: 'task-period', date: { value: '2025-03-15', meaning: 'recorded' } })], {
+      task: 'What did I decide in March?', taskDate: '2025-06-02', timeZone: 'Europe/London',
+      decide: fixed(() => 0.9), rare: false, ...(labels ? { labelKindsBySource: { notes: LABEL_KINDS } } : {}),
+    });
+    const head = 'taskPeriod on notes: 1 part dated from 2025-03-01T00:00:00.000+00:00 to 2025-03-31T23:59:59.999+01:00';
+
+    it('counts the kept part only the period brought in', async () => {
+      expect(effect((await periodPick(false)).record, 'taskPeriod', 'notes')).toEqual({
+        setting: 'taskPeriod', source: 'notes', actedOn: 1, added: 1, dropped: 0,
+        summary: `${head}; 1 reached the decide step only through the period, and 1 of them was kept.`,
+      });
+    });
+
+    it('says when each part from the period also had another way in', async () => {
+      const picked = await periodPick(true);
+      expect(picked.selected.map((c) => c.id)).toContain('m');
+      expect(effect(picked.record, 'taskPeriod', 'notes')).toEqual({
+        setting: 'taskPeriod', source: 'notes', actedOn: 1, added: 0, dropped: 0,
+        summary: `${head}, but each of them also had another way in, so it added none. It added no part.`,
+      });
+    });
+  });
+
   it('gives no entry for a setting that was off', async () => {
     const picked = await pickFromSources([chat()], { task }, { task, decide });
-    expect(picked.record.effects.map((entry) => `${entry.setting} ${entry.source}`)).toEqual(['bar chat']);
+    expect(picked.record.effects.map((entry) => `${entry.setting} ${entry.source}`)).toEqual(['bar chat', 'taskPeriod chat']);
   });
 });
 

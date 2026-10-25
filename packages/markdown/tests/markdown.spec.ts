@@ -1,6 +1,6 @@
 import { execFile, execFileSync, type ChildProcess } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
-import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -455,7 +455,7 @@ describe('knowledgeBase', () => {
     }
   });
 
-  it('carries a declared date with its meaning and leaves an undeclared note without one', async () => {
+  it('carries a declared date with its meaning and dates an undeclared note by its modified time', async () => {
     const directory = await tree({
       'dated.md': '---\ndate: 2025-01-04\n---\n## Dated\nDated body.\n',
       'effective.md': '---\neffective: 2025-02-01\n---\n## Effective\nEffective body.\n',
@@ -468,7 +468,8 @@ describe('knowledgeBase', () => {
     const byFile = (name: string) => result.candidates.filter((c) => c.id.includes(name));
     expect(byFile('dated.md')[0]!.date).toEqual({ value: '2025-01-04', meaning: 'recorded' });
     expect(byFile('effective.md')[0]!.date).toEqual({ value: '2025-02-01', meaning: 'effective' });
-    expect(byFile('plain.md').every((c) => c.date === undefined)).toBe(true);
+    const modified = { value: (await stat(join(directory, 'plain.md'))).mtime.toISOString(), meaning: 'modified' };
+    expect(byFile('plain.md').every((c) => c.date?.value === modified.value && c.date.meaning === modified.meaning)).toBe(true);
   });
 
   it('reports a missing directory as absent with its reason', async () => {
@@ -754,19 +755,20 @@ describe('knowledgeBase git dates', () => {
     expect(result.candidates[0]!.date).toEqual({ value: '2026-01-01', meaning: 'recorded' });
   });
 
-  it('leaves notes outside any repository exactly as before', async () => {
+  it('dates notes outside any repository by their modified time, with no path or repository', async () => {
     const directory = await tree({ 'docs/ops.md': 'the ops body' });
 
     const result = await read(knowledgeBase(directory), { task: 'ops work' });
 
     expect(result.status).toBe('read');
     if (result.status !== 'read') return;
-    expect(result.candidates[0]).not.toHaveProperty('date');
+    expect(result.candidates[0]!.date)
+      .toEqual({ value: (await stat(join(directory, 'docs', 'ops.md'))).mtime.toISOString(), meaning: 'modified' });
     expect(result.candidates[0]).not.toHaveProperty('path');
     expect(result.candidates[0]).not.toHaveProperty('repository');
   });
 
-  it('gives an untracked note no git date', async () => {
+  it('dates an untracked note by its modified time', async () => {
     const repo = await committedRepo({ 'docs/ops.md': 'the ops body' });
     await writeFile(join(repo, 'docs', 'draft.md'), 'uncommitted draft');
 
@@ -779,10 +781,11 @@ describe('knowledgeBase git dates', () => {
       value: '2026-09-15T12:00:00+00:00',
       meaning: 'changed',
     });
-    expect(byId.get('draft.md#1')).not.toHaveProperty('date');
+    expect(byId.get('draft.md#1')!.date)
+      .toEqual({ value: (await stat(join(repo, 'docs', 'draft.md'))).mtime.toISOString(), meaning: 'modified' });
   });
 
-  it("dates a modified working file by its last committed change", async () => {
+  it('dates a working file with uncommitted edits by its modified time', async () => {
     const repo = await committedRepo({ 'docs/ops.md': 'the committed body' });
     await writeFile(join(repo, 'docs', 'ops.md'), 'uncommitted edits');
 
@@ -791,10 +794,8 @@ describe('knowledgeBase git dates', () => {
     expect(result.status).toBe('read');
     if (result.status !== 'read') return;
     expect(result.candidates[0]!.text).toContain('uncommitted edits');
-    expect(result.candidates[0]!.date).toEqual({
-      value: '2026-09-15T12:00:00+00:00',
-      meaning: 'changed',
-    });
+    expect(result.candidates[0]!.date)
+      .toEqual({ value: (await stat(join(repo, 'docs', 'ops.md'))).mtime.toISOString(), meaning: 'modified' });
   });
 
   it('dates a note by the merge commit whose resolution changed it', async () => {
@@ -1090,7 +1091,8 @@ describe('knowledgeBase git dates', () => {
       if (result.status !== 'read') return;
       expect(result.candidates.map((candidate) => candidate.id)).toEqual(['ops.md#1']);
       expect(result.candidates[0]!.text).toContain('the ops body');
-      expect(result.candidates[0]).not.toHaveProperty('date');
+      expect(result.candidates[0]!.date)
+        .toEqual({ value: (await stat(join(repo, 'docs', 'ops.md'))).mtime.toISOString(), meaning: 'modified' });
       expect(result.candidates[0]).not.toHaveProperty('path');
       expect(result.candidates[0]).not.toHaveProperty('repository');
       // A pinned read still throws: it cannot honour its pin without git.
@@ -1131,7 +1133,8 @@ describe('knowledgeBase git dates', () => {
       if (result.status !== 'read') return;
       expect(result.candidates.map((candidate) => candidate.id)).toEqual(['ops.md#1']);
       expect(result.candidates[0]!.text).toContain('the ops body');
-      expect(result.candidates[0]).not.toHaveProperty('date');
+      expect(result.candidates[0]!.date)
+        .toEqual({ value: (await stat(join(repo, 'docs', 'ops.md'))).mtime.toISOString(), meaning: 'modified' });
       expect(result.candidates[0]).not.toHaveProperty('path');
       expect(result.candidates[0]).not.toHaveProperty('repository');
       // A pinned read still throws: its dates cannot be honoured.

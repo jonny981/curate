@@ -28,15 +28,21 @@ const source = chat({ providers: ['claude-code', 'codex'], since: '14 days' });
   defaults to both. `paths: ['/path/to/transcripts']` replaces the default
   folders for each selected provider.
 - **Dates:** `since` accepts an ISO date or a duration such as `'14 days'`
-  or `'12 hours'`, measured from read start. Only messages at or after
-  that date are emitted. Omit it to read all dated messages.
+  or `'12 hours'`. An ISO date is the cutoff itself. A duration counts
+  back from the task date: the read request's `taskDate`, else its `asOf`,
+  else now. Only messages at or after the cutoff are emitted. Omit it to read all dated messages. With `taskDate`,
+  a message dated after it is not read.
 - **Parts:** Each user or assistant text block becomes a candidate. Text
   is split at line ends into at most 700 characters. Longer lines are
   hard-cut. `maxQuestionText` and the request's text budget can tighten
   that limit. Joining the parts reproduces the scrubbed block.
 - **Metadata:** `candidate.chat` carries `provider`, `sessionId` and the
   message `role`. The candidate's own `role` stays `'reference'`. `date`
-  holds the message timestamp with meaning `'recorded'`. `contentRef`
+  holds the message timestamp with meaning `'recorded'`, as an ISO
+  date-time with the offset of the read request's `timeZone`, or of the
+  system's zone when it has none: 23:30 UTC on 1 June is
+  `2025-06-02T00:30:00.000+01:00` in `Europe/London`. UTC is written
+  `+00:00`. The candidate's title carries the same value. `contentRef`
   names the provider, session, JSONL line, block and part.
 - **Tools:** Tool calls and results are excluded by default.
   `includeTools: true` includes them with message roles `'tool-call'` and

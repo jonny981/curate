@@ -93,6 +93,28 @@ Four packages:
   documented limits, estimated at three characters a token. Picks running at the same time in one process ask for
   each part's labels once, and `labels.waited` counts the parts a pick took
   from another pick's request in flight.
+- **One moment for every read.** `recall(task, { taskDate, timeZone })`,
+  the read request and `pick` take the task's date, an ISO 8601 date or
+  date-time; anything else throws a `TypeError` before any read. Absent
+  means now. The pick record names the moment as `asOf`, with its
+  `timeZone`, so a replay can pass the same values back, and `recall`
+  gives `taskDate` to the curator as the task's date label.
+- **Readers measure from the task date.** Git recency and a chat `since`
+  duration count back from it. With `taskDate`, a chat message or a git commit
+  dated after it is not read; Markdown keeps notes dated ahead.
+- **Chat dates in the person's time zone.** Each chat date carries the
+  offset of `timeZone`, the system's zone by default, so a message sent
+  just after midnight is dated that day.
+- **Every Markdown file gets a date.** A file with no commit yet or with
+  uncommitted changes, and an undeclared `knowledgeBase()` or `rules()`
+  note outside a repository, is dated by its modified time with meaning
+  `modified`. A pinned read never uses a modified time.
+- **The task's period is a way in.** `taskPeriod(task, { asOf, timeZone })`
+  finds a period a task names, such as "in March" or "last week". With
+  `pick.taskPeriod`, on by default, the parts dated inside it reach the
+  decide step even when no search lane kept them, marked `dateWindow`.
+  Nothing is dropped for its date. The record holds `taskPeriod`, and
+  `effects` says what the period added.
 - **An optional decision cache** stores each answered decision per part, so
   a resumed run, a rerun or a repeated question asks only for what changed.
 - **Short item ids in curator prompts.** The curator sees and cites short
