@@ -60,7 +60,7 @@ async function expectBaseline(sources: readonly CandidateSource[], name: string)
 }
 
 const presetSettings = {
-  chat: { kind: 'chat', labels: true, rare: false, bar: 0.0146 },
+  chat: { kind: 'chat', labels: true, labelBar: 0.5, rare: false, bar: 0.0146 },
   git: { kind: 'git-history', labels: false, rare: true, bar: 0.0146 },
   markdown: { kind: 'markdown', labels: false, rare: true, bar: 0.0146 },
 } as const;

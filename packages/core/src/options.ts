@@ -19,7 +19,7 @@ const RENAMED_OPTIONS: Readonly<Record<string, string>> = {
 };
 
 const PICK_OPTION_KEYS: readonly (keyof PickOptions)[] = [
-  'ranking', 'task', 'decide', 'questionsBySource', 'sourceKinds', 'labelKindsBySource',
+  'ranking', 'task', 'decide', 'questionsBySource', 'sourceKinds', 'labelKindsBySource', 'labelBarBySource',
   'keepTop', 'rankProtection', 'bestPartFirst', 'tags', 'tagsByKind',
   'labels', 'cache', 'route', 'answerTypes', 'everyRanked', 'everyScored', 'rare', 'rareBySource',
   'barBySource', 'ruleBarBySource', 'rulesEnumerationComplete', 'readsBySource', 'limits', 'thresholds', 'signal',
@@ -40,7 +40,7 @@ const READ_REQUEST_KEYS: readonly (keyof CandidateReadRequest)[] = [
 const MEANING_KEYS: readonly (keyof MeaningSearchOptions)[] = ['embed', 'nearest', 'wholeLanes'];
 const CURATE_KEYS: readonly (keyof CurateOptions)[] = [
   'write', 'working', 'context', 'routeByTask', 'route', 'preferenceAdvice',
-  'preferenceChange', 'taskDate', 'answerHint', 'contextLimit', 'batchTokens', 'signal',
+  'preferenceChange', 'taskDate', 'answerHint', 'contextLimit', 'batchTokens', 'weightBands', 'signal',
 ];
 /** The fixed keys of the maps keyed by source kind — tagsByKind and
  *  the read request's kindLanes — and the values sourceKinds maps to. */
@@ -156,7 +156,8 @@ export function checkPickOptions(options: PickOptions): void {
   for (const [id, enabled] of Object.entries(options.rareBySource ?? {})) {
     if (typeof enabled !== 'boolean') throw new TypeError(`rareBySource.${id} must be a boolean.`);
   }
-  for (const [name, bars] of [['barBySource', options.barBySource], ['ruleBarBySource', options.ruleBarBySource]] as const) {
+  for (const [name, bars] of [['labelBarBySource', options.labelBarBySource], ['barBySource', options.barBySource],
+    ['ruleBarBySource', options.ruleBarBySource]] as const) {
     for (const [id, bar] of Object.entries(bars ?? {})) {
       if (typeof bar !== 'number' || !Number.isFinite(bar) || bar < 0 || bar > 1) {
         throw new TypeError(`${name}.${id} must be a number between 0 and 1.`);

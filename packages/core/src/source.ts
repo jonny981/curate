@@ -190,6 +190,9 @@ export interface CandidateSource {
   readonly questions?: PickCascade;
   /** Kinds this source can add through the label lane. Omitted means none. */
   readonly labelKinds?: readonly LabelKind[];
+  /** The label bar for this source's parts; set by `historySource()`.
+   *  Omitted means LABEL_LANE_BAR, 0.5. */
+  readonly labelBar?: number;
   /** Run the rare-word round on this source's reference evidence by default. */
   readonly rare?: boolean;
   /** The decision-score bar for this source's reference parts: a part
@@ -214,6 +217,11 @@ export interface HistorySettings {
    *  missed can reach the decision step: true for LABEL_KINDS, a list
    *  for those kinds, false for none. */
   readonly labels: boolean | readonly LabelKind[];
+  /** The label bar, from 0 to 1: a label kind the task needs at this
+   *  bar or more puts each of this source's parts labelled at this bar
+   *  or more on that kind in the label lane. Absent means
+   *  LABEL_LANE_BAR, 0.5. */
+  readonly labelBar?: number;
   /** The decision-score bar for this source's reference parts. */
   readonly bar: number;
   /** The bar for this source's rule parts; absent means 0. */
@@ -227,13 +235,17 @@ export interface HistorySettings {
  *  what `chat()`, `git()` or `markdown()` return, or your own. Spread a
  *  reader package's settings object to start from its tuned values. */
 export function historySource(config: { readonly reader: CandidateSource } & HistorySettings): CandidateSource {
-  const { reader, rare, labels, bar, ruleBar, questions } = config;
+  const { reader, rare, labels, labelBar, bar, ruleBar, questions } = config;
   checkCascadeKeys(questions, 'questions');
   checkCascade(questions);
-  const { labelKinds: _labelKinds, ruleBar: _ruleBar, questions: _questions, ...rest } = reader;
+  if (labelBar !== undefined && (typeof labelBar !== 'number' || !Number.isFinite(labelBar) || labelBar < 0 || labelBar > 1)) {
+    throw new TypeError('labelBar must be a number from 0 to 1.');
+  }
+  const { labelKinds: _labelKinds, labelBar: _labelBar, ruleBar: _ruleBar, questions: _questions, ...rest } = reader;
   const labelKinds = labels === true ? LABEL_KINDS : labels === false ? [] : labels;
   return { ...rest, rare, bar,
-    ...(labelKinds.length ? { labelKinds } : {}), ...(ruleBar === undefined ? {} : { ruleBar }),
+    ...(labelKinds.length ? { labelKinds } : {}), ...(labelBar === undefined ? {} : { labelBar }),
+    ...(ruleBar === undefined ? {} : { ruleBar }),
     ...(questions === undefined ? {} : { questions }) };
 }
 
@@ -774,6 +786,9 @@ export async function pickFromSources(
   const rareBySource: Record<string, boolean> = Object.fromEntries(
     sources.map((source) => [source.id, source.rare ?? false]),
   );
+  const labelBarBySource: Record<string, number> = Object.fromEntries(
+    sources.flatMap((source) => source.labelBar === undefined ? [] : [[source.id, source.labelBar]]),
+  );
   const barBySource: Record<string, number> = Object.fromEntries(
     sources.flatMap((source) => source.bar === undefined ? [] : [[source.id, source.bar]]),
   );
@@ -784,7 +799,8 @@ export async function pickFromSources(
   const questionsBySource: Record<string, PickCascade> = Object.assign(Object.create(null), Object.fromEntries(
     sources.flatMap((source) => source.questions === undefined ? [] : [[source.id, source.questions]]),
   ));
-  checkPickOptions({ ...options, labelKindsBySource, rareBySource, barBySource, ruleBarBySource, questionsBySource });
+  checkPickOptions({ ...options, labelKindsBySource, labelBarBySource, rareBySource, barBySource, ruleBarBySource,
+    questionsBySource });
   const reads = await Promise.all(sources.map((source) => readSearches(source, {
     ...request,
     maxQuestionText: options.limits?.maxQuestionText ?? request.maxQuestionText
@@ -811,7 +827,8 @@ export async function pickFromSources(
     for (const candidate of read.candidates) {
       labelKindsBySource[candidate.sourceId] = sources[index]!.labelKinds ?? [];
       rareBySource[candidate.sourceId] = sources[index]!.rare ?? false;
-      const { bar, ruleBar, questions } = sources[index]!;
+      const { labelBar, bar, ruleBar, questions } = sources[index]!;
+      if (labelBar !== undefined) labelBarBySource[candidate.sourceId] = labelBar;
       if (bar !== undefined) barBySource[candidate.sourceId] = bar;
       if (ruleBar !== undefined) ruleBarBySource[candidate.sourceId] = ruleBar;
       if (questions !== undefined) questionsBySource[candidate.sourceId] = questions;
@@ -866,8 +883,8 @@ export async function pickFromSources(
     for (const candidate of read.candidates) readsBySource[candidate.sourceId] = sourceRead;
   }
   const result = await pick(combined, {
-    ...options, rulesEnumerationComplete, sourceKinds, labelKindsBySource, rareBySource, barBySource, ruleBarBySource,
-    questionsBySource, readsBySource,
+    ...options, rulesEnumerationComplete, sourceKinds, labelKindsBySource, labelBarBySource, rareBySource, barBySource,
+    ruleBarBySource, questionsBySource, readsBySource,
   });
   // The read request's lever joins the pick's resolved set.
   // `meaning.wholeLanes` resolves the

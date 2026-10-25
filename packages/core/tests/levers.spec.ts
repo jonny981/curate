@@ -224,7 +224,7 @@ describe('levers', () => {
       everyScored: true,
       route: false,
       rare: false,
-      sources: { notes: { labels: true, rare: false, bar: 0 } },
+      sources: { notes: { labels: true, labelBar: 0.5, rare: false, bar: 0 } },
     });
   });
 

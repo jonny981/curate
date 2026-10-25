@@ -54,7 +54,7 @@ describe('settings per source', () => {
     const calls = recorder();
     const recalled = await memory({ sources: [source('git', true, 2), source('chat', false, 2, true)], decide: calls.decide,
       write: async () => '[2026-01-12] A constraint (said 2026-01-12; E1)' }).recall(task);
-    expect(recalled.picked.record.levers.sources).toEqual({ git: { labels: false, rare: true, bar: 0.0146 }, chat: { labels: true, rare: false, bar: 0.0146 } });
+    expect(recalled.picked.record.levers.sources).toEqual({ git: { labels: false, rare: true, bar: 0.0146 }, chat: { labels: true, labelBar: 0.5, rare: false, bar: 0.0146 } });
     expect(recalled.result.record.levers.sources).toEqual(recalled.picked.record.levers.sources);
     expect(calls.questions.some((q) => q.sourceId === 'chat' && q.questionKey === 'personal')).toBe(true);
     expect(calls.questions.filter((q) => q.sourceId === 'git').every((q) => q.questionKey === undefined)).toBe(true);

@@ -60,6 +60,9 @@ export interface SourceSettings {
   readonly kind?: CandidateSourceKind;
   /** The label gate ran on this source's parts with its label kinds. */
   readonly labels: boolean;
+  /** The label bar this source's needs and label lane used, present
+   *  when the source carries label kinds. */
+  readonly labelBar?: number;
   /** The rare-word round was on for this source's parts. */
   readonly rare: boolean;
   /** The decision-score bar this source's references were cut at: 0

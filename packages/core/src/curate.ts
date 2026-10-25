@@ -10,6 +10,13 @@ export interface CuratePrompt {
 
 export type CurateWrite = (prompt: CuratePrompt, signal: AbortSignal) => Promise<string>;
 
+/** The estimated tokens of evidence above which a curate call with
+ *  neither `batchTokens` nor `contextLimit` writes a layered log in
+ *  batches of this size. */
+export const DEFAULT_BATCH_TOKENS = 150_000;
+
+const DEFAULT_WEIGHT_BANDS: readonly [number, number] = [0.1, 0.6];
+
 /** One write pass over the log, recorded in order. */
 export interface CurateBatch {
   /** Reference items shown to the writer in this pass. */
@@ -52,7 +59,9 @@ export interface CurateOptions {
   readonly answerHint?: boolean;
   /** Condense once if the log exceeds this positive character budget.
    *  Cannot combine with `batchTokens`: a condensing pass cannot
-   *  preserve a chained log's line ids. */
+   *  preserve a chained log's line ids. With `contextLimit` and no
+   *  `batchTokens`, the evidence is written in one call however large,
+   *  so the default batch size does not apply. */
   readonly contextLimit?: number;
   /** Write the log in chained passes of about this many estimated
    *  tokens of evidence each — estimated at four characters per
@@ -64,9 +73,20 @@ export interface CurateOptions {
    *  it only adds lines, and a new line may end with "(replaces Ln:
    *  the subject it corrects)" when it is a newer correction or
    *  decision about the same subject and at least as important. Each
-   *  batch's added lines and marks are in `record.batches`. Omit to
-   *  write the log in one call. Cannot combine with `contextLimit`. */
+   *  batch's added lines and marks are in `record.batches`. A given
+   *  value always writes a layered log, even when one batch holds every
+   *  item. Omitted, with no `contextLimit`, the log is written in one
+   *  call when the evidence is estimated at DEFAULT_BATCH_TOKENS
+   *  (150,000) or less, and in layered batches of DEFAULT_BATCH_TOKENS
+   *  when it is over. Cannot combine with `contextLimit`. */
   readonly batchTokens?: number;
+  /** The low and high item weights the curator's instructions name, with
+   *  0 < low < high < 1: items at the high weight or more must be in the
+   *  log, items from low to high are less direct, and items below low
+   *  rarely matter. A condense pass is asked to merge or drop items below
+   *  low first, then items from low to high, and to keep items at high or
+   *  more whole. Omitted means [0.1, 0.6]. */
+  readonly weightBands?: readonly [number, number];
   readonly signal?: AbortSignal;
 }
 
@@ -81,6 +101,8 @@ export interface CurateSettingEffect {
 export interface CurateRecord {
   readonly promptVersion: 'v4';
   readonly weights: 'tiers';
+  /** The low and high weights the curator's instructions named. */
+  readonly weightBands: readonly [number, number];
   readonly working: boolean;
   readonly context?: boolean;
   readonly taskKinds?: readonly TaskKind[];
@@ -123,6 +145,10 @@ export interface CurateRecord {
   };
   /** The estimated token budget a chained write cut the evidence into. */
   readonly batchTokens?: number;
+  /** Present when the default batch size chose the chained write:
+   *  `batchTokens` was omitted and the evidence was over
+   *  DEFAULT_BATCH_TOKENS. */
+  readonly batchDefault?: true;
   /** Each pass over the log, strongest first: one token-sized batch. */
   readonly batches?: readonly CurateBatch[];
   /** The reference items given to the writer, in selected order, with exact weights; `batches` records what each chained pass was shown. */
@@ -166,8 +192,9 @@ const INSTRUCTIONS = [
   '- Include what the assistant said only when the task asks about it.',
   '- If no evidence bears on the task, return an empty reply: no lines, and no note that nothing was found.',
   NO_WORKING,
-  'Each item header shows, in brackets after its date, a weight from 0 to 1: how strongly a decision model judged the item relevant to this task. The weight is graded, not a yes or no, and every item already passed a search for this task. Make sure every observation from items weighted 0.6 or more is in the log. Items weighted from 0.1 to 0.6 are less direct but often hold part of what the task needs, such as one instance of several or an earlier value: include their facts when they bear on the task. Items weighted below 0.1 rarely matter: use one only when it clearly states a fact the task needs.',
 ].join('\n');
+const weightInstruction = ([low, high]: readonly [number, number]) =>
+  `Each item header shows, in brackets after its date, a weight from 0 to 1: how strongly a decision model judged the item relevant to this task. The weight is graded, not a yes or no, and every item already passed a search for this task. Make sure every observation from items weighted ${high} or more is in the log. Items weighted from ${low} to ${high} are less direct but often hold part of what the task needs, such as one instance of several or an earlier value: include their facts when they bear on the task. Items weighted below ${low} rarely matter: use one only when it clearly states a fact the task needs.`;
 
 function isDate(value: string): boolean {
   const date = new Date(`${value}T00:00:00Z`);
@@ -436,6 +463,11 @@ function curateEffects(log: string, input: {
   readonly taskKinds: readonly TaskKind[] | undefined;
   readonly logLength: number;
   readonly answerHint: string | undefined;
+  readonly weightBands: readonly [number, number];
+  /** The evidence's estimated tokens when the default batch size
+   *  applied: neither `batchTokens` nor `contextLimit` was given. */
+  readonly evidenceTokens: number | undefined;
+  readonly batches: number | undefined;
 }): CurateSettingEffect[] {
   const { options } = input;
   const lines = log.split('\n').map((line) => line.trim().replace(/^L\d+ /, '')).filter(Boolean);
@@ -493,6 +525,18 @@ function curateEffects(log: string, input: {
       ? 'answerHint: no answer type cleared the bar, so the curator\'s task carried no hint and it added no line.'
       : `answerHint: it adds "${input.answerHint}" to the task the curator reads, and one curate call cannot count which log lines that changed.` });
   }
+  const [low, high] = input.weightBands;
+  if (low !== DEFAULT_WEIGHT_BANDS[0] || high !== DEFAULT_WEIGHT_BANDS[1]) {
+    effects.push({ setting: 'weightBands', lines: null,
+      summary: `weightBands: the curator's weight instructions used ${low} and ${high}. One call cannot count which lines that changed.` });
+  }
+  if (input.evidenceTokens !== undefined) {
+    const about = `batchTokens: the evidence was about ${input.evidenceTokens.toLocaleString('en-US')} estimated tokens`;
+    const size = DEFAULT_BATCH_TOKENS.toLocaleString('en-US');
+    effects.push({ setting: 'batchTokens', lines: null, summary: input.batches === undefined
+      ? `${about}, within one batch of ${size}, so the log was written in one call, as with no batch size.`
+      : `${about}, over ${size}, so the log was written in ${input.batches} layered batches.` });
+  }
   return effects;
 }
 
@@ -513,6 +557,12 @@ export async function curate(
   if (batchTokens !== undefined && (!Number.isInteger(batchTokens) || batchTokens <= 0)) {
     throw new TypeError('curate: batchTokens must be a positive integer of estimated tokens.');
   }
+  const weightBands = options.weightBands ?? DEFAULT_WEIGHT_BANDS;
+  if (!Array.isArray(weightBands) || weightBands.length !== 2 || !weightBands.every(Number.isFinite)
+    || !(weightBands[0] > 0 && weightBands[0] < weightBands[1] && weightBands[1] < 1)) {
+    throw new TypeError('curate: weightBands must be two finite weights, low then high, with 0 < low < high < 1.');
+  }
+  const [low, high] = weightBands;
   if (options.route !== undefined && options.route !== 'jev') {
     throw new TypeError("curate: route must be 'jev'.");
   }
@@ -576,7 +626,8 @@ export async function curate(
     const kind = entries.get(id)?.sourceKind;
     return `### E${index + 1} (${candidate.date ? `${candidate.date.value}, ` : ''}${kind === undefined ? '' : `${kind}, `}${weight}${tagText(id)}): ${candidate.title}\n\n${candidate.text}`.trim();
   });
-  const instructionsWorking = !working ? INSTRUCTIONS : INSTRUCTIONS.replace(NO_WORKING,
+  const weighted = `${INSTRUCTIONS}\n${weightInstruction(weightBands)}`;
+  const instructionsWorking = !working ? weighted : weighted.replace(NO_WORKING,
     '- In the log itself, do not judge: give every observation its dates, including ones near the edge of a period the task names.')
     + '\nAfter the log, add a short section headed "Working (the curator\'s; check it against the log):". For a count or a list: number each distinct instance that falls inside the period the task names, with its date and the item ids in brackets, then name any instance you left out and why (outside the period, or the same as another). For a question about time or order: the dates involved and the computed difference or order. For something that changed: the latest value and its date. Leave out any part the task does not need.';
   const instructions = instructionsWorking + (taskKinds?.includes('count') ? COUNT : '');
@@ -593,12 +644,18 @@ export async function curate(
   // items as the token estimate allows. An item costing more than the
   // whole budget sits alone in its own batch and is never cut. The
   // estimate is characters divided by four, as the option's doc says.
+  // With neither `batchTokens` nor `contextLimit`, evidence estimated
+  // over DEFAULT_BATCH_TOKENS is chained in batches of that size.
+  if (batchTokens !== undefined && contextLimit !== undefined) {
+    throw new TypeError('curate: a chained write (batchTokens) and contextLimit do not combine; a condensing pass cannot preserve a chained log\'s line ids.');
+  }
+  const cost = (index: number) => Math.ceil(blocks[index]!.length / 4);
+  const evidenceTokens = batchTokens === undefined && contextLimit === undefined
+    ? blocks.reduce((total, _, index) => total + cost(index), 0) : undefined;
+  const batchDefault = evidenceTokens !== undefined && evidenceTokens > DEFAULT_BATCH_TOKENS;
+  const batchSize = batchTokens ?? (batchDefault ? DEFAULT_BATCH_TOKENS : undefined);
   let batches: number[][] | undefined;
-  if (batchTokens !== undefined) {
-    if (contextLimit !== undefined) {
-      throw new TypeError('curate: a chained write (batchTokens) and contextLimit do not combine; a condensing pass cannot preserve a chained log\'s line ids.');
-    }
-    const cost = (index: number) => Math.ceil(blocks[index]!.length / 4);
+  if (batchSize !== undefined) {
     const ordered = items.map((_, index) => index)
       .sort((left, right) => items[right]!.weight - items[left]!.weight
         || (items[right]!.candidate.date?.value ?? '').localeCompare(items[left]!.candidate.date?.value ?? '')
@@ -607,7 +664,7 @@ export async function curate(
     let size = 0;
     for (const index of ordered) {
       const needed = cost(index);
-      if (batches.at(-1)!.length > 0 && size + needed > batchTokens) {
+      if (batches.at(-1)!.length > 0 && size + needed > batchSize) {
         batches.push([]);
         size = 0;
       }
@@ -775,9 +832,9 @@ export async function curate(
         instructions,
         `Condense the log for the task to at most ${budget} characters, including any working section, if possible.`,
         'Reduce the tiers in this order:',
-        'First: merge or drop observations from items weighted below 0.1.',
-        'Next: merge or drop observations from items weighted from 0.1 to below 0.6.',
-        'Keep observations from items weighted 0.6 or more whole; do not shorten or drop them, even if the log must exceed the budget.',
+        `First: merge or drop observations from items weighted below ${low}.`,
+        `Next: merge or drop observations from items weighted from ${low} to below ${high}.`,
+        `Keep observations from items weighted ${high} or more whole; do not shorten or drop them, even if the log must exceed the budget.`,
         'Keep each retained observation\'s event date, said date, source item ids, and replacement dates. Merge only observations with matching dates and keep all their source ids.',
         'Never truncate text. Return only the dated log and, when requested, working notes checked against the retained observations.',
       ].join('\n') + additions,
@@ -801,14 +858,15 @@ export async function curate(
   return {
     log,
     record: {
-      promptVersion: 'v4', weights: 'tiers', working, preferenceAdvice, preferenceChange,
+      promptVersion: 'v4', weights: 'tiers', weightBands: [low, high], working, preferenceAdvice, preferenceChange,
       ...(options.context === undefined ? {} : { context }),
       ...(taskKinds === undefined ? {} : { taskKinds }),
       ...(options.route === undefined ? {} : { route: options.route }),
       levers,
       ...(taskDate === undefined ? {} : { taskDate }),
       ...(answerHint === undefined ? {} : { answerHint }), items, logLength, condensed,
-      ...(batchTokens === undefined ? {} : { batchTokens }),
+      ...(batchSize === undefined ? {} : { batchTokens: batchSize }),
+      ...(batchDefault ? { batchDefault: true as const } : {}),
       ...(recordBatches === undefined ? {} : { batches: recordBatches }),
       ...(condensed ? { condensedLength: log.length } : {}),
       ...(contextLimit === undefined ? {} : { contextLimit }),
@@ -819,6 +877,7 @@ export async function curate(
       ...(recovered ? { formatRecovery: { keptAsWritten: [...keptAsWritten], dropped: [...dropped] } } : {}),
       effects: curateEffects(log, {
         options, working, preferenceAdvice, preferenceChange, routed: routed?.on, taskKinds, logLength, answerHint,
+        weightBands: [low, high], evidenceTokens, batches: batches?.length,
       }),
     },
   };

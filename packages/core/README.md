@@ -742,12 +742,14 @@ has not found in the store.
 
 The task answers each distinct kind set once, and its sets are stored the
 same way under the task's own keys: a later pick over the same task text
-reuses it too. A kind the task needs at 0.5 or more puts every part in
-that kind set labelled 0.5 or more in the label lane, ordered by that
-probability. The decide step then sees the union of the keyword lanes
-and the label lane, ordered by reciprocal-rank fusion of the two
-orders. The 0.5 bar is one shared constant, `LABEL_LANE_BAR`, a dial
-to fit rather than a measured best. Through `pickFromSources` the gate
+reuses it too. Each source has its own label bar, its `labelBar`
+setting, 0.5 (`LABEL_LANE_BAR`) when absent. A kind the task needs at a
+source's bar or more puts every part of that source labelled at that
+bar or more on the kind in the label lane, ordered by that
+probability. Two sources that share a kind set share the task's
+labels, but each reads them at its own bar. The decide step then sees
+the union of the keyword lanes and the label lane, ordered by
+reciprocal-rank fusion of the two orders. Through `pickFromSources` the gate
 labels the source's full uncut search pool, so a part the keyword lanes
 dropped can still reach the decide step through the label lane; through
 `pick` directly it labels reference parts with kinds in `labelKindsBySource`.
@@ -940,7 +942,10 @@ bytes between overlapping reads within one `pickFromSources` call.
 `pickFromSources`. It calls your `write(prompt, signal)` function to
 write the log the task needs, with no fixed character cap.
 `prompt.instructions` contains the v4 dated-log wording and three weight
-tiers: 0.6 or more, 0.1 to below 0.6, and below 0.1. `prompt.body` contains the
+tiers: 0.6 or more, 0.1 to below 0.6, and below 0.1. `weightBands: [low, high]`
+sets the two numbers, with 0 < low < high < 1; absent means `[0.1, 0.6]`.
+Each number is written into the instructions as JavaScript prints it, so
+`0.1` stays `0.1`. `prompt.body` contains the
 task and selected reference items in their selected order. Each header
 shows the item's short id (`E1`, `E2`, and so on in selected order),
 the candidate's date value, its source kind when
@@ -1038,7 +1043,7 @@ instructions apply when condensing. Observation dates and source ids
 are checked with preferences enabled too; failed repairs use the recovery
 described below.
 
-`record` holds `promptVersion: 'v4'`, `weights: 'tiers'`, `working`,
+`record` holds `promptVersion: 'v4'`, `weights: 'tiers'`, `weightBands`, `working`,
 `preferenceAdvice`, `preferenceChange`, `items`, `logLength`, `condensed`,
 and `overContextLimit`. It includes `taskDate` when supplied.
 It includes `empty: true` when the log is empty, `emptyRetries` when an
@@ -1049,7 +1054,8 @@ lines retained and `formatRecovery.dropped` lists discarded lines.
 These arrays hold the writer's raw lines, with short `En` ids mapped by
 their positions in `record.items`; the returned log restores full item ids.
 It includes `context` when supplied and `taskKinds` when routing is enabled.
-A chained write adds `batchTokens` and `batches`.
+A chained write adds `batchTokens` and `batches`, and `batchDefault: true`
+when the default batch size chose it.
 Each item holds its full `id` (the prompt shows it as `E` plus the
 item's 1-based position), the full `candidate`, and
 the exact decision `weight`.
@@ -1072,7 +1078,13 @@ If it fails, Curate keeps its usable lines, or the original log when none
 remain, without another writer call.
 These checks do not prove that the writer followed the tier instructions.
 
-`contextLimit` cannot combine with `batchTokens`; see below.
+The condense prompt's three steps use the same two numbers as
+`weightBands`.
+
+`contextLimit` cannot combine with `batchTokens`; see below. With
+`contextLimit` and no `batchTokens`, the evidence is written in one call
+however large, then condensed as above: the default batch size does not
+apply.
 The record
 includes `contextLimit` when supplied. `logLength` is the
 first checked or recovered log's length after trimming. `condensed` says whether
@@ -1168,11 +1180,18 @@ honoured in a chained write: the first pass is asked for none, and in
 any pass a date marker, or a mark naming an id the log does not hold,
 is stripped from the line it sits on.
 
-`record.batchTokens` keeps the supplied budget and `record.batches`
+`record.batchTokens` keeps the budget and `record.batches`
 lists each pass in run order with its item count, the lines it added
 with their new ids, and the replacement marks it wrote: each mark's
-new line id and the earlier id it names. Omit `batchTokens` to write
-the log in one call; a single call writes no line ids. A chained write
+new line id and the earlier id it names. A given `batchTokens` always
+writes a chained log, even when one batch holds every item.
+
+With `batchTokens` omitted and no `contextLimit`, Curate adds up the
+same per-item estimate. Evidence at `DEFAULT_BATCH_TOKENS` (150,000)
+or less is written in one call, exactly as with no batch size; a single
+call writes no line ids. Evidence over it is written as a chained log in
+batches of 150,000, exactly as `batchTokens: 150000` would, and the
+record adds `batchDefault: true`. A chained write
 cannot combine with `contextLimit`: a condensing pass cannot preserve
 a chained log's line ids, so passing both throws a `TypeError` before
 the writer runs. `batchTokens` must be a positive integer. Nothing is
@@ -1207,10 +1226,11 @@ them. The cache is on whenever the caller passes one.
 
 ### Source settings
 
-Each source carries five settings, tuned for its kind of history:
+Each source carries six settings, tuned for its kind of history:
 
 - **`rare`:** run the rare-word round on this source's parts.
 - **`labels`:** the label kinds asked of each part: `true` for `LABEL_KINDS`, a list for those kinds, `false` for none.
+- **`labelBar`:** the label bar, from 0 to 1, for which kinds the task needs and which of this source's parts join the label lane; absent means 0.5.
 - **`bar`:** keep a reference part scored at or above this.
 - **`ruleBar`:** keep a rule scored at or above this; absent means 0. Only sources whose parts are rules use it.
 - **`questions`:** the decision questions asked of each reference part; absent means the built-in question for the part's kind.
@@ -1236,12 +1256,13 @@ The record's `levers.sources` maps each source id to the settings it ran with, a
 
 - **`kind`:** the source's kind, when it declares one.
 - **`labels`:** whether the label gate ran on its parts.
+- **`labelBar`:** the label bar its needs and label lane used, present when the source carries label kinds.
 - **`rare`:** whether the rare-word round was on for its parts.
 - **`bar`:** the bar its references were cut at, 0 when every scored part was kept.
 - **`ruleBar`:** the bar its rules were cut at, present when the source produced rules.
 - **`questions`:** the question set its reference parts were asked, present when the source carries one; absent, they were asked the built-in question.
 
-So a run reads as, for example, `{ kind: 'chat', labels: true, rare: false, bar: 0.0146 }`: a chat source with labels on.
+So a run reads as, for example, `{ kind: 'chat', labels: true, labelBar: 0.5, rare: false, bar: 0.0146 }`: a chat source with labels on.
 `levers.rare` is `false` or `{ share, bar }`, and `levers.everyScored` is present only when the call gave it.
 
 Set your own with `historySource()`.
@@ -1259,7 +1280,7 @@ const sources = [
 const picked = await pickFromSources(sources, { task }, { task, decide });
 ```
 
-A direct `pick()` takes the same settings by source id: `labelKindsBySource`, `rareBySource`, `barBySource`, `ruleBarBySource` and `questionsBySource`.
+A direct `pick()` takes the same settings by source id: `labelKindsBySource`, `labelBarBySource`, `rareBySource`, `barBySource`, `ruleBarBySource` and `questionsBySource`.
 
 ## What each setting did
 
@@ -1278,7 +1299,7 @@ A search line that repeats the task opens no lane, and its entry says so.
 
 | Setting | Entry when | `actedOn` | `added` | `dropped` |
 | --- | --- | --- | --- | --- |
-| `labels` | The source carries label kinds | The source's parts labelled this pick, asked or reused from the store | Kept parts whose only way in was the label lane | 0. The gate never removes a part a lane holds. `null` when a feed cut or a stop ended the feed early |
+| `labels` | The source carries label kinds; the summary names the source's label bar | The source's parts labelled this pick, asked or reused from the store | Kept parts whose only way in was the label lane | 0. The gate never removes a part a lane holds. `null` when a feed cut or a stop ended the feed early |
 | `rare` | The round ran on the source | Parts the round pulled in | Pulled parts that joined the selection | 0 |
 | `searchLines`, `searchPhrases`, `meaning` | The read request gave that option | Parts those lanes held | Kept parts whose only way in was those lanes | 0, or `null` when a feed cut or a stop ended the feed early |
 | `wholeLanes` | `read.wholeLanes` is on | Parts read past the lane cut | Kept parts whose only way in was the whole-lane read | 0, or `null` when a feed cut or a stop ended the feed early |
@@ -1345,6 +1366,8 @@ A curate record's `effects` covers `curate`'s own options; the pick's entries st
 | `contextLimit` | Set | `null`. The summary gives the log's length before and after, or says the log was within the limit |
 | `context`, `taskDate` | On or set | `null`. They change what the curator is told, and one call cannot count which lines that changed |
 | `answerHint` | On | `null`. The summary quotes the line it added to the curator's task, or says no answer type cleared the bar |
+| `weightBands` | Set to bands other than `[0.1, 0.6]` | `null`. The summary names the two numbers, and one call cannot count which lines they changed |
+| `batchTokens` | The default batch size applied: neither `batchTokens` nor `contextLimit` was given | `null`. The summary gives the evidence's estimated tokens and says the log was written in one call, or in how many layered batches |
 
 ```json
 {
@@ -1388,7 +1411,7 @@ left out. Pass `wholeLanes: true` to keep every returned candidate in its lane.
 | **Source read `limit`** | Off | Chat and Markdown keep ranked candidates; git keeps newest commits before ranking. Readers report partial coverage. A limit of 1 on 2 candidates drops 1. |
 | **A source's `ruleBar`** | 0 | A user applicability cut omits that source's rules below its probability. Quality loss on labelled rule tasks is unmeasured; the default adds no cut loss. |
 | **`contextLimit`** | Off | Requests a second writer call to condense the complete log. Format checks do not prove fact retention. No quality loss curve has been established; leave off for full retention. Cannot combine with a chained write. |
-| **`batchTokens`** | Off | Splits a chained write into passes of about N estimated tokens of evidence each, strongest first. Changes only how many calls the writer makes; no evidence is dropped. Cannot combine with `contextLimit`. |
+| **`batchTokens`** | 150,000 when the evidence is over it, else one call | Splits a chained write into passes of about N estimated tokens of evidence each, strongest first. Changes only how many calls the writer makes; no evidence is dropped. Cannot combine with `contextLimit`; with `contextLimit` and no `batchTokens`, the default does not apply. |
 
 Unlimited inputs can require more decision requests and model context.
 Reader failures, cancellation, missing answers and model failures still

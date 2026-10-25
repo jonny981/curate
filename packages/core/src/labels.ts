@@ -10,8 +10,8 @@ export const LABEL_QUESTION_VERSION = 'memory-kind-labels-1';
 
 /** One shared bar for the question's needs and a part's labels: a kind
  *  the question needs at 0.5 or more puts every part labelled 0.5 or
- *  more on that kind in the label lane. The bar is a dial to fit, not a
- *  measured best. */
+ *  more on that kind in the label lane. It is the default of a source's
+ *  `labelBar` setting. */
 export const LABEL_LANE_BAR = 0.5;
 
 export interface LabelKind {

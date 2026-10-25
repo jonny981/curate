@@ -150,20 +150,21 @@ const mem = memory({ sources: [chat(), git('.'), markdown({ paths: ['docs'], kin
 Each source carries its own settings, tuned for that kind of history.
 A setting on one source never changes what Curate picks from another, with one exception: a selected commit brings in a note it changed.
 
-| Source | Rare-word round | Labels | Decision-score bar | Rule bar | Questions |
-| --- | --- | --- | --- | --- | --- |
-| `chat()` | Off | On, the seven kinds | 0.0146 | | `CHAT_CASCADE` |
-| `git()` | On | Off | 0.0146 | | `GIT_HISTORY_CASCADE` |
-| `markdown()`, `knowledgeBase()` | On | Off | 0.0146 | | `MARKDOWN_CASCADE` |
-| `rules()` | On | Off | 0.0146 | 0 | `MARKDOWN_CASCADE` |
+| Source | Rare-word round | Labels | Label bar | Decision-score bar | Rule bar | Questions |
+| --- | --- | --- | --- | --- | --- | --- |
+| `chat()` | Off | On, the seven kinds | 0.5 | 0.0146 | | `CHAT_CASCADE` |
+| `git()` | On | Off | | 0.0146 | | `GIT_HISTORY_CASCADE` |
+| `markdown()`, `knowledgeBase()` | On | Off | | 0.0146 | | `MARKDOWN_CASCADE` |
+| `rules()` | On | Off | | 0.0146 | 0 | `MARKDOWN_CASCADE` |
 
 - **Rare-word round:** after selection, find unselected parts of the same source that share a rare word with a selected part, and ask about them.
 - **Labels:** ask each part seven kinds of personal fact (what someone owns, prefers, did, decided and so on), so parts the keyword search missed can still reach the decision step. Each part is labelled once and the label stored for later questions.
+- **Label bar (`labelBar`):** a label kind the task needs at this bar or more brings in each of the source's parts labelled at this bar or more on that kind. 0.5 for every source that carries labels.
 - **Decision-score bar:** keep a reference part the decision model scored at or above this.
 - **Rule bar:** keep a rule the decision model scored at or above this. Only sources whose parts are rules use it: `rules()`, and `markdown()` with kind `rules` or `instructions`.
 - **Questions:** the yes/no questions the decision model answers about each reference part, with fitted weights that combine the answers into its score.
 
-The pick record names the settings each source ran with under `levers.sources`, such as `{ kind: 'chat', labels: true, rare: false, bar: 0.0146 }`, with `questions` holding the question set its parts were asked.
+The pick record names the settings each source ran with under `levers.sources`, such as `{ kind: 'chat', labels: true, labelBar: 0.5, rare: false, bar: 0.0146 }`, with `questions` holding the question set its parts were asked.
 Each pick and curate record's `effects` list says what each setting changed: the parts it brought in or kept out, and why when it changed nothing ([what each setting did](packages/core/README.md#what-each-setting-did)).
 
 These levers act on the whole call:
@@ -175,6 +176,10 @@ These levers act on the whole call:
 | `pick.route` and `curate.route` | Off |
 | `pick.everyScored` | Unset: each source's bar. When set, one bar for every source |
 | `pick.rare` | Unset: each source's setting. When set, one setting for every source |
+| `curate.weightBands` | `[0.1, 0.6]`: the low and high weights the curator's instructions name |
+| `curate.batchTokens` | Unset: one call up to 150,000 estimated tokens of evidence, layered batches of 150,000 above |
+
+The default batch size acts only when neither `curate.batchTokens` nor `curate.contextLimit` is given.
 
 `pick.everyRanked: { c }` ranks every source's parts in one list before it cuts, and a stopping limit in `pick.limits` (questions, batches, time) is shared by every source.
 With either one, one source's settings can change what Curate picks from another.
@@ -457,8 +462,8 @@ The writer receives reference evidence with dates, source kinds, decision scores
 It writes observations with event dates, statement dates and source IDs.
 When a later fact replaces an earlier one, the log can carry both dates.
 
-- **Space by score:** The instructions ask the writer to retain observations scored 0.6 or more, include useful facts from 0.1 to below 0.6, and give scores below 0.1 little space.
-- **Batches:** `curate.batchTokens` writes strongest evidence first. Later batches add lines without rewording or removing earlier ones.
+- **Space by score:** The instructions ask the writer to retain observations scored 0.6 or more, include useful facts from 0.1 to below 0.6, and give scores below 0.1 little space. `curate.weightBands` sets the two numbers.
+- **Batches:** `curate.batchTokens` writes strongest evidence first. Later batches add lines without rewording or removing earlier ones. Evidence over 150,000 estimated tokens is batched by default.
 - **Length:** There is no fixed log length cap.
 
 ## Plain files and git

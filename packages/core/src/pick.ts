@@ -509,6 +509,11 @@ export interface PickOptions {
   /** Label kinds by source identity. Missing identities have no label lane.
    *  pickFromSources fills this from each reader's labelKinds. */
   readonly labelKindsBySource?: Readonly<Record<string, readonly LabelKind[]>>;
+  /** Each source's label bar, from 0 to 1, by source ID: the bar for
+   *  which label kinds the task needs for that source and which of its
+   *  parts join the label lane. Omitted sources use LABEL_LANE_BAR,
+   *  0.5. pickFromSources fills this from each source's `labelBar`. */
+  readonly labelBarBySource?: Readonly<Record<string, number>>;
   /** Signal weights by Markdown kind; omitted weights remain 1. */
   readonly ranking?: Partial<Record<MemoryKind, Readonly<Record<string, number>>>>;
   readonly task: string;
@@ -537,11 +542,11 @@ export interface PickOptions {
   readonly tagsByKind?: Readonly<Partial<Record<CandidateSourceKind, readonly PickTagSet[]>>>;
   /** Add reference parts to the decide step, off by default:
    *  the union of the keyword lanes and a label lane. The label lane
-   *  holds the parts labelled at the shared bar (0.5) or more on a kind
-   *  of statement the question needs at that bar, ordered by that
+   *  holds the parts labelled at their source's label bar or more on a
+   *  kind of statement the question needs at that bar, ordered by that
    *  probability, merged with the keyword lanes by rank through
-   *  reciprocal-rank fusion; the bar is a dial to fit, not a measured
-   *  best. A source's kind questions are asked through the decide port
+   *  reciprocal-rank fusion; the bar is `labelBarBySource`, 0.5 by
+   *  default. A source's kind questions are asked through the decide port
    *  of its reference parts and once of the task per kind set, batched as decision
    *  batches are — the task's own ask packs into one request instead
    *  when `route` is on — and each item's set is stored once in `directory`
@@ -925,6 +930,7 @@ interface EffectInput {
   readonly labelLane: ReadonlySet<MemoryCandidate>;
   /** The label kinds the task needed, by source. */
   readonly labelNeeds: ReadonlyMap<string, readonly string[]>;
+  readonly labelBar: (id: string) => number;
   readonly labels: ReadonlyMap<MemoryCandidate, PartLabels>;
   readonly labelKindsBySource: Readonly<Record<string, readonly LabelKind[]>>;
   /** The rare words each source the round ran on contributed. */
@@ -1030,7 +1036,7 @@ function settingEffects(input: EffectInput): PickSettingEffect[] {
       const queued = input.queue.filter((candidate) => candidate.sourceId === id && candidate.role === 'reference');
       const labelled = queued.filter((candidate) => input.labels.has(candidate)).length;
       const { reached, added } = opened('labels');
-      const head = `labels on ${id}: labelled ${count(labelled)}`;
+      const head = `labels on ${id} at the label bar ${input.labelBar(id)}: labelled ${count(labelled)}`;
       const through = 'reached the decide step only through the label lane';
       const reason = queued.every((candidate) => input.laneHeld.has(candidate))
         ? 'every part was already going to the decide step'
@@ -1172,6 +1178,7 @@ export async function pick(
   // The label gate runs when any source carries label kinds.
   const labelsOn = Object.values(labelKindsBySource).some((kinds) => kinds.length > 0);
   const kindsFor = (candidate: MemoryCandidate) => labelKindsBySource[candidate.sourceId] ?? [];
+  const labelBarFor = (id: string) => options.labelBarBySource?.[id] ?? LABEL_LANE_BAR;
   for (const weights of Object.values(options.ranking ?? {})) {
     if (Object.values(weights).some((weight) => !Number.isFinite(weight))) {
       throw new TypeError('ranking weights must be finite numbers.');
@@ -1634,7 +1641,7 @@ export async function pick(
     const store = labelFileStore(labelOptions.directory);
     const chatKindsKey = labelKindsKey(LABEL_KINDS);
     type KindSet = { key: string; kinds: readonly LabelKind[]; task: MemoryCandidate;
-      parts: MemoryCandidate[]; needs: string[] };
+      parts: MemoryCandidate[] };
     const sets = new Map<string, KindSet>();
     const sourceSets = new Map<string, KindSet>();
     for (const [id, kinds] of Object.entries(labelKindsBySource)) {
@@ -1643,7 +1650,7 @@ export async function pick(
       let set = sets.get(key);
       if (set === undefined) {
         set = { key, kinds, task: { ...taskItem, id: sets.size === 0 ? 'question' : `question:${key}` },
-          parts: [], needs: [] };
+          parts: [] };
         sets.set(key, set);
       }
       sourceSets.set(id, set);
@@ -1792,21 +1799,24 @@ export async function pick(
         });
       }
       asked += misses.filter(({ items }) => labelAnswers.has(items[0]!)).length;
-      set.needs = set.kinds.filter((kind) => (labels.get(set.task)?.[kind.key] ?? 0) >= LABEL_LANE_BAR)
-        .map((kind) => kind.key);
+    }
+    // The task's needs come from its kind set's labels, at each source's
+    // own bar, so two sources sharing a set can need different kinds.
+    for (const [id, set] of sourceSets) {
+      labelNeeds.set(id, set.kinds.filter((kind) => (labels.get(set.task)?.[kind.key] ?? 0) >= labelBarFor(id))
+        .map((kind) => kind.key));
     }
     const strength = (candidate: MemoryCandidate) => {
       const own = labels.get(candidate);
-      const needs = sourceSets.get(candidate.sourceId)?.needs ?? [];
+      const needs = labelNeeds.get(candidate.sourceId) ?? [];
       return own === undefined || !needs.length ? 0 : Math.max(0, ...needs.map((kind) => own[kind] ?? 0));
     };
     const inLane = new Set(queue.filter((candidate) =>
-      candidate.role === 'reference' && strength(candidate) >= LABEL_LANE_BAR));
+      candidate.role === 'reference' && strength(candidate) >= labelBarFor(candidate.sourceId)));
     labelLane = inLane;
-    for (const [id, set] of sourceSets) labelNeeds.set(id, set.needs);
     for (const candidate of inLane) eligible.add(candidate);
     feed = queue.filter((candidate) => eligible.has(candidate));
-    if ([...sets.values()].some((set) => set.needs.length > 0)) {
+    if ([...labelNeeds.values()].some((needs) => needs.length > 0)) {
       feed = fuseLabelLane(feed, queue, inLane, strength);
       feedFused = true;
     }
@@ -2197,7 +2207,7 @@ export async function pick(
 
   const effects = settingEffects({
     candidates: candidates.filter((candidate) => admitted(candidate) || rarePulled.has(candidate)),
-    queue, feed, statuses, laneHeld, labelLane, labelNeeds, labels, labelKindsBySource,
+    queue, feed, statuses, laneHeld, labelLane, labelNeeds, labelBar: labelBarFor, labels, labelKindsBySource,
     rareSeeds, rareTaken, rareAdded, scored: scoredParts, belowBar, linkActed, rankedBySource, cutBySource,
     reads: options.readsBySource ?? {},
     bar: referenceBar, ruleBar: ruleBarFor, everyScored: options.everyScored !== undefined,
@@ -2351,7 +2361,9 @@ export async function pick(
       ...Object.keys(options.questionsBySource ?? {}),
     ])].map((id) => [id, {
       ...(options.sourceKinds?.[id] === undefined ? {} : { kind: options.sourceKinds[id] }),
-      labels: (labelKindsBySource[id]?.length ?? 0) > 0, rare: rareForSource(id), bar: referenceBar(id),
+      labels: (labelKindsBySource[id]?.length ?? 0) > 0,
+      ...((labelKindsBySource[id]?.length ?? 0) > 0 ? { labelBar: labelBarFor(id) } : {}),
+      rare: rareForSource(id), bar: referenceBar(id),
       ...(candidates.some((c) => c.sourceId === id && c.role === 'rule') ? { ruleBar: ruleBarFor(id) } : {}),
       ...(questionsFor(id) === undefined ? {} : { questions: questionsFor(id) }),
     }])) },

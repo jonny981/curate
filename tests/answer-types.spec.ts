@@ -8,9 +8,9 @@ import { chatSettings } from '@curatejs/chat';
 import { GIT_HISTORY_CASCADE, gitSettings } from '@curatejs/git';
 import { markdownSettings } from '@curatejs/markdown';
 import {
-  curate, historySource, type AnswerType, memory, pickFromSources, type CandidateSource, type CuratePrompt, type CurateWrite,
+  curate, historySource, LABEL_LANE_BAR, type AnswerType, memory, pickFromSources, type CandidateSource, type CuratePrompt, type CurateWrite,
   type LabelKind, type MemoryCandidate, type PickAnswer, type PickBatch, type PickCascade, type PickDecide, type PickQuestion,
-  type PickResult,
+  type PickRecord, type PickResult,
 } from '@curatejs/core';
 import { decide, fixtureSource, parts, task } from './fixtures/source-settings.js';
 
@@ -69,6 +69,13 @@ interface Baseline {
 }
 const sha256 = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const baseline = (): Baseline => JSON.parse(readFileSync(BASELINE, 'utf8'));
+/** The record as the baseline build wrote it: without each source's `labelBar` and the bar the labels
+ *  summary names, which the label bar setting added. */
+const asBaseline = (record: PickRecord): PickRecord => ({ ...record,
+  levers: { ...record.levers, sources: Object.fromEntries(Object.entries(record.levers.sources)
+    .map(([id, { labelBar: _labelBar, ...settings }]) => [id, settings])) },
+  effects: record.effects.map((entry) => entry.setting !== 'labels' ? entry
+    : { ...entry, summary: entry.summary.replace(` at the label bar ${LABEL_LANE_BAR}:`, ':') }) });
 
 async function snapshot(): Promise<Baseline> {
   const runs: Record<string, Baseline['runs'][string]> = {};
@@ -78,7 +85,7 @@ async function snapshot(): Promise<Baseline> {
     const { requests, decide: how } = recording();
     const picked = await pickFromSources(sources(), { task }, { task, decide: how });
     const selected = picked.selected.map((c) => c.id);
-    runs[name] = { selected, sha256: sha256([selected, picked.record, requests]) };
+    runs[name] = { selected, sha256: sha256([selected, asBaseline(picked.record), requests]) };
     if (name === 'defaults all') {
       const curator = writer();
       await curate(task, picked, { write: curator.write });

@@ -87,6 +87,15 @@ See [core's measured reason](https://github.com/jonny981/curate/blob/main/packag
 
 - **Keyword settings:** `CHAT_KEYWORD_SETTINGS` exports the ranking defaults. Pass a partial `keyword` object to the reader to override them.
 - **Questions:** `chatSettings` carries `CHAT_CASCADE`, the fitted question set `chat()` asks of each part. Core's `memory()` and `pickFromSources()` ask it. Change it with `historySource({ reader: chat(), ...chatSettings, questions: mySet })`.
+- **Question band:** `CHAT_CASCADE.band`, `[0.1, 0.9]`, decides when the other questions are asked. A part whose answer to the first question, `relevant`, falls outside the band is scored on that answer alone. Set your own band through `questions`:
+
+  ```ts
+  import { historySource } from '@curatejs/core';
+  import { chat, CHAT_CASCADE, chatSettings } from '@curatejs/chat';
+
+  const source = historySource({ reader: chat(), ...chatSettings, questions: { ...CHAT_CASCADE, band: [0.05, 0.95] } });
+  ```
+- **Label bar:** `labelBar` sets how sure a label must be, 0.5 when absent. A higher bar brings fewer parts in through the label lane: `historySource({ reader: chat(), ...chatSettings, labelBar: 0.7 })`.
 - **Labels:** `labels: true` asks core's seven `LABEL_KINDS` for transcript facts; a list of kinds asks your own set instead. See [core's label options](https://github.com/jonny981/curate/blob/main/packages/core/README.md#label-gate).
 - **Search wording:** `CHAT_SEARCH_LINE_REGISTER` describes the wording for host-written extra search lines. Copy or replace this text in your host; the package generates no lines.
 - **Kind phrases:** `CHAT_KIND_PHRASES` exports phrases in the chat register for `directions`, `decisions` and `corrections`. Pass one list to core's `kindLanes` option, for example `{ chat: CHAT_KIND_PHRASES.directions }`; kind lanes stay off by default.

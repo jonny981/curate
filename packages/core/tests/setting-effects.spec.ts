@@ -46,7 +46,7 @@ describe('the record says what each pick setting did', () => {
       actedOn: 400,
       added: 0,
       dropped: 0,
-      summary: 'labels on chat: labelled 400 parts, but every part was already going to the decide step, so labels added none. It added no part.',
+      summary: 'labels on chat at the label bar 0.5: labelled 400 parts, but every part was already going to the decide step, so labels added none. It added no part.',
     });
   });
 
@@ -58,7 +58,7 @@ describe('the record says what each pick setting did', () => {
       actedOn: 400,
       added: 56,
       dropped: 0,
-      summary: 'labels on chat: labelled 400 parts; 70 reached the decide step only through the label lane, and 56 of them were kept.',
+      summary: 'labels on chat at the label bar 0.5: labelled 400 parts; 70 reached the decide step only through the label lane, and 56 of them were kept.',
     });
   });
 
@@ -234,7 +234,7 @@ describe('the record says what each pick setting did', () => {
       expect(decided(off)).toEqual(['a', 'b']);
       expect(effect(on.record, 'labels', 'notes')).toEqual({
         setting: 'labels', source: 'notes', actedOn: 3, added: 0, dropped: null,
-        summary: 'labels on notes: labelled 3 parts; none reached the decide step only through the label lane. A feed cut (everyRanked c 1) ended the feed early, and labels change its order, so they may also have changed which parts were decided.',
+        summary: 'labels on notes at the label bar 0.5: labelled 3 parts; none reached the decide step only through the label lane. A feed cut (everyRanked c 1) ended the feed early, and labels change its order, so they may also have changed which parts were decided.',
       });
       const uncut = await labelPick(true);
       expect(effect(uncut.record, 'labels', 'notes')).toMatchObject({ added: 0, dropped: 0 });
@@ -433,7 +433,8 @@ describe('the record says what each curate option did', () => {
   });
 
   it('gives no entry for an option that was off', async () => {
+    // With no batch option the default batch size applies, so its entry is the only one.
     const plain = await curate('How many plans?', await picked(), writing(observation));
-    expect(plain.record.effects).toEqual([]);
+    expect(plain.record.effects.map((item) => item.setting)).toEqual(['batchTokens']);
   });
 });

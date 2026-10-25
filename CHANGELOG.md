@@ -42,6 +42,12 @@ Four packages:
   with any settings, for example a chat source with labels off:
   `historySource({ reader: chat(), ...chatSettings, labels: false })`. Pick
   and curate records name each source's settings under `levers.sources`.
+- **Every bar can be set.** A source's `labelBar` sets its label bar, 0.5
+  by default. `curate.weightBands` sets the curator's two weight bands,
+  `[0.1, 0.6]` by default. With neither `batchTokens` nor `contextLimit`,
+  evidence over `DEFAULT_BATCH_TOKENS` (150,000 estimated tokens) is written
+  as a layered log in batches of that size; smaller evidence is written in
+  one call.
 - **Levers for the whole call.** Every other cost and quality setting is a
   lever that turns on for more quality at more cost: `wholeLanes` (read each
   source's whole ranked list), `everyRanked` (decide every ranked part, or

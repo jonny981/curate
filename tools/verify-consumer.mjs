@@ -23,7 +23,7 @@ try {
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { pick, pickFromSources, curate, addMeaningRanks, historySource, SourceReadError, LABEL_KINDS, ANSWER_TYPES } from '@curatejs/core';
+import { pick, pickFromSources, curate, addMeaningRanks, historySource, SourceReadError, LABEL_KINDS, ANSWER_TYPES, DEFAULT_BATCH_TOKENS } from '@curatejs/core';
 import { asSourceReadError } from '@curatejs/core/internal';
 import { chat, chatSettings, CHAT_CASCADE, CHAT_KEYWORD_SETTINGS, CHAT_SEARCH_LINE_REGISTER } from '@curatejs/chat';
 import { git, gitSettings, GIT_HISTORY_CASCADE, GIT_KEYWORD_SETTINGS, GIT_SEARCH_LINE_REGISTER } from '@curatejs/git';
@@ -31,6 +31,7 @@ import { markdown, knowledgeBase, rules, markdownSettings, rulesSettings, MARKDO
 const cancelled = new SourceReadError('cancelled', 'Stopped');
 assert.equal(asSourceReadError(cancelled), cancelled);
 assert.equal(ANSWER_TYPES.length, 10);
+assert.equal(DEFAULT_BATCH_TOKENS, 150000);
 const decide = async ({ questions }) => Object.fromEntries(questions.map(q => [q.key, { status: 'answered', probability: q.questionKey === 'offtopic' ? 0 : 1 }]));
 const candidates = [1, 0.049, 0].map((probability, index) => ({
   sourceId: 'host', role: 'reference', id: 'host-item-' + index, title: 'Backup',
@@ -55,7 +56,7 @@ const picked = await pick(candidates, { ...uncutPick, task: 'Recall backups', de
 assert.deepEqual(picked.selected.map(candidate => candidate.id), ['host-item-0', 'host-item-1', 'host-item-2']);
 assert.deepEqual(picked.record.levers.sources, { host: { labels: false, rare: false, bar: 0 } });
 const labelled = await pick(candidates, { task: 'Recall backups', decide, labelKindsBySource: { host: LABEL_KINDS } });
-assert.deepEqual(labelled.record.levers.sources, { host: { labels: true, rare: false, bar: 0.0146 } });
+assert.deepEqual(labelled.record.levers.sources, { host: { labels: true, labelBar: 0.5, rare: false, bar: 0.0146 } });
 assert.equal(labelled.record.labels.deciderId, 'custom');
 assert.ok(labelled.record.labels.asked > 0);
 const meaning = await addMeaningRanks(candidates, 'Recall backups', {
