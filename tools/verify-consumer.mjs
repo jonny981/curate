@@ -81,7 +81,7 @@ assert.ok(prompt.body.includes('### E3 (2025-01-01, 0):'));
 mkdirSync('transcripts');
 writeFileSync('transcripts/session.jsonl', JSON.stringify({ type: 'user', sessionId: 'example', timestamp: '2025-01-01T12:00:00Z', message: { content: 'Backups are encrypted.' } }) + '\\n');
 mkdirSync('notes'); writeFileSync('notes/backup.md', '## Backup\\nBackups are encrypted.\\n');
-mkdirSync('policy'); writeFileSync('policy/backup.md', '---\\napplies: always\\n---\\nEncrypt backups.\\n');
+mkdirSync('policy'); writeFileSync('policy/backup.md', 'Encrypt backups.\\n');
 execFileSync('git', ['init', '-q']);
 execFileSync('git', ['add', 'notes']);
 execFileSync('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'commit.gpgsign=false', '-c', 'user.name=Example', '-c', 'user.email=example@example.com', 'commit', '-qm', 'Document encrypted backups']);
@@ -98,13 +98,17 @@ for (const [source, questions] of [
   assert.deepEqual(result.record.levers.sources[source.id].questions, questions, source.id);
   assert.equal(result.reads[0].status, 'read');
 }
+mkdirSync('library'); writeFileSync('library/AGENTS.md', 'Read by the harness every session.\\n');
+writeFileSync('library/backup.md', 'Encrypt backups.\\n'); writeFileSync('library/keys.md', 'Keep keys offline.\\n');
+const library = await pickFromSources([rules('library')], { task: 'Recall encrypted backups' }, { task: 'Recall encrypted backups', decide });
+assert.deepEqual(library.selected.map(candidate => candidate.text).sort(), ['Encrypt backups.\\n', 'Keep keys offline.\\n']);
 const effectSources = [chat({ providers: ['claude-code'], paths: ['transcripts'] }), git('.'), knowledgeBase('notes')];
 const effects = await pickFromSources(effectSources, { task: 'Recall encrypted backups' }, { task: 'Recall encrypted backups', decide });
 assert.ok(Array.isArray(effects.record.effects));
 assert.deepEqual(effectSources.map(source => effects.record.effects
   .filter(entry => entry.setting === 'bar' && entry.source === source.id).length), effectSources.map(() => 1));
 assert.deepEqual([chatSettings, gitSettings, markdownSettings, rulesSettings].map(s => [s.rare, s.labels, s.bar, s.ruleBar]),
-  [[false, true, 0.0146, undefined], [true, false, 0.0146, undefined], [true, false, 0.0146, undefined], [true, false, 0.0146, 0]]);
+  [[false, true, 0.0146, undefined], [true, false, 0.0146, undefined], [true, false, 0.0146, undefined], [true, false, 0.0146, 0.5]]);
 assert.deepEqual(chat({ paths: ['transcripts'] }).labelKinds, LABEL_KINDS);
 assert.equal(historySource({ reader: chat({ paths: ['transcripts'] }), ...chatSettings, labels: false }).labelKinds, undefined);
 assert.equal(CHAT_KEYWORD_SETTINGS.k1, 0.6);

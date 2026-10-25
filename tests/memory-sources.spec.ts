@@ -15,7 +15,7 @@ it('uses each real reader question set with no question option', async () => {
     vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
     for (const name of ['docs', 'policy', 'transcripts']) await mkdir(join(directory, name));
     await writeFile(join(directory, 'docs/billing.md'), '---\ndate: 2026-01-12\n---\n# Billing\nKeep the order currency.\n');
-    await writeFile(join(directory, 'policy/rules.md'), '---\napplies: always\n---\nNever round an order twice.\n');
+    await writeFile(join(directory, 'policy/rules.md'), 'Never round an order twice.\n');
     await writeFile(join(directory, 'transcripts/session.jsonl'), JSON.stringify({
       type: 'user', timestamp: '2026-01-12T10:00:00Z', sessionId: 'billing',
       message: { content: 'Billing must keep the order currency.' },

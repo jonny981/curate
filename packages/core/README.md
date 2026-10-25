@@ -426,7 +426,8 @@ const picked = await pick(candidates, {
 
 Rules also keep every scored item by default. A rules source's
 `ruleBar`, or `ruleBarBySource` on a direct `pick()`, sets an optional
-applicability cut. `applies: always` rules bypass that check.
+applicability cut; `rules()` from `@curatejs/markdown` sets 0.5. A candidate
+a host builds with `applies: 'always'` bypasses that check.
 
 `everyScored: { bySize }` replaces the flat bar with a
 curve of `[decided count, bar]` points. Below the first point the first
@@ -1328,7 +1329,7 @@ Each reader package exports its settings as one plain object, and its convenienc
 | `chatSettings` (`@curatejs/chat`) | `{ rare: false, labels: true, bar: 0.0146, questions: CHAT_CASCADE }` | `chat()` |
 | `gitSettings` (`@curatejs/git`) | `{ rare: true, labels: false, bar: 0.0146, questions: GIT_HISTORY_CASCADE }` | `git()` |
 | `markdownSettings` (`@curatejs/markdown`) | `{ rare: true, labels: false, bar: 0.0146, questions: MARKDOWN_CASCADE }` | `markdown()`, `knowledgeBase()` |
-| `rulesSettings` (`@curatejs/markdown`) | `{ ...markdownSettings, ruleBar: 0 }` | `rules()` |
+| `rulesSettings` (`@curatejs/markdown`) | `{ ...markdownSettings, ruleBar: 0.5 }`; 0.5 is a starting value, not yet tuned; it will be fitted on the 160-task rules test | `rules()` |
 
 The 0.0146 bar is the highest cut that lost no answer message on the tuning questions.
 The levers for the whole call start at: `wholeLanes` off, `everyRanked` on, and `route` off.
@@ -1391,7 +1392,8 @@ A search line that repeats the task opens no lane, and its entry says so.
 | `wholeLanes` | `read.wholeLanes` is on | Parts read past the lane cut | Kept parts whose only way in was the whole-lane read | 0, or `null` when a feed cut or a stop ended the feed early |
 | `linkedPathBar` | The pick holds a reference part with a `path` and a `repository` | Reference parts rejected below their bar but at or above the link bar, with a `path` and a `repository` | Parts kept through the link | 0 |
 | `bar` | Always, for a source with reference parts | The source's scored reference parts | 0 | Scored parts below the bar that no later pass kept. The changed-path link, the rare-word round and a typed question's `keepAt` can still keep a part below the bar |
-| `ruleBar` | The source has rule parts and a bar above 0 | The source's scored rules | 0 | Rules below the bar |
+| `ruleBar` | The source has rule parts and a bar above 0; the summary says how many rules were asked, picked and dropped | The source's rules asked | 0 | Rules below the bar |
+| `alwaysOnSkipped` | The source's read skipped files the agent's harness loads every session; the summary names each file and why | The files skipped | 0 | `null`. A skipped file is never split into parts |
 | `everyScored` | The call gave the override | As `bar`; it replaces the source's `bar` entry | 0 | As `bar` |
 | `everyRanked` | The call gave `{ c }` | Ranked parts | 0 | `null`. The summary says how many parts the cut left undecided |
 | `typed` | The source's question set has typed questions | Parts asked at least one typed question | Kept parts whose score reaches the source's bar only with the typed terms, and parts a typed question's `keepAt` kept | Parts below the bar only because of the typed terms that no later pass kept |

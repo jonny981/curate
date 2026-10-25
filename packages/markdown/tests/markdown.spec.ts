@@ -596,7 +596,7 @@ describe('knowledgeBase', () => {
 });
 
 describe('rules', () => {
-  it('emits one rule candidate per file, excluding README.md', async () => {
+  it('emits one rule candidate per rule, excluding README.md', async () => {
     const directory = await tree({
       'README.md': '# Rules\nWhat this folder is.\n',
       'sign-commits.md': '# Sign commits\nEvery commit is signed.\n',
@@ -606,16 +606,15 @@ describe('rules', () => {
     expect(result.status).toBe('read');
     if (result.status !== 'read') return;
 
-    expect(result.candidates.map((candidate) => candidate.id).sort()).toEqual([
-      'sign-commits.md',
-      'small-prs.md',
+    expect(result.candidates.map((candidate) => [candidate.id, candidate.title]).sort()).toEqual([
+      ['sign-commits.md#Sign%20commits', 'sign-commits.md: Sign commits'],
+      ['small-prs.md#Small%20pull%20requests', 'small-prs.md: Small pull requests'],
     ]);
     expect(result.candidates.every((candidate) => candidate.role === 'rule')).toBe(true);
-    expect(result.candidates.every((candidate) => candidate.title === candidate.id)).toBe(true);
     expect(result.complete).toBe(true);
   });
 
-  it('marks applies: always frontmatter so pick selects it without asking', async () => {
+  it('skips a file whose frontmatter says applies: always, and says why', async () => {
     const directory = await tree({
       'always-rule.md': '---\napplies: always\n---\n# Always\nAlways true.\n',
       'sometimes-rule.md': '# Sometimes\nOnly sometimes.\n',
@@ -624,27 +623,11 @@ describe('rules', () => {
     expect(result.status).toBe('read');
     if (result.status !== 'read') return;
 
-    const always = result.candidates.find((candidate) => candidate.id === 'always-rule.md');
-    const sometimes = result.candidates.find((candidate) => candidate.id === 'sometimes-rule.md');
-    expect(always?.applies).toBe('always');
-    expect(sometimes?.applies).toBeUndefined();
-
-    const asked: string[] = [];
-    const picked = await pick(result.candidates, { ...uncutPick,
-      task: 'any task',
-      decide: async (batch) => {
-        asked.push(...batch.questions.map((question) => question.id));
-        return allAnswered(0.9)(batch);
-      },
-    });
-    expect(asked).toEqual(['sometimes-rule.md']);
-    expect(picked.selected.map((candidate) => candidate.id).sort()).toEqual([
-      'always-rule.md',
-      'sometimes-rule.md',
-    ]);
-    expect(picked.record.candidates.find((entry) => entry.id === 'always-rule.md'))
-      .toMatchObject({ status: 'selected', asked: false });
-    expect(picked.record.rulesCoverage).toBe('complete');
+    expect(result.candidates.map((candidate) => candidate.id)).toEqual(['sometimes-rule.md#Sometimes']);
+    expect(result.candidates[0]!.applies).toBeUndefined();
+    expect(result.alwaysOnSkipped).toEqual([{ file: 'always-rule.md',
+      reason: 'declared always-on (applies: always): the agent\'s harness loads always-on rules' }]);
+    expect(result.complete).toBe(true);
   });
 
   it('reports a read stopped by limit as incomplete', async () => {
@@ -696,7 +679,7 @@ describe('rules', () => {
       });
       expect(result.status).toBe('read');
       if (result.status !== 'read') return;
-      expect(result.candidates.map((candidate) => candidate.id)).toEqual(['open-rule.md']);
+      expect(result.candidates.map((candidate) => candidate.id)).toEqual(['open-rule.md#Open']);
     } finally {
       await chmod(locked, 0o644);
     }

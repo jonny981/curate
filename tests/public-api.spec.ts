@@ -112,7 +112,7 @@ describe('package exports', () => {
       { rare: false, labels: true, bar: 0.0146, questions: CHAT_CASCADE },
       { rare: true, labels: false, bar: 0.0146, questions: GIT_HISTORY_CASCADE },
       { rare: true, labels: false, bar: 0.0146, questions: MARKDOWN_CASCADE },
-      { rare: true, labels: false, bar: 0.0146, questions: MARKDOWN_CASCADE, ruleBar: 0 },
+      { rare: true, labels: false, bar: 0.0146, questions: MARKDOWN_CASCADE, ruleBar: 0.5 },
     ]);
     const reader = chat({ providers: ['codex'], paths: ['/nonexistent'] });
     expect(reader).toMatchObject({ kind: 'chat', rare: false, bar: 0.0146, labelKinds: LABEL_KINDS, questions: CHAT_CASCADE });
@@ -121,7 +121,7 @@ describe('package exports', () => {
     expect(unlabelled).toMatchObject({ id: reader.id, kind: 'chat', rare: false, bar: 0.0146 });
     expect(unlabelled.labelKinds).toBeUndefined();
     expect(historySource({ reader: unlabelled, ...chatSettings }).labelKinds).toEqual(LABEL_KINDS);
-    expect(rules('/nonexistent')).toMatchObject({ rare: true, bar: 0.0146, ruleBar: 0 });
+    expect(rules('/nonexistent')).toMatchObject({ rare: true, bar: 0.0146, ruleBar: 0.5 });
     expect(historySource({ reader: rules('/nonexistent'), ...markdownSettings }).ruleBar).toBeUndefined();
   });
 

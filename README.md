@@ -61,6 +61,7 @@ See the [changelog](CHANGELOG.md) for what each release contains.
 ## Use it
 
 Call Curate before a task, then give its log to your agent as text.
+Always-on files such as `CLAUDE.md` and `AGENTS.md` stay with your agent's harness, and Curate picks the rules a task needs from your rule library.
 Curate is a library: it keeps plain files and calls the models you supply, with no database or service to deploy.
 Your agent keeps its own tools and can follow the citations when it needs more detail.
 
@@ -155,7 +156,7 @@ A setting on one source never changes what Curate picks from another, with one e
 | `chat()` | Off | On, the seven kinds | 0.5 | 0.0146 | | `CHAT_CASCADE` |
 | `git()` | On | Off | | 0.0146 | | `GIT_HISTORY_CASCADE` |
 | `markdown()`, `knowledgeBase()` | On | Off | | 0.0146 | | `MARKDOWN_CASCADE` |
-| `rules()` | On | Off | | 0.0146 | 0 | `MARKDOWN_CASCADE` |
+| `rules()` | On | Off | | 0.0146 | 0.5, not yet tuned | `MARKDOWN_CASCADE` |
 
 - **Rare-word round:** after selection, find unselected parts of the same source that share a rare word with a selected part, and ask about them.
 - **Labels:** ask each part seven kinds of personal fact (what someone owns, prefers, did, decided and so on), so parts the keyword search missed can still reach the decision step. Each part is labelled once and the label stored for later questions.
@@ -312,14 +313,14 @@ See the [git reader](packages/git/README.md) for keyword settings and optional s
 
 `@curatejs/markdown` reads folders, files and globs.
 Choose `knowledge` or `docs` for reference evidence, and `rules` or `instructions` for exact rules.
+`rules()` reads a rule library and keeps only the rules the decision model says apply to the task.
 
 ```js
-import { markdown } from '@curatejs/markdown';
+import { markdown, rules } from '@curatejs/markdown';
 
 const sources = [
   markdown({ paths: ['docs'], kind: 'docs' }),
-  markdown({ paths: ['.agents/rules'], kind: 'rules' }),
-  markdown({ paths: ['**/AGENTS.md'], kind: 'instructions' }),
+  rules('.cursor/rules'),
 ];
 ```
 

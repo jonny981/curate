@@ -126,15 +126,15 @@ describe('the record says what each pick setting did', () => {
 
   describe('ruleBar', () => {
     const rules = [part('rules', 'strict', { role: 'rule' }), part('rules', 'loose', { role: 'rule' })];
-    it('counts the rules below the bar, and says when none fell below it', async () => {
+    it('counts the rules asked, picked and dropped below the bar, and says when none fell below it', async () => {
       const cut = await pick(rules, { task, decide: fixed((q) => q.id === 'loose' ? 0.3 : 0.9), ruleBarBySource: { rules: 0.5 } });
       expect(effect(cut.record, 'ruleBar', 'rules')).toEqual({
         setting: 'ruleBar', source: 'rules', actedOn: 2, added: 0, dropped: 1,
-        summary: 'ruleBar on rules: of 2 scored rules, 1 fell below the bar 0.5.',
+        summary: 'ruleBar on rules: asked 2 rules, picked 1, dropped 1 below the bar 0.5.',
       });
       const kept = await pick(rules, { task, decide: fixed(() => 0.9), ruleBarBySource: { rules: 0.5 } });
       expect(effect(kept.record, 'ruleBar', 'rules')).toMatchObject({ actedOn: 2, added: 0, dropped: 0,
-        summary: 'ruleBar on rules: no scored rule of 2 fell below the bar 0.5, so the bar kept out none. It kept out no part.' });
+        summary: 'ruleBar on rules: asked 2 rules, picked 2, dropped 0 below the bar 0.5. It kept out no part.' });
       const off = await pick(rules, { task, decide: fixed(() => 0.9) });
       expect(effect(off.record, 'ruleBar', 'rules')).toBeUndefined();
     });

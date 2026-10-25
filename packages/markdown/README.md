@@ -32,11 +32,46 @@ in. A `revision` pin on `knowledgeBase` reads the tree that revision
 names: the earlier contents, no later files, and the resolved SHA on the
 result.
 
-`rules(dir)` reads a folder of rules: one candidate per `.md` file, all
-role `rule`, the folder's `README.md` excluded. Frontmatter
-`applies: always` marks a rule that every task follows: `pick` selects
-it without asking. Rules and instruction sources emit role `rule`; a note can
-never declare itself one.
+`rules(dir)` is the rule library: a folder of many small rules, from
+which the decision model picks the ones a task needs.
+
+- **Files:** plain `.md` rule files, Cursor `.mdc` files and Copilot
+  `*.instructions.md` files. Names that start with a dot and the folder's
+  `README.md` are skipped.
+- **One candidate per rule:** a heading or an unindented list item starts a
+  rule, and a rule repeats the text of the heading above it. A file with no
+  heading or list item is one rule. Every candidate has role `rule`.
+- **Scope:** a `.mdc` file's `globs` and a `*.instructions.md` file's
+  `applyTo` limit its rules to tasks whose paths match. Inside a git
+  repository, task paths and scopes are both read from the repository root.
+  Outside one, they are read from the library folder.
+- **Description:** a `.mdc` file's `description` goes into each of its rules'
+  titles, as `<file name>: <description>`, so the decision model sees what
+  the rule is for. The rule's text stays its own.
+- **The bar:** a rule the decision model answers 0.5 or more for is kept,
+  and it reaches the agent as its exact text. The rest are dropped. 0.5 is a
+  starting value, not yet tuned; it will be fitted on the 160-task rules
+  test. See [Defaults and overrides](#defaults-and-overrides) to change it.
+
+Rules and instruction sources emit role `rule`; a note can never declare
+itself one.
+
+## Always-on files
+
+An agent harness loads its own always-on files every session, so Curate
+leaves them to it. Every source that reads rules (`rules()`, and
+`markdown()` with kind `rules` or `instructions`) skips:
+
+- **files a harness loads by name:** `CLAUDE.md`, `CLAUDE.local.md`,
+  `AGENTS.md`, `GEMINI.md`, `.cursorrules` and
+  `.github/copilot-instructions.md`;
+- **files whose frontmatter says they are always-on:** Cursor's
+  `alwaysApply: true`, or `applies: always`.
+
+A skipped file is never asked about and puts nothing in the log or the
+rules. The read lists each one with its reason in `alwaysOnSkipped`, and
+the pick record's `effects` names them. Knowledge and docs sources read
+these files as usual.
 
 ## Files, globs, and kinds
 
@@ -46,13 +81,12 @@ paths, `.git`, and `node_modules` are skipped before file contents are opened.
 Markdown files include `.md`, `.markdown`, `.mdc`, and `.cursorrules`.
 
 ```ts
-import { markdown } from '@curatejs/markdown';
+import { markdown, rules } from '@curatejs/markdown';
 
 const sources = [
   markdown({ paths: ['notes'], kind: 'knowledge' }),
   markdown({ paths: ['docs'], kind: 'docs' }),
-  markdown({ paths: ['.agents/rules'], kind: 'rules' }),
-  markdown({ paths: ['**/AGENTS.md'], kind: 'instructions' }),
+  rules('.cursor/rules'),
 ];
 ```
 
@@ -75,11 +109,11 @@ const sources = [
 - **Rules:** Headings and top-level list items form separate rules with ids
   based on the file and heading path. Parent text stays with child rules.
   Nested lists and fenced code remain whole.
-- **Scopes:** Cursor `.mdc` files use `globs` and `alwaysApply`; Copilot
+- **Scopes:** Cursor `.mdc` files use `globs`; Copilot
   `*.instructions.md` files use `applyTo`. Nonmatching scopes are removed
   before decision calls when task paths are supplied. Unknown task paths keep
-  scoped rules. `alwaysApply: true` and `applies: always` keep rules without
-  a decision call.
+  scoped rules. Files marked `alwaysApply: true` or `applies: always` are
+  skipped ([Always-on files](#always-on-files)).
 - **Locations:** Instructions record their real directory. Named task files
   give closer parent instruction files a stronger `instruction-location`
   signal. Other directories receive no location signal.
@@ -94,9 +128,11 @@ const sources = [
   by candidate kind when candidates have no search ranks. Omitted weights are 1. The pick record stores these weights.
   The source's `keyword` settings retain the exported Markdown defaults.
 
-`knowledgeBase()` and `rules()` retain their directory interface, ids, date
-precedence, part handling, and ranking signals. Use `markdown()` for the kinds,
-scopes, and location behaviour described here.
+`knowledgeBase()` retains its directory interface, ids, date precedence,
+part handling, and ranking signals. `rules()` keeps its directory interface
+and ranking signals. Its rule ids are the relative file name plus the heading
+path, as for `markdown()` rules. Use `markdown()` for the
+kinds and location behaviour described here.
 
 ## Usage
 
@@ -114,8 +150,10 @@ const picked = await pickFromSources(sources, { task }, { task, decide });
 `markdown()` and `knowledgeBase()` read with `markdownSettings`, `{ rare: true, labels: false, bar: 0.0146 }`: references kept when scored 0.0146 or more,
 ordered and weighted by decision probability, and no label kinds.
 Set `everyScored: true` on the pick to keep every scored reference from every source.
-`rules()` reads with `rulesSettings`, `{ ...markdownSettings, ruleBar: 0 }`, so it keeps every scored rule.
-`markdown()` with kind `rules` or `instructions` also keeps every scored rule, since an absent rule bar is 0.
+`rules()` reads with `rulesSettings`, `{ ...markdownSettings, ruleBar: 0.5 }`, so it keeps a rule scored 0.5 or more.
+0.5 is a starting value, not yet tuned; it will be fitted on the 160-task rules test.
+`markdown()` with kind `rules` or `instructions` keeps every scored rule, since an absent rule bar is 0.
+For a rule library, use `rules()`, or set `ruleBar` through `historySource()`.
 The curator receives exact scores. Its `tiers` instructions ask for less space for low-scored items.
 The rare-word round finds unselected notes that share rare words with selected notes, counting words over this source only.
 To change a setting, build the source with core's `historySource()`:
@@ -124,7 +162,7 @@ To change a setting, build the source with core's `historySource()`:
 import { historySource } from '@curatejs/core';
 import { rules, rulesSettings } from '@curatejs/markdown';
 
-const source = historySource({ reader: rules('rules'), ...rulesSettings, ruleBar: 0.5 });
+const source = historySource({ reader: rules('rules'), ...rulesSettings, ruleBar: 0.7 });
 ```
 
 See [core's measured reason](https://github.com/jonny981/curate/blob/main/packages/core/README.md#defaults-and-evidence) for the saved-decision sweep's answer-turn losses.

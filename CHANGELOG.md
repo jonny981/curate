@@ -42,6 +42,13 @@ Four packages:
   with any settings, for example a chat source with labels off:
   `historySource({ reader: chat(), ...chatSettings, labels: false })`. Pick
   and curate records name each source's settings under `levers.sources`.
+- **A rule library.** `rules(dir)` reads `.md`, Cursor `.mdc` and Copilot
+  `*.instructions.md` rule files, one candidate per rule, with `globs` and
+  `applyTo` scopes and a `.mdc` file's `description` in the rule's title. It
+  keeps the rules the decision model answers 0.5 or more for, word for word;
+  0.5 is a starting value, not yet tuned. Every source that reads rules skips
+  the always-on files a harness loads itself (`CLAUDE.md`, `AGENTS.md`,
+  `alwaysApply: true` and the like), and the record's `effects` names them.
 - **Every bar can be set.** A source's `labelBar` sets its label bar, 0.5
   by default. `curate.weightBands` sets the curator's two weight bands,
   `[0.1, 0.6]` by default. With neither `batchTokens` nor `contextLimit`,

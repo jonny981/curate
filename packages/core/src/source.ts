@@ -163,6 +163,9 @@ export type CandidateReadResult =
        *  matched the searches. The caller can see the miss and ask
        *  more broadly rather than be handed the whole history. */
       readonly noSearchMatch?: boolean;
+      /** Files a rule read skipped because the agent's harness loads
+       *  them every session itself, each with the reason. */
+      readonly alwaysOnSkipped?: readonly { readonly file: string; readonly reason: string }[];
     }
   | {
       /** Expected absence: no repository, no git binary, no record
@@ -431,6 +434,7 @@ async function readKeywordSearches(
   let resolvedRevision: string | undefined;
   let complete = true;
   let readAny = false;
+  let alwaysOnSkipped: Extract<CandidateReadResult, { status: 'read' }>['alwaysOnSkipped'];
   for (const [lane, { task, lane: kind }] of tasks.entries()) {
     // Phrase and kind filtering must precede the per-read limit. The
     // `phraseLane` flag tells a streaming reader its `task` is an exact
@@ -458,6 +462,7 @@ async function readKeywordSearches(
       continue;
     }
     readAny = true;
+    alwaysOnSkipped ??= read.alwaysOnSkipped;
     if (resolvedRevision === undefined && read.revision !== undefined) resolvedRevision = read.revision;
     if (resolvedRevision !== undefined && (request.revision !== undefined
       || !(source.kind === 'markdown' && source.role === 'rule'))) revision = resolvedRevision;
@@ -523,6 +528,7 @@ async function readKeywordSearches(
     candidates: [...union.values()].map(({ candidate, ranks, past }) =>
       ({ ...unmarked(candidate), searchRanks: ranks, ...(past ? { pastLaneCut: true as const } : {}) })),
     lanes: reports,
+    ...(alwaysOnSkipped === undefined ? {} : { alwaysOnSkipped }),
     ...(noSearchMatch ? { noSearchMatch: true } : {}),
     ...(reasons.size === 0 ? {} : { partial: [...reasons].join('; ') }),
   };
@@ -879,7 +885,8 @@ export async function pickFromSources(
     const sourceRead = { lanes: laneOrigins(request, sources[index]!.kind),
       given: (['searchLines', 'searchPhrases', 'meaning'] as const).filter((option) =>
         option === 'meaning' ? Boolean(request.meaning) : (request[option] ?? []).some((line) => line.trim() !== '')),
-      wholeLanes: request.wholeLanes === true && sources[index]!.role === 'reference' };
+      wholeLanes: request.wholeLanes === true && sources[index]!.role === 'reference',
+      ...(read.alwaysOnSkipped === undefined ? {} : { alwaysOnSkipped: read.alwaysOnSkipped }) };
     readsBySource[sources[index]!.id] = sourceRead;
     for (const candidate of read.candidates) readsBySource[candidate.sourceId] = sourceRead;
   }

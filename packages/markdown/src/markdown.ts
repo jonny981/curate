@@ -91,7 +91,7 @@ async function walkMarkdown(
   exclude: ReadonlySet<string>,
   toplevel?: string,
   select: (file: string) => boolean = () => true,
-  legacy = false,
+  legacy?: 'knowledge' | 'rules',
 ): Promise<Walked> {
   const files: string[] = [];
   let skipped = 0;
@@ -107,20 +107,33 @@ async function walkMarkdown(
     const ignored = legacy ? new Set<string>()
       : await ignoredPaths(directory, entries.map((entry) => join(directory, entry.name)), toplevel, signal);
     for (const entry of entries) {
-      if (legacy ? entry.name.startsWith('.') : entry.name === '.git' || entry.name === 'node_modules') continue;
+      // rules() still lists .cursorrules, only so the read can record that it skipped it.
+      if (legacy !== undefined ? entry.name.startsWith('.') && !(legacy === 'rules' && entry.name === '.cursorrules')
+        : entry.name === '.git' || entry.name === 'node_modules') continue;
       const path = join(directory, entry.name);
       if (ignored.has(path) || isExcluded(path, root, exclude, toplevel)) continue;
       if (entry.isSymbolicLink()) {
         skipped += 1;
       } else if (entry.isDirectory()) {
         await walk(path);
-      } else if (entry.isFile() && (legacy ? entry.name.endsWith('.md') : markdownFile(path)) && select(path)) {
+      } else if (entry.isFile() && (legacy === 'knowledge' ? entry.name.endsWith('.md')
+        : legacy === 'rules' ? /\.mdc?$/.test(entry.name) || entry.name === '.cursorrules'
+          : markdownFile(path)) && select(path)) {
         files.push(path);
       }
     }
   }
   await walk(root);
   return { files, skipped };
+}
+
+/** Files an agent harness loads every session on its own. */
+const HARNESS_FILES = ['CLAUDE.md', 'CLAUDE.local.md', 'AGENTS.md', 'GEMINI.md', '.cursorrules'];
+
+/** The name a harness loads the file by, when it loads it every session. */
+function harnessFile(file: string): string | undefined {
+  if (HARNESS_FILES.includes(basename(file))) return basename(file);
+  return file.endsWith(`${sep}.github${sep}copilot-instructions.md`) ? '.github/copilot-instructions.md' : undefined;
 }
 
 function markdownFile(file: string): boolean {
@@ -386,6 +399,9 @@ interface ReadState {
   /** Set when the corpus sits inside a work tree: the repository the
    *  notes belong to and the corpus's path inside it. */
   readonly repo?: { readonly toplevel: string; readonly prefix: string };
+  /** Set for a rules() read inside a work tree: the repository root its
+   *  globs and applyTo scopes match task paths against. */
+  readonly scopeRoot?: string;
   /** Set for a pinned read: the resolved SHA and each file's blob id at
    *  that revision. Texts are fetched in bounded batches on each pass,
    *  so a large pinned corpus is never held whole. A candidate's text
@@ -605,8 +621,17 @@ async function openDirectory(
     repo = { toplevel, prefix: relative(toplevel, root).split(sep).join('/') };
   } else {
     if (legacy === 'rules') {
-      const { files, skipped } = await walkMarkdown(root, request.signal, exclude, undefined, select, true);
-      return { root, files, skipped };
+      const { files, skipped } = await walkMarkdown(root, request.signal, exclude, undefined, select, legacy);
+      // Scopes name paths from the repository root, as Cursor and Copilot
+      // read them; a repository git cannot inspect leaves the library folder.
+      let probe: WorkTreeProbe | undefined;
+      try {
+        probe = await probeWorkTree(root, request.signal);
+      } catch (error) {
+        if (isCancel(error)) throw asSourceReadError(error);
+      }
+      return { root, files, skipped,
+        ...(probe?.status === 'worktree' ? { scopeRoot: await realpath(probe.toplevel) } : {}) };
     }
     let probe: WorkTreeProbe;
     try {
@@ -624,14 +649,14 @@ async function openDirectory(
     }
     if (probe.status === 'absent') {
       if (request.revision !== undefined) return { status: 'absent', reason: PIN_REASON };
-      const { files, skipped } = await walkMarkdown(root, request.signal, exclude, undefined, select, legacy !== undefined);
+      const { files, skipped } = await walkMarkdown(root, request.signal, exclude, undefined, select, legacy);
       return { root, files, skipped };
     }
     const toplevel = await realpath(probe.toplevel);
     repo = { toplevel, prefix: relative(toplevel, root).split(sep).join('/') };
   }
   if (request.revision === undefined) {
-    const { files, skipped } = await walkMarkdown(root, request.signal, exclude, repo.toplevel, select, legacy !== undefined);
+    const { files, skipped } = await walkMarkdown(root, request.signal, exclude, repo.toplevel, select, legacy);
     return { root, files, skipped, repo };
   }
   try {
@@ -740,7 +765,7 @@ interface EnumeratedPart {
 }
 
 /** The note's candidate parts in their stable order: body sections cut
- *  to the part budget, or the whole body for the legacy rules reader. */
+ *  to the part budget, or rules, which `rules()` never cuts. */
 function* noteParts(
   note: Note,
   file: string,
@@ -749,15 +774,10 @@ function* noteParts(
   rule: boolean,
   partBudget: number,
 ): Generator<EnumeratedPart> {
-  const items: readonly (Section | RuleSection)[] = legacy === 'rules'
-    ? [{
-        text: note.body,
-        startLine: note.bodyOffset + 1,
-        endLine: note.bodyOffset + note.body.split('\n').length,
-        key: '',
-      }]
-    : rule ? ruleSections(note.body, note.bodyOffset) : sections(note.body, note.bodyOffset);
+  const items: readonly (Section | RuleSection)[] = rule ? ruleSections(note.body, note.bodyOffset) : sections(note.body, note.bodyOffset);
   const fileId = legacy === undefined ? file : name;
+  // A Cursor rule's description tells the decision model what the rule is for.
+  const description = legacy === 'rules' && file.endsWith('.mdc') ? note.fields.get('description') : undefined;
   for (const [sectionIndex, section] of items.entries()) {
     const parts = legacy === 'rules' ? [section.text] : splitParts(section.text, partBudget);
     const key = 'key' in section ? (section as RuleSection).key : String(sectionIndex + 1);
@@ -766,11 +786,11 @@ function* noteParts(
       const heading = section.heading ?? basename(file);
       yield {
         id: parts.length === 1 ? sectionId : `${sectionId}.${partIndex + 1}`,
-        title: legacy === 'rules' ? name
+        title: description !== undefined && description !== '' ? `${name}: ${description}`
           : parts.length === 1 ? `${name}: ${heading}` : `${name}: ${heading} (part ${partIndex + 1})`,
         text,
         heading,
-        contentRef: legacy === 'rules' ? name : `${fileId}#L${section.startLine}-L${section.endLine}`,
+        contentRef: `${fileId}#L${section.startLine}-L${section.endLine}`,
       };
     }
   }
@@ -785,7 +805,8 @@ interface FileMeta {
   readonly file: string;
   readonly name: string;
   readonly directory: string;
-  readonly always: boolean;
+  /** Why the file was skipped as always-on, when its frontmatter declares it. */
+  readonly alwaysOn?: string;
   /** Scope glob patterns when the file's rule scopes it; the skip
    *  decision waits on the resolved repository root. */
   readonly scope?: readonly string[];
@@ -866,6 +887,8 @@ function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 'rules'
       const partBudget = Math.min(maxQuestionText, request.maxQuestionText ?? maxQuestionText);
       const seen = new Set<string>();
       const reasons: string[] = [];
+      // The agent's harness loads always-on files itself; a rule read skips them and says which.
+      const alwaysOn: { readonly file: string; readonly reason: string }[] = [];
       let skipped = 0;
       let present = false;
       let revision: string | undefined;
@@ -918,6 +941,11 @@ function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 'rules'
           if (legacy === 'rules' && basename(file).toLowerCase() === 'readme.md') return false;
           if (seen.has(file)) return false;
           seen.add(file);
+          const harness = role === 'rule' ? harnessFile(file) : undefined;
+          if (harness !== undefined) {
+            alwaysOn.push({ file: relative(state.root, file).split(sep).join('/'), reason: `a harness loads ${harness} every session` });
+            return false;
+          }
           return true;
         });
         const notePaths = new Set<string>();
@@ -959,19 +987,23 @@ function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 'rules'
             if (target === undefined || target === name) continue;
             links.push(target);
           }
-          const always = role === 'rule' && ((legacy === undefined && note.fields.get('alwaysapply') === 'true')
-            || note.fields.get('applies') === 'always');
-          const scope = legacy === undefined && role === 'rule' ? ruleScope(file, note) : undefined;
+          const marker = role !== 'rule' ? undefined
+            : note.fields.get('alwaysapply') === 'true' ? 'alwaysApply: true'
+              : note.fields.get('applies') === 'always' ? 'applies: always' : undefined;
+          const always = marker === undefined ? undefined
+            : `declared always-on (${marker}): the agent's harness loads always-on rules`;
+          if (always !== undefined) alwaysOn.push({ file: name, reason: always });
+          const scope = role === 'rule' && always === undefined ? ruleScope(file, note) : undefined;
           // The scope gate reads request paths against the repository
           // root, which the date lookup below can still unset; a file
           // the gate could skip defers its part count until it resolves.
-          const deferred = !always && scope !== undefined && (request.paths ?? []).length > 0;
+          const deferred = scope !== undefined && (request.paths ?? []).length > 0;
           const declared = declaredDate(note.fields, legacy === undefined);
           if (legacy !== undefined && declared === undefined) anyUndeclared = true;
           const meta: FileMeta = {
             index: metas.length,
             file, name, directory: dirname(file),
-            always, scope, deferred,
+            ...(always === undefined ? {} : { alwaysOn: always }), scope, deferred,
             scopeSkipped: false,
             replaced: REPLACED_FRONTMATTER.test(note.frontmatter) || REPLACED_LINE.test(note.body),
             fileHits: hits(`${name} ${note.frontmatter}`, terms),
@@ -984,7 +1016,7 @@ function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 'rules'
           // A meaning lane needs each part's slot for materialization
           // but no keyword statistics; a kind lane needs both the
           // statistics for its topic score and each part's phrase count.
-          if (!deferred && (!phraseLane || kindLane)) {
+          if (always === undefined && !deferred && (!phraseLane || kindLane)) {
             for (const part of noteParts(note, file, name, legacy, role === 'rule', partBudget)) {
               if (meaningLane) {
                 parts.push({ file: meta.index, id: part.id, len: 0, headingHits: 0, namedPath: false });
@@ -1028,13 +1060,14 @@ function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 'rules'
             group.repo = undefined;
           }
         }
+        const scopeRoot = group.repo?.toplevel ?? state.scopeRoot ?? state.root;
         const taskPaths = (request.paths ?? []).map((hint) =>
-          relative(group.repo?.toplevel ?? state.root, resolve(group.repo?.toplevel ?? state.root, hint)).split(sep).join('/'));
+          relative(scopeRoot, resolve(scopeRoot, hint)).split(sep).join('/'));
         const deferredFiles: FileMeta[] = [];
         for (const meta of group.metas) {
           meta.inbound = inbound.get(meta.name) ?? 0;
-          meta.scopeSkipped = !meta.always && meta.scope !== undefined && taskPaths.length > 0
-            && !taskPaths.some((hint) => meta.scope!.some((glob) => matchesGlob(hint, glob)));
+          meta.scopeSkipped = meta.alwaysOn !== undefined || (meta.scope !== undefined && taskPaths.length > 0
+            && !taskPaths.some((hint) => meta.scope!.some((glob) => matchesGlob(hint, glob))));
           if (meta.deferred && !meta.scopeSkipped) deferredFiles.push(meta);
           if (meta.scopeSkipped) continue;
           meta.repoPath = group.repo === undefined ? undefined
@@ -1087,6 +1120,8 @@ function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 'rules'
         groups.push(group);
       }
       if (!present) return { status: 'absent', reason: reasons.join('; ') };
+      alwaysOn.sort((left, right) => (left.file < right.file ? -1 : left.file > right.file ? 1 : 0));
+      const skippedAlwaysOn = alwaysOn.length === 0 ? {} : { alwaysOnSkipped: alwaysOn };
       const limit = request.limit;
       if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1)) {
         throw new TypeError('limit must be a positive safe integer.');
@@ -1101,7 +1136,6 @@ function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 'rules'
         ...(meta.date === undefined ? {} : { date: meta.date }),
         ...(meta.repoPath === undefined ? {} : { path: meta.repoPath, repository: meta.repository }),
         ...(options.kind === 'instructions' ? { directory: meta.directory } : {}),
-        ...(meta.always ? { applies: 'always' as const } : {}),
         signals,
       });
 
@@ -1193,6 +1227,7 @@ function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 'rules'
           ...(revision === undefined ? {} : { revision }),
           candidates: emitted,
           meaningLane: true as const,
+          ...skippedAlwaysOn,
           complete: partial.length === 0 && reasons.length === 0,
           ...(partial.length === 0 && reasons.length === 0
             ? {}
@@ -1231,6 +1266,7 @@ function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 'rules'
             status: 'read',
             ...(revision === undefined ? {} : { revision }),
             candidates,
+            ...skippedAlwaysOn,
             complete: partial.length === 0,
             ...(partial.length === 0 ? {} : { partial: partial.join('; ') }),
           };
@@ -1239,6 +1275,7 @@ function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 'rules'
           status: 'read',
           ...(revision === undefined ? {} : { revision }),
           candidates,
+          ...skippedAlwaysOn,
           complete: false,
           partial: [...reasons, ...partial].join('; '),
         };
@@ -1372,6 +1409,7 @@ function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 'rules'
         status: 'read',
         ...(revision === undefined ? {} : { revision }),
         candidates: emitted,
+        ...skippedAlwaysOn,
         complete: partial.length === 0 && reasons.length === 0,
         ...(partial.length === 0 && reasons.length === 0
           ? {}
@@ -1390,7 +1428,7 @@ export function knowledgeBase(directory: string, options: KnowledgeBaseOptions =
   return historySource({ reader, ...markdownSettings });
 }
 
-/** Directory rules with the original file ids and README exclusion. */
+/** Directory rules with ids of the relative file name and heading path, and README exclusion. */
 export function rules(directory: string, options: RulesOptions = {}): CandidateSource {
   if (typeof directory !== 'string' || directory.trim() === '') throw new TypeError('directory must be a non-empty string.');
   return historySource({ reader: markdownSource({ ...options, paths: [directory], kind: 'rules' }, 'rules'), ...rulesSettings });

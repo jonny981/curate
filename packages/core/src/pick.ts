@@ -332,11 +332,12 @@ export interface PickCascade {
 /** What one setting did in one pick, for one source. */
 export interface PickSettingEffect {
   /** The setting's name as a caller writes it: 'labels', 'rare', 'bar', 'ruleBar', 'searchLines',
-   *  'searchPhrases', 'meaning', 'wholeLanes', 'linkedPathBar', 'everyScored', 'everyRanked', 'typed' or 'written'. */
+   *  'searchPhrases', 'meaning', 'wholeLanes', 'linkedPathBar', 'everyScored', 'everyRanked', 'typed' or 'written'.
+   *  'alwaysOnSkipped' is no setting: it reports the always-on files a rule read skipped. */
   readonly setting: string;
   /** The source the counts are for. A setting given for the whole call gets one entry per source. */
   readonly source: string;
-  /** Parts the setting looked at. */
+  /** Parts the setting looked at; for 'alwaysOnSkipped', the files skipped. */
   readonly actedOn: number;
   /** Kept parts that are kept only because of this setting. */
   readonly added: number;
@@ -361,6 +362,8 @@ export interface PickSourceRead {
   readonly given?: readonly ('searchLines' | 'searchPhrases' | 'meaning')[];
   /** The read kept whole lanes (`wholeLanes` on the read request). */
   readonly wholeLanes: boolean;
+  /** Files the read skipped because the agent's harness loads them every session itself. */
+  readonly alwaysOnSkipped?: readonly { readonly file: string; readonly reason: string }[];
 }
 
 export interface PickRecord {
@@ -1150,12 +1153,17 @@ function settingEffects(input: EffectInput): PickSettingEffect[] {
     const rules = own.filter((candidate) => candidate.role === 'rule');
     if (rules.length > 0 && input.ruleBar(id) > 0) {
       const bar = input.ruleBar(id);
+      // A rule is asked unless it applies always or the feed never reached it.
+      const asked = rules.filter((candidate) => {
+        const status = statuses.get(candidate);
+        return status !== undefined && status.status !== 'unassessed' && !(status.status === 'selected' && !status.asked);
+      }).length;
       const scored = rules.filter((candidate) => input.scored.has(candidate));
+      const picked = scored.filter((candidate) => statuses.get(candidate)?.status === 'selected').length;
       const dropped = scored.filter((candidate) => input.belowBar.has(candidate)).length;
-      effects.push({ setting: 'ruleBar', source: id, actedOn: scored.length, added: 0, dropped,
-        summary: dropped > 0
-          ? `ruleBar on ${id}: of ${count(scored.length, 'scored rule')}, ${dropped} fell below the bar ${bar}.`
-          : `ruleBar on ${id}: no scored rule of ${scored.length} fell below the bar ${bar}, so the bar kept out none. It kept out no part.` });
+      effects.push({ setting: 'ruleBar', source: id, actedOn: asked, added: 0, dropped,
+        summary: `ruleBar on ${id}: asked ${count(asked, 'rule')}, picked ${picked}, dropped ${dropped} below the bar ${bar}.`
+          + (dropped === 0 ? ' It kept out no part.' : '') });
     }
 
     for (const setting of ['searchLines', 'searchPhrases', 'meaning'] as const) {
@@ -1218,6 +1226,16 @@ function settingEffects(input: EffectInput): PickSettingEffect[] {
   }
   for (const id of input.typedSources.keys()) {
     if (!input.candidates.some((candidate) => candidate.sourceId === id)) effects.push(typedEffect(id, []));
+  }
+  // One entry per read that skipped always-on files, a read that returned no part included.
+  const listed = new Set<PickSourceRead>();
+  for (const [id, read] of Object.entries(reads)) {
+    if (read.alwaysOnSkipped === undefined || listed.has(read)) continue;
+    listed.add(read);
+    const skipped = read.alwaysOnSkipped;
+    effects.push({ setting: 'alwaysOnSkipped', source: id, actedOn: skipped.length, added: 0, dropped: null,
+      summary: `alwaysOnSkipped on ${id}: skipped ${count(skipped.length, 'always-on file')} the agent's harness loads itself: `
+        + `${skipped.map((skip) => `${skip.file} (${skip.reason})`).join('; ')}.` });
   }
   for (const id of input.writtenSources) {
     if (!input.candidates.some((candidate) => candidate.sourceId === id)) effects.push(writtenEffect(id, []));

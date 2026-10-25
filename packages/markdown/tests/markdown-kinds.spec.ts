@@ -45,10 +45,10 @@ afterEach(async () => {
 
 describe('Markdown paths and shared reads', () => {
   it('matches globs and hidden rules while skipping git ignores and dependency folders before opening content', async () => {
-    const directory = await tree({ 'AGENTS.md': 'Root rule.', 'src/AGENTS.md': 'Source rule.', '.agents/guide.md': 'Hidden rule.',
-      'ignored/AGENTS.md': 'Ignored.', 'node_modules/a/AGENTS.md': 'Dependency.', '.gitignore': 'ignored/\n' });
+    const directory = await tree({ 'RULES.md': 'Root rule.', 'src/RULES.md': 'Source rule.', '.agents/guide.md': 'Hidden rule.',
+      'ignored/RULES.md': 'Ignored.', 'node_modules/a/RULES.md': 'Dependency.', '.gitignore': 'ignored/\n' });
     git(directory, 'init', '-b', 'main');
-    const result = await read([join(directory, '**/AGENTS.md'), join(directory, '.agents/*.md')], 'instructions');
+    const result = await read([join(directory, '**/RULES.md'), join(directory, '.agents/*.md')], 'instructions');
     expect(result.candidates).toHaveLength(3);
     expect(result.candidates.every((c) => c.kind === 'instructions' && c.role === 'rule')).toBe(true);
     expect(fileReads.some((file) => file.includes('/ignored/') || file.includes('/node_modules/'))).toBe(false);
@@ -110,18 +110,19 @@ describe('Markdown paths and shared reads', () => {
 });
 
 describe('Markdown rules and instructions', () => {
-  it('keeps the existing rules reader full file text, ids, and exact signal set beyond 700 characters', async () => {
+  it('keeps a rules() rule whole beyond 700 characters, with a file-based id and its exact signal set', async () => {
     const text = `# Battery\nSuperseded\nguide.ts\n${'one '.repeat(400)}`;
     const directory = await tree({ 'battery.md': text, 'README.md': 'Excluded.' });
     const result = await pickFromSources([rules(directory)], { task: 'battery', paths: ['guide.ts'] }, { ...uncutPick,
-      task: 'battery', decide: async ({ questions }, signal) => {
+      task: 'battery', decide: async ({ questions }) => {
         expect(questions).toHaveLength(1);
-        expect(questions[0]).toMatchObject({ id: 'battery.md', title: 'battery.md', text });
-        return yes({ task: 'battery', questions }, signal);
+        expect(questions[0]).toMatchObject({ id: 'battery.md#Battery', title: 'battery.md: Battery', text });
+        return Object.fromEntries(questions.map((q) => [q.key, { status: 'answered', probability: 0.9 }]));
       },
     });
     expect(result.selected).toHaveLength(1);
-    expect(result.selected[0]).toMatchObject({ sourceId: `rules:${directory}`, id: 'battery.md', title: 'battery.md', text, contentRef: 'battery.md' });
+    expect(result.selected[0]).toMatchObject({ sourceId: `rules:${directory}`, id: 'battery.md#Battery', title: 'battery.md: Battery', text,
+      contentRef: 'battery.md#L1-L4' });
     expect(result.selected[0]!.signals).toEqual({ 'names-path': 3, bm25: 2 * Math.log(1 + 0.5 / 1.5) });
     expect(result.selected[0]).not.toHaveProperty('kind');
     expect(result.reads[0]).toMatchObject({ complete: true });
@@ -129,7 +130,7 @@ describe('Markdown rules and instructions', () => {
 
   it('splits headings and top-level bullets into stable rules with parent text and intact nested lists and code', async () => {
     const text = '# Safety\nKeep the battery safe.\n## Charging\n- Limit current.\n  - Keep the fuse.\n- Stop on heat.\n```md\n# Not a heading\n- Not a rule\n```\n';
-    const directory = await tree({ '.cursorrules': text });
+    const directory = await tree({ 'safety.md': text });
     const result = await read([directory], 'rules');
     expect(result.candidates).toHaveLength(3);
     const first = result.candidates.find((c) => c.id.endsWith('/Limit%20current.'))!;
@@ -137,21 +138,24 @@ describe('Markdown rules and instructions', () => {
     expect(first.text).toContain('Keep the battery safe.');
     expect(first.text).toContain('Keep the fuse.');
     expect(second.text).toContain('# Not a heading\n- Not a rule');
-    await writeFile(join(directory, '.cursorrules'), text + '## Storage\nStore dry.\n');
+    await writeFile(join(directory, 'safety.md'), text + '## Storage\nStore dry.\n');
     const extended = await read([directory], 'rules');
     expect(result.candidates.every((c) => extended.candidates.some((next) => next.id === c.id))).toBe(true);
   });
 
-  it('honors Cursor globs and alwaysApply before decision calls, retaining scopes when task paths are unknown', async () => {
+  it('honors Cursor globs before decision calls and skips alwaysApply files, retaining scopes when task paths are unknown', async () => {
     const directory = await tree({ 'typescript.mdc': '---\nglobs: ["**/*.{ts,tsx}"]\n---\nUse types.',
       'python.mdc': '---\nglobs:\n  - "**/*.py"\n---\nUse Python.',
       'always.mdc': '---\nglobs: "**/*.py"\nalwaysApply: true\n---\nKeep secrets private.' });
     const picked = await pickFromSources([markdown({ paths: [directory], kind: 'rules' })], { task: 'battery', paths: ['src/battery.ts'] }, { ...uncutPick,
       task: 'battery', decide: async ({ questions }, signal) => { expect(questions).toHaveLength(1); expect(questions[0]!.text).toBe('Use types.'); return yes({ task: 'battery', questions }, signal); },
     });
-    expect(picked.selected).toHaveLength(2);
-    expect(picked.record.candidates.find((c) => c.id.includes('always.mdc'))).toMatchObject({ asked: false });
-    expect((await read([directory], 'rules')).candidates).toHaveLength(3);
+    expect(picked.selected).toHaveLength(1);
+    expect(picked.record.candidates.some((c) => c.id.includes('always.mdc'))).toBe(false);
+    const all = await read([directory], 'rules');
+    expect(all.candidates).toHaveLength(2);
+    expect(all.alwaysOnSkipped).toEqual([{ file: 'always.mdc',
+      reason: 'declared always-on (alwaysApply: true): the agent\'s harness loads always-on rules' }]);
   });
 
   it('honors Copilot applyTo before any model call', async () => {
@@ -164,9 +168,9 @@ describe('Markdown rules and instructions', () => {
   });
 
   it('ranks nearest parent instructions and records their real directory', async () => {
-    const directory = await tree({ 'AGENTS.md': 'Root.', 'src/AGENTS.md': 'Source.', 'other/AGENTS.md': 'Other.' });
+    const directory = await tree({ 'RULES.md': 'Root.', 'src/RULES.md': 'Source.', 'other/RULES.md': 'Other.' });
     git(directory, 'init', '-b', 'main');
-    const result = await read([join(directory, '**/AGENTS.md')], 'instructions', { paths: ['src/battery.ts'] });
+    const result = await read([join(directory, '**/RULES.md')], 'instructions', { paths: ['src/battery.ts'] });
     expect(result.candidates[0]!.directory).toBe(join(directory, 'src'));
     expect(result.candidates[0]!.signals['instruction-location']).toBe(1);
     expect(result.candidates.find((c) => c.directory === directory)!.signals['instruction-location']).toBe(0.5);

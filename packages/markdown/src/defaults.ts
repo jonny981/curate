@@ -8,8 +8,10 @@ import { MARKDOWN_CASCADE } from './questions.js';
 export const markdownSettings: HistorySettings = { rare: true, labels: false, bar: 0.0146, questions: MARKDOWN_CASCADE };
 
 /** The settings `rules()` reads with: `markdownSettings` and a rule bar
- *  of 0, so every rule the decision step scored is kept. */
-export const rulesSettings: HistorySettings = { ...markdownSettings, ruleBar: 0 };
+ *  of 0.5, so a rule is kept when the decision model answers 0.5 or more
+ *  that it applies to the task. 0.5 is a starting value, not yet tuned;
+ *  it will be fitted on the 160-task rules test. */
+export const rulesSettings: HistorySettings = { ...markdownSettings, ruleBar: 0.5 };
 
 export interface MarkdownKeywordSettings {
   readonly k1: number;

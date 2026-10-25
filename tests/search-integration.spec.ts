@@ -16,7 +16,7 @@ it('combines search options and source questions across real readers', async () 
   try {
     for (const name of ['notes', 'policy', 'transcripts']) await mkdir(join(directory, name));
     await writeFile(join(directory, 'notes', 'guide.md'), '## Backup\nApple orchard backup evidence.\n## Audit\nBanana harvest restoration evidence.\n');
-    await writeFile(join(directory, 'policy', 'rule.md'), '---\napplies: always\n---\nKeep source dates.\n');
+    await writeFile(join(directory, 'policy', 'rule.md'), 'Keep source dates.\n');
     await writeFile(join(directory, 'transcripts', 'session.jsonl'), [
       { type: 'session_meta', timestamp: '2026-01-01T10:00:00Z', payload: { id: 'fruit' } },
       ...['Apple orchard backup evidence.', 'Banana harvest restoration evidence.'].map((text) => ({
@@ -42,17 +42,20 @@ it('combines search options and source questions across real readers', async () 
     const task = 'Apple orchard. Answer in one line. Cite both.';
     const calls: string[][] = [];
     const result = await pickFromSources(readers, { task, searchLines: ['Banana harvest'], stripSearchInstructions: true }, { ...uncutPick,
-      task, bestPartFirst: true, rankProtection: true, limits: { maxCandidates: 3 },
+      task, bestPartFirst: true, rankProtection: true, limits: { maxCandidates: 4 },
       decide: async (batch) => {
         expect(batch.task).toBe(task);
         calls.push(batch.questions.map((question) => `${question.sourceId}:${question.id}:${question.questionKey}`));
         return Object.fromEntries(batch.questions.map((question) => {
-          expect(question.questionKey).toBe(kinds.get(question.sourceId) === 'chat' ? 'chat' : kinds.get(question.sourceId) === 'git-history' ? 'history' : 'note');
+          // A rule is asked the rule question, never the source's set.
+          expect(question.questionKey).toBe(question.role === 'rule' ? undefined
+            : kinds.get(question.sourceId) === 'chat' ? 'chat' : kinds.get(question.sourceId) === 'git-history' ? 'history' : 'note');
           return [question.key, { status: 'answered', probability: 0.5 }];
         }));
       },
     });
-    expect(calls.map((questions) => questions.length)).toEqual([3, 2]);
+    // The rule is asked too, in the first batch.
+    expect(calls.map((questions) => questions.length)).toEqual([4, 2]);
     expect(result.selected).toHaveLength(6);
     expect(result.record.rulesCoverage).toBe('complete');
     expect(result.record.candidates.filter((entry) => entry.role === 'reference').every((entry) =>
