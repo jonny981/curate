@@ -2,10 +2,11 @@ import type { MemoryCandidate } from './pick.js';
 
 /** One retrieval lane's contribution to the union, for reporting. */
 export interface SearchLaneReport {
-  /** The lane's search text: the task, a search line, a phrase or a
-   *  kind-lane phrase; meaning lanes report their query text. */
+  /** The lane's search text: the task, a search line, a phrase, a
+   *  kind-lane phrase or a name the task names; meaning lanes report
+   *  their query text. */
   readonly task: string;
-  readonly lane: 'search' | 'phrase' | 'kind' | 'meaning';
+  readonly lane: 'search' | 'phrase' | 'kind' | 'meaning' | 'name';
   /** Candidates the lane matched before any cut: the reader's own
    *  `matched` count when it cut inside the read, the count it
    *  returned otherwise. */

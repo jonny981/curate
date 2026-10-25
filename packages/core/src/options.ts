@@ -5,7 +5,7 @@ import type {
 } from './pick.js';
 import type { CandidateReadRequest } from './source.js';
 import type { MeaningSearchOptions } from './meaning.js';
-import { ANSWER_TYPES } from './task.js';
+import { ANSWER_TYPES, taskNames } from './task.js';
 
 /** Option names the levers change renamed, in one place: each old
  *  dotted path a caller could still pass names the option that took
@@ -21,7 +21,7 @@ const RENAMED_OPTIONS: Readonly<Record<string, string>> = {
 const PICK_OPTION_KEYS: readonly (keyof PickOptions)[] = [
   'ranking', 'task', 'decide', 'questionsBySource', 'sourceKinds', 'labelKindsBySource', 'labelBarBySource',
   'keepTop', 'rankProtection', 'bestPartFirst', 'tags', 'tagsByKind',
-  'labels', 'cache', 'route', 'answerTypes', 'writeQuestions', 'everyRanked', 'everyScored', 'rare', 'rareBySource',
+  'labels', 'cache', 'route', 'answerTypes', 'writeQuestions', 'findNames', 'everyRanked', 'everyScored', 'rare', 'rareBySource',
   'barBySource', 'ruleBarBySource', 'rulesEnumerationComplete', 'readsBySource', 'limits', 'thresholds',
   'taskDate', 'timeZone', 'taskPeriod', 'signal',
 ];
@@ -48,7 +48,9 @@ const CURATE_KEYS: readonly (keyof CurateOptions)[] = [
 const SOURCE_KIND_KEYS: readonly CandidateSourceKind[] = ['chat', 'git-history', 'markdown'];
 /** The fixed keys of `ranking`, keyed by candidate kind. */
 const MEMORY_KIND_KEYS: readonly MemoryKind[] = ['knowledge', 'docs', 'rules', 'instructions'];
-const CASCADE_KEYS: readonly (keyof PickCascade)[] = ['bias', 'questions', 'typed', 'first', 'band', 'firstOnly', 'written'];
+const CASCADE_KEYS: readonly (keyof PickCascade)[] = [
+  'bias', 'questions', 'typed', 'first', 'band', 'firstOnly', 'written', 'named',
+];
 const TAG_SET_KEYS: readonly (keyof PickTagSet)[] = ['key', 'questions'];
 const CRITERION_KEYS: readonly (keyof PickCriterion)[] = ['key', 'instructions', 'true', 'false'];
 const CASCADE_QUESTION_KEYS: readonly (keyof PickCascade['questions'][number])[] = [
@@ -59,6 +61,7 @@ const TYPED_QUESTION_KEYS: readonly (keyof NonNullable<PickCascade['typed']>[num
 ];
 const FIRST_ONLY_KEYS: readonly (keyof NonNullable<PickCascade['firstOnly']>)[] = ['bias', 'weight'];
 const WRITTEN_KEYS: readonly (keyof NonNullable<PickCascade['written']>)[] = ['highest', 'second'];
+const NAMED_KEYS: readonly (keyof NonNullable<PickCascade['named']>)[] = ['question', 'highest', 'hasNames'];
 /** The keys Curate gives the written questions, in order. */
 export const WRITTEN_QUESTION_KEYS = ['task1', 'task2', 'task3', 'task4'] as const;
 
@@ -86,6 +89,8 @@ export function checkCascadeKeys(set: PickCascade | undefined, path: string): vo
   checkKeys(set, CASCADE_KEYS, path);
   checkKeys(set?.firstOnly, FIRST_ONLY_KEYS, `${path}.firstOnly`);
   checkKeys(set?.written, WRITTEN_KEYS, `${path}.written`);
+  checkKeys(set?.named, NAMED_KEYS, `${path}.named`);
+  checkKeys(set?.named?.question, CRITERION_KEYS, `${path}.named.question`);
   for (const [index, question] of (set?.questions ?? []).entries()) {
     checkKeys(question, CASCADE_QUESTION_KEYS, `${path}.questions[${index}]`);
   }
@@ -98,8 +103,9 @@ export function checkCascadeKeys(set: PickCascade | undefined, path: string): vo
  *  weights, typed questions whose keys no other question in the set
  *  shares, whose answer type is one of ANSWER_TYPES and whose keepAt is
  *  between 0 and 1, first, band and firstOnly together or not at all,
- *  and finite written weights beside keys that leave `task1` to `task4`
- *  free. */
+ *  finite written weights beside keys that leave `task1` to `task4`
+ *  free, and a complete name question with finite weights whose key,
+ *  followed by a number, is no other question's key. */
 export function checkCascade(set: PickCascade | undefined): void {
   if (set === undefined) return;
   const keys = set.questions.map((q) => q.key);
@@ -127,6 +133,19 @@ export function checkCascade(set: PickCascade | undefined): void {
       || all.some((key) => (WRITTEN_QUESTION_KEYS as readonly string[]).includes(key))) {
       throw new TypeError('a question set\'s written weights must be finite, and its own question keys '
         + 'cannot be task1 to task4.');
+    }
+  }
+  if (set.named !== undefined) {
+    const named: Partial<NonNullable<PickCascade['named']>> =
+      typeof set.named === 'object' && set.named !== null ? set.named : {};
+    const question = named.question;
+    const all = [...keys, ...(set.typed ?? []).map((q) => q.key), ...(set.written === undefined ? [] : WRITTEN_QUESTION_KEYS)];
+    if (typeof question !== 'object' || question === null
+      || [question.key, question.instructions, question.true, question.false].some((text) => typeof text !== 'string' || !text.trim())
+      || !Number.isFinite(named.highest) || !Number.isFinite(named.hasNames)
+      || all.some((key) => key.startsWith(question.key) && /^\d+$/.test(key.slice(question.key.length)))) {
+      throw new TypeError('a question set\'s named question needs a key, instructions, true and false, finite highest '
+        + 'and hasNames weights, and a key that, followed by a number, is no other question\'s key.');
     }
   }
   if (set.first !== undefined || set.band !== undefined || set.firstOnly !== undefined) {
@@ -205,6 +224,9 @@ export function checkPickOptions(options: PickOptions): void {
   if (options.writeQuestions !== undefined && typeof options.writeQuestions !== 'function') {
     throw new TypeError('writeQuestions must be a function.');
   }
+  if (options.findNames !== undefined && typeof options.findNames !== 'function') {
+    throw new TypeError('findNames must be a function.');
+  }
   for (const [index, set] of (options.tags ?? []).entries()) {
     checkTagSetKeys(set, `tags[${index}]`);
   }
@@ -227,6 +249,25 @@ export function checkWriteQuestions(options: PickOptions): void {
     && !Object.values(options.questionsBySource ?? {}).some((set) => set?.written !== undefined)) {
     throw new TypeError('writeQuestions is set, but no source\'s question set has written weights.');
   }
+}
+
+/** The names the task names: what the caller's `findNames` returns,
+ *  or `taskNames` without one. Names are trimmed, and blank and
+ *  repeated names are dropped. */
+export async function findTaskNames(
+  options: PickOptions,
+): Promise<{ readonly found: readonly string[]; readonly by: 'code' | 'caller' }> {
+  if (options.findNames === undefined) return { found: taskNames(options.task), by: 'code' };
+  let returned: unknown;
+  try {
+    returned = await options.findNames(options.task);
+  } catch (error) {
+    throw new Error(`findNames failed: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+  }
+  if (!Array.isArray(returned) || returned.some((name) => typeof name !== 'string')) {
+    throw new TypeError('findNames must return an array of strings.');
+  }
+  return { found: [...new Set((returned as string[]).map((name) => name.trim()).filter(Boolean))], by: 'caller' };
 }
 
 /** The same for the source-read request `pickFromSources` takes,

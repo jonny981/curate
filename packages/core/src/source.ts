@@ -5,7 +5,9 @@ import { DEFAULT_MAX_QUESTION_TEXT, pick } from './pick.js';
 import { phraseCount, stripSearchInstructions } from './search.js';
 import { addMeaningRanks, type MeaningSearchOptions } from './meaning.js';
 import { cutLane, laneBend, laneScoreOf, type SearchLaneReport } from './lanes.js';
-import { checkCascade, checkCascadeKeys, checkPickOptions, checkReadRequest, checkWriteQuestions } from './options.js';
+import {
+  checkCascade, checkCascadeKeys, checkPickOptions, checkReadRequest, checkWriteQuestions, findTaskNames,
+} from './options.js';
 import { LABEL_KINDS, type LabelKind } from './labels.js';
 import { datedIn, taskMoment, taskPeriod, timeZoneOf, zonedIso, type TaskPeriod } from './time.js';
 
@@ -220,6 +222,8 @@ export interface CandidateSource {
   readonly labelBar?: number;
   /** Run the rare-word round on this source's reference evidence by default. */
   readonly rare?: boolean;
+  /** Open one exact-phrase lane per name the task names; set by `historySource()`. */
+  readonly names?: boolean;
   /** The decision-score bar for this source's reference parts: a part
    *  scored at or above it is kept. Omitted means 0.0146. */
   readonly bar?: number;
@@ -254,21 +258,31 @@ export interface HistorySettings {
   /** The decision questions asked of this source's reference parts.
    *  Absent: the built-in question for the part's kind. */
   readonly questions?: PickCascade;
+  /** Search this source once more for each name the task names, as an
+   *  exact phrase that ignores case, so a part that mentions a name
+   *  reaches the decision step even when the keyword search ranked it
+   *  low. The reason is recall: a part the search loses never reaches
+   *  the decision step. Like a `searchPhrases` lane, a name lane is
+   *  never cut on its score curve; it holds at most the read's `limit`
+   *  matches, and `maxCandidates` and an `everyRanked: { c }` cut apply
+   *  to it as to every lane. A task with no names opens no lane. */
+  readonly names: boolean;
 }
 
 /** A source that reads with these settings. `reader` is any source:
  *  what `chat()`, `git()` or `markdown()` return, or your own. Spread a
  *  reader package's settings object to start from its tuned values. */
 export function historySource(config: { readonly reader: CandidateSource } & HistorySettings): CandidateSource {
-  const { reader, rare, labels, labelBar, bar, ruleBar, questions } = config;
+  const { reader, rare, labels, labelBar, bar, ruleBar, questions, names } = config;
   checkCascadeKeys(questions, 'questions');
   checkCascade(questions);
   if (labelBar !== undefined && (typeof labelBar !== 'number' || !Number.isFinite(labelBar) || labelBar < 0 || labelBar > 1)) {
     throw new TypeError('labelBar must be a number from 0 to 1.');
   }
-  const { labelKinds: _labelKinds, labelBar: _labelBar, ruleBar: _ruleBar, questions: _questions, ...rest } = reader;
+  const { labelKinds: _labelKinds, labelBar: _labelBar, ruleBar: _ruleBar, questions: _questions, names: _names,
+    ...rest } = reader;
   const labelKinds = labels === true ? LABEL_KINDS : labels === false ? [] : labels;
-  return { ...rest, rare, bar,
+  return { ...rest, rare, bar, names,
     ...(labelKinds.length ? { labelKinds } : {}), ...(labelBar === undefined ? {} : { labelBar }),
     ...(ruleBar === undefined ? {} : { ruleBar }),
     ...(questions === undefined ? {} : { questions }) };
@@ -296,10 +310,12 @@ export interface PickSourcesResult extends PickResult {
 
 interface SearchTask {
   readonly task: string;
-  readonly lane: 'search' | 'phrase' | 'kind';
+  readonly lane: 'search' | 'phrase' | 'kind' | 'name';
 }
 
-function searchTasks(request: CandidateReadRequest, kind: CandidateSource['kind']): SearchTask[] {
+/** The read's lanes: the task, each search line, then each phrase, kind
+ *  phrase and name that no earlier phrase lane already searches. */
+function searchTasks(request: CandidateReadRequest, kind: CandidateSource['kind'], names: readonly string[]): SearchTask[] {
   const searchTask = (task: string) => request.stripSearchInstructions ? stripSearchInstructions(task) : task;
   const tasks: SearchTask[] = [{ task: searchTask(request.task), lane: 'search' }];
   const seen = new Set([tasks[0]!.task.trim()]);
@@ -310,7 +326,7 @@ function searchTasks(request: CandidateReadRequest, kind: CandidateSource['kind'
     tasks.push({ task, lane: 'search' });
   }
   const phrases = new Set<string>();
-  const phrase = (line: string, lane: 'phrase' | 'kind') => {
+  const phrase = (line: string, lane: 'phrase' | 'kind' | 'name') => {
     const task = line.trim();
     if (!task || phrases.has(task)) return;
     phrases.add(task);
@@ -318,6 +334,7 @@ function searchTasks(request: CandidateReadRequest, kind: CandidateSource['kind'
   };
   for (const line of request.searchPhrases ?? []) phrase(line, 'phrase');
   for (const line of (kind === undefined ? [] : request.kindLanes?.[kind] ?? [])) phrase(line, 'kind');
+  for (const name of names) phrase(name, 'name');
   return tasks;
 }
 
@@ -341,27 +358,31 @@ function unmarked(candidate: MemoryCandidate): MemoryCandidate {
 
 /** The read request option each `searchRanks` position of a source's
  *  read comes from: its search tasks, then one meaning lane per distinct
- *  non-kind search text. */
-function laneOrigins(request: CandidateReadRequest, kind: CandidateSource['kind']): SearchLaneOrigin[] {
-  const tasks = searchTasks(request, kind);
+ *  search text that is not a kind phrase or a name. */
+function laneOrigins(
+  request: CandidateReadRequest, kind: CandidateSource['kind'], names: readonly string[],
+): SearchLaneOrigin[] {
+  const tasks = searchTasks(request, kind, names);
   const origins = tasks.map(({ lane }, index): SearchLaneOrigin => lane === 'search'
-    ? (index === 0 ? 'task' : 'searchLines') : lane === 'phrase' ? 'searchPhrases' : 'kindLanes');
-  const queries = new Set(tasks.filter(({ lane }) => lane !== 'kind').map(({ task }) => task.trim()).filter(Boolean));
+    ? (index === 0 ? 'task' : 'searchLines')
+    : lane === 'phrase' ? 'searchPhrases' : lane === 'name' ? 'names' : 'kindLanes');
+  const queries = new Set(tasks.filter(({ lane }) => lane !== 'kind' && lane !== 'name')
+    .map(({ task }) => task.trim()).filter(Boolean));
   return request.meaning ? [...origins, ...[...queries].map((): SearchLaneOrigin => 'meaning')] : origins;
 }
 
 /** One lane's candidates with their `pastLaneCut` marks settled. Only a
  *  reference source read with `wholeLanes` on keeps marks (`marking`).
  *  A search lane the reader did not cut itself is marked here, keeping
- *  any mark the reader set; a phrase lane is never cut, so it holds no
- *  mark; a kind lane keeps the reader's marks. */
+ *  any mark the reader set; a phrase or name lane is never cut, so it
+ *  holds no mark; a kind lane keeps the reader's marks. */
 function laneMarks(
   candidates: readonly MemoryCandidate[],
   marking: boolean,
   lane: SearchTask['lane'],
   readerCut: boolean,
 ): MemoryCandidate[] {
-  if (!marking || lane === 'phrase') return candidates.map(unmarked);
+  if (!marking || lane === 'phrase' || lane === 'name') return candidates.map(unmarked);
   if (lane === 'kind' || readerCut) return [...candidates];
   const groups = new Map<string, MemoryCandidate[]>();
   for (const candidate of candidates) {
@@ -413,8 +434,9 @@ async function readKeywordSearches(
   source: CandidateSource,
   request: CandidateReadRequest,
   context: CandidateReadContext,
+  names: readonly string[],
 ): Promise<CandidateReadResult> {
-  const tasks = searchTasks(request, source.kind);
+  const tasks = searchTasks(request, source.kind, names);
   // The cut applies to keyword lanes on reference sources only.
   const laneCut = request.wholeLanes !== true && source.role === 'reference';
   const marking = request.wholeLanes === true && source.role === 'reference';
@@ -509,7 +531,7 @@ async function readKeywordSearches(
       // count is no relevance measure, and a reader that did not score
       // the task keeps every match rather than lose a one-off direction.
       if (!positive) continue;
-      const cut = read.laneCutApplied === true && kind !== 'phrase'
+      const cut = read.laneCutApplied === true && kind !== 'phrase' && kind !== 'name'
         ? { kept: group, read: group.length }
         : cutLane(group, positive && kind === 'search' && laneCut);
       laneKept += cut.kept.length;
@@ -560,10 +582,11 @@ async function readSearches(
   source: CandidateSource,
   request: CandidateReadRequest,
   context: CandidateReadContext,
+  names: readonly string[],
 ): Promise<CandidateReadResult> {
-  const found = await readKeywordSearches(source, request, context);
+  const found = await readKeywordSearches(source, request, context, names);
   if (found.status !== 'read' || (!request.meaning && request.labelPool === undefined)) return found;
-  const tasks = searchTasks(request, source.kind);
+  const tasks = searchTasks(request, source.kind, names);
   const laneCut = request.wholeLanes !== true && source.role === 'reference';
   const marking = request.wholeLanes === true && source.role === 'reference';
   // The uncut, unlimited primary-search pool, fetched at most once and
@@ -612,10 +635,10 @@ async function readSearches(
       ...(partial === '' ? {} : { partial }) };
   }
   if (!request.meaning) return read;
-  // One meaning lane per distinct non-kind search text: the task and
-  // each search line or phrase.
+  // One meaning lane per distinct search text that is not a kind phrase
+  // or a name: the task and each search line or phrase.
   const queries = [...new Set(
-    tasks.filter(({ lane }) => lane !== 'kind').map(({ task }) => task.trim()).filter(Boolean),
+    tasks.filter(({ lane }) => lane !== 'kind' && lane !== 'name').map(({ task }) => task.trim()).filter(Boolean),
   )];
   const lanes = [...(read.lanes ?? [])];
 
@@ -788,7 +811,7 @@ async function addTaskPeriod(
 ): Promise<CandidateReadResult> {
   if (found.status !== 'read' || source.role === 'rule') return found;
   const read = await source.read({
-    ...request, task: searchTasks(request, source.kind)[0]!.task, taskPeriod: period,
+    ...request, task: searchTasks(request, source.kind, [])[0]!.task, taskPeriod: period,
     searchLines: undefined, searchPhrases: undefined, kindLanes: undefined, meaning: undefined, limit: undefined,
     wholeLanes: true, phraseLane: undefined, topic: undefined, meaningLane: undefined, labelPool: undefined,
     ...(found.revision === undefined ? {} : { revision: found.revision }),
@@ -871,6 +894,9 @@ export async function pickFromSources(
   checkPickOptions({ ...options, labelKindsBySource, labelBarBySource, rareBySource, barBySource, ruleBarBySource,
     questionsBySource });
   checkWriteQuestions({ ...options, questionsBySource });
+  // The task's names, found once for every source with name lanes on.
+  const found = sources.some((source) => source.names === true) ? await findTaskNames(options) : undefined;
+  const namesFor = (source: CandidateSource) => source.names === true ? found!.found : [];
   const reads = await Promise.all(sources.map(async (source) => {
     const sourceRequest: CandidateReadRequest = {
       ...request, ...(taskDate === undefined ? { asOf } : { taskDate }), timeZone, taskPeriod: undefined,
@@ -881,8 +907,8 @@ export async function pickFromSources(
           || (options.rare ?? source.rare ?? false) !== false
           ? 'count' : undefined,
     };
-    const found = await readSearches(source, sourceRequest, context);
-    return period === undefined ? found : addTaskPeriod(source, sourceRequest, period, found, context);
+    const read = await readSearches(source, sourceRequest, context, namesFor(source));
+    return period === undefined ? read : addTaskPeriod(source, sourceRequest, period, read, context);
   }));
   const candidates: MemoryCandidate[] = [];
   const sourceKinds: Record<string, CandidateSourceKind> = Object.assign(Object.create(null), options.sourceKinds);
@@ -916,7 +942,8 @@ export async function pickFromSources(
     }
   }
   let combined = candidates;
-  if (sources.some((source) => searchTasks(request, source.kind).length > 1) || request.meaning !== undefined) {
+  if (sources.some((source) => searchTasks(request, source.kind, namesFor(source)).length > 1)
+    || request.meaning !== undefined) {
     const unique = new Map<string, MemoryCandidate>();
     // Kind lanes differ between source kinds, so a single-lane read can
     // meet the merge without ranks: absent positions count as null.
@@ -949,16 +976,19 @@ export async function pickFromSources(
   for (const [index, read] of reads.entries()) {
     if (read.status !== 'read') continue;
     // A source whose role is not 'reference' is never cut, so whole lanes do not apply to it.
-    const sourceRead = { lanes: laneOrigins(request, sources[index]!.kind),
-      given: (['searchLines', 'searchPhrases', 'meaning'] as const).filter((option) =>
+    const sourceRead: PickSourceRead = { lanes: laneOrigins(request, sources[index]!.kind, namesFor(sources[index]!)),
+      given: [...(['searchLines', 'searchPhrases', 'meaning'] as const).filter((option) =>
         option === 'meaning' ? Boolean(request.meaning) : (request[option] ?? []).some((line) => line.trim() !== '')),
+      ...(sources[index]!.names === true ? ['names' as const] : [])],
       wholeLanes: request.wholeLanes === true && sources[index]!.role === 'reference',
       ...(read.alwaysOnSkipped === undefined ? {} : { alwaysOnSkipped: read.alwaysOnSkipped }) };
     readsBySource[sources[index]!.id] = sourceRead;
     for (const candidate of read.candidates) readsBySource[candidate.sourceId] = sourceRead;
   }
+  // A caller's findNames answers the pick from the names found above, so it is called once.
   const result = await pick(combined, {
     ...options, taskDate: asOf, timeZone,
+    ...(options.findNames === undefined || found === undefined ? {} : { findNames: async () => found.found }),
     rulesEnumerationComplete, sourceKinds, labelKindsBySource, labelBarBySource, rareBySource, barBySource,
     ruleBarBySource, questionsBySource, readsBySource,
   });
@@ -971,5 +1001,6 @@ export async function pickFromSources(
   const levers = { ...result.record.levers,
     wholeLanes: keywordWhole === meaningWhole ? keywordWhole
       : { keyword: keywordWhole, meaning: meaningWhole } };
-  return { ...result, reads, record: { ...result.record, levers } };
+  // The names found above, also when every source with name lanes on was absent.
+  return { ...result, reads, record: { ...result.record, ...(found === undefined ? {} : { names: found }), levers } };
 }

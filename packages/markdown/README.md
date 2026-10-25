@@ -159,10 +159,10 @@ const picked = await pickFromSources(sources, { task }, { task, decide });
 
 ## Defaults and overrides
 
-`markdown()` and `knowledgeBase()` read with `markdownSettings`, `{ rare: true, labels: false, bar: 0.0146 }`: references kept when scored 0.0146 or more,
+`markdown()` and `knowledgeBase()` read with `markdownSettings`, `{ rare: true, labels: false, names: true, bar: 0.0146 }`: a name lane for each name the task names, references kept when scored 0.0146 or more,
 ordered and weighted by decision probability, and no label kinds.
 Set `everyScored: true` on the pick to keep every scored reference from every source.
-`rules()` reads with `rulesSettings`, `{ ...markdownSettings, ruleBar: 0.5 }`, so it keeps a rule scored 0.5 or more.
+`rules()` reads with `rulesSettings`, `{ ...markdownSettings, names: false, ruleBar: 0.5 }`, so it keeps a rule scored 0.5 or more and opens no name lane: rules are chosen by where they apply, not by search.
 0.5 is a starting value, not yet tuned; it will be fitted on the 160-task rules test.
 `markdown()` with kind `rules` or `instructions` keeps every scored rule, since an absent rule bar is 0.
 For a rule library, use `rules()`, or set `ruleBar` through `historySource()`.

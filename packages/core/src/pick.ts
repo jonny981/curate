@@ -13,7 +13,7 @@ import {
   ANSWER_TYPES, ROUTE_QUESTIONS, routeOptions, type AnswerType, type RouteKey, type RouteOption,
 } from './task.js';
 import type { LeverStates } from './levers.js';
-import { WRITTEN_QUESTION_KEYS, checkCascade, checkPickOptions, checkWriteQuestions } from './options.js';
+import { WRITTEN_QUESTION_KEYS, checkCascade, checkPickOptions, checkWriteQuestions, findTaskNames } from './options.js';
 import { datedIn, taskMoment, taskPeriod, timeZoneOf, zonedIso, type TaskPeriod } from './time.js';
 
 export type MemoryCandidateRole = 'reference' | 'rule';
@@ -337,13 +337,27 @@ export interface PickCascade {
    *  band, written questions are asked only of parts whose first answer
    *  is inside the band. */
   readonly written?: { readonly highest: number; readonly second: number };
+  /** A question asked once per name the task names, of each reference
+   *  part, in the same request as the set's other questions. Its key,
+   *  followed by the name's place in the list from 1, keys each
+   *  answer. With a first question and a band, it is asked only of
+   *  parts whose first answer is inside the band. A task with no names
+   *  asks it of no part and adds neither term. */
+  readonly named?: {
+    /** Asked once per name; {name} is replaced. */
+    readonly question: PickCriterion;
+    /** Weight on logit(the highest answer across the task's names). */
+    readonly highest: number;
+    /** Added when the task has at least one name. */
+    readonly hasNames: number;
+  };
 }
 
 /** What one setting did in one pick, for one source. */
 export interface PickSettingEffect {
   /** The setting's name as a caller writes it: 'labels', 'rare', 'bar', 'ruleBar', 'searchLines',
-   *  'searchPhrases', 'meaning', 'wholeLanes', 'linkedPathBar', 'everyScored', 'everyRanked', 'typed',
-   *  'taskPeriod' or 'written'.
+   *  'searchPhrases', 'meaning', 'names', 'wholeLanes', 'linkedPathBar', 'everyScored', 'everyRanked', 'typed',
+   *  'taskPeriod', 'written' or 'named'.
    *  'alwaysOnSkipped' is no setting: it reports the always-on files a rule read skipped. */
   readonly setting: string;
   /** The source the counts are for. A setting given for the whole call gets one entry per source. */
@@ -361,16 +375,17 @@ export interface PickSettingEffect {
 /** Where a source's read found its parts: the read request option each
  *  `searchRanks` position came from, 'task' for the task's own keyword
  *  lane. */
-export type SearchLaneOrigin = 'task' | 'searchLines' | 'searchPhrases' | 'kindLanes' | 'meaning';
+export type SearchLaneOrigin = 'task' | 'searchLines' | 'searchPhrases' | 'kindLanes' | 'meaning' | 'names';
 
 /** How one source was read, for the record's `effects`. */
 export interface PickSourceRead {
   /** The option each `searchRanks` position came from, in position order. */
   readonly lanes: readonly SearchLaneOrigin[];
   /** The extra-lane options the read request gave with a non-blank
-   *  entry, whether or not each opened a lane: a search line that
-   *  repeats the task opens none. Defaults to those `lanes` names. */
-  readonly given?: readonly ('searchLines' | 'searchPhrases' | 'meaning')[];
+   *  entry, and 'names' when the source's `names` setting is on,
+   *  whether or not each opened a lane: a search line that repeats the
+   *  task opens none. Defaults to those `lanes` names. */
+  readonly given?: readonly ('searchLines' | 'searchPhrases' | 'meaning' | 'names')[];
   /** The read kept whole lanes (`wholeLanes` on the read request). */
   readonly wholeLanes: boolean;
   /** Files the read skipped because the agent's harness loads them every session itself. */
@@ -489,6 +504,11 @@ export interface PickRecord {
   /** Present when `writeQuestions` ran: the questions it wrote for the
    *  task, keyed `task1` to `task4`. */
   readonly writtenQuestions?: { readonly questions: readonly PickCriterion[] };
+  /** Present when the pick looked for the names the task names: when a
+   *  source's `names` setting is on or a source's question set has
+   *  `named`. `by` is 'caller' when `findNames` found them, 'code' when
+   *  `taskNames` did. */
+  readonly names?: { readonly found: readonly string[]; readonly by: 'code' | 'caller' };
   /** Present when a decide-feed dial ran — `everyRanked: { c }` or the
    *  rare-word round: the history's size N in reference parts (every
    *  reference part the pick received, including pool members the
@@ -646,6 +666,12 @@ export interface PickOptions {
    *  `false`, stops the pick. `taskQuestionWriter(write)` builds one.
    *  Off by default. */
   readonly writeQuestions?: (task: string, signal?: AbortSignal) => Promise<readonly PickCriterion[]>;
+  /** Find the names the task names, in place of `taskNames`, for this
+   *  call: a small model can do it. Called once per pick, and only when
+   *  a source's `names` setting is on or a source's question set has
+   *  `named`. A function that throws, or returns anything but an array
+   *  of strings, stops the pick. Curate ships no model for it. */
+  readonly findNames?: (task: string) => Promise<readonly string[]>;
   /** Read every ranked part, the default. `{ c }` turns the lever off
    *  and keeps only the top `round(c × N^0.8)` reference parts of the
    *  ranking the decide step reads — the label gate's fused order when
@@ -1043,6 +1069,14 @@ interface EffectInput {
   readonly unwritten: ReadonlyMap<MemoryCandidate, number>;
   /** The parts a typed answer at or above its keepAt keeps, whatever their score. */
   readonly keepReached: ReadonlySet<MemoryCandidate>;
+  /** Each source whose set has a name question. */
+  readonly namedSources: ReadonlySet<string>;
+  /** Whether the task named anything. */
+  readonly named: boolean;
+  /** The parts asked at least one name question. */
+  readonly namedAsked: ReadonlySet<MemoryCandidate>;
+  /** Each part's score without its name terms, for the parts that have them. */
+  readonly unnamed: ReadonlyMap<MemoryCandidate, number>;
 }
 
 const count = (n: number, noun = 'part') => `${n} ${noun}${n === 1 ? '' : 's'}`;
@@ -1128,6 +1162,21 @@ function settingEffects(input: EffectInput): PickSettingEffect[] {
         ? `${head}, but no part crossed the bar because of them. It added no part and kept out no part.`
         : `${head}; ${count(added)} reached the bar ${bar} only with them, and ${count(dropped)} fell below it only because of them.` };
   };
+  // One entry per source whose set has a name question, a source that
+  // returned no part included.
+  const namedEffect = (id: string, own: readonly MemoryCandidate[]): PickSettingEffect => {
+    const bar = input.bar(id);
+    const acted = own.filter((candidate) => input.namedAsked.has(candidate)).length;
+    // A part a typed answer's keepAt keeps would be kept without the name terms too.
+    const { added, dropped } = crossings(own.filter((candidate) => !input.keepReached.has(candidate)), input.unnamed, bar);
+    const head = `named on ${id}: ${count(acted)} ${acted === 1 ? 'was' : 'were'} asked whether they mention the task's names`;
+    return { setting: 'named', source: id, actedOn: acted, added, dropped,
+      summary: !input.named
+        ? `named on ${id}: the task named nothing, so no name question was asked. It added no part and kept out no part.`
+        : added === 0 && dropped === 0
+          ? `${head}, but no part crossed the bar because of them. It added no part and kept out no part.`
+          : `${head}; ${count(added)} reached the bar ${bar} only with the name terms, and ${count(dropped)} fell below it only because of them.` };
+  };
   const effects: PickSettingEffect[] = [];
   for (const id of new Set(input.candidates.map((candidate) => candidate.sourceId))) {
     const own = input.candidates.filter((candidate) => candidate.sourceId === id);
@@ -1191,6 +1240,7 @@ function settingEffects(input: EffectInput): PickSettingEffect[] {
 
     if (input.typedSources.has(id)) effects.push(typedEffect(id, own));
     if (input.writtenSources.has(id)) effects.push(writtenEffect(id, own));
+    if (input.namedSources.has(id)) effects.push(namedEffect(id, own));
 
     const rules = own.filter((candidate) => candidate.role === 'rule');
     if (rules.length > 0 && input.ruleBar(id) > 0) {
@@ -1208,7 +1258,7 @@ function settingEffects(input: EffectInput): PickSettingEffect[] {
           + (dropped === 0 ? ' It kept out no part.' : '') });
     }
 
-    for (const setting of ['searchLines', 'searchPhrases', 'meaning'] as const) {
+    for (const setting of ['searchLines', 'searchPhrases', 'meaning', 'names'] as const) {
       if (read === undefined || !(read.given ?? read.lanes).includes(setting)) continue;
       const held = own.filter((candidate) => candidate.searchRanks?.some((rank, index) =>
         rank !== null && read.lanes[index] === setting) === true).length;
@@ -1223,7 +1273,9 @@ function settingEffects(input: EffectInput): PickSettingEffect[] {
           : added > 0 ? `${head}; ${reached} ${through}, and ${keptOf(added)}.`
             : reached > 0 ? `${head}; ${reached} ${through}, but none of them were kept. It added no part.`
               : !read.lanes.includes(setting) ? `${setting} on ${id}: ${setting === 'searchLines'
-                ? 'every line was blank or repeated the task or an earlier line' : 'there was no text to search'
+                ? 'every line was blank or repeated the task or an earlier line'
+                : setting === 'names' ? 'the task named nothing that another lane did not already search'
+                  : 'there was no text to search'
               }, so no extra lane opened and they added none. It added no part.`
                 : held === 0 ? `${setting} on ${id}: the lanes held no part, so they added none. It added no part.`
                 : `${head}, but every part they held${inLimit < held ? ' inside the candidate limit' : ''} was also in another lane, so they added none. It added no part.` });
@@ -1299,6 +1351,17 @@ function settingEffects(input: EffectInput): PickSettingEffect[] {
   }
   for (const id of input.writtenSources) {
     if (!input.candidates.some((candidate) => candidate.sourceId === id)) effects.push(writtenEffect(id, []));
+  }
+  for (const id of input.namedSources) {
+    if (!input.candidates.some((candidate) => candidate.sourceId === id)) effects.push(namedEffect(id, []));
+  }
+  // A source with name lanes on whose read returned no part still gets its entry.
+  for (const [id, read] of Object.entries(reads)) {
+    if (!(read.given ?? read.lanes).includes('names') || input.candidates.some((candidate) => candidate.sourceId === id)) continue;
+    effects.push({ setting: 'names', source: id, actedOn: 0, added: 0, dropped: 0,
+      summary: read.lanes.includes('names')
+        ? `names on ${id}: the lanes held no part, so they added none. It added no part.`
+        : `names on ${id}: the task named nothing that another lane did not already search, so no extra lane opened and they added none. It added no part.` });
   }
   return effects;
 }
@@ -1491,6 +1554,11 @@ export async function pick(
       key: WRITTEN_QUESTION_KEYS[index]!, instructions: q.instructions, true: q.true, false: q.false,
     }));
   }
+  // The task's names, once per pick and before any decide request, when
+  // a source opened name lanes or a source's set asks about names.
+  const names = Object.values(options.questionsBySource ?? {}).some((set) => set.named !== undefined)
+    || Object.values(options.readsBySource ?? {}).some((read) => read.given?.includes('names') === true)
+    ? await findTaskNames(options) : undefined;
   let cacheAsked = 0;
   let cacheReused = 0;
   let cacheFailedWrites = 0;
@@ -1565,10 +1633,19 @@ export async function pick(
     : (cascadeFor(candidate)?.typed ?? []).filter((q) => neededTypes.has(q.answerType));
   const writtenFor = (candidate: MemoryCandidate) =>
     candidate.role === 'reference' && cascadeFor(candidate)?.written !== undefined ? writtenQuestions : [];
+  // The set's name question, once per name the task names.
+  const namedFor = (candidate: MemoryCandidate): PickCriterion[] => {
+    const named = candidate.role === 'reference' ? cascadeFor(candidate)?.named : undefined;
+    const fill = (text: string, name: string) => text.replaceAll('{name}', () => name);
+    return named === undefined ? [] : (names?.found ?? []).map((name, index) => ({
+      key: `${named.question.key}${index + 1}`, instructions: fill(named.question.instructions, name),
+      true: fill(named.question.true, name), false: fill(named.question.false, name),
+    }));
+  };
   const specsFor = (candidate: MemoryCandidate) => {
     const cascade = cascadeFor(candidate);
     return candidate.role === 'reference' && cascade
-      ? [...cascade.questions, ...typedFor(candidate), ...writtenFor(candidate)].map((q) => ({ key: q.key, question: q.instructions, trueCriterion: q.true, falseCriterion: q.false }))
+      ? [...cascade.questions, ...typedFor(candidate), ...writtenFor(candidate), ...namedFor(candidate)].map((q) => ({ key: q.key, question: q.instructions, trueCriterion: q.true, falseCriterion: q.false }))
       : [{ key: candidate.role, ...(candidate.kind === undefined || (candidate.role === 'rule' && candidate.kind !== 'instructions')
         ? PICK_QUESTIONS[candidate.role] : KIND_QUESTIONS[candidate.kind]) }];
   };
@@ -2091,6 +2168,7 @@ export async function pick(
   // terms, for the record's `effects`.
   const untyped = new Map<MemoryCandidate, number>();
   const unwritten = new Map<MemoryCandidate, number>();
+  const unnamed = new Map<MemoryCandidate, number>();
   // The typed question whose answer reached its keepAt, by part.
   const keptBy = new Map<MemoryCandidate, string>();
   // Candidates a stop left half-assessed inside a cascade.
@@ -2125,7 +2203,8 @@ export async function pick(
           // A question never attempted because a limit stopped us is unassessed.
           const typed = typedFor(candidate);
           const written = writtenFor(candidate);
-          const asked = [...cascade.questions, ...typed, ...written];
+          const named = namedFor(candidate);
+          const asked = [...cascade.questions, ...typed, ...written, ...named];
           if (stop && asked.some((q) => !got.has(q.key))
             && (!cascade.first || first?.status === 'answered')) {
             curtailed.set(candidate, stop);
@@ -2145,14 +2224,22 @@ export async function pick(
             const writtenZ = cascade.written === undefined ? 0
               : (highest === undefined ? 0 : cascade.written.highest * writtenLogit(highest))
                 + (second === undefined ? 0 : cascade.written.second * writtenLogit(second));
-            if (typed.length > 0) untyped.set(candidate, 1 / (1 + Math.exp(-(z + writtenZ))));
-            if (written.length > 0) unwritten.set(candidate, 1 / (1 + Math.exp(-(z + typedZ))));
+            // The highest name answer; with none answered only hasNames is added.
+            const best = named.flatMap((q) => {
+              const reply = got.get(q.key);
+              return reply?.status === 'answered' ? [reply.probability] : [];
+            }).reduce<number | undefined>((top, p) => top === undefined || p > top ? p : top, undefined);
+            const namedZ = named.length === 0 ? 0
+              : cascade.named!.hasNames + (best === undefined ? 0 : cascade.named!.highest * writtenLogit(best));
+            if (typed.length > 0) untyped.set(candidate, 1 / (1 + Math.exp(-(z + writtenZ + namedZ))));
+            if (written.length > 0) unwritten.set(candidate, 1 / (1 + Math.exp(-(z + typedZ + namedZ))));
+            if (named.length > 0) unnamed.set(candidate, 1 / (1 + Math.exp(-(z + typedZ + writtenZ))));
             const keeper = typed.find((q) => {
               const reply = got.get(q.key);
               return q.keepAt !== undefined && reply?.status === 'answered' && reply.probability >= q.keepAt;
             });
             if (keeper !== undefined) keptBy.set(candidate, keeper.key);
-            answer = { status: 'answered', probability: 1 / (1 + Math.exp(-(z + typedZ + writtenZ))),
+            answer = { status: 'answered', probability: 1 / (1 + Math.exp(-(z + typedZ + writtenZ + namedZ))),
               // The verdict reused the store only when every answer
               // behind it did: a question this pick asked — even one
               // that came back unanswered — keeps it fresh.
@@ -2429,6 +2516,12 @@ export async function pick(
       writtenFor(candidate).some((q) => answered.get(candidate)?.has(q.key) === true))),
     unwritten,
     keepReached: new Set(keptBy.keys()),
+    namedSources: new Set(Object.entries(options.questionsBySource ?? {})
+      .flatMap(([id, set]) => set.named === undefined ? [] : [id])),
+    named: (names?.found.length ?? 0) > 0,
+    namedAsked: new Set(candidates.filter((candidate) =>
+      namedFor(candidate).some((q) => answered.get(candidate)?.has(q.key) === true))),
+    unnamed,
   });
 
   // Decision tags run on the kept references once relevance has
@@ -2514,7 +2607,8 @@ export async function pick(
       ...(wasTruncated === undefined ? {} : { truncated: wasTruncated }),
       ...(cascade && candidate.role === 'reference' && answered.has(candidate) ? {
         questions: [...cascade.questions, ...typedFor(candidate),
-          ...writtenFor(candidate).filter((q) => answered.get(candidate)!.has(q.key))]
+          ...writtenFor(candidate).filter((q) => answered.get(candidate)!.has(q.key)),
+          ...namedFor(candidate).filter((q) => answered.get(candidate)!.has(q.key))]
           .map((q) => ({ key: q.key, ...(answered.get(candidate)!.get(q.key) ?? { status: 'missing' as const }) })),
       } : {}),
       ...(tags === undefined ? {} : { tags }),
@@ -2567,6 +2661,7 @@ export async function pick(
     ...(routeRecord === undefined ? {} : { route: routeRecord }),
     ...(answerTypesRecord === undefined ? {} : { answerTypes: answerTypesRecord }),
     ...(options.writeQuestions === undefined ? {} : { writtenQuestions: { questions: writtenQuestions } }),
+    ...(names === undefined ? {} : { names }),
     ...(pickRecord === undefined ? {} : { pick: pickRecord }),
     levers: { ...levers, sources: Object.fromEntries([...new Set([
       ...Object.keys(labelKindsBySource), ...rareSourceIds,

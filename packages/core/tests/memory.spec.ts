@@ -104,7 +104,7 @@ describe('memory', () => {
     const questions: (string | undefined)[] = [];
     const recalled = await memory({
       sources: [historySource({ reader: { ...source(), kind: 'markdown' }, rare: false, labels: false, bar: 0.0146,
-        questions: fitted('from-source') })],
+        names: false, questions: fitted('from-source') })],
       decide: async (batch, signal) => {
         questions.push(...batch.questions.map((question) => question.questionKey));
         return decide(batch, signal);

@@ -75,7 +75,7 @@ const source = chat({ providers: ['claude-code', 'codex'], since: '14 days' });
 
 ## Defaults and overrides
 
-`chat()` reads with `chatSettings`, `{ rare: false, labels: true, bar: 0.0146 }`: no rare-word round, core's seven label kinds, and references kept when scored 0.0146 or more,
+`chat()` reads with `chatSettings`, `{ rare: false, labels: true, names: true, bar: 0.0146 }`: no rare-word round, core's seven label kinds, a name lane for each name the task names, and references kept when scored 0.0146 or more,
 ordered and weighted by decision probability.
 Set `everyScored: true` on the pick to keep every scored reference from every source.
 The curator receives exact scores. Its `tiers` instructions ask for less space for low-scored items.
@@ -109,7 +109,7 @@ See [core's measured reason](https://github.com/jonny981/curate/blob/main/packag
 
   const source = historySource({ reader: chat(), ...chatSettings, questions: PERSONAL_CHAT_CASCADE });
   ```
-- **Personal questions with written ones:** `PERSONAL_CHAT_WRITTEN_CASCADE` holds the same questions, fitted together with two to four questions a model writes for each task. It needs core's `writeQuestions` pick option; `taskQuestionWriter(write)` builds one from your curator's `write` function. A pick with this set and no writer throws. See [core's written questions](https://github.com/jonny981/curate/blob/main/packages/core/README.md#questions-written-for-each-task).
+- **Personal questions with written ones:** `PERSONAL_CHAT_WRITTEN_CASCADE` holds the same questions, fitted together with two to four questions a model writes for each task and a question asked once per name the task names ([core's name question](https://github.com/jonny981/curate/blob/main/packages/core/README.md#a-question-about-each-name)). It needs core's `writeQuestions` pick option; `taskQuestionWriter(write)` builds one from your curator's `write` function. A pick with this set and no writer throws. See [core's written questions](https://github.com/jonny981/curate/blob/main/packages/core/README.md#questions-written-for-each-task).
 
   ```ts
   import { historySource, memory, taskQuestionWriter } from '@curatejs/core';

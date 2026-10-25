@@ -23,7 +23,7 @@ try {
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { pick, pickFromSources, curate, addMeaningRanks, historySource, SourceReadError, LABEL_KINDS, ANSWER_TYPES, DEFAULT_BATCH_TOKENS, COUNT_MARKER, taskQuestionWriter } from '@curatejs/core';
+import { pick, pickFromSources, curate, addMeaningRanks, historySource, SourceReadError, LABEL_KINDS, ANSWER_TYPES, DEFAULT_BATCH_TOKENS, COUNT_MARKER, taskQuestionWriter, taskNames } from '@curatejs/core';
 import { asSourceReadError } from '@curatejs/core/internal';
 import { chat, chatSettings, CHAT_CASCADE, CHAT_KEYWORD_SETTINGS, CHAT_SEARCH_LINE_REGISTER, PERSONAL_CHAT_CASCADE, PERSONAL_CHAT_WRITTEN_CASCADE } from '@curatejs/chat';
 import { git, gitSettings, GIT_HISTORY_CASCADE, GIT_KEYWORD_SETTINGS, GIT_SEARCH_LINE_REGISTER } from '@curatejs/git';
@@ -35,6 +35,7 @@ assert.equal(DEFAULT_BATCH_TOKENS, 150000);
 assert.equal(COUNT_MARKER.keepAt, 0.5);
 assert.equal(PERSONAL_CHAT_CASCADE.first, 'personal_fact');
 assert.equal(PERSONAL_CHAT_WRITTEN_CASCADE.written.highest > 0, true);
+assert.deepEqual(taskNames('Who graduated first among Emma, Rachel and Alex?'), ['Emma', 'Rachel', 'Alex']);
 const writer = taskQuestionWriter(async () => JSON.stringify([{ instructions: 'a?', true: 'yes', false: 'no' }, { instructions: 'b?', true: 'yes', false: 'no' }]));
 assert.deepEqual((await writer('task')).map(q => q.key), ['task1', 'task2']);
 const decide = async ({ questions }) => Object.fromEntries(questions.map(q => [q.key, { status: 'answered', probability: q.questionKey === 'offtopic' ? 0 : 1 }]));

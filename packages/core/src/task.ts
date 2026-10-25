@@ -2,7 +2,7 @@ import type { CurateWrite } from './curate.js';
 import { LABEL_LANE_BAR } from './labels.js';
 import type { PickCriterion, PickOptions } from './pick.js';
 
-export type TaskKind = 'count' | 'date' | 'advice' | 'changed' | 'named' | 'other';
+export type TaskKind = 'count' | 'date' | 'advice' | 'named' | 'other';
 
 /** Classify only the task's words. A task can need more than one kind of answer. */
 export function classifyTask(task: string): readonly TaskKind[] {
@@ -11,11 +11,62 @@ export function classifyTask(task: string): readonly TaskKind[] {
   if (/\b(how many|how much|total|count|list|enumerate|every|all (?:the|my|of))\b/i.test(text)) kinds.push('count');
   if (/\b(when|how long|how (?:many|much) (?:days?|weeks?|months?|years?|time)|before|after|earlier|later|first|last|latest|oldest|newest|order|since|until|ago)\b/i.test(text)) kinds.push('date');
   if (/\b(advice|suggest\w*|recommend\w*|should|good idea|ideas?|what (?:can|could|would) (?:i|we)|help me (?:choose|pick|decide|plan))\b/i.test(text)) kinds.push('advice');
-  if (/\b(now|current\w*|latest|updated?|changed?|instead|anymore|no longer|still|new (?:job|role|plan|habit))\b/i.test(text)) kinds.push('changed');
-  const names = text.replace(/\b(?:January|February|March|April|May|June|July|August|September|October|November|December|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|I)\b/g, '');
-  if (/(?<![\p{L}\p{N}])['"“‘][^'"”’]+['"”’](?![\p{L}\p{N}])|#[\p{L}\p{N}_]+/u.test(names)
-    || /(?<![\p{L}\p{N}])\p{Lu}[\p{L}\p{N}_-]+/u.test(names.replace(/(?:^|[.!?]\s+)\S+/g, ''))) kinds.push('named');
+  if (taskNames(text).length > 0) kinds.push('named');
   return kinds.length ? kinds : ['other'];
+}
+
+const MONTHS = 'January February March April May June July August September October November December Jan Feb Mar Apr Jun Jul Aug Sep Sept Oct Nov Dec';
+const DAYS = 'Monday Tuesday Wednesday Thursday Friday Saturday Sunday Mon Tue Wed Thu Fri Sat Sun';
+const WORDS = 'I I\'m I\'ve I\'d I\'ll How What Which Who Whom Whose Where When Why Can Could Would Should Do Does Did Is Are Was Were Have Has Had Any Some The A An My Your Please Hey Hi OK';
+/** Capitalised words that never start or join a name. */
+const NOT_NAMES = new Set(`${MONTHS} ${DAYS} ${WORDS}`.split(' '));
+/** Abbreviations whose full stop stays inside a name. */
+const ABBREVIATIONS = new Set(['Dr', 'St', 'Mr', 'Mrs', 'Ms', 'Jr', 'Sr', 'Mt']);
+const upper = (word: string) => /^\p{Uppercase}/u.test(word);
+const alphanumeric = (word: string) => /^[\p{L}\p{N}]/u.test(word);
+
+/** The people and things the task names, found with code and no
+ *  model, in the order they appear: quoted titles, hashtags, and runs
+ *  of capitalised words that do not start a sentence. A run of two or
+ *  more capitalised words counts even at the start of a sentence.
+ *  Month and day names, "I" and question words are never names; "Dr."
+ *  and "St." stay inside a name, a trailing "'s" is dropped, and an
+ *  "(asked …)" suffix is ignored. A capitalised word that names
+ *  nothing specific, such as "Korean", is listed too. */
+export function taskNames(task: string): string[] {
+  const found: string[] = [];
+  const take = (_match: string, name: string) => { found.push(name); return ' , '; };
+  const text = task.replace(/\s*\(asked .*\)\s*$/, '')
+    .replace(/(?<![\p{L}\p{N}_])['"‘“](.+?)['"’”](?![\p{L}\p{N}_])/gu, take)
+    .replace(/(#[\p{L}\p{N}_]+)/gu, take);
+  const run: string[] = [];
+  let start = true;
+  const close = () => {
+    while (run.length > 0 && /^\p{Nd}/u.test(run[run.length - 1]!)) run.pop();
+    if (run.length > 0) found.push(run.join(' ').replace(/['’]s$/, ''));
+    run.length = 0;
+  };
+  const tokens = text.match(/[\p{L}\p{N}_'’&-]+\.?|[^\p{L}\p{N}_\s]/gu) ?? [];
+  for (const [index, token] of tokens.entries()) {
+    const stop = token.endsWith('.') && !ABBREVIATIONS.has(token.slice(0, -1));
+    const word = stop ? token.slice(0, -1) : token;
+    const next = tokens[index + 1] ?? '';
+    const capital = upper(word) && !NOT_NAMES.has(word.replace(/\.+$/, ''));
+    if (!alphanumeric(word)) {
+      close();
+      start = '?!'.includes(word);
+    } else if (capital && (!start || run.length > 0 || (upper(next) && !NOT_NAMES.has(next.replace(/\.+$/, ''))))) {
+      run.push(word);
+    } else if (/^\p{Nd}/u.test(word) && run.length > 0) {
+      run.push(word);
+    } else {
+      close();
+    }
+    if (alphanumeric(word)) start = false;
+    if (stop) { close(); start = true; }
+  }
+  close();
+  return [...new Set(found)];
 }
 
 /** The curator options a route answer can switch on. */

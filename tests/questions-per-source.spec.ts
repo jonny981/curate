@@ -103,7 +103,7 @@ describe('pickFromSources asks each source its own set', () => {
 
   it('asks a source without a set the built-in question', async () => {
     const custom = historySource({ reader: { ...fixtureSource('markdown', parts('custom', 'cword'), { rare: false }), id: 'custom' },
-      rare: false, labels: false, bar: 0.0146 });
+      rare: false, labels: false, names: false, bar: 0.0146 });
     const { requests, how } = recording();
     const picked = await pickFromSources([custom], { task }, { task, decide: how });
     const asked = decisionQuestions(requests, 'custom');

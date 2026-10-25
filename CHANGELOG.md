@@ -82,6 +82,14 @@ Four packages:
   four questions for each task, `taskQuestionWriter(write)` builds it, and a
   set's `written` weights fold their answers into the score, as
   `PERSONAL_CHAT_WRITTEN_CASCADE` does. No preset's default questions change.
+- **Tasks that name people or things search for those names.**
+  `taskNames(task)` finds the names in a task with code, and `findNames`
+  replaces it for one call. A source's `names` setting, on for chat, git and
+  Markdown and off for rules, searches each name as an exact phrase, so every
+  part that mentions it reaches the decision step within the caller's limits.
+  A set's `named` question asks whether a part mentions each name and weighs
+  the highest answer, as `PERSONAL_CHAT_WRITTEN_CASCADE` does. The record
+  lists the names in `record.names`.
 - **Unknown options are rejected.** `pick`, `pickFromSources` and `curate`
   throw a `TypeError` before any model call when an options object, or a
   nested one such as `thresholds` or `everyRanked`, holds a key Curate does

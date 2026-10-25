@@ -73,7 +73,8 @@ export const PERSONAL_CHAT_CASCADE: PickCascade = {
 };
 
 /** The same questions, fitted together with two to four questions
- *  written for each task. Use it with `writeQuestions`, for example
+ *  written for each task and a question asked once per name the task
+ *  names. Use it with `writeQuestions`, for example
  *  `taskQuestionWriter(write)`; a pick without one throws. */
 export const PERSONAL_CHAT_WRITTEN_CASCADE: PickCascade = {
   bias: -2.405528458290732,
@@ -87,4 +88,14 @@ export const PERSONAL_CHAT_WRITTEN_CASCADE: PickCascade = {
     { ...PERSONAL_CHAT_CASCADE.questions[3]!, weight: 0.130222278825567 },
   ],
   written: { highest: 0.4235428027761504, second: 0.18564016475115125 },
+  named: {
+    question: {
+      key: 'name',
+      instructions: 'Does this part mention {name}?',
+      true: 'The part names {name}, or refers to it in a way that can only mean {name}',
+      false: 'The part does not name {name} or clearly refer to it, even if it is about the same topic',
+    },
+    highest: 0.1655479793453193,
+    hasNames: -0.1646894012324575,
+  },
 };

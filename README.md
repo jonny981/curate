@@ -151,16 +151,17 @@ const mem = memory({ sources: [chat(), git('.'), markdown({ paths: ['docs'], kin
 Each source carries its own settings, tuned for that kind of history.
 A setting on one source never changes what Curate picks from another, with one exception: a selected commit brings in a note it changed.
 
-| Source | Rare-word round | Labels | Label bar | Decision-score bar | Rule bar | Questions |
-| --- | --- | --- | --- | --- | --- | --- |
-| `chat()` | Off | On, the seven kinds | 0.5 | 0.0146 | | `CHAT_CASCADE` |
-| `git()` | On | Off | | 0.0146 | | `GIT_HISTORY_CASCADE` |
-| `markdown()`, `knowledgeBase()` | On | Off | | 0.0146 | | `MARKDOWN_CASCADE` |
-| `rules()` | On | Off | | 0.0146 | 0.5, not yet tuned | `MARKDOWN_CASCADE` |
+| Source | Rare-word round | Labels | Label bar | Name lanes | Decision-score bar | Rule bar | Questions |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `chat()` | Off | On, the seven kinds | 0.5 | On | 0.0146 | | `CHAT_CASCADE` |
+| `git()` | On | Off | | On | 0.0146 | | `GIT_HISTORY_CASCADE` |
+| `markdown()`, `knowledgeBase()` | On | Off | | On | 0.0146 | | `MARKDOWN_CASCADE` |
+| `rules()` | On | Off | | Off | 0.0146 | 0.5, not yet tuned | `MARKDOWN_CASCADE` |
 
 - **Rare-word round:** after selection, find unselected parts of the same source that share a rare word with a selected part, and ask about them.
 - **Labels:** ask each part seven kinds of personal fact (what someone owns, prefers, did, decided and so on), so parts the keyword search missed can still reach the decision step. Each part is labelled once and the label stored for later questions.
 - **Label bar (`labelBar`):** a label kind the task needs at this bar or more brings in each of the source's parts labelled at this bar or more on that kind. 0.5 for every source that carries labels.
+- **Name lanes (`names`):** search once more for each person or thing the task names, as an exact phrase, so every part that mentions it reaches the decision step. The reason is recall: a part the search loses can never be picked. Off for rules, which are chosen by where they apply, not by search.
 - **Decision-score bar:** keep a reference part the decision model scored at or above this.
 - **Rule bar:** keep a rule the decision model scored at or above this. Only sources whose parts are rules use it: `rules()`, and `markdown()` with kind `rules` or `instructions`.
 - **Questions:** the yes/no questions the decision model answers about each reference part, with fitted weights that combine the answers into its score.

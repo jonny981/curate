@@ -209,7 +209,7 @@ describe('Markdown dates, pins, and decisions', () => {
     // markdownSettings without its question set: a source without one asks each part its kind's question.
     const picked = await pickFromSources(['knowledge', 'docs', 'rules', 'instructions'].map((kind) => historySource({
       reader: markdown({ paths: [directory], kind: kind as 'knowledge' | 'docs' | 'rules' | 'instructions' }),
-      rare: true, labels: false, bar: 0.0146,
+      rare: true, labels: false, names: true, bar: 0.0146,
     })), { task: 'battery' }, { ...uncutPick,
       task: 'battery', decide: async ({ questions }, signal) => {
         expect(questions.map((q) => q.kind).sort()).toEqual(['docs', 'instructions', 'knowledge', 'rules']);

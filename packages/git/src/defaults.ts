@@ -2,10 +2,13 @@ import type { HistorySettings } from '@curatejs/core';
 import { GIT_HISTORY_CASCADE } from './questions.js';
 
 /** The settings `git()` reads with: the rare-word round on, no label
- *  kinds, the 0.0146 decision-score bar and the `GIT_HISTORY_CASCADE`
- *  decision questions. Change one with
+ *  kinds, a name lane for each name the task names, the 0.0146
+ *  decision-score bar and the `GIT_HISTORY_CASCADE` decision questions.
+ *  Change one with
  *  `historySource({ reader: git('.'), ...gitSettings, bar: 0.05 })`. */
-export const gitSettings: HistorySettings = { rare: true, labels: false, bar: 0.0146, questions: GIT_HISTORY_CASCADE };
+export const gitSettings: HistorySettings = {
+  rare: true, labels: false, names: true, bar: 0.0146, questions: GIT_HISTORY_CASCADE,
+};
 
 export interface GitKeywordSettings {
   readonly sharedWordCap: number;

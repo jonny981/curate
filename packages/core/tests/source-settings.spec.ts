@@ -24,9 +24,9 @@ const baseline: Record<string, Baseline> = JSON.parse(
 
 // The presets' settings without their question sets, as the baseline ran them: it was recorded with the
 // built-in decision question.
-const chatSettings: HistorySettings = { rare: false, labels: true, bar: 0.0146 };
-const gitSettings: HistorySettings = { rare: true, labels: false, bar: 0.0146 };
-const markdownSettings: HistorySettings = { rare: true, labels: false, bar: 0.0146 };
+const chatSettings: HistorySettings = { rare: false, labels: true, bar: 0.0146, names: false };
+const gitSettings: HistorySettings = { rare: true, labels: false, bar: 0.0146, names: false };
+const markdownSettings: HistorySettings = { rare: true, labels: false, bar: 0.0146, names: false };
 
 const sharedWords = (word: string) => Array.from({ length: 20 }, (_, i) => `${word}${i * 10}`).join(' ');
 const chat = (settings: Partial<HistorySettings> = {}, pool = parts('chat', 'chatword')) =>

@@ -192,7 +192,7 @@ Curate generates no phrases and makes no model call.
 Each source read is a set of lanes: one keyword lane for the task and
 each distinct search line, one phrase lane per phrase, and any kind or
 meaning lanes. A read result's `lanes` lists every lane with its search
-text, its type (`search`, `phrase`, `kind` or `meaning`), the candidate
+text, its type (`search`, `phrase`, `kind`, `meaning` or `name`), the candidate
 count the source returned for it before the lane's own filter, and the
 count the lane kept. The
 read's candidates are the union of what the lanes kept; the union has
@@ -266,6 +266,39 @@ The exported `stripSearchInstructions(task)` helper performs the same
 operation. It preserves unfamiliar wording and retrieval needs such as
 counting, dates, comparisons and identifying the newer fact. The full
 task still goes to `decide`; pass that same task to `curate`.
+
+### Names in the task
+
+`taskNames(task)` lists the people and things a task names, found with
+code and no model. It finds quoted titles, hashtags, and runs of
+capitalised words that do not start a sentence. A run of two or more
+capitalised words counts even at the start of a sentence. Month and day
+names, "I" and question words are never names. "Dr." and "St." stay
+inside a name, and a trailing "'s" is dropped. So
+`taskNames('Who graduated first among Emma, Rachel and Alex?')` returns
+`['Emma', 'Rachel', 'Alex']`. It also lists capitalised words that name
+nothing specific, such as "Korean". `classifyTask` tags a task `named`
+exactly when `taskNames` finds a name.
+
+A source with its `names` setting on searches once more for each name,
+as an exact phrase that ignores case, like a `searchPhrases` entry. The
+reason is recall: a part the search loses never reaches the decision
+step, and a name is the most exact search a task offers. A name lane is
+never cut on its score curve. Like every lane, it holds at most the
+read's `limit` matches, `maxCandidates` caps it on its own, and an
+`everyRanked: { c }` cut can leave one of its matches undecided. Its
+entry in the read's `lanes` has the type `name` and the name as its
+search text. A task with no names opens no name lane, and neither does
+a name another phrase lane already searches. A name gets no meaning
+lane.
+
+`findNames` on `pick` or `pickFromSources` replaces `taskNames` for one
+call, for example with a small model. It takes the task and returns the
+names. It is called once per pick, and only when a source has `names`
+on or a source's question set has `named`. A function that throws, or
+returns anything but an array of strings, stops the pick. Curate ships
+no model for it. `record.names` holds `found`, the names, and `by`,
+`'code'` or `'caller'`. It is present when the pick looked for names.
 
 ### Optional local meaning search
 
@@ -735,6 +768,32 @@ their keys. A part's record entry lists the written questions it was
 asked beside the others. A set with `written` cannot use the keys
 `task1` to `task4` for its own questions.
 
+### A question about each name
+
+A question set's `named` field asks its `question` once per name the
+task names, with `{name}` replaced by the name. It is asked of each
+reference part in the same request as the set's other questions. In a
+set with `first` and `band`, it is asked only of parts whose first
+answer is inside the band. Each answer is keyed by the question's key
+followed by the name's place in the list from 1, such as `name1`. A
+task with no names asks it of no part and adds neither term. The names
+come from `taskNames`, or from `findNames` when the call gives it.
+
+`named: { question, highest, hasNames }` adds `highest × logit(highest
+answer across the task's names) + hasNames` to a part's score. The
+answer is clamped to 0.0001 to 0.9999 before the logit. With every name
+answer missing, only `hasNames` is added. A name answer is a weighted
+term, never a rule: other parts of the same history mention the same
+name and get answers just as high, so a rule that raised a part to its
+name answer ranked the answer parts worse in tuning.
+
+`PERSONAL_CHAT_WRITTEN_CASCADE` carries `named`, asking "Does this part
+mention {name}?", with `highest` 0.1655479793453193 and `hasNames`
+-0.1646894012324575. Those weights were fitted together with the rest
+of that set. No other shipped set carries `named`, because no weight
+was fitted for one. A set's own question keys cannot be the name
+question's key followed by a number.
+
 ### Decision tags
 
 `tags` asks extra yes/no questions of each reference that passes
@@ -1152,13 +1211,14 @@ the writer preserved each factual link.
 - **Counts and lists:** Enable worked notes and ask for each distinct instance across the supplied sessions.
 - **Dates and order:** Enable worked notes for dates, gaps and order.
 - **Advice:** Enable the advice preference lines.
-- **Changed facts, named things and other tasks:** Keep the ordinary dated-log guidance.
+- **Named things and other tasks:** Keep the ordinary dated-log guidance.
 
 The option is off by default. Explicit `working` and `preferenceAdvice`
 values override the route's choices. `context` stays independently configurable.
-`classifyTask(task)` exposes the same code-only classification. It can return
-several kinds for one task. It uses common English phrases, capitals and
-quoted names; it does not infer unstated changes or consult evidence.
+`classifyTask(task)` exposes the same code-only classification. It returns
+`count`, `date`, `advice`, `named` or `other`, and can return several kinds
+for one task. It uses common English phrases and `taskNames`; it does not
+consult evidence.
 
 `route: 'jev'` chooses guidance from the route answers the pick
 recorded, off by default. A `taste` answer at the bar turns on both
@@ -1375,11 +1435,12 @@ them. The cache is on whenever the caller passes one.
 
 ### Source settings
 
-Each source carries six settings, tuned for its kind of history:
+Each source carries seven settings, tuned for its kind of history:
 
 - **`rare`:** run the rare-word round on this source's parts.
 - **`labels`:** the label kinds asked of each part: `true` for `LABEL_KINDS`, a list for those kinds, `false` for none.
 - **`labelBar`:** the label bar, from 0 to 1, for which kinds the task needs and which of this source's parts join the label lane; absent means 0.5.
+- **`names`:** open one exact-phrase lane per name the task names ([names in the task](#names-in-the-task)). The reason is recall.
 - **`bar`:** keep a reference part scored at or above this.
 - **`ruleBar`:** keep a rule scored at or above this; absent means 0. Only sources whose parts are rules use it.
 - **`questions`:** the decision questions asked of each reference part; absent means the built-in question for the part's kind.
@@ -1388,10 +1449,12 @@ Each reader package exports its settings as one plain object, and its convenienc
 
 | Settings object | Value | Carried by |
 | --- | --- | --- |
-| `chatSettings` (`@curatejs/chat`) | `{ rare: false, labels: true, bar: 0.0146, questions: CHAT_CASCADE }` | `chat()` |
-| `gitSettings` (`@curatejs/git`) | `{ rare: true, labels: false, bar: 0.0146, questions: GIT_HISTORY_CASCADE }` | `git()` |
-| `markdownSettings` (`@curatejs/markdown`) | `{ rare: true, labels: false, bar: 0.0146, questions: MARKDOWN_CASCADE }` | `markdown()`, `knowledgeBase()` |
-| `rulesSettings` (`@curatejs/markdown`) | `{ ...markdownSettings, ruleBar: 0.5 }`; 0.5 is a starting value, not yet tuned; it will be fitted on the 160-task rules test | `rules()` |
+| `chatSettings` (`@curatejs/chat`) | `{ rare: false, labels: true, names: true, bar: 0.0146, questions: CHAT_CASCADE }` | `chat()` |
+| `gitSettings` (`@curatejs/git`) | `{ rare: true, labels: false, names: true, bar: 0.0146, questions: GIT_HISTORY_CASCADE }` | `git()` |
+| `markdownSettings` (`@curatejs/markdown`) | `{ rare: true, labels: false, names: true, bar: 0.0146, questions: MARKDOWN_CASCADE }` | `markdown()`, `knowledgeBase()` |
+| `rulesSettings` (`@curatejs/markdown`) | `{ ...markdownSettings, names: false, ruleBar: 0.5 }`; 0.5 is a starting value, not yet tuned; it will be fitted on the 160-task rules test | `rules()` |
+
+Rules have no name lanes because they are chosen by where they apply, not by search.
 
 The 0.0146 bar is the highest cut that lost no answer message on the tuning questions.
 The levers for the whole call start at: `wholeLanes` off, `everyRanked` on, and `route` off.
@@ -1415,7 +1478,7 @@ So a run reads as, for example, `{ kind: 'chat', labels: true, labelBar: 0.5, ra
 `levers.rare` is `false` or `{ share, bar }`, and `levers.everyScored` is present only when the call gave it.
 
 Set your own with `historySource()`.
-`reader` is any source, a reader's or your own, and `rare`, `labels` and `bar` are required, so spread a settings object to start from its values:
+`reader` is any source, a reader's or your own, and `rare`, `labels`, `names` and `bar` are required, so spread a settings object to start from its values:
 
 ```ts
 import { historySource, pickFromSources } from '@curatejs/core';
@@ -1440,7 +1503,7 @@ It counts the parts the setting looked at and the kept parts it brought in or ke
 When the setting brought in nothing and kept out nothing, its sentence says why.
 A setting that was off has no entry, and every count comes from the one pick that ran.
 
-A part reaches the decide step by one or more ways in: the task's own keyword lane, an extra lane (a search line, a phrase or a meaning query), the label lane, a whole-lane read past the lane cut, the task's period, the rare-word round, or the commit-to-note link.
+A part reaches the decide step by one or more ways in: the task's own keyword lane, an extra lane (a search line, a phrase, a name or a meaning query), the label lane, a whole-lane read past the lane cut, the task's period, the rare-word round, or the commit-to-note link.
 A setting that opens a way in counts a kept part as `added` only when that was the part's only way in and neither the link nor the rare-word round kept it.
 A part two ways brought in counts for neither.
 A lane is a way in only for the parts inside its candidate limit (`maxCandidates`).
@@ -1451,6 +1514,7 @@ A search line that repeats the task opens no lane, and its entry says so.
 | `labels` | The source carries label kinds; the summary names the source's label bar | The source's parts labelled this pick, asked or reused from the store | Kept parts whose only way in was the label lane | 0. The gate never removes a part a lane holds. `null` when a feed cut or a stop ended the feed early |
 | `rare` | The round ran on the source | Parts the round pulled in | Pulled parts that joined the selection | 0 |
 | `searchLines`, `searchPhrases`, `meaning` | The read request gave that option | Parts those lanes held | Kept parts whose only way in was those lanes | 0, or `null` when a feed cut or a stop ended the feed early |
+| `names` | The source's `names` setting is on | Parts the name lanes held | Kept parts whose only way in was a name lane | 0, or `null` when a feed cut or a stop ended the feed early |
 | `wholeLanes` | `read.wholeLanes` is on | Parts read past the lane cut | Kept parts whose only way in was the whole-lane read | 0, or `null` when a feed cut or a stop ended the feed early |
 | `taskPeriod` | `taskPeriod` is on, the default | Reference parts dated inside the period; 0 when the task names none | Kept parts whose only way in was the period | 0, or `null` when the task named a period and a feed cut or a stop ended the feed early. When it added none, the summary says the task names no period, that none of the parts only the period brought in were kept, that every part from the period was already in a search lane, or that each part from the period also had another way in |
 | `linkedPathBar` | The pick holds a reference part with a `path` and a `repository` | Reference parts rejected below their bar but at or above the link bar, with a `path` and a `repository` | Parts kept through the link | 0 |
@@ -1461,6 +1525,7 @@ A search line that repeats the task opens no lane, and its entry says so.
 | `everyRanked` | The call gave `{ c }` | Ranked parts | 0 | `null`. The summary says how many parts the cut left undecided |
 | `typed` | The source's question set has typed questions | Parts asked at least one typed question | Kept parts whose score reaches the source's bar only with the typed terms, and parts a typed question's `keepAt` kept | Parts below the bar only because of the typed terms that no later pass kept |
 | `written` | The source's question set has `written` weights | Parts asked at least one written question | Kept parts whose score reaches the source's bar only with the written terms, other than parts a typed question's `keepAt` keeps | Parts below the bar only because of the written terms that no later pass kept |
+| `named` | The source's question set has `named` | Parts asked at least one name question | Kept parts whose score reaches the source's bar only with the name terms, other than parts a typed question's `keepAt` keeps | Parts below the bar only because of the name terms that no later pass kept |
 
 Labels, extra lanes, `wholeLanes` and the task's period also change the order of the decide feed.
 That order matters only when something ends the feed early: an `everyRanked: { c }` cut or a stopping limit.
@@ -1537,6 +1602,7 @@ A curate record's `effects` covers `curate`'s own options; the pick's entries st
 - **`CurateSettingEffect`:** `setting`; `lines`, the log lines the option wrote, or `null` when one curate call cannot tell; and `summary`.
 - **`PickRecord.answerTypes`:** present when `answerTypes` was on: `bar`, `answers` with one answer per type, and `needed`, the types at or above the bar.
 - **`PickRecord.writtenQuestions`:** present when `writeQuestions` ran: `questions`, the questions it wrote, keyed `task1` to `task4`.
+- **`PickRecord.names`:** present when the pick looked for names: `found`, the names, and `by`, `'code'` when `taskNames` found them or `'caller'` when `findNames` did.
 - **`keptBy`:** on a selected `PickRecordEntry`, the key of the typed question whose `keepAt` kept the part below its bar.
 - **`CurateRecord.answerHint`:** the line `answerHint` added to the curator's task, absent when it added none.
 - **`pastLaneCut`:** on a part and its `PickRecordEntry`, true when a read with `wholeLanes` on returned the part although the lane cut would have dropped it.

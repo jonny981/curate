@@ -2,16 +2,20 @@ import type { HistorySettings } from '@curatejs/core';
 import { MARKDOWN_CASCADE } from './questions.js';
 
 /** The settings `markdown()` and `knowledgeBase()` read with: the
- *  rare-word round on, no label kinds, the 0.0146 decision-score bar
- *  and the `MARKDOWN_CASCADE` decision questions. Change one with
+ *  rare-word round on, no label kinds, a name lane for each name the
+ *  task names, the 0.0146 decision-score bar and the `MARKDOWN_CASCADE`
+ *  decision questions. Change one with
  *  `historySource({ reader: knowledgeBase('docs'), ...markdownSettings, rare: false })`. */
-export const markdownSettings: HistorySettings = { rare: true, labels: false, bar: 0.0146, questions: MARKDOWN_CASCADE };
+export const markdownSettings: HistorySettings = {
+  rare: true, labels: false, names: true, bar: 0.0146, questions: MARKDOWN_CASCADE,
+};
 
-/** The settings `rules()` reads with: `markdownSettings` and a rule bar
- *  of 0.5, so a rule is kept when the decision model answers 0.5 or more
- *  that it applies to the task. 0.5 is a starting value, not yet tuned;
- *  it will be fitted on the 160-task rules test. */
-export const rulesSettings: HistorySettings = { ...markdownSettings, ruleBar: 0.5 };
+/** The settings `rules()` reads with: `markdownSettings` with no name
+ *  lanes, because rules are chosen by where they apply, not by search,
+ *  and a rule bar of 0.5, so a rule is kept when the decision model
+ *  answers 0.5 or more that it applies to the task. 0.5 is a starting
+ *  value, not yet tuned; it will be fitted on the 160-task rules test. */
+export const rulesSettings: HistorySettings = { ...markdownSettings, names: false, ruleBar: 0.5 };
 
 export interface MarkdownKeywordSettings {
   readonly k1: number;

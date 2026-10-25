@@ -11,9 +11,9 @@ import {
 import { decide, fixtureSource, parts, task } from './fixtures/source-settings.js';
 
 // Each source's settings as the settings-by-source baseline ran them, written out in full.
-const chatSettings: HistorySettings = { rare: false, labels: false, bar: 0.0146 };
-const gitSettings: HistorySettings = { rare: true, labels: false, bar: 0.0146 };
-const markdownSettings: HistorySettings = { rare: true, labels: false, bar: 0.0146 };
+const chatSettings: HistorySettings = { rare: false, labels: false, bar: 0.0146, names: false };
+const gitSettings: HistorySettings = { rare: true, labels: false, bar: 0.0146, names: false };
+const markdownSettings: HistorySettings = { rare: true, labels: false, bar: 0.0146, names: false };
 
 const chat = (settings: Partial<HistorySettings> = {}, pool = parts('chat', 'chatword')) =>
   historySource({ reader: fixtureSource('chat', pool, { rare: false }), ...chatSettings, ...settings });
