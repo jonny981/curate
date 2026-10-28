@@ -9,7 +9,7 @@ import {
   checkCascade, checkCascadeKeys, checkPickOptions, checkReadRequest, checkWriteQuestions, findTaskNames,
 } from './options.js';
 import { LABEL_KINDS, type LabelKind } from './labels.js';
-import { datedIn, taskMoment, taskPeriod, timeZoneOf, zonedIso, type TaskPeriod } from './time.js';
+import { datedIn, durationMs, taskMoment, taskPeriod, timeZoneOf, zonedIso, type TaskPeriod } from './time.js';
 
 /** What a source is asked for, once per search. */
 export interface CandidateReadRequest {
@@ -143,6 +143,15 @@ export interface CandidateReadRequest {
    *  pickFromSources keeps only those dated inside the period, so a
    *  reader that ignores it still works. Leave unset otherwise. */
   readonly taskPeriod?: TaskPeriod;
+  /** Internal to pickFromSources: the source's `decay` half-life in
+   *  milliseconds. A Markdown reader then ranks each dated part lower
+   *  by its age at the task date. Leave unset otherwise. */
+  readonly decayHalfLife?: number;
+  /** Internal to pickFromSources: the limit a kind lane's matches are
+   *  cut to after the read, by score and then id. A reader that reports
+   *  `decay` for that lane counts its added and dropped parts after this
+   *  limit. Leave unset otherwise. */
+  readonly decayLimit?: number;
   /** Cancellation reaches file reads and child processes. */
   readonly signal?: AbortSignal;
 }
@@ -190,6 +199,11 @@ export type CandidateReadResult =
       /** Files a rule read skipped because the agent's harness loads
        *  them every session itself, each with the reason. */
       readonly alwaysOnSkipped?: readonly { readonly file: string; readonly reason: string }[];
+      /** Set by a reader that ranked with `decayHalfLife`: how many dated
+       *  parts it ranked, and the ids of the parts its limit and lane cut
+       *  kept (`added`) or left out (`dropped`) only because of decay. A
+       *  read of several lanes compares their kept parts together. */
+      readonly decay?: { readonly actedOn: number; readonly added: readonly string[]; readonly dropped: readonly string[] };
     }
   | {
       /** Expected absence: no repository, no git binary, no record
@@ -229,6 +243,8 @@ export interface CandidateSource {
   readonly bar?: number;
   /** The bar for this source's rule parts. Omitted means 0. */
   readonly ruleBar?: number;
+  /** The decay half-life this source's Markdown parts rank with; set by `historySource()`. */
+  readonly decay?: { readonly halfLife: string };
   /** 'reference' | 'rule' | 'mixed'; declared so the caller knows
    *  whether this source can feed the applicable-rule set. */
   readonly role: 'reference' | 'rule' | 'mixed';
@@ -258,6 +274,10 @@ export interface HistorySettings {
   /** The decision questions asked of this source's reference parts.
    *  Absent: the built-in question for the part's kind. */
   readonly questions?: PickCascade;
+  /** Rank older notes lower, by their age at the task date. A duration
+   *  such as '365 days': the age at which a note has lost half of the
+   *  full decay. Absent or false: off. Markdown sources only. */
+  readonly decay?: { readonly halfLife: string } | false;
   /** Search this source once more for each name the task names, as an
    *  exact phrase that ignores case, so a part that mentions a name
    *  reaches the decision step even when the keyword search ranked it
@@ -273,19 +293,24 @@ export interface HistorySettings {
  *  what `chat()`, `git()` or `markdown()` return, or your own. Spread a
  *  reader package's settings object to start from its tuned values. */
 export function historySource(config: { readonly reader: CandidateSource } & HistorySettings): CandidateSource {
-  const { reader, rare, labels, labelBar, bar, ruleBar, questions, names } = config;
+  const { reader, rare, labels, labelBar, bar, ruleBar, questions, names, decay } = config;
   checkCascadeKeys(questions, 'questions');
   checkCascade(questions);
   if (labelBar !== undefined && (typeof labelBar !== 'number' || !Number.isFinite(labelBar) || labelBar < 0 || labelBar > 1)) {
     throw new TypeError('labelBar must be a number from 0 to 1.');
   }
-  const { labelKinds: _labelKinds, labelBar: _labelBar, ruleBar: _ruleBar, questions: _questions, names: _names,
+  if (decay !== undefined && decay !== false) {
+    if (reader.kind !== 'markdown') throw new TypeError('decay applies to Markdown sources only.');
+    durationMs(decay?.halfLife, 'decay.halfLife');
+  }
+  const { labelKinds: _labelKinds, labelBar: _labelBar, ruleBar: _ruleBar, questions: _questions, names: _names, decay: _decay,
     ...rest } = reader;
   const labelKinds = labels === true ? LABEL_KINDS : labels === false ? [] : labels;
   return { ...rest, rare, bar, names,
     ...(labelKinds.length ? { labelKinds } : {}), ...(labelBar === undefined ? {} : { labelBar }),
     ...(ruleBar === undefined ? {} : { ruleBar }),
-    ...(questions === undefined ? {} : { questions }) };
+    ...(questions === undefined ? {} : { questions }),
+    ...(decay === undefined || decay === false ? {} : { decay: { halfLife: decay.halfLife } }) };
 }
 
 /** A real read failure: permission denied, corrupt store, killed
@@ -479,6 +504,11 @@ async function readKeywordSearches(
   let complete = true;
   let readAny = false;
   let alwaysOnSkipped: Extract<CandidateReadResult, { status: 'read' }>['alwaysOnSkipped'];
+  // Decay's ranked count is the task's own lane's; `plainKept` holds the
+  // parts the lanes keep without decay, so the source's added and
+  // dropped parts compare what all its lanes keep together.
+  let decayRanked: number | undefined;
+  const plainKept = new Set<string>();
   for (const [lane, { task, lane: kind }] of tasks.entries()) {
     // Phrase and kind filtering must precede the per-read limit. The
     // `phraseLane` flag tells a streaming reader its `task` is an exact
@@ -489,7 +519,8 @@ async function readKeywordSearches(
       ...(kind === 'search'
         ? { wholeLanes: !laneCut }
         : kind === 'kind'
-          ? { limit: undefined, phraseLane: true, topic: tasks[0]!.task, wholeLanes: !laneCut }
+          ? { limit: undefined, phraseLane: true, topic: tasks[0]!.task, wholeLanes: !laneCut,
+            ...(request.decayHalfLife === undefined || request.limit === undefined ? {} : { decayLimit: request.limit }) }
           : { limit: undefined, phraseLane: true }),
       ...(revision === undefined ? {} : { revision }) }, context);
     // `read` on the report counts what the source matched for this
@@ -507,6 +538,7 @@ async function readKeywordSearches(
     }
     readAny = true;
     alwaysOnSkipped ??= read.alwaysOnSkipped;
+    if (lane === 0) decayRanked = read.decay?.actedOn;
     if (resolvedRevision === undefined && read.revision !== undefined) resolvedRevision = read.revision;
     if (resolvedRevision !== undefined && (request.revision !== undefined
       || !(source.kind === 'markdown' && source.role === 'rule'))) revision = resolvedRevision;
@@ -535,6 +567,7 @@ async function readKeywordSearches(
         ? { kept: group, read: group.length }
         : cutLane(group, positive && kind === 'search' && laneCut);
       laneKept += cut.kept.length;
+      for (const candidate of cut.kept) if (!read.decay?.added.includes(candidate.id)) plainKept.add(candidate.id);
       const ranked = new Set<string>();
       for (const candidate of cut.kept) {
         const key = JSON.stringify([candidate.sourceId, candidate.id]);
@@ -559,8 +592,12 @@ async function readKeywordSearches(
         }
       }
     }
+    for (const id of read.decay?.dropped ?? []) plainKept.add(id);
     reports.push({ task, lane: kind, read: returned, kept: laneKept });
   }
+  const keptIds = new Set([...union.values()].map(({ candidate }) => candidate.id));
+  const decay = decayRanked === undefined ? undefined : { actedOn: decayRanked,
+    added: [...keptIds].filter((id) => !plainKept.has(id)), dropped: [...plainKept].filter((id) => !keptIds.has(id)) };
   if (!readAny) return { status: 'absent', reason: [...absent].join('; ') };
   // No lane of this read kept anything into the union: nothing
   // matched, and the caller sees the miss rather than the whole
@@ -573,6 +610,7 @@ async function readKeywordSearches(
       ({ ...unmarked(candidate), searchRanks: ranks, ...(past ? { pastLaneCut: true as const } : {}) })),
     lanes: reports,
     ...(alwaysOnSkipped === undefined ? {} : { alwaysOnSkipped }),
+    ...(decay === undefined ? {} : { decay }),
     ...(noSearchMatch ? { noSearchMatch: true } : {}),
     ...(reasons.size === 0 ? {} : { partial: [...reasons].join('; ') }),
   };
@@ -740,8 +778,13 @@ async function readSearches(
     // The flag reads the combined read: a meaning lane that matched
     // rescues a keyword miss, and only a read that kept nothing is one.
     const { noSearchMatch: _keywordMiss, ...rest } = read;
+    // A part a meaning lane keeps is kept with or without decay.
+    const meaningKept = new Set(meaningReads.flatMap(({ read: laneRead }) => laneRead.candidates.map((candidate) => candidate.id)));
     return { ...rest, complete: read.complete && reasons.length === 0,
       candidates: combined, lanes,
+      ...(rest.decay === undefined ? {} : { decay: { actedOn: rest.decay.actedOn,
+        added: rest.decay.added.filter((id) => !meaningKept.has(id)),
+        dropped: rest.decay.dropped.filter((id) => !meaningKept.has(id)) } }),
       ...(laneCut && !matched(combined) ? { noSearchMatch: true } : {}),
       ...(partial === '' ? {} : { partial }) };
   }
@@ -900,6 +943,7 @@ export async function pickFromSources(
   const reads = await Promise.all(sources.map(async (source) => {
     const sourceRequest: CandidateReadRequest = {
       ...request, ...(taskDate === undefined ? { asOf } : { taskDate }), timeZone, taskPeriod: undefined,
+      ...(source.decay === undefined ? {} : { decayHalfLife: durationMs(source.decay.halfLife, 'decay.halfLife') }),
       maxQuestionText: options.limits?.maxQuestionText ?? request.maxQuestionText
         ?? (source.maxQuestionText === Number.POSITIVE_INFINITY ? undefined : source.maxQuestionText ?? DEFAULT_MAX_QUESTION_TEXT),
       labelPool: (source.labelKinds?.length ?? 0) > 0 ? 'gate'
@@ -998,9 +1042,28 @@ export async function pickFromSources(
   // override that splits the two is recorded as a split.
   const keywordWhole = request.wholeLanes === true;
   const meaningWhole = request.meaning?.wholeLanes ?? keywordWhole;
-  const levers = { ...result.record.levers,
+  // Decay acts inside the read, so its half-life and its effects entry join here.
+  const sourceLevers = { ...result.record.levers.sources };
+  const effects = [...result.record.effects];
+  for (const [index, source] of sources.entries()) {
+    if (source.decay === undefined) continue;
+    const { halfLife } = source.decay;
+    if (sourceLevers[source.id] !== undefined) sourceLevers[source.id] = { ...sourceLevers[source.id]!, decay: { halfLife } };
+    const read = reads[index]!;
+    const counted = read.status === 'read' ? read.decay : undefined;
+    const actedOn = counted?.actedOn ?? 0;
+    const added = counted?.added.length ?? 0;
+    const dropped = counted?.dropped.length ?? 0;
+    const head = `decay on ${source.id} at the half-life ${halfLife}: ranked ${actedOn} dated part${actedOn === 1 ? '' : 's'} lower by age`;
+    effects.push({ setting: 'decay', source: source.id, actedOn, added, dropped,
+      summary: added === 0 && dropped === 0
+        ? `${head}, but the read kept the same parts with and without it. It added no part and kept out no part.`
+        : `${head}; ${added} ${added === 1 ? 'was' : 'were'} kept in the read only because decay ranked others lower, and ${
+          dropped} ${dropped === 1 ? 'was' : 'were'} left out of the read only because decay ranked it lower by its age.` });
+  }
+  const levers = { ...result.record.levers, sources: sourceLevers,
     wholeLanes: keywordWhole === meaningWhole ? keywordWhole
       : { keyword: keywordWhole, meaning: meaningWhole } };
   // The names found above, also when every source with name lanes on was absent.
-  return { ...result, reads, record: { ...result.record, ...(found === undefined ? {} : { names: found }), levers } };
+  return { ...result, reads, record: { ...result.record, ...(found === undefined ? {} : { names: found }), levers, effects } };
 }

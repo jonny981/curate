@@ -1444,6 +1444,7 @@ Each source carries seven settings, tuned for its kind of history:
 - **`bar`:** keep a reference part scored at or above this.
 - **`ruleBar`:** keep a rule scored at or above this; absent means 0. Only sources whose parts are rules use it.
 - **`questions`:** the decision questions asked of each reference part; absent means the built-in question for the part's kind.
+- **`decay`:** rank older notes lower by their age at the task date, as `{ halfLife: '365 days' }`; absent or `false` is off, as in every preset. Markdown sources only; see the [Markdown reader](https://github.com/jonny981/curate/blob/main/packages/markdown/README.md#decay).
 
 Each reader package exports its settings as one plain object, and its convenience functions carry it:
 
@@ -1473,6 +1474,7 @@ The record's `levers.sources` maps each source id to the settings it ran with, a
 - **`bar`:** the bar its references were cut at, 0 when every scored part was kept.
 - **`ruleBar`:** the bar its rules were cut at, present when the source produced rules.
 - **`questions`:** the question set its reference parts were asked, present when the source carries one; absent, they were asked the built-in question.
+- **`decay`:** the half-life its parts ranked with, present when the source has `decay` on. Only a record `pickFromSources()` produced carries it.
 
 So a run reads as, for example, `{ kind: 'chat', labels: true, labelBar: 0.5, rare: false, bar: 0.0146 }`: a chat source with labels on.
 `levers.rare` is `false` or `{ share, bar }`, and `levers.everyScored` is present only when the call gave it.
@@ -1520,6 +1522,7 @@ A search line that repeats the task opens no lane, and its entry says so.
 | `linkedPathBar` | The pick holds a reference part with a `path` and a `repository` | Reference parts rejected below their bar but at or above the link bar, with a `path` and a `repository` | Parts kept through the link | 0 |
 | `bar` | Always, for a source with reference parts | The source's scored reference parts | 0 | Scored parts below the bar that no later pass kept. The changed-path link, the rare-word round and a typed question's `keepAt` can still keep a part below the bar |
 | `ruleBar` | The source has rule parts and a bar above 0; the summary says how many rules were asked, picked and dropped | The source's rules asked | 0 | Rules below the bar |
+| `decay` | The source has `decay` on | The dated parts the source's read ranked | Parts the source's search lanes, taken together, kept only because decay ranked others lower | Parts every search lane of the source left out only because decay ranked them lower. Both are counted in the read, before the decide step, from one set of scores |
 | `alwaysOnSkipped` | The source's read skipped files the agent's harness loads every session; the summary names each file and why | The files skipped | 0 | `null`. A skipped file is never split into parts |
 | `everyScored` | The call gave the override | As `bar`; it replaces the source's `bar` entry | 0 | As `bar` |
 | `everyRanked` | The call gave `{ c }` | Ranked parts | 0 | `null`. The summary says how many parts the cut left undecided |

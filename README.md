@@ -341,6 +341,7 @@ const sources = [
 ```
 
 See the [Markdown reader](packages/markdown/README.md) for dates, rule scopes and revision pins.
+Older notes can rank lower with [decay](packages/markdown/README.md#decay), off by default, and [`reviewNotes()`](packages/markdown/README.md#reviewing-notes) proposes notes to retire or parts to promote.
 
 ## Bring your own models
 

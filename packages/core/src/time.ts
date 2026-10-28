@@ -114,6 +114,34 @@ export function taskMoment(taskDate: string | undefined, timeZone?: string): num
   return local - (offset.startsWith('-') ? -minutes : minutes) * 60_000;
 }
 
+const UNITS: Readonly<Record<string, number>> = { second: 1_000, minute: 60_000, hour: 3_600_000, day: DAY, week: 7 * DAY };
+
+/** A duration such as `365 days` in milliseconds: a positive number and
+ *  one of seconds, minutes, hours, days or weeks, the form chat's
+ *  `since` takes. Anything else throws a TypeError naming `name`. */
+export function durationMs(text: unknown, name: string): number {
+  const match = typeof text === 'string' ? /^(\d+(?:\.\d+)?)\s+(seconds?|minutes?|hours?|days?|weeks?)$/i.exec(text.trim()) : null;
+  const ms = match === null ? NaN : Number(match[1]) * UNITS[match[2]!.toLowerCase().replace(/s$/, '')]!;
+  if (!Number.isFinite(ms) || ms <= 0) throw new TypeError(`${name} must be a duration such as "365 days".`);
+  return ms;
+}
+
+/** How much lower decay ranks a part: `weight × (1 − 2^(−age / halfLife))`,
+ *  where the age runs from the part's date to `asOf`. A bare date is the
+ *  start of that day in the zone. Undefined for a part with no readable
+ *  date or one dated after `asOf`: decay does not act on it. */
+export function decayWeight(value: string | undefined, asOf: number, halfLife: number, weight: number,
+  timeZone: string): number | undefined {
+  if (value === undefined) return undefined;
+  let at: number;
+  try {
+    at = taskMoment(/^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T00:00:00` : value, timeZone);
+  } catch {
+    return undefined;
+  }
+  return at > asOf ? undefined : weight * (1 - 2 ** (-(asOf - at) / halfLife));
+}
+
 /** True when a part's date value falls inside the period. A date
  *  without a time is a day, compared with the period's days. */
 export function datedIn(value: string, period: TaskPeriod): boolean {

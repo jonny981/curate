@@ -94,6 +94,7 @@ export const EXPECTED_FILES = {
     'package/dist/index.js.map',
     'package/dist/markdown.d.ts',
     'package/dist/questions.d.ts',
+    'package/dist/review.d.ts',
     'package/package.json',
   ],
 };

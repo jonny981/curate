@@ -357,7 +357,7 @@ export interface PickCascade {
 export interface PickSettingEffect {
   /** The setting's name as a caller writes it: 'labels', 'rare', 'bar', 'ruleBar', 'searchLines',
    *  'searchPhrases', 'meaning', 'names', 'wholeLanes', 'linkedPathBar', 'everyScored', 'everyRanked', 'typed',
-   *  'taskPeriod', 'written' or 'named'.
+   *  'taskPeriod', 'written', 'named' or 'decay'.
    *  'alwaysOnSkipped' is no setting: it reports the always-on files a rule read skipped. */
   readonly setting: string;
   /** The source the counts are for. A setting given for the whole call gets one entry per source. */

@@ -10,6 +10,9 @@ import {
   embedQuery,
   embedSimilarities,
   datedIn,
+  decayWeight,
+  taskMoment,
+  timeZoneOf,
 } from '@curatejs/core/internal';
 import { lstat, readdir, readFile, realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -874,7 +877,7 @@ export function markdown(options: MarkdownOptions): CandidateSource {
   return historySource({ reader: markdownSource(options), ...markdownSettings });
 }
 
-function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 'rules'): CandidateSource {
+export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 'rules'): CandidateSource {
   if (!Array.isArray(options.paths) || options.paths.length === 0
     || options.paths.some((path) => typeof path !== 'string' || path.trim() === '')) {
     throw new TypeError('paths must contain non-empty strings.');
@@ -1340,10 +1343,18 @@ function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 'rules'
         }
       }
 
+      // Decay ranks each dated note lower by its age at the task date;
+      // undefined for an undated note or one dated after it.
+      const halfLife = request.decayHalfLife;
+      const aged = halfLife === undefined ? undefined : (() => {
+        const zone = timeZoneOf(request.timeZone);
+        const asOf = taskMoment(request.taskDate ?? request.asOf, zone);
+        return metas.map((meta) => decayWeight(meta.date?.value, asOf, halfLife, keyword.replacedWeight, zone));
+      })();
       // Rank by the same signal sum the candidates report, slice the
       // read's limit, then — when the lane cut is on — keep what the
       // score curve keeps.
-      const sums = parts.map((part, index) => {
+      const plain = parts.map((part, index) => {
         const meta = metas[part.file]!;
         let sum = scores[index]!;
         if (legacy !== 'rules' && part.headingHits > 0) sum += Math.min(keyword.headingCap, part.headingHits * keyword.headingWeight);
@@ -1354,35 +1365,57 @@ function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 'rules'
         if (meta.location > 0) sum += meta.location;
         return sum;
       });
-      const ranked = parts.map((_, index) => index)
-        .sort((left, right) => sums[right]! - sums[left]!
-          || (parts[left]!.id < parts[right]!.id ? -1 : parts[left]!.id > parts[right]!.id ? 1 : 0));
+      const sums = aged === undefined ? plain : plain.map((sum, index) => sum + (aged[parts[index]!.file] ?? 0));
       // A period read keeps only the parts of notes dated inside the task's period.
       const period = request.taskPeriod;
       const dated = (index: number) => period === undefined
         || datedIn(metas[parts[index]!.file]!.date?.value ?? '', period);
-      // A kind lane's lane is its exact-phrase matches, ranked by the
-      // topic's signal sum — never by how often the phrase occurs, so a
-      // direction said once survives a phrase everyone says.
-      const laneRanked = kindLane
-        ? ranked.filter((index) => (parts[index]!.phrased ?? 0) > 0 && dated(index))
-        : ranked.filter(dated);
-      // A keyword read's limit bounds the read itself; a kind lane's
-      // caps what the score curve keeps.
-      const pool = kindLane || limit === undefined ? laneRanked : laneRanked.slice(0, limit);
       const cut = request.wholeLanes === false;
       // With `wholeLanes` on the read keeps every part and marks each one
       // the cut would have dropped.
       const mark = request.wholeLanes === true;
-      const bend = cut || mark ? laneBend(pool.map((index) => sums[index]!)) : undefined;
-      // A cut keyword lane where nothing scored above zero matched
-      // nothing: it keeps no parts rather than read back every body. A
-      // kind lane still keeps its phrase matches, scored or not.
-      const matched = kindLane || pool.some((index) => sums[index]! > 0);
-      const passes = (index: number) => bend === undefined ? matched : sums[index]! > bend;
-      const curveKept = cut ? pool.filter(passes) : pool;
-      const kept = kindLane && limit !== undefined ? curveKept.slice(0, limit) : curveKept;
+      const select = (totals: readonly number[]) => {
+        const ranked = parts.map((_, index) => index)
+          .sort((left, right) => totals[right]! - totals[left]!
+            || (parts[left]!.id < parts[right]!.id ? -1 : parts[left]!.id > parts[right]!.id ? 1 : 0));
+        // A kind lane's lane is its exact-phrase matches, ranked by the
+        // topic's signal sum — never by how often the phrase occurs, so a
+        // direction said once survives a phrase everyone says.
+        const laneRanked = kindLane
+          ? ranked.filter((index) => (parts[index]!.phrased ?? 0) > 0 && dated(index))
+          : ranked.filter(dated);
+        // A keyword read's limit bounds the read itself; a kind lane's
+        // caps what the score curve keeps.
+        const pool = kindLane || limit === undefined ? laneRanked : laneRanked.slice(0, limit);
+        const bend = cut || mark ? laneBend(pool.map((index) => totals[index]!)) : undefined;
+        // A cut keyword lane where nothing scored above zero matched
+        // nothing: it keeps no parts rather than read back every body. A
+        // kind lane still keeps its phrase matches, scored or not.
+        const matched = kindLane || pool.some((index) => totals[index]! > 0);
+        const passes = (index: number) => bend === undefined ? matched : totals[index]! > bend;
+        const curveKept = cut ? pool.filter(passes) : pool;
+        const kept = kindLane && limit !== undefined ? curveKept.slice(0, limit) : curveKept;
+        return { laneRanked, pool, passes, curveKept, kept };
+      };
+      const { laneRanked, pool, passes, curveKept, kept } = select(sums);
       const limitBase = kindLane ? curveKept.length : laneRanked.length;
+      // What the same limit and cut keep without decay, from the same
+      // scores. A kind lane's limit applies after the read, by score and
+      // then id, so both sets pass through it before they are compared.
+      let decayCounts: { actedOn: number; added: string[]; dropped: string[] } | undefined;
+      if (aged !== undefined) {
+        const afterLimit = (indexes: readonly number[], totals: readonly number[]) =>
+          !kindLane || request.decayLimit === undefined ? indexes : [...indexes]
+            .sort((left, right) => totals[right]! - totals[left]! || parts[left]!.id.localeCompare(parts[right]!.id))
+            .slice(0, request.decayLimit);
+        const withDecay = new Set(afterLimit(kept, sums));
+        const without = new Set(afterLimit(select(plain).kept, plain));
+        decayCounts = {
+          actedOn: laneRanked.filter((index) => aged[parts[index]!.file] !== undefined).length,
+          added: [...withDecay].filter((index) => !without.has(index)).map((index) => parts[index]!.id),
+          dropped: [...without].filter((index) => !withDecay.has(index)).map((index) => parts[index]!.id),
+        };
+      }
 
       // The materializing pass reads back only the files that kept a
       // part and builds their candidates.
@@ -1412,6 +1445,8 @@ function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 'rules'
             if (descriptor.namedPath) signals['names-path'] = keyword.namedPathWeight;
             if (legacy !== 'rules' && meta.inbound > 0) signals['inbound-links'] = Math.min(keyword.inboundLinkCap, Math.log10(1 + meta.inbound));
             if (legacy !== 'rules' && meta.replaced) signals['replaced'] = keyword.replacedWeight;
+            const decay = aged?.[meta.index];
+            if (decay !== undefined && decay !== 0) signals['decay'] = decay;
             if (meta.location > 0) signals['instruction-location'] = meta.location;
             if (scores[index] !== 0) signals['bm25'] = scores[index]!;
             if (kindLane) signals['phrase'] = descriptor.phrased!;
@@ -1442,6 +1477,7 @@ function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 'rules'
           ? {}
           : { partial: [...reasons, ...partial].join('; ') }),
         ...(cut ? { laneCutApplied: true as const, matched: kindLane ? laneRanked.length : pool.length } : {}),
+        ...(decayCounts === undefined ? {} : { decay: decayCounts }),
       };
     },
   };

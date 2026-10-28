@@ -193,3 +193,78 @@ const source = knowledgeBase('docs', { keyword: { b: 0 } });
 `rules(directory, { keyword })` accepts the same overrides.
 
 See [core](https://github.com/jonny981/curate/blob/main/packages/core/README.md) for selection, search lines, optional cuts and curation.
+
+## Decay
+
+Decay ranks older notes lower, by their age at the task date.
+It is off out of the box.
+
+- **The signal:** each dated part gets the signal `decay`, `replacedWeight × (1 − 2^(−age / halfLife))`.
+  With the default `replacedWeight` of −2 it starts at 0 and falls towards −2 as the note ages.
+  So decay alone never ranks a note lower than the replaced mark does.
+- **The age:** the time from the note's date to the task date (`taskDate`, else now).
+  A bare date counts from the start of that day, and a bare task date means the end of that day, so a note dated on the task date has aged almost a day.
+- **The note's date:** the one the reader gives the part.
+  `knowledgeBase()` and `rules()` prefer a declared date, and `markdown()` in a repository prefers the last commit date.
+  A file with no commit or with uncommitted edits gets its modified time.
+- **No decay:** for a part with no date, and for a note dated after the task date, such as one with a future `effective` date.
+- **What it changes:** the order of a read and its lane cut.
+  It never removes a part by itself, but a part the lane cut leaves out does not reach the decision model.
+
+It is off because a knowledge base's most relied-on pages are often its oldest, and decay would rank them lower.
+It also shapes the lane cut, so it can drop an old page before the decision model sees it.
+Turn it on for a folder that is a log, such as meeting notes or ops reports:
+
+```ts
+import { historySource } from '@curatejs/core';
+import { knowledgeBase, markdownSettings } from '@curatejs/markdown';
+
+const source = historySource({ reader: knowledgeBase('notes/ops'), ...markdownSettings, decay: { halfLife: '180 days' } });
+```
+
+`halfLife` is a positive number and one of seconds, minutes, hours, days or weeks: the age at which a note has lost half of the full decay.
+Decay acts on the reads `pickFromSources()` and `memory()` make.
+`historySource()` throws when the reader is not a Markdown source.
+The record's `levers.sources[id].decay` holds the half-life.
+Its `effects` entry counts the parts the source's search lanes, taken together, kept or left out only because of decay.
+
+## Reviewing notes
+
+`reviewNotes()` asks the decision model which notes look retired and which parts state lasting rules.
+It returns proposals and never edits a file.
+
+```ts
+import { reviewNotes } from '@curatejs/markdown';
+
+// Supply your own decision function.
+const { proposals, record } = await reviewNotes({ paths: ['notes'], kind: 'knowledge', decide, taskDate: '2025-06-02' });
+```
+
+It reads the notes `markdown()` reads with the same options, with the same parts, dates and replaced marks.
+It asks each part two questions through the decide port `pick` uses:
+
+- **`stale`:** as of the review's date, does this part describe something that is no longer true, no longer done, or replaced by a later decision?
+- **`lasting`:** does this part state a lasting rule, decision or fact that people rely on beyond one event?
+
+Each question carries the part's date and the review's date.
+
+- **Retire:** proposed when every part of a note answers `stale` at or above the bar.
+  A note with one current part is not proposed.
+- **Promote:** proposed when any part answers `lasting` at or above the bar.
+  It names those parts, so you can move them into the rules a `rules()` source reads.
+  It makes no edit, because only you know where your rules live.
+- **Questions not asked:** a note already marked replaced is not asked `stale`.
+  A rules source (`kind: 'rules'` or `'instructions'`) is not asked `lasting`.
+- **The bar:** 0.5 by default, the label lane's bar. Set it with `bar`.
+- **The record:** the review's date and time zone, the bar, the decider's `deciderId`, the notes, parts and questions, and each question a stop or a failed batch left unanswered.
+
+The decision model sees one part at a time.
+It cannot see the newer note that replaced an old one, so look at a note before you mark it.
+
+### Applying a retire
+
+Add the proposal's `edit` line, `status: retired`, to the note's front matter.
+A note with no front matter needs the line inside a `---` block at its top.
+`markdown()` and `knowledgeBase()` then rank the note lower with the `replaced` signal, and never remove it for the mark.
+`rules()` does not read the mark.
+Delete the line to undo it.

@@ -75,6 +75,10 @@ export interface SourceSettings {
    *  present when the source carries a set; absent, they were asked the
    *  built-in question for their kind. */
   readonly questions?: PickCascade;
+  /** The decay half-life this source's Markdown parts ranked with,
+   *  present when the source has `decay` on. Only a record
+   *  pickFromSources produced carries it. */
+  readonly decay?: { readonly halfLife: string };
 }
 
 /** The lever set a curate record carries: the pick's resolved states

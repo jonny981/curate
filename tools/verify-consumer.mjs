@@ -27,7 +27,7 @@ import { pick, pickFromSources, curate, addMeaningRanks, historySource, SourceRe
 import { asSourceReadError } from '@curatejs/core/internal';
 import { chat, chatSettings, CHAT_CASCADE, CHAT_KEYWORD_SETTINGS, CHAT_SEARCH_LINE_REGISTER, PERSONAL_CHAT_CASCADE, PERSONAL_CHAT_WRITTEN_CASCADE } from '@curatejs/chat';
 import { git, gitSettings, GIT_HISTORY_CASCADE, GIT_KEYWORD_SETTINGS, GIT_SEARCH_LINE_REGISTER } from '@curatejs/git';
-import { markdown, knowledgeBase, rules, markdownSettings, rulesSettings, MARKDOWN_CASCADE, MARKDOWN_KEYWORD_SETTINGS, MARKDOWN_SEARCH_LINE_REGISTER } from '@curatejs/markdown';
+import { markdown, knowledgeBase, rules, reviewNotes, markdownSettings, rulesSettings, MARKDOWN_CASCADE, MARKDOWN_KEYWORD_SETTINGS, MARKDOWN_SEARCH_LINE_REGISTER } from '@curatejs/markdown';
 const cancelled = new SourceReadError('cancelled', 'Stopped');
 assert.equal(asSourceReadError(cancelled), cancelled);
 assert.equal(ANSWER_TYPES.length, 10);
@@ -116,7 +116,13 @@ assert.equal(CHAT_KEYWORD_SETTINGS.k1, 0.6);
 assert.equal(GIT_KEYWORD_SETTINGS.recencyDays, 60);
 assert.equal(MARKDOWN_KEYWORD_SETTINGS.b, 0.75);
 assert.ok([CHAT_SEARCH_LINE_REGISTER, GIT_SEARCH_LINE_REGISTER, MARKDOWN_SEARCH_LINE_REGISTER].every(s => s.length > 0));
-console.log('Clean consumer: core, chat, git, notes, rules and Markdown kinds passed.');
+mkdirSync('review'); writeFileSync('review/plan.md', 'Ship the beta in March.\\n'); writeFileSync('review/rule.md', 'Every deploy needs two approvals.\\n');
+const reviewDecide = async ({ questions }) => Object.fromEntries(questions.map(q => [q.key, { status: 'answered',
+  probability: (q.questionKey === 'stale') === q.id.includes('plan.md') ? 0.9 : 0.1 }]));
+const review = await reviewNotes({ paths: ['review'], kind: 'knowledge', decide: reviewDecide, taskDate: '2025-06-02', timeZone: 'UTC' });
+assert.deepEqual(review.proposals.map(p => [p.path.slice(p.path.lastIndexOf('/') + 1), p.action, p.edit]), [['plan.md', 'retire', 'status: retired'], ['rule.md', 'promote', undefined]]);
+assert.equal(review.record.questions, 4);
+console.log('Clean consumer: core, chat, git, notes, rules, Markdown kinds and the note review passed.');
 `);
   execFileSync(process.execPath, ['example.mjs'], { cwd: consumer, stdio: 'inherit', env: { ...process.env, XDG_CACHE_HOME: join(consumer, 'cache') } });
   writeFileSync(join(consumer, 'require.cjs'), `

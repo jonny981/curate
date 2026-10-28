@@ -36,7 +36,7 @@ const READ_REQUEST_KEYS: readonly (keyof CandidateReadRequest)[] = [
   'task', 'searchLines', 'searchPhrases', 'meaning', 'kindLanes', 'wholeLanes',
   'speakerOnly', 'phraseLane', 'topic', 'meaningLane', 'labelPool',
   'stripSearchInstructions', 'paths', 'exclude', 'revision', 'limit',
-  'maxQuestionText', 'taskDate', 'timeZone', 'asOf', 'taskPeriod', 'signal',
+  'maxQuestionText', 'taskDate', 'timeZone', 'asOf', 'taskPeriod', 'decayHalfLife', 'decayLimit', 'signal',
 ];
 const MEANING_KEYS: readonly (keyof MeaningSearchOptions)[] = ['embed', 'nearest', 'wholeLanes'];
 const CURATE_KEYS: readonly (keyof CurateOptions)[] = [

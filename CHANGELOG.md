@@ -123,6 +123,13 @@ Four packages:
   decide step even when no search lane kept them, marked `dateWindow`.
   Nothing is dropped for its date. The record holds `taskPeriod`, and
   `effects` says what the period added.
+- **Decay, off by default.** `historySource({ ..., decay: { halfLife: '180 days' } })`
+  ranks a Markdown source's older notes lower by their age at the task date,
+  never by more than the replaced mark. The record holds the half-life, and
+  `effects` counts the parts the read kept or left out only because of it.
+- **Note review.** `reviewNotes()` asks the decision model which notes look
+  stale and which parts state lasting rules, and returns proposals to retire
+  or promote them. It never edits a file.
 - **An optional decision cache** stores each answered decision per part, so
   a resumed run, a rerun or a repeated question asks only for what changed.
 - **Short item ids in curator prompts.** The curator sees and cites short
