@@ -33,11 +33,15 @@ export interface ChatOptions {
 
 type Json = Record<string, unknown>;
 type MessageRole = NonNullable<MemoryCandidate['chat']>['role'];
-interface Part { role: MessageRole; text: string }
+type Author = NonNullable<NonNullable<MemoryCandidate['chat']>['author']>;
+interface Written { author: Author; authorName?: string }
+interface Part extends Written { role: MessageRole; text: string }
 interface Decoded { sessionId?: string; date?: string; parts: Part[] }
 interface ProviderReader {
   readonly folder: string;
-  decode(record: Json, includeTools: boolean): Decoded;
+  /** `session` carries what one record says about the whole file to
+   *  the records after it. */
+  decode(record: Json, includeTools: boolean, session: Json): Decoded;
 }
 
 /** One message part as it streams out of a transcript: enough to build
@@ -51,6 +55,8 @@ interface RawPart {
   readonly piece: number;
   readonly sessionId: string;
   readonly role: MessageRole;
+  readonly author: Author;
+  readonly authorName?: string;
   readonly date: number;
   readonly text: string;
 }
@@ -89,23 +95,64 @@ function toolText(value: unknown): string {
   return JSON.stringify(value, (_key, item: unknown) => typeof item === 'string' ? scrubChat(item) : item) ?? '';
 }
 
+const named = (author: Author, name: string | undefined): Written =>
+  name === undefined ? { author } : { author, authorName: name };
+
+/** Who wrote a Claude Code user text, read only from what the record
+ *  marks; a record that marks nothing is 'unmarked'. */
+function claudeAuthor(record: Json, origin: Json, text: string): Written {
+  const crossSession = record.origin === undefined && text.startsWith('Another Claude session sent a message');
+  const sender = origin.kind === 'peer' ? string(origin.name)
+    : crossSession ? /<agent-message from="([^"]+)"/.exec(text)?.[1] : undefined;
+  // An agent's own transcript has no human turns: every user text is an
+  // agent's, named where the record names its sender.
+  if (record.isSidechain === true) return named('agent', sender ?? /<teammate-message teammate_id="([^"]+)"/.exec(text)?.[1]);
+  if (record.isCompactSummary === true) return { author: 'agent' };
+  if (origin.kind === 'task-notification') return { author: 'tool' };
+  if (record.isMeta === true) return { author: 'system' };
+  if (origin.kind === 'human') return { author: 'person' };
+  if (origin.kind === 'peer' || crossSession) return named('agent', sender);
+  if (origin.kind === 'auto-continuation') return { author: 'system' };
+  return { author: 'unmarked' };
+}
+
+/** Who wrote a Codex user text: instruction blocks are the system's;
+ *  otherwise what started the session decides. */
+function codexAuthor(source: unknown, text: string): Written {
+  if (/^\s*(?:# AGENTS\.md instructions|<environment_context>|<user_instructions>)/.test(text)) return { author: 'system' };
+  if (source === 'exec') return { author: 'agent' };
+  const spawned = object(source).subagent;
+  if (spawned !== undefined) return named('agent', string(object(object(spawned).thread_spawn).parent_thread_id));
+  return { author: 'unmarked' };
+}
+
 const READERS: Record<ChatProvider, ProviderReader> = {
   'claude-code': {
     folder: join(homedir(), '.claude', 'projects'),
     decode(record, includeTools) {
-      const role = record.type;
+      // A message typed while an agent works is saved as a queued
+      // attachment; every other attachment stays unread.
+      const attachment = object(record.attachment);
+      const queued = record.type === 'attachment' && attachment.type === 'queued_command';
+      const role = queued ? 'user' : record.type;
       const parts: Part[] = [];
       if (role === 'user' || role === 'assistant') {
-        const content = object(record.message).content;
-        if (typeof content === 'string') parts.push({ role, text: content });
+        const origin = object(queued ? attachment.origin : record.origin);
+        const said = (text: string) =>
+          parts.push({ role, text, ...(role === 'user' ? claudeAuthor(record, origin, text) : { author: 'agent' as const }) });
+        const content = !queued ? object(record.message).content : Array.isArray(attachment.prompt)
+          ? attachment.prompt.map(object).filter((block) => block.type === 'text' && typeof block.text === 'string')
+            .map((block) => block.text).join('\n')
+          : attachment.prompt;
+        if (typeof content === 'string') said(content);
         else if (Array.isArray(content)) for (const value of content) {
           const block = object(value);
-          if (block.type === 'text' && typeof block.text === 'string') parts.push({ role, text: block.text });
+          if (block.type === 'text' && typeof block.text === 'string') said(block.text);
           if (includeTools && block.type === 'tool_use') {
-            parts.push({ role: 'tool-call', text: `${string(block.name) ?? 'tool'}\n${toolText(block.input ?? {})}` });
+            parts.push({ role: 'tool-call', author: 'tool', text: `${string(block.name) ?? 'tool'}\n${toolText(block.input ?? {})}` });
           }
           if (includeTools && block.type === 'tool_result') {
-            parts.push({ role: 'tool-result', text: resultText(block.content) });
+            parts.push({ role: 'tool-result', author: 'tool', text: resultText(block.content) });
           }
         }
       }
@@ -114,23 +161,26 @@ const READERS: Record<ChatProvider, ProviderReader> = {
   },
   codex: {
     folder: join(homedir(), '.codex', 'sessions'),
-    decode(record, includeTools) {
+    decode(record, includeTools, session) {
       const payload = object(record.payload);
       const parts: Part[] = [];
+      if (record.type === 'session_meta') session.source = payload.source;
       if (record.type === 'response_item') {
         const role = payload.role;
         if (payload.type === 'message' && (role === 'user' || role === 'assistant') && Array.isArray(payload.content)) {
           for (const value of payload.content) {
             const block = object(value);
             if ((block.type === 'input_text' || block.type === 'output_text' || block.type === 'text')
-              && typeof block.text === 'string') parts.push({ role, text: block.text });
+              && typeof block.text === 'string') {
+              parts.push({ role, text: block.text, ...(role === 'user' ? codexAuthor(session.source, block.text) : { author: 'agent' as const }) });
+            }
           }
         }
         if (includeTools && (payload.type === 'function_call' || payload.type === 'custom_tool_call')) {
-          parts.push({ role: 'tool-call', text: `${string(payload.name) ?? 'tool'}\n${toolText(payload.arguments ?? payload.input ?? '')}` });
+          parts.push({ role: 'tool-call', author: 'tool', text: `${string(payload.name) ?? 'tool'}\n${toolText(payload.arguments ?? payload.input ?? '')}` });
         }
         if (includeTools && (payload.type === 'function_call_output' || payload.type === 'custom_tool_call_output')) {
-          parts.push({ role: 'tool-result', text: resultText(payload.output) });
+          parts.push({ role: 'tool-result', author: 'tool', text: resultText(payload.output) });
         }
       }
       // event_msg duplicates response_item text; never emit it twice.
@@ -185,6 +235,16 @@ const partId = (part: RawPart) =>
   scrubChat(`${part.provider}:${part.root}:${relative(part.root, part.file)}:${part.line}:${part.block}:${part.piece}`);
 const partTitle = (part: RawPart, zone: string) =>
   `${part.provider} ${part.sessionId} ${part.role} ${zonedIso(part.date, zone)}`;
+const AUTHOR_TITLES: Record<Author, string> = { person: ' (the person)', agent: ' (agent)', tool: ' (tool)', system: ' (system)', unmarked: '' };
+/** The title a candidate carries: the author follows the role. Ranks and
+ *  phrase matches read `partTitle`, so the mark never changes them. */
+const shownTitle = (part: RawPart, zone: string) =>
+  `${part.provider} ${part.sessionId} ${part.role}${part.authorName === undefined ? AUTHOR_TITLES[part.author]
+    : ` (${part.author} ${part.authorName})`} ${zonedIso(part.date, zone)}`;
+const chatOf = (part: RawPart): NonNullable<MemoryCandidate['chat']> => ({
+  provider: part.provider, sessionId: part.sessionId, role: part.role, author: part.author,
+  ...(part.authorName === undefined ? {} : { authorName: part.authorName }),
+});
 
 /** The parts of one transcript, decoded and split but never kept. Each
  *  pass over the history reads the file again rather than holding the
@@ -195,6 +255,7 @@ async function* fileParts(
   const raw = await readFile(file, { encoding: 'utf8', signal: walk.signal });
   let sessionId = basename(file, '.jsonl').replace(/^rollout-.*T\d{2}-\d{2}-\d{2}-/, '');
   const lines = raw.split(/\r?\n/);
+  const session: Json = {};
   for (const [lineIndex, line] of lines.entries()) {
     cancelled(walk.signal);
     if (!line.trim()) continue;
@@ -203,7 +264,7 @@ async function* fileParts(
       // JSON errors can contain the transcript text. Never copy them.
       throw new SourceReadError('failed', 'Invalid JSON in a chat transcript.');
     }
-    const decoded = READERS[provider].decode(record, walk.includeTools);
+    const decoded = READERS[provider].decode(record, walk.includeTools, session);
     sessionId = scrubChat(decoded.sessionId ?? sessionId);
     const date = Date.parse(decoded.date ?? '');
     if (!decoded.parts.length) continue;
@@ -216,7 +277,9 @@ async function* fileParts(
         yield {
           provider, root, file,
           line: lineIndex + 1, block: block + 1, piece: piece + 1,
-          sessionId, role: part.role, date, text: textPart,
+          sessionId, role: part.role, author: part.author,
+          ...(part.authorName === undefined ? {} : { authorName: scrubChat(part.authorName) }),
+          date, text: textPart,
         };
       }
     }
@@ -368,9 +431,9 @@ export function chat(options: ChatOptions = {}): CandidateSource {
               if (!indexes.has(index)) continue;
               byIndex.set(index, {
                 sourceId: id, role: 'reference',
-                id: ids[index]!, title: partTitle(part, zone), text: part.text,
+                id: ids[index]!, title: shownTitle(part, zone), text: part.text,
                 contentRef: `${part.provider}:${part.sessionId}:${part.line}:${part.block}:${part.piece}`,
-                chat: { provider: part.provider, sessionId: part.sessionId, role: part.role },
+                chat: chatOf(part),
                 date: dated(part),
                 signals: { similarity: similarities[index]! }, laneScore: similarities[index]!,
                 ...(mark && !passes(index) ? { pastLaneCut: true as const } : {}),
@@ -467,9 +530,9 @@ export function chat(options: ChatOptions = {}): CandidateSource {
               const position = at.get(index)!;
               byIndex.set(index, {
                 sourceId: id, role: 'reference',
-                id: ids[index]!, title: partTitle(part, zone), text: part.text,
+                id: ids[index]!, title: shownTitle(part, zone), text: part.text,
                 contentRef: `${part.provider}:${part.sessionId}:${part.line}:${part.block}:${part.piece}`,
-                chat: { provider: part.provider, sessionId: part.sessionId, role: part.role },
+                chat: chatOf(part),
                 date: dated(part),
                 signals: { keyword: scores[position]!, phrase: matchOf.get(index)! },
                 laneScore: base[position]!,
@@ -501,9 +564,9 @@ export function chat(options: ChatOptions = {}): CandidateSource {
             if (count > 0) {
               matched.push({
                 sourceId: id, role: 'reference',
-                id: partId(part), title, text: part.text,
+                id: partId(part), title: shownTitle(part, zone), text: part.text,
                 contentRef: `${part.provider}:${part.sessionId}:${part.line}:${part.block}:${part.piece}`,
-                chat: { provider: part.provider, sessionId: part.sessionId, role: part.role },
+                chat: chatOf(part),
                 date: dated(part),
                 signals: { phrase: count }, laneScore: count,
               });
@@ -581,9 +644,9 @@ export function chat(options: ChatOptions = {}): CandidateSource {
             if (!indexes.has(index)) continue;
             byIndex.set(index, {
               sourceId: id, role: 'reference',
-              id: ids[index]!, title: partTitle(part, zone), text: part.text,
+              id: ids[index]!, title: shownTitle(part, zone), text: part.text,
               contentRef: `${part.provider}:${part.sessionId}:${part.line}:${part.block}:${part.piece}`,
-              chat: { provider: part.provider, sessionId: part.sessionId, role: part.role },
+              chat: chatOf(part),
               date: dated(part),
               signals: { keyword: scores[index]! }, laneScore: base[index]!,
               ...(mark && !passes(index) ? { pastLaneCut: true as const } : {}),

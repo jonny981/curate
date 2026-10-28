@@ -1163,6 +1163,24 @@ the candidate's date value, its source kind when
 the read recorded one, its decision weight without rounding, and any
 recorded tags: `### E1 (2023-05-30, markdown, 0.87, intent: correction): title`.
 A missing date stays missing.
+
+A chat candidate can say who wrote it in `chat.author`: `'person'`,
+`'agent'`, `'tool'`, `'system'` or `'unmarked'`. `chat.authorName` holds the
+agent's name or id when the transcript gives one. The chat reader sets both.
+The header then ends with the author: `by the person`, `by agent <name>`
+(`by an agent` with no name), `by a tool` or `system`, as in
+`### E1 (2023-05-30, 0.87, by the person): title`. An `'unmarked'` or absent
+author adds nothing.
+When at least one header names an author, the instructions add two rules:
+
+- Words quoted as the person's must come from an item marked 'by the
+  person'. An item by an agent may report what the person wants: say it is
+  the agent's account, and do not quote it as the person's words.
+- When an item by the person and a later item by an agent say the same
+  thing, cite the person's item and keep the person's words.
+
+A call where no header names an author sends the same prompt as before
+authors existed.
 The instructions ask the writer to keep every observation from items at
 0.6 or more, include useful facts from items at 0.1 to below 0.6, and use
 items below 0.1 only when they clearly state a needed fact. The prompt

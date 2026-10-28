@@ -555,6 +555,21 @@ it('orders user messages first, then keyword score, then newer matching sessions
   expect(items.every((item) => !('rankOrder' in item.signals))).toBe(true);
 });
 
+it('orders the person\'s parts before other user-role parts', () => {
+  const candidate = (id: string, role: 'user' | 'assistant', author: 'person' | 'agent' | 'unmarked', score: number): MemoryCandidate => ({
+    sourceId: 'chat', id, role: 'reference', title: '', text: '',
+    chat: { provider: 'claude-code', role, sessionId: 'one', author }, date: { value: '2026-01-01', meaning: 'recorded' }, signals: { keyword: score },
+  });
+  const items = [
+    candidate('assistant', 'assistant', 'agent', 10),
+    candidate('agent-brief', 'user', 'agent', 5),
+    candidate('unmarked', 'user', 'unmarked', 4),
+    candidate('person', 'user', 'person', 0),
+  ];
+  expect(rankMatches(items).map((item: MemoryCandidate) => item.id)).toEqual(['person', 'agent-brief', 'unmarked', 'assistant']);
+  expect(rankMatches(items, { userFirst: false }).map((item: MemoryCandidate) => item.id)).toEqual(['assistant', 'agent-brief', 'unmarked', 'person']);
+});
+
 describe('decision answers', () => {
   const batch = { questions: [{ key: 'first' }, { key: 'second' }, { key: 'third' }] };
 

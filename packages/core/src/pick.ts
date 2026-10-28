@@ -55,6 +55,10 @@ export interface MemoryCandidate {
     readonly provider: 'claude-code' | 'codex';
     readonly sessionId: string;
     readonly role: 'user' | 'assistant' | 'tool-call' | 'tool-result';
+    /** Who wrote the part, where the transcript says; 'unmarked' where it does not. */
+    readonly author?: 'person' | 'agent' | 'tool' | 'system' | 'unmarked';
+    /** The agent's name or id, when the transcript gives one. */
+    readonly authorName?: string;
   };
   /** Repository paths this candidate changed. For a commit: the files in
    *  its diff, not paths the text mentions. */

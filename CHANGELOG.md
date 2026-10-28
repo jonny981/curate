@@ -147,6 +147,11 @@ Four packages:
   Empty repairs and unusable condensed replies cannot erase a cited log.
 - **`@curatejs/chat`** reads local Claude Code and Codex transcripts. It
   scrubs likely secrets before ranking.
+- **Chat parts say who wrote them.** The chat reader reads messages typed
+  while an agent works, and marks each part's `chat.author` as the person,
+  an agent, a tool, the system or unmarked, from what the transcript records.
+  The curator then sees the author in each item header and quotes the person
+  only from the person's own parts.
 - **`@curatejs/git`** reads commit history, with optional blame and co-change
   signals.
 - **`@curatejs/markdown`** reads Markdown folders, files and globs as

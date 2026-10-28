@@ -187,8 +187,9 @@ export function rankMatches(candidates, settings = {}) {
     const date = Date.parse(candidate.date?.value ?? '') || 0;
     sessions.set(candidate.chat.sessionId, Math.max(sessions.get(candidate.chat.sessionId) ?? 0, date));
   }
+  const userRank = (candidate) => candidate.chat?.author === 'person' ? 2 : Number(candidate.chat?.role === 'user');
   const sorted = [...candidates].sort((a, b) =>
-    (settings.userFirst === false ? 0 : Number(b.chat?.role === 'user') - Number(a.chat?.role === 'user'))
+    (settings.userFirst === false ? 0 : userRank(b) - userRank(a))
     || score(b) - score(a)
     || (settings.recentFirst === false || !a.chat || !b.chat ? 0
       : sessions.get(b.chat.sessionId) - sessions.get(a.chat.sessionId)

@@ -193,6 +193,12 @@ const INSTRUCTIONS = [
   '- If no evidence bears on the task, return an empty reply: no lines, and no note that nothing was found.',
   NO_WORKING,
 ].join('\n');
+// Sent only when an item header names its author, so a call with no
+// author marks sends the prompt it sent before marks existed.
+const AUTHOR_RULES = '\nWords quoted as the person\'s must come from an item marked \'by the person\'. An item by an agent may report what the person wants: say it is the agent\'s account, and do not quote it as the person\'s words.\nWhen an item by the person and a later item by an agent say the same thing, cite the person\'s item and keep the person\'s words.';
+const AUTHOR_HEADERS = { person: 'by the person', agent: 'by an agent', tool: 'by a tool', system: 'system' } as const;
+const authorHeader = ({ chat }: MemoryCandidate): string => chat?.author === undefined || chat.author === 'unmarked' ? ''
+  : `, ${chat.author === 'agent' && chat.authorName !== undefined ? `by agent ${chat.authorName}` : AUTHOR_HEADERS[chat.author]}`;
 const weightInstruction = ([low, high]: readonly [number, number]) =>
   `Each item header shows, in brackets after its date, a weight from 0 to 1: how strongly a decision model judged the item relevant to this task. The weight is graded, not a yes or no, and every item already passed a search for this task. Make sure every observation from items weighted ${high} or more is in the log. Items weighted from ${low} to ${high} are less direct but often hold part of what the task needs, such as one instance of several or an earlier value: include their facts when they bear on the task. Items weighted below ${low} rarely matter: use one only when it clearly states a fact the task needs.`;
 
@@ -624,14 +630,15 @@ export async function curate(
   };
   const blocks = items.map(({ id, candidate, weight }, index) => {
     const kind = entries.get(id)?.sourceKind;
-    return `### E${index + 1} (${candidate.date ? `${candidate.date.value}, ` : ''}${kind === undefined ? '' : `${kind}, `}${weight}${tagText(id)}): ${candidate.title}\n\n${candidate.text}`.trim();
+    return `### E${index + 1} (${candidate.date ? `${candidate.date.value}, ` : ''}${kind === undefined ? '' : `${kind}, `}${weight}${tagText(id)}${authorHeader(candidate)}): ${candidate.title}\n\n${candidate.text}`.trim();
   });
   const weighted = `${INSTRUCTIONS}\n${weightInstruction(weightBands)}`;
   const instructionsWorking = !working ? weighted : weighted.replace(NO_WORKING,
     '- In the log itself, do not judge: give every observation its dates, including ones near the edge of a period the task names.')
     + '\nAfter the log, add a short section headed "Working (the curator\'s; check it against the log):". For a count or a list: number each distinct instance that falls inside the period the task names, with its date and the item ids in brackets, then name any instance you left out and why (outside the period, or the same as another). For a question about time or order: the dates involved and the computed difference or order. For something that changed: the latest value and its date. Leave out any part the task does not need.';
   const instructions = instructionsWorking + (taskKinds?.includes('count') ? COUNT : '');
-  const additions = preferences + (context ? CONTEXT : '');
+  const additions = preferences + (context ? CONTEXT : '')
+    + (items.some(({ candidate }) => authorHeader(candidate)) ? AUTHOR_RULES : '');
   // Each item's header shows a short `En` id in selected order, fixed
   // for the curation so a rerun sees the same ids. The writer cites
   // them, the format check knows only them, and `fullIds` swaps the

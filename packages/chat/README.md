@@ -32,12 +32,22 @@ const source = chat({ providers: ['claude-code', 'codex'], since: '14 days' });
   back from the task date: the read request's `taskDate`, else its `asOf`,
   else now. Only messages at or after the cutoff are emitted. Omit it to read all dated messages. With `taskDate`,
   a message dated after it is not read.
+- **Records read:** Claude Code `user` and `assistant` records, and the
+  `attachment` records whose `attachment.type` is `queued_command`. Claude
+  Code saves a message typed while an agent works as a queued attachment;
+  the reader reads its `prompt` as a user part dated by the record's
+  `timestamp`. A list prompt's text blocks are joined by line breaks. Every
+  other attachment type stays unread. Codex `response_item` messages are
+  read, and the first record's `session_meta` says what started the session.
 - **Parts:** Each user or assistant text block becomes a candidate. Text
   is split at line ends into at most 700 characters. Longer lines are
   hard-cut. `maxQuestionText` and the request's text budget can tighten
   that limit. Joining the parts reproduces the scrubbed block.
-- **Metadata:** `candidate.chat` carries `provider`, `sessionId` and the
-  message `role`. The candidate's own `role` stays `'reference'`. `date`
+- **Metadata:** `candidate.chat` carries `provider`, `sessionId`, the
+  message `role`, the part's `author` and, when the transcript names an
+  agent, `authorName`. The title names the author after the role, for
+  example `claude-code <session> user (the person) <date>` or
+  `user (agent team-lead)`. The candidate's own `role` stays `'reference'`. `date`
   holds the message timestamp with meaning `'recorded'`, as an ISO
   date-time with the offset of the read request's `timeZone`, or of the
   system's zone when it has none: 23:30 UTC on 1 June is
@@ -72,6 +82,48 @@ const source = chat({ providers: ['claude-code', 'codex'], since: '14 days' });
   records `noSearchMatch` so the caller can ask more broadly. A read
   with `wholeLanes: true` returns every part. A phrase lane needs only
   the matching pass.
+
+## Who wrote each part
+
+A user-role part is not always the person's: an agent's brief, another
+agent's message, a tool event and a compaction summary all arrive as user
+text. The reader marks each part's `author` as `person`, `agent`, `tool`,
+`system` or `unmarked`. It never guesses: a part is `person` only where the
+transcript says so, and `unmarked` where the transcript says nothing.
+
+Assistant parts are `agent`. Tool calls and tool results are `tool`.
+
+A Claude Code user record or queued message:
+
+| What the record says | Author |
+| --- | --- |
+| `isSidechain: true` (an agent's own transcript) | `agent`, named by `origin.name`, `<agent-message from="…">` or `<teammate-message teammate_id="…">` when present |
+| `isCompactSummary: true` | `agent` (a summary) |
+| `origin.kind: "task-notification"` | `tool` |
+| `isMeta: true` | `system` |
+| `origin.kind: "human"` | `person` |
+| `origin.kind: "peer"` | `agent`, named by `origin.name` |
+| `origin.kind: "auto-continuation"` | `system` |
+| No `origin`, text starting "Another Claude session sent a message" | `agent`, named by `<agent-message from="…">` |
+| Anything else | `unmarked` |
+
+The first row that matches decides.
+
+A Codex user message:
+
+| Session or message | Author |
+| --- | --- |
+| Text starting `# AGENTS.md instructions`, `<environment_context>` or `<user_instructions>` | `system` |
+| A session whose `source` is `exec` | `agent` (a program started it) |
+| A session another agent started (`source.subagent`) | `agent`, named by its parent thread id |
+| Any other session, such as `cli` | `unmarked` |
+
+In a `cli` session a user message can be the person's or text another tool
+typed into the terminal. The transcript cannot tell them apart, so it stays
+`unmarked`.
+
+The author mark changes no rank: keyword scores and phrase matches read the
+title without it.
 
 ## Defaults and overrides
 
