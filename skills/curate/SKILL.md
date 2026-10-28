@@ -10,11 +10,11 @@ Run this skill when the user invokes `/curate <prompt>` or asks to recover decis
 ## Run
 
 - **Task:** Use the user's prompt as the task. Read source settings from `~/.curate/sources.json`, or pass `--sources` with another settings file.
-- **Setup:** In the repository, run `pnpm install --frozen-lockfile` and `pnpm build` before the first invocation.
-- **Command:** Run the script from the repository root. Pass the task as one quoted argument.
+- **Setup:** The skill's folder may be a symlink to `skills/curate` in a built checkout of the repository. Run `pnpm install --frozen-lockfile` and `pnpm build` once in that checkout before the first invocation.
+- **Command:** Run `run.mjs` from the skill's folder, from any working folder. Pass the task as one quoted argument.
 
 ```sh
-node skills/curate/run.mjs "What decisions and tried ideas bear on this task?"
+node <the skill's folder>/run.mjs "What decisions and tried ideas bear on this task?"
 ```
 
 ## Source settings

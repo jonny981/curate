@@ -1,4 +1,4 @@
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { readFileSync, readSync, writeFileSync } from 'node:fs';
 import { copyFile, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
@@ -106,6 +106,17 @@ describe('curate command input', () => {
   it.each(['userFirst', 'recentFirst'])('requires a boolean for %s', (key) => {
     expect(() => parseSources({ sources: [{ type: 'markdown', path: 'documents' }], [key]: 'true' })).toThrow();
     expect(parseSources({ sources: [{ type: 'markdown', path: 'documents' }], [key]: false })[key]).toBe(false);
+  });
+
+  it('runs from another folder through a symlinked script or a symlinked skill folder', async () => {
+    const directory = await folder();
+    const skill = join(__dirname, '../skills/curate');
+    await symlink(join(skill, 'run.mjs'), join(directory, 'run.mjs'));
+    await symlink(skill, join(directory, 'curate'));
+    for (const script of [join(directory, 'run.mjs'), join(directory, 'curate', 'run.mjs')]) {
+      const result = spawnSync(process.execPath, [script, '--help'], { cwd: directory, encoding: 'utf8' });
+      expect(result.stderr).toContain('Usage: node skills/curate/run.mjs');
+    }
   });
 });
 
