@@ -130,6 +130,11 @@ Four packages:
 - **Note review.** `reviewNotes()` asks the decision model which notes look
   stale and which parts state lasting rules, and returns proposals to retire
   or promote them. It never edits a file.
+- **Open Knowledge Format bundles.** `knowledgeBase()` dates a page by its
+  `generated.at` or `timestamp`, puts its `title`, `type` and `description`
+  in each part title, counts `/` links from the bundle root, skips `index.md`,
+  dates each `log.md` entry by its heading, and ranks a page past its
+  `stale_after` lower. A retire proposal's edit is `status: deprecated`.
 - **An optional decision cache** stores each answered decision per part, so
   a resumed run, a rerun or a repeated question asks only for what changed.
 - **Short item ids in curator prompts.** The curator sees and cites short

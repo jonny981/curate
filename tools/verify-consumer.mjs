@@ -124,9 +124,15 @@ mkdirSync('review'); writeFileSync('review/plan.md', 'Ship the beta in March.\\n
 const reviewDecide = async ({ questions }) => Object.fromEntries(questions.map(q => [q.key, { status: 'answered',
   probability: (q.questionKey === 'stale') === q.id.includes('plan.md') ? 0.9 : 0.1 }]));
 const review = await reviewNotes({ paths: ['review'], kind: 'knowledge', decide: reviewDecide, taskDate: '2025-06-02', timeZone: 'UTC' });
-assert.deepEqual(review.proposals.map(p => [p.path.slice(p.path.lastIndexOf('/') + 1), p.action, p.edit]), [['plan.md', 'retire', 'status: retired'], ['rule.md', 'promote', undefined]]);
+assert.deepEqual(review.proposals.map(p => [p.path.slice(p.path.lastIndexOf('/') + 1), p.action, p.edit]), [['plan.md', 'retire', 'status: deprecated'], ['rule.md', 'promote', undefined]]);
 assert.equal(review.record.questions, 4);
-console.log('Clean consumer: core, chat, git, notes, rules, Markdown kinds and the note review passed.');
+mkdirSync('okf'); writeFileSync('okf/a.md', '---\\ntype: decision\\ntimestamp: "2026-05-28T14:30:00Z"\\n---\\n## Use Postgres\\nBilling uses Postgres. See [B](/b.md).\\n');
+writeFileSync('okf/b.md', '---\\ntype: concept\\ntimestamp: "2026-05-28T14:30:00Z"\\n---\\n## B\\nOne row per account.\\n');
+const okf = await knowledgeBase('okf').read({ task: '', wholeLanes: true });
+assert.equal(okf.status, 'read');
+assert.equal(okf.candidates.length, 2);
+assert.ok(okf.candidates.every(c => c.date.value === '2026-05-28T14:30:00Z' && c.date.meaning === 'changed'));
+console.log('Clean consumer: core, chat, git, notes, rules, Markdown kinds, the note review and an OKF bundle passed.');
 `);
   execFileSync(process.execPath, ['example.mjs'], { cwd: consumer, stdio: 'inherit', env: { ...process.env, XDG_CACHE_HOME: join(consumer, 'cache') } });
   writeFileSync(join(consumer, 'require.cjs'), `

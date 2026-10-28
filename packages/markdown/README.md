@@ -22,7 +22,7 @@ cut at line ends so every part is judged. A note that says it was replaced (`sup
 `retired`, `deprecated`, `obsolete`, `withdrawn` in frontmatter or the
 body) keeps its candidates at a negative
 signal: ranked lower, never hidden. A note's declared date (frontmatter `date`, `written`,
-`effective` or `applies-from`) is carried with its meaning. When the
+`effective`, `applies-from`, `generated.at` or `timestamp`) is carried with its meaning. When the
 corpus sits inside a work tree and the note declares none, its last
 committed change date is carried with meaning `changed` instead. A note
 with no commit yet or with uncommitted changes, and an undeclared note
@@ -125,9 +125,9 @@ const sources = [
     ahead of frontmatter. A file with no commit yet, or with uncommitted
     changes, gets its modified time, `modified`.
   - **`markdown()` outside git:** a declared date (`date` supplies
-    `recorded`, `updated` supplies `changed`, and `written`, `effective`
-    and `applies-from` keep their meanings), else the file's modified
-    time, `modified`.
+    `recorded`, `updated`, `generated.at` and `timestamp` supply `changed`,
+    and `written`, `effective` and `applies-from` keep their meanings), else
+    the file's modified time, `modified`.
   - **`knowledgeBase()` and `rules()`:** a declared date, else the last
     committed change, `changed`, else the modified time, `modified`, for
     a file with no commit yet, with uncommitted changes, or outside a
@@ -145,6 +145,27 @@ part handling, and ranking signals. `rules()` keeps its directory interface
 and ranking signals. Its rule ids are the relative file name plus the heading
 path, as for `markdown()` rules. Use `markdown()` for the
 kinds and location behaviour described here.
+
+## Open Knowledge Format
+
+`knowledgeBase()` reads an [Open Knowledge Format](https://github.com/GoogleCloudPlatform/open-knowledge-format) bundle, v0.1 and v0.2.
+A bundle is a folder of Markdown pages with front matter, plus `index.md` and `log.md`.
+A page with an unknown type, an unknown key, a missing field or a broken link is read like any other.
+
+| Field or file | What Curate does |
+| --- | --- |
+| `generated.at` | The page's date, meaning `changed`. Read in block form (`generated:` with `at:` indented under it) and flow form (`generated: { by: x, at: y }`). |
+| `timestamp` | The page's date, meaning `changed`, when `generated.at` is absent. |
+| `title`, `type`, `description` | Each one set goes into every part title of the page, after its path: `decisions/db.md (Use Postgres; decision; Why billing uses Postgres.): Links`. `markdown()` does the same. |
+| `status` | `deprecated` ranks the page lower with the `replaced` signal. `draft` and `stable` change nothing. |
+| `stale_after` | At or before the task's moment, the page ranks lower with the `replaced` signal. The moment is `taskDate`, where a bare date means the end of that day, else now. The page is never removed for it. |
+| `/` links | A link such as `[B](/tables/b.md)` is read from the folder the reader was given and counts toward `inbound-links`. `markdown()` does the same. |
+| `index.md` | Not a page, at any level. It gives no parts, and its links do not count. `markdown()` still reads it as a page. |
+| `log.md` | Read as a page. A section whose heading starts with a day (`## 2026-10-27`, `## [2026-10-28] update \| Title`, `## [2026-10-28 19:40:00] ingest \| Title`) carries that day, meaning `recorded`, ahead of the page's own date. A section without one keeps the page's date. |
+
+Some fields have no handling of their own: `sources`, `verified`, `usage_window`, `resource`, `tags` and the Attested Computation fields.
+Like all front matter, their words count toward the `file-words` signal, and a replaced word among them, such as `deprecated`, ranks the page lower.
+They are not part text, so the decision model does not read them.
 
 ## Usage
 
@@ -263,7 +284,8 @@ It cannot see the newer note that replaced an old one, so look at a note before 
 
 ### Applying a retire
 
-Add the proposal's `edit` line, `status: retired`, to the note's front matter.
+Add the proposal's `edit` line, `status: deprecated`, to the note's front matter.
+`deprecated` is the Open Knowledge Format status word.
 A note with no front matter needs the line inside a `---` block at its top.
 `markdown()` and `knowledgeBase()` then rank the note lower with the `replaced` signal, and never remove it for the mark.
 `rules()` does not read the mark.

@@ -80,7 +80,13 @@ const DATE_FIELDS: ReadonlyArray<readonly [string, 'recorded' | 'effective' | 'c
   ['written', 'recorded'],
   ['effective', 'effective'],
   ['applies-from', 'effective'],
+  // Open Knowledge Format: v0.2's last meaningful change, then v0.1's.
+  ['generated.at', 'changed'],
+  ['timestamp', 'changed'],
 ];
+/** A log section heading that starts with its day: `2026-10-27`,
+ *  `[2026-10-28] update | Title` or `[2026-10-28 19:40:00] ingest | Title`. */
+const LOG_HEADING = /^\[?(\d{4}-\d{2}-\d{2})/;
 
 interface Walked {
   readonly files: readonly string[];
@@ -211,13 +217,29 @@ function parseNote(raw: string): Note {
   if (!match) return { fields: new Map(), frontmatter: '', body: raw, bodyOffset: 0 };
   const frontmatter = match[1] ?? '';
   const fields = new Map<string, string>();
+  const unquote = (value: string) => value.trim().replace(/^(['"])(.*)\1$/, '$2');
   let listField: string | undefined;
+  // A key with an empty value opens a block mapping: its indented
+  // `key: value` lines are stored as `parent.key`, one level deep.
+  let mapField: string | undefined;
   for (const line of frontmatter.split(/\r?\n/)) {
     const field = /^([A-Za-z_][\w-]*):[ \t]*(.*)$/.exec(line);
+    const nested = /^\s+([A-Za-z_][\w-]*):[ \t]*(.*)$/.exec(line);
     if (field) {
       listField = field[1]!.toLowerCase();
-      fields.set(listField, field[2]!.trim().replace(/^(['"])(.*)\1$/, '$2'));
+      const value = unquote(field[2]!);
+      fields.set(listField, value);
+      mapField = value === '' ? listField : undefined;
+      // A flow mapping, `{ by: x, at: y }`, stores each pair the same way.
+      const flow = /^\{(.*)\}$/.exec(value)?.[1];
+      for (const pair of flow === undefined ? [] : scopePatterns(flow)) {
+        const [key, ...rest] = pair.split(':');
+        if (/^[A-Za-z_][\w-]*$/.test(key!.trim())) fields.set(`${listField}.${key!.trim().toLowerCase()}`, unquote(rest.join(':')));
+      }
+    } else if (nested && mapField !== undefined) {
+      fields.set(`${mapField}.${nested[1]!.toLowerCase()}`, unquote(nested[2]!));
     } else {
+      mapField = undefined;
       const item = /^\s+-\s+(.+)$/.exec(line);
       if (item && listField !== undefined) {
         fields.set(listField, `${fields.get(listField) ?? ''}\n${item[1]}`);
@@ -781,6 +803,8 @@ interface EnumeratedPart {
   readonly text: string;
   readonly heading: string;
   readonly contentRef: string;
+  /** A knowledge-base log entry's own day, which outranks the page's date. */
+  readonly date?: MemoryCandidate['date'];
 }
 
 /** The note's candidate parts in their stable order: body sections cut
@@ -797,19 +821,25 @@ function* noteParts(
   const fileId = legacy === undefined ? file : name;
   // A Cursor rule's description tells the decision model what the rule is for.
   const description = legacy === 'rules' && file.endsWith('.mdc') ? note.fields.get('description') : undefined;
+  // A page's title, type and description say what each of its sections belongs to.
+  const page = legacy === 'rules' ? [] : ['title', 'type', 'description'].map((field) => note.fields.get(field)).filter(Boolean);
+  const label = page.length === 0 ? name : `${name} (${page.join('; ')})`;
+  const log = legacy === 'knowledge' && basename(file) === 'log.md';
   for (const [sectionIndex, section] of items.entries()) {
     const parts = legacy === 'rules' ? [section.text] : splitParts(section.text, partBudget);
     const key = 'key' in section ? (section as RuleSection).key : String(sectionIndex + 1);
     const sectionId = key === '' ? fileId : `${fileId}#${key}`;
+    const day = log ? LOG_HEADING.exec(section.heading ?? '')?.[1] : undefined;
     for (const [partIndex, text] of parts.entries()) {
       const heading = section.heading ?? basename(file);
       yield {
         id: parts.length === 1 ? sectionId : `${sectionId}.${partIndex + 1}`,
         title: description !== undefined && description !== '' ? `${name}: ${description}`
-          : parts.length === 1 ? `${name}: ${heading}` : `${name}: ${heading} (part ${partIndex + 1})`,
+          : parts.length === 1 ? `${label}: ${heading}` : `${label}: ${heading} (part ${partIndex + 1})`,
         text,
         heading,
         contentRef: `${fileId}#L${section.startLine}-L${section.endLine}`,
+        ...(day === undefined ? {} : { date: { value: day, meaning: 'recorded' as const } }),
       };
     }
   }
@@ -856,6 +886,8 @@ interface PartStat {
   readonly len: number;
   readonly headingHits: number;
   readonly namedPath: boolean;
+  /** The part's own date when it has one apart from its file's. */
+  readonly date?: MemoryCandidate['date'];
   /** A kind lane's exact-phrase count in this part's text and title;
    *  recorded during the statistics pass so the lane can rank its
    *  matches without holding their texts. */
@@ -923,6 +955,7 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
       const parts: PartStat[] = [];
       const documentFrequency = new Map<string, number>();
       let totalLength = 0;
+      let taskNow: number | undefined;
 
       // The statistics pass reads each file once: it keeps the fields the
       // emitted parts will need, counts the query terms' document
@@ -958,6 +991,8 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
         revision = state.pinned?.revision;
         const files = state.files.filter((file) => {
           if (legacy === 'rules' && basename(file).toLowerCase() === 'readme.md') return false;
+          // A knowledge base's index.md, at any level, lists pages and is not one.
+          if (legacy === 'knowledge' && basename(file) === 'index.md') return false;
           if (seen.has(file)) return false;
           seen.add(file);
           const harness = role === 'rule' ? harnessFile(file) : undefined;
@@ -991,7 +1026,8 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
             if (raw === '') continue;
             let target: string | undefined;
             if (match[1] === undefined) {
-              target = relative(state.root, resolve(dirname(file), raw)).split(sep).join('/');
+              // A link that starts with `/` is written from the source root.
+              target = relative(state.root, raw.startsWith('/') ? join(state.root, raw) : resolve(dirname(file), raw)).split(sep).join('/');
               if (target.startsWith('..')) continue;
             } else {
               const linked = raw.endsWith('.md') ? raw : `${raw}.md`;
@@ -1019,12 +1055,15 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
           const deferred = scope !== undefined && (request.paths ?? []).length > 0;
           const declared = declaredDate(note.fields, legacy === undefined);
           if (legacy !== undefined && declared === undefined) anyUndeclared = true;
+          // A page is stale at or after its `stale_after`, measured at the task's moment.
+          const staleAfter = Date.parse(note.fields.get('stale_after') ?? '');
           const meta: FileMeta = {
             index: metas.length,
             file, name, directory: dirname(file),
             ...(always === undefined ? {} : { alwaysOn: always }), scope, deferred,
             scopeSkipped: false,
-            replaced: REPLACED_FRONTMATTER.test(note.frontmatter) || REPLACED_LINE.test(note.body),
+            replaced: REPLACED_FRONTMATTER.test(note.frontmatter) || REPLACED_LINE.test(note.body)
+              || (Number.isFinite(staleAfter) && staleAfter <= (taskNow ??= taskMoment(request.taskDate ?? request.asOf, timeZoneOf(request.timeZone)))),
             fileHits: hits(`${name} ${note.frontmatter}`, terms),
             declared,
             partStart: parts.length,
@@ -1054,6 +1093,7 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
                 len: tokens.length,
                 headingHits: hits(part.heading, terms),
                 namedPath: (request.paths ?? []).some((hint) => part.text.includes(hint)),
+                ...(part.date === undefined ? {} : { date: part.date }),
                 ...(kindLane
                   ? { phrased: phraseCount(part.text, request.task) + phraseCount(part.title, request.task) }
                   : {}),
@@ -1134,6 +1174,7 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
                   len: tokens.length,
                   headingHits: hits(part.heading, terms),
                   namedPath: (request.paths ?? []).some((hint) => part.text.includes(hint)),
+                  ...(part.date === undefined ? {} : { date: part.date }),
                   ...(kindLane
                     ? { phrased: phraseCount(part.text, request.task) + phraseCount(part.title, request.task) }
                     : {}),
@@ -1159,7 +1200,7 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
         title: part.title,
         text: part.text,
         contentRef: part.contentRef,
-        ...(meta.date === undefined ? {} : { date: meta.date }),
+        ...((part.date ?? meta.date) === undefined ? {} : { date: part.date ?? meta.date }),
         ...(meta.repoPath === undefined ? {} : { path: meta.repoPath, repository: meta.repository }),
         ...(options.kind === 'instructions' ? { directory: meta.directory } : {}),
         signals,
@@ -1343,13 +1384,15 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
         }
       }
 
-      // Decay ranks each dated note lower by its age at the task date;
-      // undefined for an undated note or one dated after it.
+      // A part's own date, else its file's.
+      const dateOf = (index: number) => parts[index]!.date ?? metas[parts[index]!.file]!.date;
+      // Decay ranks each dated part lower by its age at the task date;
+      // undefined for an undated part or one dated after it.
       const halfLife = request.decayHalfLife;
       const aged = halfLife === undefined ? undefined : (() => {
         const zone = timeZoneOf(request.timeZone);
         const asOf = taskMoment(request.taskDate ?? request.asOf, zone);
-        return metas.map((meta) => decayWeight(meta.date?.value, asOf, halfLife, keyword.replacedWeight, zone));
+        return parts.map((_, index) => decayWeight(dateOf(index)?.value, asOf, halfLife, keyword.replacedWeight, zone));
       })();
       // Rank by the same signal sum the candidates report, slice the
       // read's limit, then — when the lane cut is on — keep what the
@@ -1365,11 +1408,10 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
         if (meta.location > 0) sum += meta.location;
         return sum;
       });
-      const sums = aged === undefined ? plain : plain.map((sum, index) => sum + (aged[parts[index]!.file] ?? 0));
-      // A period read keeps only the parts of notes dated inside the task's period.
+      const sums = aged === undefined ? plain : plain.map((sum, index) => sum + (aged[index] ?? 0));
+      // A period read keeps only the parts dated inside the task's period.
       const period = request.taskPeriod;
-      const dated = (index: number) => period === undefined
-        || datedIn(metas[parts[index]!.file]!.date?.value ?? '', period);
+      const dated = (index: number) => period === undefined || datedIn(dateOf(index)?.value ?? '', period);
       const cut = request.wholeLanes === false;
       // With `wholeLanes` on the read keeps every part and marks each one
       // the cut would have dropped.
@@ -1411,7 +1453,7 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
         const withDecay = new Set(afterLimit(kept, sums));
         const without = new Set(afterLimit(select(plain).kept, plain));
         decayCounts = {
-          actedOn: laneRanked.filter((index) => aged[parts[index]!.file] !== undefined).length,
+          actedOn: laneRanked.filter((index) => aged[index] !== undefined).length,
           added: [...withDecay].filter((index) => !without.has(index)).map((index) => parts[index]!.id),
           dropped: [...without].filter((index) => !withDecay.has(index)).map((index) => parts[index]!.id),
         };
@@ -1445,7 +1487,7 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
             if (descriptor.namedPath) signals['names-path'] = keyword.namedPathWeight;
             if (legacy !== 'rules' && meta.inbound > 0) signals['inbound-links'] = Math.min(keyword.inboundLinkCap, Math.log10(1 + meta.inbound));
             if (legacy !== 'rules' && meta.replaced) signals['replaced'] = keyword.replacedWeight;
-            const decay = aged?.[meta.index];
+            const decay = aged?.[index];
             if (decay !== undefined && decay !== 0) signals['decay'] = decay;
             if (meta.location > 0) signals['instruction-location'] = meta.location;
             if (scores[index] !== 0) signals['bm25'] = scores[index]!;

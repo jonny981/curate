@@ -105,9 +105,9 @@ describe('knowledgeBase', () => {
     expect(result.candidates.every((candidate) => candidate.role === 'reference')).toBe(true);
     expect([...result.candidates].sort((left, right) => left.id.localeCompare(right.id))
       .map((candidate) => candidate.title)).toEqual([
-      'guide.md: Guide',
-      'guide.md: Setup',
-      'guide.md: Usage',
+      'guide.md (The guide): Guide',
+      'guide.md (The guide): Setup',
+      'guide.md (The guide): Usage',
     ]);
     expect(result.candidates[1]!.contentRef).toMatch(/^guide\.md#L\d+-L\d+$/);
   });
@@ -246,7 +246,7 @@ describe('knowledgeBase', () => {
 
   it('counts inbound links by resolved path, so same-named files in different folders stay distinct', async () => {
     const directory = await tree({
-      'a/index.md': '## Index\nPlain text.\n',
+      'a/home.md': '## Home\nPlain text.\n',
       'a/plan.md': '## Plan A\nSee [the b plan](../b/plan.md).\n',
       'b/other.md': '## Other\nSee [the a plan](../a/plan.md) and [the b plan](plan.md).\n',
       'b/plan.md': '## Plan B\nThe b plan.\n',
@@ -262,15 +262,15 @@ describe('knowledgeBase', () => {
     // name alone would tie the two plans.
     const aPlan = result.candidates.find((candidate) => candidate.id.startsWith('a/plan.md'))!;
     const bPlan = result.candidates.find((candidate) => candidate.id.startsWith('b/plan.md'))!;
-    const index = result.candidates.find((candidate) => candidate.id.startsWith('a/index.md'))!;
+    const home = result.candidates.find((candidate) => candidate.id.startsWith('a/home.md'))!;
     expect(aPlan.signals['inbound-links']).toBeGreaterThan(0);
     expect(bPlan.signals['inbound-links']).toBeGreaterThan(aPlan.signals['inbound-links']!);
-    expect(index.signals['inbound-links']).toBeUndefined();
+    expect(home.signals['inbound-links']).toBeUndefined();
   });
 
   it('counts a `[[wiki]]` link by note name across folders', async () => {
     const directory = await tree({
-      'a/index.md': '## Index\nSee [[plan]] for the approach.\n',
+      'a/home.md': '## Home\nSee [[plan]] for the approach.\n',
       'b/plan.md': '## Plan\nThe plan lives in another folder.\n',
     });
 
@@ -286,7 +286,7 @@ describe('knowledgeBase', () => {
 
   it('counts a `.md` link that carries a `#section` anchor', async () => {
     const directory = await tree({
-      'index.md': '## Index\nSee [the plan](plan.md#details) for detail.\n',
+      'home.md': '## Home\nSee [the plan](plan.md#details) for detail.\n',
       'plan.md': '## Plan\nThe plan.\n\n## Details\nThe detail.\n',
     });
 
@@ -383,8 +383,8 @@ describe('knowledgeBase', () => {
         'The ledger records each deployment.',
         '',
       ].join('\n'),
-      'index.md': [
-        '## Index',
+      'home.md': [
+        '## Home',
         'See [[deployment-ledger]] and [the ledger](deployment-ledger.md) for the record.',
         '',
       ].join('\n'),

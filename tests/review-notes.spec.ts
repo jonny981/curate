@@ -58,7 +58,7 @@ describe('reviewNotes proposes and never edits', () => {
 
     expect(proposals.map((p) => [part(p.path), p.action])).toEqual([['a.md', 'retire'], ['b.md', 'promote']]);
     const [retire, promote] = proposals;
-    expect(retire).toMatchObject({ edit: 'status: retired', date: { value: '2023-01-01', meaning: 'recorded' } });
+    expect(retire).toMatchObject({ edit: 'status: deprecated', date: { value: '2023-01-01', meaning: 'recorded' } });
     expect(retire!.parts.map((p) => [part(p.id), p.probability])).toEqual([['a.md#1', 0.9], ['a.md#2', 0.9]]);
     expect(promote!.edit).toBeUndefined();
     expect(promote!.parts.map((p) => [part(p.id), p.probability])).toEqual([['b.md#1', 0.8]]);

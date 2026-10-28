@@ -164,7 +164,7 @@ export async function reviewNotes(options: MarkdownOptions & {
     if (!replaced(parts)) {
       const stale = parts.map((part) => ({ id: part.id, probability: answers.get(keyOf(part.id, 'stale')) }));
       if (stale.every(({ probability }) => probability !== undefined && probability >= bar)) {
-        proposals.push({ path, action: 'retire', parts: stale as NoteProposal['parts'], ...date, edit: 'status: retired' });
+        proposals.push({ path, action: 'retire', parts: stale as NoteProposal['parts'], ...date, edit: 'status: deprecated' });
       }
     }
     if (!rule) {
