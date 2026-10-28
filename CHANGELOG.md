@@ -101,6 +101,18 @@ Four packages:
   documented limits, estimated at three characters a token. Picks running at the same time in one process ask for
   each part's labels once, and `labels.waited` counts the parts a pick took
   from another pick's request in flight.
+- **A decision batch too large never stops a run.** `jev()` sends a request
+  the service rejects as too large again in halves, each item keeping its
+  questions, and resends a lone item with its evidence text halved and its
+  answers marked `truncated`. The largest whole body accepted so far bounds
+  later batches, and a rejection it cannot explain — or a lone item cut to
+  no text — throws with the reply's whole body. `jev({ onCall })` reports
+  every request with its size, status, milliseconds, usage and `splits`, the
+  extra requests its rejection produced. The `/curate` skill decides through
+  `jev()` and records each request; a Codex source's `allowedCwd` takes one
+  folder or a list and admits a session run in it or below it; and a read
+  the skill's cache does not hold, such as a name lane, is read from the
+  source.
 - **One moment for every read.** `recall(task, { taskDate, timeZone })`,
   the read request and `pick` take the task's date, an ISO 8601 date or
   date-time; anything else throws a `TypeError` before any read. Absent

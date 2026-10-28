@@ -4,7 +4,8 @@ import { copyFile, mkdir, readFile, readdir, realpath, writeFile } from 'node:fs
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { curate, jevRequest, pickFromSources } from '@curatejs/core';
+import { curate, pickFromSources } from '@curatejs/core';
+import { jev } from '@curatejs/core/models';
 import { chat, CHAT_CASCADE, CHAT_SEARCH_LINE_REGISTER } from '@curatejs/chat';
 import { git, GIT_HISTORY_CASCADE, GIT_SEARCH_LINE_REGISTER } from '@curatejs/git';
 import { knowledgeBase, MARKDOWN_CASCADE, MARKDOWN_SEARCH_LINE_REGISTER } from '@curatejs/markdown';
@@ -33,10 +34,15 @@ export function parseSources(value) {
   const sources = value.sources.map((source) => {
     if (!source || !['claude-code', 'codex', 'git', 'markdown'].includes(source.type)
       || typeof source.path !== 'string' || !source.path.trim()) throw new Error('Each source needs a type and a path.');
-    if (source.type === 'codex' && (typeof source.allowedCwd !== 'string' || !source.allowedCwd.trim())) {
-      throw new Error('A Codex source needs allowedCwd; no transcript bodies are read without it.');
+    const allowed = source.allowedCwd;
+    if (source.type === 'codex') {
+      const folders = Array.isArray(allowed) ? allowed : [allowed];
+      if (!folders.length || folders.some((folder) => typeof folder !== 'string' || !folder.trim())) {
+        throw new Error('A Codex source needs allowedCwd; no transcript bodies are read without it.');
+      }
     }
-    return { ...source, path: homePath(source.path), ...(source.allowedCwd ? { allowedCwd: homePath(source.allowedCwd) } : {}) };
+    return { ...source, path: homePath(source.path),
+      ...(allowed ? { allowedCwd: Array.isArray(allowed) ? allowed.map(homePath) : homePath(allowed) } : {}) };
   });
   if (value.threshold !== undefined && (!Number.isFinite(value.threshold) || value.threshold < 0 || value.threshold > 1)) {
     throw new Error('threshold must be between 0 and 1.');
@@ -64,16 +70,19 @@ export function sessionHeader(path) {
   try { return JSON.parse(Buffer.from(bytes).toString('utf8')); } catch { return null; }
 }
 
-export async function allowedSession(header, allowedRoot) {
+export async function allowedSession(header, allowedCwd) {
   if (header?.type !== 'session_meta' || typeof header.payload?.cwd !== 'string' || !isAbsolute(header.payload.cwd)) return false;
   let cwd;
   try { cwd = await realpath(header.payload.cwd); } catch { return false; }
-  const root = await realpath(allowedRoot);
-  const part = relative(root, cwd);
-  return part !== '' && part !== '..' && !part.startsWith(`..${sep}`) && !isAbsolute(part);
+  for (const allowed of Array.isArray(allowedCwd) ? allowedCwd : [allowedCwd]) {
+    const root = await realpath(allowed);
+    const part = relative(root, cwd);
+    if (part !== '..' && !part.startsWith(`..${sep}`) && !isAbsolute(part)) return true;
+  }
+  return false;
 }
 
-export async function filterSessions(folder, allowedRoot) {
+export async function filterSessions(folder, allowedCwd) {
   const admitted = [], excluded = [];
   const walk = async (path) => {
     for (const entry of await readdir(path, { withFileTypes: true })) {
@@ -81,7 +90,7 @@ export async function filterSessions(folder, allowedRoot) {
       if (entry.isSymbolicLink()) continue;
       if (entry.isDirectory()) await walk(file);
       else if (entry.isFile() && entry.name.endsWith('.jsonl')) {
-        (await allowedSession(sessionHeader(file), allowedRoot) ? admitted : excluded).push(file);
+        (await allowedSession(sessionHeader(file), allowedCwd) ? admitted : excluded).push(file);
       }
     }
   };
@@ -248,8 +257,14 @@ export async function pickFullSources(sources, request, options) {
         ...(revision === undefined ? {} : { revision }) });
       for (const candidate of pool.candidates ?? []) maxQuestionText = Math.max(maxQuestionText, candidate.text.length);
     }
-    return { ...source, read: async ({ task, wholeLanes, limit }) =>
-      wholeLanes && limit === undefined && pool ? pool : reads.get(task) };
+    return { ...source, async read(readRequest, context) {
+      const { task, wholeLanes, limit } = readRequest;
+      if (wholeLanes && limit === undefined && pool !== undefined) return pool;
+      const held = reads.get(task);
+      // A read the cache does not hold — a name lane, a task-period read —
+      // goes to the wrapped source with the same request.
+      return held === undefined ? source.read({ wholeLanes: false, ...readRequest }, context) : held;
+    } };
   }));
   return pickFromSources(cached, request, { ...options, limits: { ...options.limits, maxQuestionText } });
 }
@@ -339,31 +354,16 @@ export async function run(args = process.argv.slice(2), callSubscription = subsc
     const searchStart = Date.now();
     record.searches = await searchLines(searchPrompt, folder, record, save, callSubscription);
     record.timings.searchesMs = Date.now() - searchStart;
-    const decide = async (batch, signal) => {
-      const call = { questions: batch.questions.length, started: new Date().toISOString() };
-      record.jev.push(call);
-      await save();
-      const then = Date.now();
-      try {
-        const response = await fetch('https://api.typesafe.ai/v1/systemone', {
-          method: 'POST', headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },
-          signal,
-          body: JSON.stringify(jevRequest(batch)),
-        });
-        if (!response.ok) throw new Error(`Decision service returned HTTP ${response.status}.`);
-        const raw = await response.json();
-        if (!raw.answers || typeof raw.answers !== 'object') throw new Error('Decision service returned no answers.');
-        call.usage = raw.usage ?? null;
-        call.answers = raw.answers;
-        const result = decisionAnswers(batch, raw.answers);
-        if (Object.values(result).some((answer) => answer.status !== 'answered')) throw new Error('Decision service left questions unanswered.');
-        return result;
-      } catch (error) {
-        call.error = error.message;
-        throw error;
-      } finally { call.ms = Date.now() - then; await save(); }
-    };
-    decide.deciderId = 'curate-skill:typesafe:jev-latest';
+    // Core's jev() sends the requests and reports each one, split
+    // requests included; the run record keeps them all.
+    const service = jev({ apiKey, onCall: async (call) => { record.jev.push(call); await save(); } });
+    const decide = Object.assign(async (batch, signal) => {
+      const answers = await service(batch, signal);
+      if (Object.values(answers).some((answer) => answer.status !== 'answered')) {
+        throw new Error('Decision service left questions unanswered.');
+      }
+      return answers;
+    }, { deciderId: 'curate-skill:typesafe:jev-latest' });
     // Jev documents 32,000 tokens for a request's state plus its longest
     // question; three characters per token is a conservative estimate for
     // English text and JSON. Subtracting the longest question's characters

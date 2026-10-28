@@ -27,6 +27,18 @@ async function post(url: string, apiKey: string | undefined, body: unknown, sign
   return response.json();
 }
 
+/** Jev's reply to one request: its HTTP status and whole body, read so a
+ *  rejected request's reason is never lost. */
+async function jevPost(url: string, apiKey: string | undefined, text: string, signal: AbortSignal) {
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}), 'content-type': 'application/json' },
+    body: text,
+    signal,
+  });
+  return { ok: response.ok, status: response.status, text: await response.text() };
+}
+
 /** An item as a decision model reads it: its id and date, its title, then its text. */
 function itemState(question: PickQuestion): string {
   return `${question.id}${question.date === undefined ? ''
@@ -63,16 +75,18 @@ export function jevRequest(batch: PickBatch, model = 'jev-latest') {
 const JEV_STATE_CHARS = 32_000 * 3;
 const JEV_REQUEST_CHARS = 64_000 * 3;
 
-function fitsJev(body: ReturnType<typeof jevRequest>): boolean {
+function fitsJev(body: ReturnType<typeof jevRequest>, maxChars = JEV_REQUEST_CHARS): boolean {
   const longest = Math.max(0, ...Object.values(body.questions).map((question) =>
     question.instructions.length + question.criteria.true.length + question.criteria.false.length));
-  return body.state.length + longest <= JEV_STATE_CHARS && JSON.stringify(body).length <= JEV_REQUEST_CHARS;
+  return body.state.length + longest <= JEV_STATE_CHARS && JSON.stringify(body).length <= maxChars;
 }
 
 /** The batch split into requests inside Jev's limits. Whole items join a
  *  request in order until the next would pass a limit; an item's
- *  questions always go with it, and an item too large alone goes alone. */
-function jevBatches(batch: PickBatch, model: string): PickBatch[] {
+ *  questions always go with it, and an item too large alone goes alone.
+ *  `maxChars` is the whole-request bound a plan keeps to, the learned
+ *  limit once a rejection has landed. */
+function jevBatches(batch: PickBatch, model: string, maxChars = JEV_REQUEST_CHARS): PickBatch[] {
   const items = new Map<string, PickQuestion[]>();
   for (const question of batch.questions) {
     const key = `${question.sourceId}\n${question.id}`;
@@ -82,7 +96,7 @@ function jevBatches(batch: PickBatch, model: string): PickBatch[] {
   let questions: PickQuestion[] = [];
   for (const own of items.values()) {
     const next = { task: batch.task, questions: [...questions, ...own] };
-    if (questions.length > 0 && !fitsJev(jevRequest(next, model))) {
+    if (questions.length > 0 && !fitsJev(jevRequest(next, model), maxChars)) {
       batches.push({ task: batch.task, questions });
       questions = own;
     } else questions = next.questions;
@@ -100,22 +114,121 @@ function hostAndPath(url: string): string {
   return `${host}${pathname}`;
 }
 
+/** One request `jev()` sent, reported through `onCall`. `splits` is the
+ *  number of extra requests its rejection produced: two halves when a
+ *  multi-item request was split, one resend when a lone item's text was
+ *  halved, zero for a request the service answered or finally rejected. */
+export interface JevCall {
+  /** When the request was sent. */
+  readonly started: string;
+  /** How many questions the request asked. */
+  readonly questions: number;
+  /** The whole request body, in characters. */
+  readonly size: number;
+  /** The reply's HTTP status, or 0 when the request never got a reply. */
+  readonly status: number;
+  /** How long the request took, in milliseconds. */
+  readonly ms: number;
+  /** The failure's message, when the request never got a reply: a
+   *  network error or a cancellation. */
+  readonly error?: string;
+  /** The usage the reply reported, when it held one. */
+  readonly usage?: unknown;
+  /** The reply's raw answers, when it held them. */
+  readonly answers?: unknown;
+  /** The extra requests this rejection spawned. */
+  readonly splits: number;
+}
+
 /** Create a decision function using TypeSafe's yes/no probabilities, or
  *  those of another server that speaks Jev's format at `url`. */
-export function jev({ apiKey, model = 'jev-latest', url = JEV_URL }: {
+export function jev({ apiKey, model = 'jev-latest', url = JEV_URL, onCall }: {
   /** Required at TypeSafe's address; sent only when given. */
   readonly apiKey?: string | undefined;
   readonly model?: string;
   readonly url?: string;
+  /** Called once per request, split and resent requests included. */
+  readonly onCall?: ((call: JevCall) => void | Promise<void>) | undefined;
 }): PickDecide {
   if (!apiKey && url === JEV_URL) throw new Error('Jev requires an API key.');
   const deciderId = url === JEV_URL ? `typesafe:${model}:items-once` : `jev:${hostAndPath(url)}:${model}:items-once`;
-  const decide: PickDecide = async (batch, signal) => {
-    const answered = await Promise.all(jevBatches(batch, model).map(async (part) => {
-      const answers = record(record(await post(url, apiKey, jevRequest(part, model), signal)).answers);
+  // The largest whole body Jev has accepted in this pick. Once a
+  // rejection has landed, later batches are planned inside it, and a
+  // request rejected at no more than it did not fail for size: its
+  // reply is thrown as sent.
+  let accepted = 0;
+  let rejected = false;
+  const send = async (part: PickBatch, signal: AbortSignal): Promise<[string, PickAnswer][]> => {
+    const text = JSON.stringify(jevRequest(part, model));
+    const then = Date.now();
+    let reply: Awaited<ReturnType<typeof jevPost>>;
+    try {
+      reply = await jevPost(url, apiKey, text, signal);
+    } catch (error) {
+      // A request that never got a reply — a network failure or a
+      // cancelled signal — is still a call: report it with its timing
+      // and the error it raised, then let that error fail the pick.
+      await onCall?.({
+        started: new Date(then).toISOString(), questions: part.questions.length,
+        size: text.length, status: 0, ms: Date.now() - then,
+        error: error instanceof Error ? error.message : String(error),
+        splits: 0,
+      });
+      throw error;
+    }
+    const raw = (() => { try { return record(JSON.parse(reply.text)); } catch { return {}; } })();
+    const call = {
+      started: new Date(then).toISOString(), questions: part.questions.length,
+      size: text.length, status: reply.status, ms: Date.now() - then,
+      ...(raw.usage === undefined ? {} : { usage: raw.usage }),
+      ...(raw.answers === undefined ? {} : { answers: raw.answers }),
+      splits: 0,
+    };
+    if (reply.ok) {
+      accepted = Math.max(accepted, call.size);
+      await onCall?.(call);
+      const answers = record(raw.answers);
       return part.questions.map((q, index): [string, PickAnswer] =>
         [q.key, probabilityAnswer(record(answers[`q${index}`]).noul)]);
-    }));
+    }
+    rejected = true;
+    // Only a rejection size can explain is retried: a too-large status
+    // on a body bigger than every body Jev has accepted so far.
+    if ((reply.status === 400 || reply.status === 413) && call.size > accepted) {
+      const items = new Map<string, PickQuestion[]>();
+      for (const q of part.questions) {
+        const key = `${q.sourceId}\n${q.id}`;
+        items.set(key, [...(items.get(key) ?? []), q]);
+      }
+      if (items.size > 1) {
+        call.splits = 2;
+        await onCall?.(call);
+        const groups = [...items.values()];
+        const middle = Math.ceil(groups.length / 2);
+        const halves = await Promise.all([groups.slice(0, middle), groups.slice(middle)]
+          .map((half) => send({ task: part.task, questions: half.flat() }, signal)));
+        return halves.flat();
+      }
+      // A lone oversized item is resent with its evidence halved, never
+      // its question; an empty text cannot be cut further.
+      const current = part.questions[0]!.text;
+      if (current !== '') {
+        call.splits = 1;
+        await onCall?.(call);
+        const points = [...current];
+        const half = points.slice(0, Math.floor(points.length / 2)).join('');
+        const answers = await send({ task: part.task,
+          questions: part.questions.map((q) => ({ ...q, text: half })) }, signal);
+        return answers.map(([key, answer]): [string, PickAnswer] => [key, { ...answer, truncated: true }]);
+      }
+    }
+    await onCall?.(call);
+    throw new Error(`Model request failed: HTTP ${reply.status}. ${reply.text}`);
+  };
+  const decide: PickDecide = async (batch, signal) => {
+    const answered = await Promise.all(
+      jevBatches(batch, model, rejected && accepted > 0 ? accepted : JEV_REQUEST_CHARS)
+        .map((part) => send(part, signal)));
     return Object.fromEntries(answered.flat());
   };
   return Object.assign(decide, { deciderId });

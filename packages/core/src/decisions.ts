@@ -44,18 +44,20 @@ export function decisionKey(
 
 /** A stored entry is `{ answer: { status: 'answered', probability } }`
  *  with a finite 0-to-1 probability — a refused, missing or errored
- *  answer is never stored, so a file holding one is corrupt. A
- *  missing, corrupt or wrong-shaped entry is a miss. */
+ *  answer is never stored, so a file holding one is corrupt — plus the
+ *  `truncated` flag when the stored answer carried one. A missing,
+ *  corrupt or wrong-shaped entry is a miss. */
 export function storedDecision(
   value: unknown,
-): { readonly status: 'answered'; readonly probability: number } | undefined {
+): { readonly status: 'answered'; readonly probability: number; readonly truncated?: boolean } | undefined {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
   const answer = (value as { readonly answer?: unknown }).answer;
   if (typeof answer !== 'object' || answer === null || Array.isArray(answer)) return undefined;
-  const { status, probability } = answer as { readonly status?: unknown; readonly probability?: unknown };
+  const { status, probability, truncated } = answer as {
+    readonly status?: unknown; readonly probability?: unknown; readonly truncated?: unknown };
   return status === 'answered' && typeof probability === 'number'
     && Number.isFinite(probability) && probability >= 0 && probability <= 1
-    ? { status: 'answered', probability }
+    ? { status: 'answered', probability, ...(truncated === true ? { truncated: true as const } : {}) }
     : undefined;
 }
 

@@ -156,7 +156,7 @@ describe('package exports', () => {
     expect(jevRequest({ task: 'task', questions: [] })).toEqual({ model: 'jev-latest', state: 'task', questions: {} });
     const skill = readFileSync(join(__dirname, '../skills/curate/run.mjs'), 'utf8');
     expect(skill).not.toContain('function jevRequest');
-    expect(skill.split('\n').find((line) => line.includes("from '@curatejs/core'"))).toContain('jevRequest');
+    expect(skill.split('\n').find((line) => line.includes("from '@curatejs/core/models'"))).toContain('jev');
   });
 });
 

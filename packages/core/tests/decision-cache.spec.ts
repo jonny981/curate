@@ -128,6 +128,31 @@ describe('pick decision cache', () => {
       entry.status === 'selected' && entry.reused === true)).toBe(true);
   });
 
+  it('keeps the truncated flag on a reused answer', async () => {
+    const directory = storeDirectory();
+    // A decider marking every answer truncated, the way jev() marks an
+    // item whose evidence text it had to halve for the model to take it.
+    const decide: PickDecide = async (batch) => Object.fromEntries(batch.questions.map(
+      (question) => [question.key, { status: 'answered' as const, probability: 0.9, truncated: true }]));
+    const options = { ...uncutPick,
+      task: 'Recall the plan', decide,
+      questionsBySource: { notes: {
+        bias: 0,
+        questions: [{ key: 'relevant', instructions: 'Relevant?', true: 'yes', false: 'no', weight: 1 }],
+      } },
+      cache: { store: decisionFileStore(directory), deciderId: 'test-decider' },
+    };
+    const first = await pick(threeParts(), options);
+    expect(first.record.candidates.every((entry) =>
+      entry.questions?.[0]?.truncated === true)).toBe(true);
+
+    const second = await pick(threeParts(), options);
+    expect(second.record.cache).toMatchObject({ asked: 0, reused: 3 });
+    expect(second.record.candidates.every((entry) =>
+      entry.questions?.every((question) => question.truncated === true && question.reused === true)))
+      .toBe(true);
+  });
+
   it('asks only the new part when a later pick gains a neighbour in the same batch', async () => {
     const directory = storeDirectory();
     const counter = counting();

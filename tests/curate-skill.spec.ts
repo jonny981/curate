@@ -1,6 +1,6 @@
 import { execFileSync, spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { readSync, writeFileSync } from 'node:fs';
+import { readFileSync, readSync, writeFileSync } from 'node:fs';
 import { copyFile, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -65,6 +65,7 @@ describe('curate command input', () => {
     expect(parseSources({
       sources: [
         { type: 'codex', path: 'sessions', allowedCwd: 'projects' },
+        { type: 'codex', path: 'more-sessions', allowedCwd: ['work', 'personal'] },
         { type: 'claude-code', path: 'transcripts' },
         { type: 'git', path: 'repository' },
         { type: 'markdown', path: 'documents' },
@@ -72,6 +73,7 @@ describe('curate command input', () => {
     })).toEqual({
       sources: [
         { type: 'codex', path: resolve('sessions'), allowedCwd: resolve('projects') },
+        { type: 'codex', path: resolve('more-sessions'), allowedCwd: [resolve('work'), resolve('personal')] },
         { type: 'claude-code', path: resolve('transcripts') },
         { type: 'git', path: resolve('repository') },
         { type: 'markdown', path: resolve('documents') },
@@ -86,6 +88,9 @@ describe('curate command input', () => {
     { sources: [{ type: 'codex', path: 'sessions' }] },
     { sources: [{ type: 'codex', path: 'sessions', allowedCwd: ' ' }] },
     { sources: [{ type: 'codex', path: 'sessions', allowedCwd: 1 }] },
+    { sources: [{ type: 'codex', path: 'sessions', allowedCwd: [] }] },
+    { sources: [{ type: 'codex', path: 'sessions', allowedCwd: [' ', 'projects'] }] },
+    { sources: [{ type: 'codex', path: 'sessions', allowedCwd: [1] }] },
   ])('rejects invalid source settings %j', (value) => {
     expect(() => parseSources(value)).toThrow();
   });
@@ -105,7 +110,7 @@ describe('curate command input', () => {
 });
 
 describe('Codex session folder restrictions', () => {
-  it('admits only real folders strictly inside the allowed root', async () => {
+  it('admits the allowed root itself and real folders below it', async () => {
     const directory = await folder();
     const root = join(directory, 'projects');
     const child = join(root, 'project');
@@ -116,9 +121,26 @@ describe('Codex session folder restrictions', () => {
     await symlink(child, join(directory, 'alias'));
 
     expect(await allowedSession(metadata(child), root)).toBe(true);
+    expect(await allowedSession(metadata(root), root)).toBe(true);
     expect(await allowedSession(metadata(join(directory, 'alias')), root)).toBe(true);
-    for (const cwd of [root, sibling, outside, join(root, 'escape'), join(root, 'missing')]) {
+    for (const cwd of [sibling, outside, join(root, 'escape'), join(root, 'missing')]) {
       expect(await allowedSession(metadata(cwd), root), cwd).toBe(false);
+    }
+  });
+
+  it('admits each folder in a list of allowed roots, and not their shared parent', async () => {
+    const directory = await folder();
+    const first = join(directory, 'first');
+    const second = join(directory, 'second');
+    const firstChild = join(first, 'project');
+    const secondChild = join(second, 'project');
+    await Promise.all([firstChild, secondChild].map((path) => mkdir(path, { recursive: true })));
+
+    for (const cwd of [first, second, firstChild, secondChild]) {
+      expect(await allowedSession(metadata(cwd), [first, second]), cwd).toBe(true);
+    }
+    for (const cwd of [directory, join(directory, 'first-other'), join(directory, 'missing')]) {
+      expect(await allowedSession(metadata(cwd), [first, second]), cwd).toBe(false);
     }
   });
 
@@ -161,9 +183,12 @@ describe('Codex session folder restrictions', () => {
     await Promise.all([child, nested, sibling].map((path) => mkdir(path, { recursive: true })));
     await symlink(sibling, join(root, 'escape'));
     const allowed = join(nested, 'allowed.jsonl');
+    const own = join(nested, 'root.jsonl');
+    const ownMessage = { ...message, payload: { ...message.payload, content: [{ type: 'input_text', text: 'Root session evidence.' }] } };
     await writeFile(allowed, `${JSON.stringify(metadata(child))}\n${JSON.stringify(message)}\n`);
+    await writeFile(own, `${JSON.stringify(metadata(root))}\n${JSON.stringify(ownMessage)}\n`);
     const rejected = [
-      ['sibling', metadata(sibling)], ['root', metadata(root)], ['escape', metadata(join(root, 'escape'))],
+      ['sibling', metadata(sibling)], ['escape', metadata(join(root, 'escape'))],
       ['missing', {}], ['invalid', null],
     ].map(([name, header]) => ({ file: join(nested, `${name}.jsonl`), header }));
     for (const { file, header } of rejected) {
@@ -178,11 +203,12 @@ describe('Codex session folder restrictions', () => {
     const snapshot = join(directory, 'snapshot');
     const { filter, source }: { filter: { admitted: string[]; excluded: string[] }; source: CandidateSource } =
       await snapshotCodex({ type: 'codex', path: sessions, allowedCwd: root }, snapshot);
-    expect(filter.admitted).toEqual([allowed]);
+    expect(filter.admitted.sort()).toEqual([allowed, own].sort());
     expect(filter.excluded.sort()).toEqual(rejected.map(({ file }) => file).sort());
-    expect(vi.mocked(copyFile).mock.calls.map((call) => call.slice(0, 2))).toEqual([
+    expect(vi.mocked(copyFile).mock.calls.map((call) => call.slice(0, 2)).sort()).toEqual([
       [allowed, join(snapshot, '2026', '01', 'allowed.jsonl')],
-    ]);
+      [own, join(snapshot, '2026', '01', 'root.jsonl')],
+    ].sort());
     expect(vi.mocked(readFile)).not.toHaveBeenCalled();
     await writeFile(join(nested, 'late-excluded.jsonl'), `${JSON.stringify(metadata(sibling))}\nFORBIDDEN BODY is not JSON\n`);
     await writeFile(join(nested, 'late-allowed.jsonl'), `${JSON.stringify(metadata(child))}\n${JSON.stringify(message)}\n`);
@@ -192,18 +218,20 @@ describe('Codex session folder restrictions', () => {
     expect(result.status).toBe('read');
     if (result.status !== 'read') throw new Error('Expected an admitted session to be read.');
     expect(result.complete).toBe(true);
-    expect(result.candidates.map((candidate) => candidate.text)).toEqual(['Useful orchard evidence.']);
+    expect(result.candidates.map((candidate) => candidate.text)).toEqual(['Useful orchard evidence.', 'Root session evidence.']);
     expect(result.candidates[0]?.chat).toMatchObject({ provider: 'codex', sessionId: 'session', role: 'user' });
     expect(result.candidates[0]?.sourceId).toBe(`chat:codex:${sessions}`);
     expect(result.candidates[0]?.id).toBe(`codex:${await realpath(sessions)}:2026/01/allowed.jsonl:2:1:1`);
+    expect(result.candidates[1]?.id).toBe(`codex:${await realpath(sessions)}:2026/01/root.jsonl:2:1:1`);
 
     await writeFile(allowed, `${JSON.stringify(metadata(child))}\n`);
     await rm(join(nested, 'late-allowed.jsonl'));
     expect(await source.read({ task: 'orchard evidence' })).toEqual(result);
-    // The read passes over the admitted copy more than once; the set of
-    // opened paths is what proves nothing outside it was touched.
+    // The read passes over the admitted copies more than once; the set of
+    // opened paths is what proves nothing outside them was touched.
     expect(new Set(vi.mocked(readFile).mock.calls.map((call) => call[0]))).toEqual(
-      new Set([await realpath(join(snapshot, '2026', '01', 'allowed.jsonl'))]),
+      new Set(await Promise.all(['allowed', 'root'].map(async (name) =>
+        realpath(join(snapshot, '2026', '01', `${name}.jsonl`))))),
     );
   });
 });
@@ -689,11 +717,124 @@ it('saves the pick record naming the rejected batch when the decision service fa
   expect(folders).toHaveLength(1);
   const saved = JSON.parse(await readFile(join(home, '.curate', 'runs', folders[0]!, 'record.json'), 'utf8'));
   expect(saved.status).toBe('failed');
-  expect(saved.error).toContain('Decision service returned HTTP 400.');
-  expect(saved.pick?.decideError?.message).toBe('Decision service returned HTTP 400.');
+  expect(saved.error).toContain('Model request failed: HTTP 400. rejected');
+  expect(saved.pick?.decideError?.message).toBe('Model request failed: HTTP 400. rejected');
   expect(saved.pick?.decideError?.candidates?.length).toBeGreaterThan(0);
   const ids = new Set<string>((saved.pick?.candidates ?? []).map((entry: { id: string }) => entry.id));
   expect(saved.pick?.decideError?.candidates?.every((id: string) => ids.has(id))).toBe(true);
+});
+
+// The injected subscription replies as the helper would: a searches
+// reply first, then a curator reply naming the evidence ids the prompt
+// carried, each written to <label>-<n>.txt and recorded.
+function subscriptionReply(searches: unknown, log = 'Log line.') {
+  const calls: { label: string; prompt: string }[] = [];
+  const folders: string[] = [];
+  const call = async (prompt: string, folder: string, label: string,
+    record: { subscription: { label: string; attempt: number; code: number }[] }, save: () => Promise<void>) => {
+    calls.push({ label, prompt });
+    folders.push(folder);
+    const number = record.subscription.filter((entry) => entry.label === label).length + 1;
+    record.subscription.push({ label, attempt: number, code: 0 });
+    const reply = label === 'searches' ? JSON.stringify(searches)
+      : [...prompt.matchAll(/^### (.+) \([^)]*\):/gm)]
+        .map((match) => `[2026-01-01] Evidence ${match[1]} (said 2026-01-01; ${match[1]})`)
+        .join('\n') || log;
+    writeFileSync(join(folder, `${label}-${number}.txt`), reply);
+    await save();
+    return reply;
+  };
+  return { calls, folders, call };
+}
+
+const searches = () => Object.fromEntries(['chat', 'git-history', 'markdown'].map((kind) => [
+  kind, { keywords: ['orchard', 'orchard trees'], answers: ['The orchard has trees.', 'Fruit trees grow here.'] },
+]));
+
+describe('a run through core decision calls', () => {
+  it('records one Jev entry per request, split requests included, and finishes', async () => {
+    const directory = await folder();
+    const home = join(directory, 'home');
+    const notes = join(directory, 'notes');
+    await mkdir(home);
+    await mkdir(notes);
+    for (let index = 0; index < 6; index++) {
+      await writeFile(join(notes, `orchard-${index}.md`), `# Orchard ${index}\n\n${`orchard idea ${index} `.repeat(300)}\n`);
+    }
+    const sourcesFile = join(directory, 'sources.json');
+    await writeFile(sourcesFile, JSON.stringify({ sources: [{ type: 'markdown', path: notes }] }));
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
+    vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
+    const bodies: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => {
+      const raw = String(init.body);
+      const sent = JSON.parse(raw);
+      bodies.push(raw);
+      if (sent.state.length > 20_000) return new Response('request too large', { status: 400 });
+      return new Response(JSON.stringify({
+        usage: { input_tokens: 1, output_tokens: 1 },
+        answers: Object.fromEntries(Object.keys(sent.questions).map((key) => [key, { noul: 0.8 }])),
+      }));
+    }));
+    const { call, folders } = subscriptionReply(searches());
+    const runFolder = await run(['--sources', sourcesFile, 'orchard'], call);
+    expect(runFolder).toBe(folders[0]);
+
+    const record = JSON.parse(await readFile(join(runFolder, 'record.json'), 'utf8'));
+    expect(record.status).toBe('complete');
+    expect(record.jev.length).toBe(bodies.length);
+    expect(bodies.length).toBeGreaterThan(1);
+    for (const [index, entry] of record.jev.entries()) {
+      expect(entry.size).toBe(bodies[index]!.length);
+      expect(typeof entry.status).toBe('number');
+      expect(typeof entry.ms).toBe('number');
+      expect(typeof entry.questions).toBe('number');
+      expect(typeof entry.splits).toBe('number');
+    }
+    expect(record.jev.some((entry: { status: number }) => entry.status === 400)).toBe(true);
+    expect(record.jev.reduce((sum: number, entry: { splits: number }) => sum + entry.splits, 0)).toBeGreaterThan(0);
+    expect(await readFile(join(runFolder, 'log.md'), 'utf8')).toContain('2026-01-01');
+    // The decide path is core's jev(); the skill keeps no endpoint of its own.
+    expect(readFileSync(join(__dirname, '../skills/curate/run.mjs'), 'utf8')).not.toContain('api.typesafe.ai');
+  });
+
+  it('runs a task that names someone: the name lane is read through the source', async () => {
+    const directory = await folder();
+    const home = join(directory, 'home');
+    const transcripts = join(directory, 'transcripts');
+    await mkdir(home);
+    await mkdir(transcripts);
+    await writeFile(join(transcripts, 'session.jsonl'), [
+      JSON.stringify({
+        type: 'user', sessionId: 's1', timestamp: '2026-01-01T12:00:00Z',
+        message: { content: 'What did Ada decide about the cache?' },
+      }),
+      JSON.stringify({
+        type: 'assistant', sessionId: 's1', timestamp: '2026-01-01T12:01:00Z',
+        message: { content: [{ type: 'text', text: 'Ada decided to keep the cache layered.' }] },
+      }),
+    ].join('\n'));
+    const sourcesFile = join(directory, 'sources.json');
+    await writeFile(sourcesFile, JSON.stringify({ sources: [{ type: 'claude-code', path: transcripts }] }));
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
+    vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
+    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => new Response(JSON.stringify({
+      usage: null,
+      answers: Object.fromEntries(Object.keys(JSON.parse(String(init.body)).questions).map((key) => [key, { noul: 0.8 }])),
+    }))));
+    const { call, folders } = subscriptionReply(searches());
+    const runFolder = await run(['--sources', sourcesFile, 'What did Ada decide about the cache?'], call);
+    expect(runFolder).toBe(folders[0]);
+
+    const record = JSON.parse(await readFile(join(runFolder, 'record.json'), 'utf8'));
+    expect(record.status).toBe('complete');
+    expect(record.pick?.names?.found ?? []).toContain('Ada');
+    expect(record.reads.some((read: { task: string }) => read.task === 'Ada')).toBe(true);
+    expect(record.jev.length).toBeGreaterThan(0);
+    expect(await readFile(join(runFolder, 'log.md'), 'utf8')).toContain('2026-01-01');
+  });
 });
 
 describe('search line repair', () => {

@@ -116,11 +116,14 @@ export interface PickBatch {
 }
 
 export type PickAnswer =
-  | { readonly status: 'answered'; readonly probability: number }
-  | { readonly status: 'refused' | 'missing' | 'error'; readonly detail?: string }
+  | { readonly status: 'answered'; readonly probability: number;
+      /** The sent item text had to be cut for the model to answer. */
+      readonly truncated?: boolean }
+  | { readonly status: 'refused' | 'missing' | 'error'; readonly detail?: string;
+      readonly truncated?: boolean }
   /** The question was never asked: a stopping dial ended the run first.
    *  Recorded for tag and route questions; a decide reply cannot produce it. */
-  | { readonly status: 'unassessed'; readonly detail?: string };
+  | { readonly status: 'unassessed'; readonly detail?: string; readonly truncated?: boolean };
 
 export type PickDecide = ((
   batch: PickBatch,
@@ -843,8 +846,8 @@ const KIND_QUESTIONS: Record<MemoryKind, typeof PICK_QUESTIONS.reference> = {
 };
 
 type CheckedAnswer =
-  | { readonly status: 'answered'; readonly probability: number; readonly reused?: boolean }
-  | { readonly status: 'refused' | 'missing' | 'error'; readonly detail?: string };
+  | { readonly status: 'answered'; readonly probability: number; readonly reused?: boolean; readonly truncated?: boolean }
+  | { readonly status: 'refused' | 'missing' | 'error'; readonly detail?: string; readonly truncated?: boolean };
 
 interface ResolvedLimits {
   readonly maxPerBatch: number;
@@ -959,14 +962,15 @@ function checkAnswer(raw: unknown): CheckedAnswer {
   if (raw === undefined) return { status: 'missing' };
   if (!isRecord(raw)) return { status: 'error', detail: 'The answer is not an object.' };
   const { status, probability, detail } = raw;
+  const truncated = raw.truncated === true ? { truncated: true as const } : {};
   if (status === 'answered') {
     return typeof probability === 'number' && Number.isFinite(probability)
       && probability >= 0 && probability <= 1
-      ? { status: 'answered', probability }
+      ? { status: 'answered', probability, ...truncated }
       : { status: 'error', detail: 'The answer probability is not a number between 0 and 1.' };
   }
   if (status === 'refused' || status === 'missing' || status === 'error') {
-    return typeof detail === 'string' ? { status, detail } : { status };
+    return typeof detail === 'string' ? { status, detail, ...truncated } : { status, ...truncated };
   }
   return { status: 'error', detail: 'The answer status is not recognised.' };
 }
@@ -1804,7 +1808,8 @@ export async function pick(
         if (cacheKey !== undefined && answer.status === 'answered') {
           try {
             await cache!.store.set(cacheKey,
-              { answer: { status: 'answered', probability: answer.probability } });
+              { answer: { status: 'answered', probability: answer.probability,
+                ...(answer.truncated === true ? { truncated: true } : {}) } });
           } catch (error) {
             cacheFailedWrites += 1;
             cacheWriteError ??= error;
