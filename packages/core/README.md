@@ -63,7 +63,7 @@ See the [runnable example](https://github.com/jonny981/curate#use-it) for instal
 
 ## Model helpers
 
-The optional `@curatejs/core/models` entry supplies three factories using Node's built-in `fetch`:
+The optional `@curatejs/core/models` entry supplies four factories using Node's built-in `fetch`:
 
 ```ts
 import { jev, chatWriter } from '@curatejs/core/models';
@@ -72,16 +72,19 @@ const decide = jev({ apiKey: process.env.TYPESAFE_API_KEY });
 const write = chatWriter({ apiKey: process.env.CHAT_API_KEY, model: 'gpt-5-mini' });
 ```
 
-- **Jev:** `jev({ apiKey, model? })` returns a `PickDecide` function for TypeSafe's System One endpoint, with `deciderId: typesafe:${model}:items-once`. The model defaults to `'jev-latest'`. Missing or invalid probabilities become missing answers.
+- **Jev:** `jev({ apiKey?, model?, url? })` returns a `PickDecide` function for TypeSafe's System One endpoint, with `deciderId: typesafe:${model}:items-once`. The model defaults to `'jev-latest'`. Missing or invalid probabilities become missing answers.
+- **Jev at another address:** set `url` for any server that speaks Jev's format, such as a Clef server. The key is then optional, and no `authorization` header is sent without one. The `deciderId` is `jev:${host}${path}:${model}:items-once`, read from `url`.
 - **What a Jev request holds:** the request's state is the batch's task, then each item once, numbered, with its id, date, title and text. Each question's instructions are its wording, then the number of its item, so an item asked seven questions is sent once. `jevRequest(batch, model?)`, exported from `@curatejs/core`, builds that body.
 - **Jev request size:** Jev documents its limits in tokens: 32,000 for the state plus the longest question, and 64,000 for the whole request. At an estimate of three characters a token, `jev()` splits a batch into several requests so that in each one the state plus its longest question's instructions and criteria is at most 96,000 characters, and the whole request body at most 192,000. An item's questions always go in its item's request, and an item larger than those bounds goes alone. The answers come back as one map for the batch, and a failed request fails the batch.
 - **Labels and decisions stored by an older `jev()`:** they are keyed by its earlier ID, `typesafe:${model}`, so `jev()` asks for them once more. A pick that sets `labels.deciderId`, or a decision cache with its own `deciderId`, keeps its stored entries.
 - **OpenAI Decisions:** `openAIDecisions({ apiKey, model? })` returns a `PickDecide` function for the [Decisions API](https://developers.openai.com/api/docs/guides/decisions), with `deciderId: openai:${model}`. The model defaults to `'gpt-6-luna'`. Predicate answers become probabilities; refusals become `{ status: 'refused' }`. Missing or invalid probabilities become missing answers.
-- **Chat writer:** `chatWriter({ apiKey, model, url? })` returns a `CurateWrite` function. The URL defaults to OpenAI's Chat Completions endpoint. Set `url` for another provider using that format. Empty text passes through for later batches that add no observations; Curate checks the log itself.
-- **Errors:** All factories reject a missing API key. HTTP failures and missing writer text throw. Cancellation reaches `fetch`.
+- **Local decisions:** `localDecisions({ url, model, apiKey? })` returns a `PickDecide` function for an OpenAI-compatible chat completions address, with `deciderId: local:${host}${path}:${model}`. It sends one request a question, one after another. Each request holds the task, the question with its true and false criteria, and the item's id, date, title and text, and asks for one token with `temperature: 0`, `logprobs: true` and `top_logprobs: 20`. The answer is the probability of the "yes" tokens over the "yes" and "no" tokens among the first token's top log-probabilities, with case and leading whitespace ignored. When neither is there, the answer is missing. No `authorization` header is sent without a key.
+- **Chat writer:** `chatWriter({ apiKey?, model, url? })` returns a `CurateWrite` function. The URL defaults to OpenAI's Chat Completions endpoint. Set `url` for another provider using that format; the key is then optional, and no `authorization` header is sent without one. Empty text passes through for later batches that add no observations; Curate checks the log itself.
+- **Separate IDs per server:** the IDs built from `url` leave out its scheme and query. Set `labels.deciderId` yourself for two servers that differ only there. A decision cache keeps its own `deciderId`, so give it a different one for each server.
+- **Errors:** `jev()` and `chatWriter()` reject a missing API key at their default addresses, and `openAIDecisions()` always does. A `localDecisions()` reply with no log-probabilities throws `The model server at <url> returned no log-probabilities; localDecisions needs a server that does.` HTTP failures and missing writer text throw. Cancellation reaches `fetch`.
 
 > [!NOTE]
-> These helpers make paid model calls. You can instead supply plain `decide` and `write` functions using any model route.
+> At their default addresses, `jev()`, `openAIDecisions()` and `chatWriter()` make paid model calls. A local model server needs no hosted service. You can also supply plain `decide` and `write` functions using any model route.
 
 ## Source packages
 

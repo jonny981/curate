@@ -16,15 +16,21 @@ function probabilityAnswer(probability: unknown): PickAnswer {
     ? { status: 'answered', probability } : { status: 'missing' };
 }
 
-async function post(url: string, apiKey: string, body: unknown, signal: AbortSignal): Promise<unknown> {
+async function post(url: string, apiKey: string | undefined, body: unknown, signal: AbortSignal): Promise<unknown> {
   const response = await fetch(url, {
     method: 'POST',
-    headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },
+    headers: { ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}), 'content-type': 'application/json' },
     body: JSON.stringify(body),
     signal,
   });
   if (!response.ok) throw new Error(`Model request failed: HTTP ${response.status}.`);
   return response.json();
+}
+
+/** An item as a decision model reads it: its id and date, its title, then its text. */
+function itemState(question: PickQuestion): string {
+  return `${question.id}${question.date === undefined ? ''
+    : ` (${question.date.meaning} ${question.date.value})`}\n${question.title}\n\n${question.text}`;
 }
 
 /** Jev's request body for a batch. The state is the batch's task, then
@@ -39,8 +45,7 @@ export function jevRequest(batch: PickBatch, model = 'jev-latest') {
   const numbers = new Map([...items.keys()].map((key, index) => [key, index + 1]));
   const number = (question: PickQuestion) => numbers.get(`${question.sourceId}\n${question.id}`);
   const state = [batch.task, ...[...items.values()].map((question) =>
-    `Item ${number(question)}: ${question.id}${question.date === undefined ? ''
-      : ` (${question.date.meaning} ${question.date.value})`}\n${question.title}\n\n${question.text}`)].join('\n\n');
+    `Item ${number(question)}: ${itemState(question)}`)].join('\n\n');
   return {
     model,
     state,
@@ -86,22 +91,34 @@ function jevBatches(batch: PickBatch, model: string): PickBatch[] {
   return batches;
 }
 
-/** Create a decision function using TypeSafe's yes/no probabilities. */
-export function jev({ apiKey, model = 'jev-latest' }: {
-  readonly apiKey: string | undefined;
+const JEV_URL = 'https://api.typesafe.ai/v1/systemone';
+
+/** A URL's host and path, so labels stored from servers at different
+ *  hosts or paths keep apart. The scheme and query are left out. */
+function hostAndPath(url: string): string {
+  const { host, pathname } = new URL(url);
+  return `${host}${pathname}`;
+}
+
+/** Create a decision function using TypeSafe's yes/no probabilities, or
+ *  those of another server that speaks Jev's format at `url`. */
+export function jev({ apiKey, model = 'jev-latest', url = JEV_URL }: {
+  /** Required at TypeSafe's address; sent only when given. */
+  readonly apiKey?: string | undefined;
   readonly model?: string;
+  readonly url?: string;
 }): PickDecide {
-  if (!apiKey) throw new Error('Jev requires an API key.');
+  if (!apiKey && url === JEV_URL) throw new Error('Jev requires an API key.');
+  const deciderId = url === JEV_URL ? `typesafe:${model}:items-once` : `jev:${hostAndPath(url)}:${model}:items-once`;
   const decide: PickDecide = async (batch, signal) => {
     const answered = await Promise.all(jevBatches(batch, model).map(async (part) => {
-      const answers = record(record(await post('https://api.typesafe.ai/v1/systemone', apiKey,
-        jevRequest(part, model), signal)).answers);
+      const answers = record(record(await post(url, apiKey, jevRequest(part, model), signal)).answers);
       return part.questions.map((q, index): [string, PickAnswer] =>
         [q.key, probabilityAnswer(record(answers[`q${index}`]).noul)]);
     }));
     return Object.fromEntries(answered.flat());
   };
-  return Object.assign(decide, { deciderId: `typesafe:${model}:items-once` });
+  return Object.assign(decide, { deciderId });
 }
 
 /** Create a decision function using OpenAI's named predicate answers. */
@@ -134,13 +151,67 @@ export function openAIDecisions({ apiKey, model = 'gpt-6-luna' }: {
   return Object.assign(decide, { deciderId: `openai:${model}` });
 }
 
+const OPENAI_CHAT_URL = 'https://api.openai.com/v1/chat/completions';
+
+/** The yes share of the first answer token's top log-probabilities:
+ *  the "yes" tokens' probability over the "yes" and "no" tokens', with
+ *  case and leading whitespace ignored. Missing when neither is there. */
+function yesProbability(raw: unknown, url: string): PickAnswer {
+  const choices = record(raw).choices;
+  const content = record(record(Array.isArray(choices) ? choices[0] : undefined).logprobs).content;
+  const top = record(Array.isArray(content) ? content[0] : undefined).top_logprobs;
+  if (!Array.isArray(top)) {
+    throw new Error(`The model server at ${url} returned no log-probabilities; localDecisions needs a server that does.`);
+  }
+  let yes = 0;
+  let no = 0;
+  for (const entry of top) {
+    const { token, logprob } = record(entry);
+    if (typeof token !== 'string' || typeof logprob !== 'number') continue;
+    const word = token.trimStart().toLowerCase();
+    if (word === 'yes') yes += Math.exp(logprob);
+    else if (word === 'no') no += Math.exp(logprob);
+  }
+  return yes + no > 0 ? probabilityAnswer(yes / (yes + no)) : { status: 'missing' };
+}
+
+/** Create a decision function using yes/no log-probabilities from an
+ *  OpenAI-compatible chat server, one question a request, in turn. */
+export function localDecisions({ url, model, apiKey }: {
+  /** An OpenAI-compatible chat completions address that returns log-probabilities, for example http://127.0.0.1:8000/v1/chat/completions. */
+  readonly url: string;
+  readonly model: string;
+  readonly apiKey?: string;
+}): PickDecide {
+  const decide: PickDecide = async (batch, signal) => {
+    const answers: Record<string, PickAnswer> = {};
+    for (const q of batch.questions) {
+      answers[q.key] = yesProbability(await post(url, apiKey, {
+        model,
+        messages: [
+          { role: 'system', content: 'Answer the question about the item with one word, yes or no.' },
+          { role: 'user', content: `Task:\n${batch.task}\n\nQuestion:\n${q.question}\n\nYes means: ${q.trueCriterion}\n`
+            + `No means: ${q.falseCriterion}\n\nItem:\n${itemState(q)}` },
+        ],
+        max_tokens: 1,
+        temperature: 0,
+        logprobs: true,
+        top_logprobs: 20,
+      }, signal), url);
+    }
+    return answers;
+  };
+  return Object.assign(decide, { deciderId: `local:${hostAndPath(url)}:${model}` });
+}
+
 /** Create a writer using an OpenAI-compatible Chat Completions endpoint. */
-export function chatWriter({ apiKey, model, url = 'https://api.openai.com/v1/chat/completions' }: {
-  readonly apiKey: string | undefined;
+export function chatWriter({ apiKey, model, url = OPENAI_CHAT_URL }: {
+  /** Required at OpenAI's address; sent only when given. */
+  readonly apiKey?: string | undefined;
   readonly model: string;
   readonly url?: string;
 }): CurateWrite {
-  if (!apiKey) throw new Error('Chat writer requires an API key.');
+  if (!apiKey && url === OPENAI_CHAT_URL) throw new Error('Chat writer requires an API key.');
   return async ({ instructions, body }, signal) => {
     const raw = await post(url, apiKey, {
       model,

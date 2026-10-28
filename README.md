@@ -114,7 +114,7 @@ The log cites the source file, for example:
 ```
 
 > [!NOTE]
-> The model helpers make paid API calls. `jev()` uses TypeSafe's `jev-latest`; `chatWriter()` uses OpenAI's Chat Completions URL unless you supply `url`.
+> At their default addresses, the model helpers make paid API calls. `jev()` uses TypeSafe's `jev-latest`; `chatWriter()` uses OpenAI's Chat Completions URL. A local model server needs no hosted service. To keep every step on your machine, see [Run it on your own machine](#run-it-on-your-own-machine).
 
 `recall()` returns the log, exact selected rules as joined text, and the full selection and curation records:
 
@@ -360,7 +360,7 @@ import { openAIDecisions } from '@curatejs/core/models';
 const decide = openAIDecisions({ apiKey: process.env.OPENAI_API_KEY });
 ```
 
-The helpers identify their label answers as `typesafe:${model}:items-once` and `openai:${model}`.
+The hosted helpers identify their label answers as `typesafe:${model}:items-once` and `openai:${model}`.
 For a handwritten `decide`, set its `deciderId` property.
 An explicit `pick.labels.deciderId` overrides the function's ID.
 Without an ID it uses `'custom'`, so different handwritten decision functions must supply different IDs to keep their saved labels apart.
@@ -381,6 +381,56 @@ const write = chatWriter({
   model: process.env.CHAT_MODEL,
 });
 ```
+
+### Run it on your own machine
+
+Ranking, deciding and curating can all run against models on your own machine.
+The one requirement: the decision server must return log-probabilities.
+`localDecisions()` throws when a reply has none, because a pick that cannot judge must not guess.
+
+`localDecisions()` asks an OpenAI-compatible chat server each yes/no question, one request at a time.
+It reads the answer from the log-probabilities of "yes" and "no" for the first reply token:
+
+```js
+import { chatWriter, jev, localDecisions } from '@curatejs/core/models';
+
+const decide = localDecisions({ url: 'http://127.0.0.1:8000/v1/chat/completions', model: 'my-local-model' });
+```
+
+A server that speaks Jev's format, such as a Clef server, can decide through `jev()`.
+Give it the address and model name your server uses:
+
+```js
+const decide = jev({ url: 'http://127.0.0.1:30000/v1/systemone', model: 'clef-flash' });
+```
+
+The writer takes any OpenAI-compatible chat address:
+
+```js
+const write = chatWriter({ url: 'http://127.0.0.1:8000/v1/chat/completions', model: 'my-local-model' });
+```
+
+Away from TypeSafe's and OpenAI's addresses, an API key is optional, and the helpers send none unless you give one.
+
+For meaning search, use the local embedder (it needs `node-llama-cpp@3.18.1`):
+
+```js
+import { memory } from '@curatejs/core';
+import { createLocalEmbedder } from '@curatejs/core/local-embeddings';
+
+// A local MiniLM GGUF model file; the adapter downloads nothing.
+const local = await createLocalEmbedder({ modelPath });
+try {
+  const mem = memory({ sources, decide, write, read: { meaning: { embed: local.embed } } });
+  const { log } = await mem.recall('What billing constraint must this change preserve?');
+} finally {
+  await local.dispose();
+}
+```
+
+Labels from each server are stored under its own ID: `local:<host><path>:<model>` for `localDecisions()`, and `jev:<host><path>:<model>:items-once` for `jev()` at another address.
+The ID leaves out the scheme and the query, so set `pick.labels.deciderId` yourself for two servers that differ only there.
+A decision cache keeps the `deciderId` you give it, so give each server its own.
 
 ### Separate selection and curation
 
