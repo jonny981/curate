@@ -1,14 +1,26 @@
-import { getLlama } from 'node-llama-cpp';
-import type { EmbeddingFunction } from './meaning.js';
+import { createHash } from 'node:crypto';
+import { createReadStream } from 'node:fs';
+import { getLlama, type LlamaGpuType } from 'node-llama-cpp';
+import { cachedEmbeddings, type EmbeddingFunction } from './meaning.js';
 
 /** Load a local sentence embedding model that takes plain text, such as MiniLM. */
-export async function createLocalEmbedder(options: { readonly modelPath: string }): Promise<{
+export async function createLocalEmbedder(options: {
+  readonly modelPath: string;
+  readonly cacheDirectory?: string;
+  /** An explicit GPU must be available; it never falls back to CPU. */
+  readonly gpu?: LlamaGpuType | 'auto';
+}): Promise<{
   readonly embed: EmbeddingFunction;
+  readonly gpu: LlamaGpuType;
   dispose(): Promise<void>;
 }> {
-  const llama = await getLlama({ build: 'never', skipDownload: true });
+  const llama = await getLlama({ build: 'never', skipDownload: true, gpu: options.gpu ?? 'auto' });
   try {
-    const model = await llama.loadModel({ modelPath: options.modelPath });
+    if (options.gpu !== undefined && options.gpu !== 'auto' && llama.gpu !== options.gpu) {
+      throw new Error(`The requested ${options.gpu} embedding backend is unavailable.`);
+    }
+    const model = await llama.loadModel({ modelPath: options.modelPath,
+      ...(llama.gpu === false ? {} : { gpuLayers: 'max' as const }) });
     const context = await model.createEmbeddingContext({ contextSize: model.trainContextSize });
     // The runtime adds beginning and ending tokens to each window.
     const windowSize = model.trainContextSize - 2;
@@ -36,8 +48,16 @@ export async function createLocalEmbedder(options: { readonly modelPath: string 
       signal?.throwIfAborted();
       return vectors;
     };
+    let cached = embed;
+    if (options.cacheDirectory !== undefined) {
+      const hash = createHash('sha256');
+      for await (const chunk of createReadStream(options.modelPath)) hash.update(chunk);
+      cached = cachedEmbeddings(embed, { directory: options.cacheDirectory,
+        modelId: `llama-embedding-window-mean-1:${hash.digest('hex')}` });
+    }
     return {
-      embed,
+      embed: cached,
+      gpu: llama.gpu,
       async dispose() {
         await context.dispose();
         await model.dispose();

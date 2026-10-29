@@ -15,6 +15,13 @@ import { allowedSession, curationEvidence, decisionAnswers, instructionsProfile,
 
 const uncutPick = { everyRanked: true, everyScored: true, rare: false } as const;
 
+vi.mock('@curatejs/core/local-embeddings', () => ({
+  createLocalEmbedder: vi.fn(async () => ({
+    embed: async (texts: readonly string[]) => texts.map((text) => /orchard|fruit|tree|cache|ada/i.test(text) ? [1, 0] : [0, 1]),
+    dispose: vi.fn(async () => {}),
+  })),
+}));
+
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
   return { ...actual, readSync: vi.fn(actual.readSync) };
@@ -285,7 +292,7 @@ it('keeps the original task and each source register while core interleaves all 
         requests.push(request);
         return { status: 'read', complete: true, candidates: [1, 0].map((score) => ({
           id: `${request.task}:${score}`, sourceId: kind, role: 'reference', title: request.task,
-          text: `Evidence for ${request.task}`, signals: { keyword: score },
+          text: `Evidence for ${kind} ${request.task} at score ${score}`, signals: { keyword: score },
         })) };
       },
     };
@@ -770,7 +777,8 @@ describe('a run through core decision calls', () => {
     await mkdir(home);
     await mkdir(notes);
     for (let index = 0; index < 6; index++) {
-      await writeFile(join(notes, `orchard-${index}.md`), `# Orchard ${index}\n\n${`orchard idea ${index} `.repeat(300)}\n`);
+      const ideas = Array.from({ length: 300 }, (_, idea) => `orchard idea ${index} ${idea} `).join('');
+      await writeFile(join(notes, `orchard-${index}.md`), `# Orchard ${index}\n\n${ideas}\n`);
     }
     const sourcesFile = join(directory, 'sources.json');
     await writeFile(sourcesFile, JSON.stringify({ sources: [{ type: 'markdown', path: notes }] }));

@@ -153,7 +153,7 @@ A setting on one source never changes what Curate picks from another, with one e
 
 | Source | Rare-word round | Labels | Label bar | Name lanes | Decision-score bar | Rule bar | Questions |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `chat()` | Off | On, the seven kinds | 0.5 | On | 0.0146 | | `CHAT_CASCADE` |
+| `chat()` | Off | On, the seven kinds | 0.5 | On | 0.0146 | | `AGENT_CHAT_CASCADE` |
 | `git()` | On | Off | | On | 0.0146 | | `GIT_HISTORY_CASCADE` |
 | `markdown()`, `knowledgeBase()` | On | Off | | On | 0.0146 | | `MARKDOWN_CASCADE` |
 | `rules()` | On | Off | | Off | 0.0146 | 0.5, not yet tuned | `MARKDOWN_CASCADE` |
@@ -194,9 +194,9 @@ Spread a reader's settings object, then change what you need:
 
 ```js
 import { historySource } from '@curatejs/core';
-import { chat, chatSettings } from '@curatejs/chat';
+import { chat, chatSettings, AGENT_CHAT_CASCADE } from '@curatejs/chat';
 
-const source = historySource({ reader: chat({ paths: ['transcripts'] }), ...chatSettings, labels: false });
+const source = historySource({ reader: chat({ paths: ['transcripts'] }), ...chatSettings, labels: false, questions: AGENT_CHAT_CASCADE });
 ```
 
 This turns labels off for one chat source, as the DolphinBench run did.
@@ -481,6 +481,7 @@ Save `sources.json` with your own paths:
       "path": "~/notes/example"
     }
   ],
+  "embeddingModel": "~/models/embeddinggemma-300M-Q8_0.gguf",
   "envFile": "~/.curate/credentials.env"
 }
 ```
@@ -488,6 +489,9 @@ Save `sources.json` with your own paths:
 Paths must be absolute or start with `~/`.
 Set `TYPESAFE_API_KEY` in the environment or the `KEY=VALUE` file named by `envFile`.
 Without `--sources`, the script reads `~/.curate/sources.json`.
+Supply a local embedding GGUF through `embeddingModel`. The script requires Metal on macOS and downloads no model.
+The skill combines keyword and meaning lanes, and disables label admission and the rare-word round.
+Vectors persist by model bytes and input text. Identical text shares matching decision answers within each pick.
 It prints the log and saves the log, source reads, model usage and timings under `~/.curate/runs/`.
 Subscription route failures never fall back to an API.
 

@@ -5,7 +5,7 @@ import { curate, decisionFileStore, DEFAULT_MAX_QUESTION_TEXT, historySource, LA
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { chat, CHAT_CASCADE, chatSettings, type ChatOptions, type ChatProvider } from '@curatejs/chat';
+import { chat, AGENT_CHAT_CASCADE, CHAT_CASCADE, chatSettings, type ChatOptions, type ChatProvider } from '@curatejs/chat';
 import { git, GIT_HISTORY_CASCADE, gitSettings, type GitOptions } from '@curatejs/git';
 import { markdown, MARKDOWN_CASCADE, markdownSettings, knowledgeBase, rules, rulesSettings, type MarkdownOptions, type KnowledgeBaseOptions } from '@curatejs/markdown';
 
@@ -115,7 +115,7 @@ describe('package exports', () => {
       { rare: true, labels: false, names: false, bar: 0.0146, questions: MARKDOWN_CASCADE, ruleBar: 0.5 },
     ]);
     const reader = chat({ providers: ['codex'], paths: ['/nonexistent'] });
-    expect(reader).toMatchObject({ kind: 'chat', rare: false, bar: 0.0146, labelKinds: LABEL_KINDS, questions: CHAT_CASCADE });
+    expect(reader).toMatchObject({ kind: 'chat', rare: false, bar: 0.0146, labelKinds: LABEL_KINDS, questions: AGENT_CHAT_CASCADE });
     expect(historySource({ reader, rare: false, labels: false, names: false, bar: 0.0146 }).questions).toBeUndefined();
     const unlabelled = historySource({ reader, ...chatSettings, labels: false });
     expect(unlabelled).toMatchObject({ id: reader.id, kind: 'chat', rare: false, bar: 0.0146 });

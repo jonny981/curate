@@ -50,7 +50,7 @@ const timesAsked = (calls: PickBatch[], id: string) => decidedIds(calls)
 function parts(count: number, words: Record<string, string> = {}): MemoryCandidate[] {
   return Array.from({ length: count }, (_, index) => {
     const id = `p${index}`;
-    return candidate({ sourceId: 'notes', id, text: words[id] ?? 'plain', searchRanks: [index] });
+    return candidate({ sourceId: 'notes', id, text: `${words[id] ?? 'plain'} ${index}`, searchRanks: [index] });
   });
 }
 
@@ -178,7 +178,7 @@ describe('pick rare-word round', () => {
     const counter = stubDecide(() => answered(0.9));
     const pool = [10, 9, 8, 1, 1, 1, 1, 1, 1, 1].map((score, index) =>
       candidate({ sourceId: 'notes', id: `w${index}`, signals: { score },
-        text: index === 0 || index === 9 ? 'plain zephyr' : 'plain' }));
+        text: `plain ${index}${index === 0 || index === 9 ? ' zephyr' : ''}` }));
     const source: CandidateSource = {
       id: 'notes', role: 'reference',
       read: async () => ({ status: 'read', complete: true, candidates: pool }),

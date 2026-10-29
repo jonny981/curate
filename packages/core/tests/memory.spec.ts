@@ -14,7 +14,7 @@ const LOG = '[2026-01-12] Keep the order currency (said 2026-01-12; E1)';
 const INCOMPLETE = 'Context collection did not finish; inspect the source and decision records.';
 const note = (id = 'billing'): MemoryCandidate => ({
   sourceId: 'notes', id, role: 'reference', title: 'Billing',
-  text: 'Keep the order currency.', signals: { keyword: 1 },
+  text: `Keep the order currency. ${id}`, signals: { keyword: 1 },
   date: { value: '2026-01-12', meaning: 'recorded' },
 });
 const source = (candidates = [note()]): CandidateSource => ({

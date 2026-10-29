@@ -31,6 +31,13 @@ export const CHAT_CASCADE: PickCascade = {
   ],
 };
 
+/** Coding-agent transcripts use relevance and needed evidence without
+ *  treating a person's own situation as a selection signal. */
+export const AGENT_CHAT_CASCADE: PickCascade = {
+  ...CHAT_CASCADE,
+  questions: CHAT_CASCADE.questions.filter((question) => question.key !== 'own'),
+};
+
 /** Questions and fitted weights for histories of a person's own life:
  *  events, purchases, people, ages, places and numbers. Not `chat()`'s
  *  default, whose main input is coding-agent transcripts: a clear "no"

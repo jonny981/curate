@@ -4,7 +4,7 @@ import { curate, pick, type MemoryCandidate, type PickAnswer, type PickCascade, 
 const uncutPick = { everyRanked: true, everyScored: true, rare: false } as const;
 
 const item = (id: string, overrides: Partial<MemoryCandidate> = {}): MemoryCandidate => ({
-  sourceId: 'notes', id, role: 'reference', title: id, text: 'Evidence',
+  sourceId: 'notes', id, role: 'reference', title: id, text: `Evidence ${id}`,
   signals: {}, ...overrides,
 });
 const answer = (probability: number): PickAnswer => ({ status: 'answered', probability });

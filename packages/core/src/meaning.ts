@@ -1,12 +1,59 @@
+import { createHash } from 'node:crypto';
+import { join } from 'node:path';
 import type { MemoryCandidate } from './pick.js';
 import { cutScoreCurve } from './lanes.js';
 import { normalize, similarity } from './vectors.js';
+import { labelFileStore } from './labels.js';
 
 /** One local vector per complete input text, in input order. */
 export type EmbeddingFunction = (
   texts: readonly string[],
   signal?: AbortSignal,
 ) => Promise<readonly ArrayLike<number>[]>;
+
+/** Reuse vectors across runs, keyed by the model identity and complete
+ * input text. Only hashes and vectors are written to disk. */
+export function cachedEmbeddings(
+  embed: EmbeddingFunction,
+  options: { readonly directory: string; readonly modelId: string },
+): EmbeddingFunction {
+  const hash = (text: string) => createHash('sha256').update(text).digest('hex');
+  const store = labelFileStore(join(options.directory, hash(options.modelId)));
+  // The local context evaluates one input at a time; serialize cache
+  // misses too, so concurrent source reads never embed a text twice.
+  let pending: Promise<unknown> = Promise.resolve();
+  return (texts, signal) => {
+    const result = pending.then(async () => {
+      signal?.throwIfAborted();
+      const unique = new Map(texts.map((text) => [hash(text), text]));
+      const vectors = new Map<string, readonly number[]>();
+      const missing: [string, string][] = [];
+      const entries = [...unique];
+      const storedVectors = await Promise.all(entries.map(([key]) => store.get(key)));
+      entries.forEach(([key, text], index) => {
+        const stored = storedVectors[index];
+        if (Array.isArray(stored) && stored.length > 0
+          && stored.every((value) => typeof value === 'number' && Number.isFinite(value))
+          && stored.some((value) => value !== 0)) vectors.set(key, stored as number[]);
+        else missing.push([key, text]);
+      });
+      if (missing.length > 0) {
+        const embedded = await embed(missing.map(([, text]) => text), signal);
+        if (embedded.length !== missing.length) throw new TypeError('embed must return one vector per input text.');
+        signal?.throwIfAborted();
+        await Promise.all(missing.map(async ([key], index) => {
+          const vector = Array.from(normalize(embedded[index]!));
+          await store.set(key, vector);
+          vectors.set(key, vector);
+        }));
+      }
+      signal?.throwIfAborted();
+      return texts.map((text) => vectors.get(hash(text))!);
+    });
+    pending = result.catch(() => {});
+    return result;
+  };
+}
 
 export interface MeaningSearchOptions {
   readonly embed: EmbeddingFunction;

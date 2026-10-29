@@ -12,7 +12,7 @@ import {
   type LabelKind, type MemoryCandidate, type PickAnswer, type PickBatch, type PickCascade, type PickDecide, type PickQuestion,
   type PickRecord, type PickResult,
 } from '@curatejs/core';
-import { decide, fixtureSource, parts, task } from './fixtures/source-settings.js';
+import { baselineText, decide, fixtureSource, parts, task } from './fixtures/source-settings.js';
 
 const BASELINE = join(__dirname, 'fixtures/answer-types-baseline.json');
 
@@ -79,6 +79,10 @@ const asBaseline = ({ names: _names, asOf: _asOf, timeZone: _timeZone, ...record
   effects: record.effects.filter((entry) => entry.setting !== 'names' && entry.setting !== 'taskPeriod').map((entry) => entry.setting !== 'labels' ? entry
     : { ...entry, summary: entry.summary.replace(` at the label bar ${LABEL_LANE_BAR}:`, ':') }) });
 
+const baselineEvidence = (picked: PickResult): PickResult => ({ ...picked,
+  selected: picked.selected.map((part) => ({ ...part, text: baselineText(part.sourceId, part.text) })),
+});
+
 async function snapshot(): Promise<Baseline> {
   const runs: Record<string, Baseline['runs'][string]> = {};
   let prompts = '';
@@ -87,10 +91,14 @@ async function snapshot(): Promise<Baseline> {
     const { requests, decide: how } = recording();
     const picked = await pickFromSources(sources(), { task }, { task, decide: how });
     const selected = picked.selected.map((c) => c.id);
-    runs[name] = { selected, sha256: sha256([selected, asBaseline(picked.record), requests]) };
+    const baselineRequests = requests.map((request) => ({ ...request,
+      questions: request.questions.map((question) => ({ ...question,
+        text: baselineText(question.sourceId, question.text) })),
+    }));
+    runs[name] = { selected, sha256: sha256([selected, asBaseline(picked.record), baselineRequests]) };
     if (name === 'defaults all') {
       const curator = writer();
-      await curate(task, picked, { write: curator.write });
+      await curate(task, baselineEvidence(picked), { write: curator.write });
       prompts = sha256(curator.prompts);
     }
   }
@@ -291,7 +299,7 @@ describe('a typed answer moves a part across its bar', () => {
 async function allPick(needed: readonly AnswerType[]): Promise<PickResult> {
   freshStore();
   const picked = await pickFromSources(RUNS['defaults all']!(), { task }, { task, decide });
-  return { ...picked, record: { ...picked.record, answerTypes: { bar: 0.5, answers: [], needed } } };
+  return { ...baselineEvidence(picked), record: { ...picked.record, answerTypes: { bar: 0.5, answers: [], needed } } };
 }
 const HINT = 'The answer likely needs: a date, a number.';
 

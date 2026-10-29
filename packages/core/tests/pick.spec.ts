@@ -462,12 +462,12 @@ describe('pick', () => {
 
   it('closes a batch at maxBatchChars, counting the task, each item once and each question’s wording', async () => {
     const candidates = [
-      candidate({ sourceId: 'notes', id: 'a', title: 'a', text: 'x'.repeat(10), signals: { score: 3 } }),
+      candidate({ sourceId: 'notes', id: 'a', title: 'a', text: 'a'.repeat(10), signals: { score: 3 } }),
       candidate({
-        sourceId: 'notes', id: 'b', title: 'b', text: 'x'.repeat(10), signals: { score: 2 },
+        sourceId: 'notes', id: 'b', title: 'b', text: 'b'.repeat(10), signals: { score: 2 },
         date: { value: '2026-01-01', meaning: 'recorded' },
       }),
-      candidate({ sourceId: 'notes', id: 'c', title: 'c', text: 'x'.repeat(10), signals: { score: 1 } }),
+      candidate({ sourceId: 'notes', id: 'c', title: 'c', text: 'c'.repeat(10), signals: { score: 1 } }),
     ];
     const { decide, calls } = stubDecide((batch) => allAnswered(batch, 0.9));
 
@@ -507,7 +507,7 @@ describe('pick', () => {
   it('sends an item larger than maxBatchChars alone and drops or cuts nothing', async () => {
     const candidates = [
       candidate({ sourceId: 'notes', id: 'big', title: 'big', text: 'x'.repeat(200), signals: { score: 3 } }),
-      candidate({ sourceId: 'notes', id: 's2', title: 's2', text: 'x'.repeat(10), signals: { score: 2 } }),
+      candidate({ sourceId: 'notes', id: 's2', title: 's2', text: 'y'.repeat(10), signals: { score: 2 } }),
       candidate({ sourceId: 'notes', id: 's1', title: 's1', text: 'x'.repeat(10), signals: { score: 1 } }),
     ];
     const { decide, calls } = stubDecide((batch) => allAnswered(batch, 0.9));
@@ -531,7 +531,7 @@ describe('pick', () => {
   it('closes a batch at maxPerBatch or maxBatchChars, whichever it reaches first', async () => {
     const candidates = Array.from({ length: 4 }, (_, index) => candidate({
       sourceId: 'notes', id: `n${index}`, title: `n${index}`,
-      text: 'x'.repeat(20), signals: { score: 4 - index },
+      text: String(index).repeat(20), signals: { score: 4 - index },
     }));
 
     // The count bound bites first: each item counts 24 + 11 = 35, all

@@ -3,11 +3,12 @@ import { CHAT_CASCADE } from './questions.js';
 
 export { CHAT_KEYWORD_SETTINGS } from './chat-rank.js';
 
-/** The settings `chat()` reads with: no rare-word round, the seven label
+/** Chat settings: no rare-word round, the seven label
  *  kinds, which find parts the keyword search missed, a name lane for
  *  each name the task names, the 0.0146 decision-score bar and the
- *  `CHAT_CASCADE` decision questions.
- *  Change one with `historySource({ reader: chat(), ...chatSettings, labels: false })`. */
+ *  `CHAT_CASCADE` decision questions. `chat()` uses `AGENT_CHAT_CASCADE`
+ *  instead, which omits the personal `own` question.
+ *  Change one with `historySource({ reader: chat(), ...chatSettings, labels: false, questions: AGENT_CHAT_CASCADE })`. */
 export const chatSettings: HistorySettings = {
   rare: false, labels: true, names: true, bar: 0.0146, questions: CHAT_CASCADE,
 };

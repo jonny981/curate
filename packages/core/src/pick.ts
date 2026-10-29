@@ -1687,7 +1687,26 @@ export async function pick(
   /** Candidates in a rejected decision batch: their verdicts are not
    *  trusted even when an earlier batch answered some questions. */
   const decideFailed = new Set<MemoryCandidate>();
+  const decisionsByText = new Map<string, Pending>();
   const ask = async (asks: Pending[], sink = answered, task = options.task, whole = false) => {
+    const copies: { item: Pending; first: Pending }[] = [];
+    if (sink === answered) {
+      asks = asks.filter((item) => {
+        const { question } = item;
+        // A part with no text is judged by its title, as a title-only
+        // commit's subject is, so the title stands in for the text in
+        // the sharing key. With text present the title is a byline or
+        // locator, and identical texts keep sharing one answer.
+        const key = JSON.stringify([item.candidate.text,
+          item.candidate.text === '' ? item.candidate.title : null,
+          question.role, question.kind, question.questionKey, question.question,
+          question.trueCriterion, question.falseCriterion]);
+        const first = decisionsByText.get(key);
+        if (first !== undefined) { copies.push({ item, first }); return false; }
+        decisionsByText.set(key, item);
+        return true;
+      });
+    }
     // The decision cache, off by default and never entered by label
     // asks: a stored answer serves its question, and the decider sees
     // only the misses. Answers are reused across batches — the key
@@ -1826,6 +1845,17 @@ export async function pick(
       batches += 1;
       if (timedOut) { stop = 'time'; break; }
       if (decideFailure !== undefined) break;
+    }
+    // Copies keep their source identity and score with their own question set.
+    // Only the answer to the identical text and question is shared.
+    for (const { item, first } of copies) {
+      const answer = sink.get(first.candidate)?.get(first.spec.key);
+      if (answer === undefined) continue;
+      let got = sink.get(item.candidate);
+      if (got === undefined) { got = new Map(); sink.set(item.candidate, got); }
+      got.set(item.spec.key, answer);
+      if (truncated.has(first.candidate)) truncated.set(item.candidate, truncated.get(first.candidate)!);
+      if (decideFailed.has(first.candidate)) decideFailed.add(item.candidate);
     }
   };
 

@@ -24,7 +24,7 @@ function candidate(overrides: Partial<MemoryCandidate> & Pick<MemoryCandidate, '
   return {
     role: 'reference',
     title: overrides.id,
-    text: 'plain',
+    text: `plain ${overrides.sourceId}/${overrides.id}`,
     signals: { score: 0 },
     ...overrides,
   };
@@ -321,7 +321,7 @@ describe('levers', () => {
       // top-k keep count and shares it.
       const parts = Array.from({ length: 10 }, (_, index) => candidate({
         sourceId: 'notes', id: `p${index}`, searchRanks: [index], signals: { score: 1 },
-        text: index === 0 || index === 7 ? 'plain zephyr' : 'plain',
+        text: `plain ${index}${index === 0 || index === 7 ? ' zephyr' : ''}`,
       }));
       const probabilities = (question: PickBatch['questions'][number]) =>
         answered(question.id === 'p3' ? 0.1 : 0.9);

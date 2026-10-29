@@ -38,7 +38,7 @@ describe('a Jev request the service rejects as too large', () => {
     const bodies = limited();
     const calls: JevCall[] = [];
     const decide = jev({ apiKey: 'test-key', onCall: (call) => { calls.push(call); } });
-    const picked = await pick(Array.from({ length: 12 }, (_, index) => part(index, 'x'.repeat(3_000))), {
+    const picked = await pick(Array.from({ length: 12 }, (_, index) => part(index, `${index} ${'x'.repeat(3_000)}`)), {
       ...uncutPick, task: 'What did the notes decide?', decide });
 
     expect(picked.selected).toHaveLength(12);

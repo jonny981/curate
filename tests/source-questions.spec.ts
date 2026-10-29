@@ -17,7 +17,7 @@ const fitted = (key: string): PickCascade => ({
   bias: 0, questions: [{ ...criterion(key), weight: 1 }],
 });
 const candidate = (id: string, overrides: Partial<MemoryCandidate> = {}): MemoryCandidate => ({
-  id, sourceId: 'notes', role: 'reference', title: id, text: 'Task evidence.', signals: {}, ...overrides,
+  id, sourceId: 'notes', role: 'reference', title: id, text: `Task evidence ${overrides.sourceId ?? 'notes'}/${id}.`, signals: {}, ...overrides,
 });
 const answers = (probability: number): PickDecide => async ({ questions }) => Object.fromEntries(
   questions.map((q) => [q.key, { status: 'answered', probability }]),

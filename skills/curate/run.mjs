@@ -6,7 +6,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { curate, pickFromSources } from '@curatejs/core';
 import { jev } from '@curatejs/core/models';
-import { chat, CHAT_CASCADE, CHAT_SEARCH_LINE_REGISTER } from '@curatejs/chat';
+import { chat, AGENT_CHAT_CASCADE, CHAT_SEARCH_LINE_REGISTER } from '@curatejs/chat';
 import { git, GIT_HISTORY_CASCADE, GIT_SEARCH_LINE_REGISTER } from '@curatejs/git';
 import { knowledgeBase, MARKDOWN_CASCADE, MARKDOWN_SEARCH_LINE_REGISTER } from '@curatejs/markdown';
 
@@ -53,7 +53,11 @@ export function parseSources(value) {
   for (const key of ['userFirst', 'recentFirst']) {
     if (value[key] !== undefined && typeof value[key] !== 'boolean') throw new Error(`${key} must be a boolean.`);
   }
-  return { ...value, sources };
+  if (value.embeddingModel !== undefined && (typeof value.embeddingModel !== 'string' || !value.embeddingModel.trim())) {
+    throw new Error('embeddingModel must be a local model path.');
+  }
+  return { ...value, sources,
+    ...(value.embeddingModel === undefined ? {} : { embeddingModel: homePath(value.embeddingModel) }) };
 }
 
 // Read exactly the first line. Buffered streams can read rejected session bodies ahead of the header.
@@ -216,38 +220,44 @@ export function searchSource(source, searches, audit, folder, settings = {}) {
   return { ...source, async read(request) {
     const match = /^curate-search:(\d+)$/.exec(request.task);
     const task = match ? lines[Number(match[1])] : request.task;
-    if (task === undefined) return { status: 'read', candidates: [], complete: true };
+    if (task === undefined) return { status: 'read', candidates: [], complete: true,
+      ...(request.meaningLane === undefined ? {} : { meaningLane: true, matched: 0 }) };
     const started = Date.now();
     // The cut narrows each search lane inside the read, so the wrapped
     // source's result holds only the kept set; an explicit wholeLanes
     // on (a meaning full read, an opted-out caller) still wins.
     const read = await source.read({ wholeLanes: false, ...request, task });
     const terms = new Set(words(task));
-    const result = read.status !== 'read' ? read : { ...read, candidates: rankMatches(read.candidates.filter((candidate) =>
+    const result = read.status !== 'read' || request.meaningLane !== undefined ? read : { ...read, candidates: rankMatches(read.candidates.filter((candidate) =>
       request.wholeLanes === true
       || ['keyword', 'shared_words', 'bm25', 'heading-words', 'file-words'].some((key) => candidate.signals[key] > 0)
       || words(`${candidate.title} ${candidate.text}`).some((word) => terms.has(word))), settings) };
     const file = `read-${audit.length + 1}.json`;
-    audit.push({ source: source.id, task, ms: Date.now() - started, status: result.status,
+    audit.push({ source: source.id, task, ...(request.meaningLane === undefined ? {} : { lane: 'meaning' }), ms: Date.now() - started, status: result.status,
       parts: result.candidates?.length ?? 0, complete: result.complete, partial: result.partial, file });
     await writeFile(join(folder, file), JSON.stringify(result), { mode: 0o600 });
     return result;
   } };
 }
 
-// Cache each lane and the label pool, then size the text budget from them.
+// Cache keyword and meaning reads separately. Leave text limits to the caller.
 export async function pickFullSources(sources, request, options) {
-  let maxQuestionText = 1;
   const cached = await Promise.all(sources.map(async (source) => {
     const reads = new Map();
+    const key = (read) => JSON.stringify([read.task, read.meaningLane !== undefined, read.wholeLanes === true]);
     let revision = request.revision;
     for (const task of new Set([request.task, ...(request.searchLines ?? [])])) {
       // Lane cuts narrow each task and search line inside the read, so the
       // cached results held for the pick carry only the kept candidates.
-      const read = await source.read({ wholeLanes: false, ...request, task, ...(revision === undefined ? {} : { revision }) });
-      if (read.status === 'read' && read.revision !== undefined) revision ??= read.revision;
-      reads.set(task, read);
-      for (const candidate of read.candidates ?? []) maxQuestionText = Math.max(maxQuestionText, candidate.text.length);
+      for (const meaningLane of request.meaning === undefined ? [undefined] : [undefined, request.meaning]) {
+        const readRequest = { wholeLanes: false, ...request, task,
+          ...(meaningLane === undefined ? {} : { meaning: undefined, searchLines: undefined, meaningLane,
+            wholeLanes: meaningLane.wholeLanes ?? request.wholeLanes ?? false, limit: meaningLane.nearest }),
+          ...(revision === undefined ? {} : { revision }) };
+        const read = await source.read(readRequest);
+        if (read.status === 'read' && read.revision !== undefined) revision ??= read.revision;
+        reads.set(key(readRequest), read);
+      }
     }
     let pool;
     if (source.role === 'reference' && (source.labelKinds?.length
@@ -255,18 +265,17 @@ export async function pickFullSources(sources, request, options) {
       || (options.rare ?? source.rare ?? false) !== false)) {
       pool = await source.read({ ...request, task: request.task, wholeLanes: true, limit: undefined,
         ...(revision === undefined ? {} : { revision }) });
-      for (const candidate of pool.candidates ?? []) maxQuestionText = Math.max(maxQuestionText, candidate.text.length);
     }
     return { ...source, async read(readRequest, context) {
-      const { task, wholeLanes, limit } = readRequest;
-      if (wholeLanes && limit === undefined && pool !== undefined) return pool;
-      const held = reads.get(task);
+      const { wholeLanes, limit } = readRequest;
+      if (readRequest.meaningLane === undefined && wholeLanes && limit === undefined && pool !== undefined) return pool;
+      const held = reads.get(key(readRequest));
       // A read the cache does not hold — a name lane, a task-period read —
       // goes to the wrapped source with the same request.
       return held === undefined ? source.read({ wholeLanes: false, ...readRequest }, context) : held;
     } };
   }));
-  return pickFromSources(cached, request, { ...options, limits: { ...options.limits, maxQuestionText } });
+  return pickFromSources(cached, request, options);
 }
 
 export function curationEvidence(picked, collectedDate) {
@@ -325,6 +334,7 @@ export async function run(args = process.argv.slice(2), callSubscription = subsc
   await mkdir(folder, { recursive: true, mode: 0o700 });
   const started = Date.now();
   const record = { task: options.task, sourcesFile: options.sources, settings, status: 'started', subscription: [], sessions: [], reads: [], jev: [], timings: {} };
+  let local;
   const save = () => writeFile(join(folder, 'record.json'), JSON.stringify(record, null, 2), { mode: 0o600 });
   console.error(`Run record: ${folder}`);
   try {
@@ -354,6 +364,14 @@ export async function run(args = process.argv.slice(2), callSubscription = subsc
     const searchStart = Date.now();
     record.searches = await searchLines(searchPrompt, folder, record, save, callSubscription);
     record.timings.searchesMs = Date.now() - searchStart;
+    const { createLocalEmbedder } = await import('@curatejs/core/local-embeddings');
+    const modelPath = settings.embeddingModel ?? join(homedir(), '.cache/curate/models/embeddinggemma-300M-Q8_0.gguf');
+    const cacheDirectory = join(process.env.XDG_CACHE_HOME ?? join(homedir(), '.cache'), 'curate/embeddings');
+    const embeddingStart = Date.now();
+    local = await createLocalEmbedder({ modelPath, cacheDirectory,
+      ...(process.platform === 'darwin' ? { gpu: 'metal' } : {}) });
+    record.embedding = { modelPath, cacheDirectory };
+    record.timings.embeddingLoadMs = Date.now() - embeddingStart;
     // Core's jev() sends the requests and reports each one, split
     // requests included; the run record keeps them all.
     const service = jev({ apiKey, onCall: async (call) => { record.jev.push(call); await save(); } });
@@ -371,17 +389,18 @@ export async function run(args = process.argv.slice(2), callSubscription = subsc
     // 64,000-token whole-request limit covers the per-question JSON
     // framing the batch count does not measure.
     const maxBatchChars = 32_000 * 3 - Math.max(
-      ...[CHAT_CASCADE, GIT_HISTORY_CASCADE, MARKDOWN_CASCADE]
+      ...[AGENT_CHAT_CASCADE, GIT_HISTORY_CASCADE, MARKDOWN_CASCADE]
         .flatMap((cascade) => cascade.questions)
         .map((question) => question.instructions.length + question.true.length + question.false.length));
     const count = Math.max(...kinds.map((kind) => record.searches[kind].keywords.length + record.searches[kind].answers.length));
     const pickStart = Date.now();
-    const request = { task: options.task, searchLines: Array.from({ length: count }, (_, i) => `curate-search:${i}`) };
+    const request = { task: options.task, searchLines: Array.from({ length: count }, (_, i) => `curate-search:${i}`),
+      meaning: { embed: local.embed } };
     const pickOptions = { task: options.task, decide,
       limits: { maxBatchChars },
       ...(settings.threshold === undefined ? {} : { everyScored: { bar: settings.threshold } }) };
     const picked = await pickFullSources(sources.map((source) =>
-      searchSource(source, record.searches, record.reads, folder, settings)), request, pickOptions);
+      searchSource({ ...source, labelKinds: [], rare: false }, record.searches, record.reads, folder, settings)), request, pickOptions);
     record.pick = picked.record;
     record.sourcesRead = picked.reads.map((read, i) => ({ source: sources[i].id, status: read.status,
       parts: read.candidates?.length ?? 0, complete: read.complete, partial: read.partial, reason: read.reason,
@@ -397,7 +416,10 @@ export async function run(args = process.argv.slice(2), callSubscription = subsc
     if (error?.record !== undefined) record.pick = error.record;
     record.status = 'failed'; record.error = error.message; throw error;
   }
-  finally { record.timings.totalMs = Date.now() - started; await save(); }
+  finally {
+    try { await local?.dispose(); }
+    finally { record.timings.totalMs = Date.now() - started; await save(); }
+  }
   return folder;
 }
 

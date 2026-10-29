@@ -13,7 +13,7 @@ const fitted: PickCascade = {
   ],
 };
 const item = (id: string, score = 0): MemoryCandidate => ({
-  sourceId: 'chat', role: 'reference', id, title: id, text: 'Evidence',
+  sourceId: 'chat', role: 'reference', id, title: id, text: `Evidence ${id}`,
   date: { value: '2023-05-20', meaning: 'recorded' }, signals: { keyword: score },
 });
 const sigmoid = (z: number) => 1 / (1 + Math.exp(-z));
@@ -56,7 +56,7 @@ describe('fitted decision questions', () => {
     expect(missing.record.candidates[0]).toMatchObject({ status: 'unanswered', answer: 'missing' });
   });
 
-  it('keeps rule questions separate and source keys distinct', async () => {
+  it('shares identical reference questions across sources and keeps rule questions separate', async () => {
     const keys: string[] = [];
     const decide: PickDecide = async ({ questions }) => {
       for (const q of questions) {
@@ -68,7 +68,7 @@ describe('fitted decision questions', () => {
     await pick([item('same'), { ...item('same'), sourceId: 'other' }, { ...item('r'), role: 'rule' }], { ...uncutPick,
       task: 'Recall', questionsBySource: { chat: fitted, other: fitted }, decide,
     });
-    expect(new Set(keys).size).toBe(7);
+    expect(new Set(keys).size).toBe(4);
     expect(keys).toContain(JSON.stringify(['chat', 'same', 'needed']));
   });
 
@@ -122,7 +122,7 @@ describe('selection after decisions', () => {
   const candidates = [item('keyword', 9), item('strong', 5), item('weak', 10)];
 
   it('orders by decision weight and keeps all passing items without a size cap', async () => {
-    const result = await pick(candidates.map((c) => ({ ...c, text: 'x'.repeat(30_000) })), { ...uncutPick, task: 'Recall', decide });
+    const result = await pick(candidates.map((c) => ({ ...c, text: c.id + 'x'.repeat(30_000 - c.id.length) })), { ...uncutPick, task: 'Recall', decide });
     expect(result.selected.map((c) => c.id)).toEqual(['strong', 'keyword', 'weak']);
     expect(result.selected.every((c) => c.text.length === 30_000)).toBe(true);
   });

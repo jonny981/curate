@@ -244,7 +244,7 @@ describe('chat source contract', () => {
     expect(result.partial).toBe('the limit kept 1 of 2 candidates');
   });
 
-  it('passes every part to the picker within its text budget', async () => {
+  it('preserves every part within the picker text budget', async () => {
     const text = 'hello world\n'.repeat(20);
     const directory = await transcript('codex', [message('codex', 'user', text)]);
     const seen: string[] = [];
@@ -258,7 +258,7 @@ describe('chat source contract', () => {
     });
     expect(result.selected.length).toBeGreaterThan(1);
     expect(seen.every((part) => part.length <= 50)).toBe(true);
-    expect(seen.join('')).toBe(text);
+    expect(result.selected.map((candidate) => candidate.text).join('')).toBe(text);
     expect(result.record.candidates.every((candidate) => !candidate.truncated)).toBe(true);
   });
 
@@ -504,7 +504,9 @@ describe('streaming read', () => {
       message('codex', 'user', 'we said battery cells degrade'),
       message('codex', 'assistant', 'we said a fourth note'),
     ]);
-    const embed = async (texts: readonly string[]) => texts.map((text) => (text.includes('battery') ? [1, 0] : [0, 1]));
+    // Score the current part so this test keeps its two-level curve
+    // when the embedder also receives the previous part as context.
+    const embed = async (texts: readonly string[]) => texts.map((text) => (text.split('\n').at(-1)!.includes('battery') ? [1, 0] : [0, 1]));
     const source = chat({ providers: ['codex'], paths: [directory] });
     const lanes: CandidateReadRequest[] = [
       { task: 'battery' },
@@ -524,6 +526,27 @@ describe('streaming read', () => {
       expect(whole.candidates.filter((candidate) => candidate.pastLaneCut === true).map((candidate) => candidate.id))
         .toEqual(whole.candidates.filter((candidate) => !kept.has(candidate.id)).map((candidate) => candidate.id));
     }
+  });
+
+  it('embeds a reply with the previous part in its file and preserves its own decision text', async () => {
+    const directory = await transcript('codex', [
+      message('codex', 'assistant', 'Did you choose the red bicycle?'),
+      message('codex', 'user', 'Yes, that one.'),
+    ], undefined, 'a-first');
+    await transcript('codex', [message('codex', 'user', 'unrelated breakfast')], directory, 'b-next');
+    const embedded: string[] = [];
+    const embed = async (texts: readonly string[]) => texts.map((text) => {
+      embedded.push(text);
+      return text === 'bicycle purchase' || text === 'Did you choose the red bicycle?\nYes, that one.' ? [1, 0] : [0, 1];
+    });
+    const source = chat({ providers: ['codex'], paths: [directory] });
+    const result = await source.read({ task: 'bicycle purchase', wholeLanes: false, meaningLane: { embed } });
+    if (result.status !== 'read') throw new Error('Expected a read');
+    expect(embedded).toEqual(['bicycle purchase', 'Did you choose the red bicycle?', 'Did you choose the red bicycle?\nYes, that one.', 'unrelated breakfast']);
+    expect(result.candidates.map((candidate) => candidate.text)).toEqual(['Yes, that one.']);
+    const keywords = await source.read({ task: 'bicycle purchase', wholeLanes: false });
+    if (keywords.status !== 'read') throw new Error('Expected a read');
+    expect(keywords.candidates.some((candidate) => candidate.text === 'Yes, that one.')).toBe(false);
   });
 
   it('serves a phrase lane by matching the exact phrase without scoring', async () => {

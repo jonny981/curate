@@ -25,7 +25,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { pick, pickFromSources, curate, addMeaningRanks, historySource, SourceReadError, LABEL_KINDS, ANSWER_TYPES, DEFAULT_BATCH_TOKENS, COUNT_MARKER, taskQuestionWriter, taskNames } from '@curatejs/core';
 import { asSourceReadError } from '@curatejs/core/internal';
-import { chat, chatSettings, CHAT_CASCADE, CHAT_KEYWORD_SETTINGS, CHAT_SEARCH_LINE_REGISTER, PERSONAL_CHAT_CASCADE, PERSONAL_CHAT_WRITTEN_CASCADE } from '@curatejs/chat';
+import { chat, chatSettings, CHAT_CASCADE, AGENT_CHAT_CASCADE, CHAT_KEYWORD_SETTINGS, CHAT_SEARCH_LINE_REGISTER, PERSONAL_CHAT_CASCADE, PERSONAL_CHAT_WRITTEN_CASCADE } from '@curatejs/chat';
 import { git, gitSettings, GIT_HISTORY_CASCADE, GIT_KEYWORD_SETTINGS, GIT_SEARCH_LINE_REGISTER } from '@curatejs/git';
 import { markdown, knowledgeBase, rules, reviewNotes, markdownSettings, rulesSettings, MARKDOWN_CASCADE, MARKDOWN_KEYWORD_SETTINGS, MARKDOWN_SEARCH_LINE_REGISTER } from '@curatejs/markdown';
 const cancelled = new SourceReadError('cancelled', 'Stopped');
@@ -41,7 +41,7 @@ assert.deepEqual((await writer('task')).map(q => q.key), ['task1', 'task2']);
 const decide = async ({ questions }) => Object.fromEntries(questions.map(q => [q.key, { status: 'answered', probability: q.questionKey === 'offtopic' ? 0 : 1 }]));
 const candidates = [1, 0.049, 0].map((probability, index) => ({
   sourceId: 'host', role: 'reference', id: 'host-item-' + index, title: 'Backup',
-  text: 'Backups are encrypted. ' + 'Details. '.repeat(100) + 'Recovery uses offline keys.', signals: { probability }, date: { value: '2025-01-01', meaning: 'recorded' },
+  text: 'Backup ' + index + '. Backups are encrypted. ' + 'Details. '.repeat(100) + 'Recovery uses offline keys.', signals: { probability }, date: { value: '2025-01-01', meaning: 'recorded' },
 }));
 const weighted = async ({ questions }) => {
   assert.ok(questions.every(q => q.text.endsWith('Recovery uses offline keys.')));
@@ -91,7 +91,7 @@ execFileSync('git', ['init', '-q']);
 execFileSync('git', ['add', 'notes']);
 execFileSync('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'commit.gpgsign=false', '-c', 'user.name=Example', '-c', 'user.email=example@example.com', 'commit', '-qm', 'Document encrypted backups']);
 for (const [source, questions] of [
-  [chat({ providers: ['claude-code'], paths: ['transcripts'] }), CHAT_CASCADE],
+  [chat({ providers: ['claude-code'], paths: ['transcripts'] }), AGENT_CHAT_CASCADE],
   [git('.'), GIT_HISTORY_CASCADE],
   [knowledgeBase('notes'), MARKDOWN_CASCADE],
   [rules('policy'), MARKDOWN_CASCADE],
@@ -115,6 +115,7 @@ assert.deepEqual(effectSources.map(source => effects.record.effects
 assert.deepEqual([chatSettings, gitSettings, markdownSettings, rulesSettings].map(s => [s.rare, s.labels, s.bar, s.ruleBar]),
   [[false, true, 0.0146, undefined], [true, false, 0.0146, undefined], [true, false, 0.0146, undefined], [true, false, 0.0146, 0.5]]);
 assert.deepEqual(chat({ paths: ['transcripts'] }).labelKinds, LABEL_KINDS);
+assert.deepEqual(chatSettings.questions, CHAT_CASCADE);
 assert.equal(historySource({ reader: chat({ paths: ['transcripts'] }), ...chatSettings, labels: false }).labelKinds, undefined);
 assert.equal(CHAT_KEYWORD_SETTINGS.k1, 0.6);
 assert.equal(GIT_KEYWORD_SETTINGS.recencyDays, 60);

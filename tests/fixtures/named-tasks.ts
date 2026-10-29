@@ -8,7 +8,7 @@ import {
   type PickBatch, type PickDecide, type PickRecord,
 } from '@curatejs/core';
 import { curatePick, sha256 } from './bars-and-batches.js';
-import { decide, fixtureSource, parts } from './source-settings.js';
+import { baselineText, decide, fixtureSource, parts } from './source-settings.js';
 
 export const namedTask = 'Which deploy constraint did Emma agree with Book Lovers Unite for the billing service?';
 
@@ -16,7 +16,7 @@ export const namedTask = 'Which deploy constraint did Emma agree with Book Lover
 export function namedParts(sourceId: string, rareWord: string): MemoryCandidate[] {
   const pool = parts(sourceId, rareWord);
   return [...pool, ...['Emma said the deploy waits a week.', 'Book Lovers Unite meets on Tuesday.'].map((text, i) => ({
-    ...pool[0]!, id: `${sourceId}#${400 + i}`, title: `${sourceId} part ${400 + i}`, text, signals: { keyword: 0 },
+    ...pool[0]!, id: `${sourceId}#${400 + i}`, title: `${sourceId} part ${400 + i}`, text: `${sourceId} ${text}`, signals: { keyword: 0 },
   }))];
 }
 
@@ -45,9 +45,15 @@ export async function offRuns(tasks: readonly string[]) {
     }, { deciderId: 'fixture' });
     const picked = await pickFromSources(offSources(), { task }, { task, decide: how });
     const prompts: CuratePrompt[] = [];
-    await curate(task, picked, { routeByTask: true, write: async (prompt) => { prompts.push(prompt); return ''; } });
+    const evidence = { ...picked, selected: picked.selected.map((part) => ({ ...part,
+      text: baselineText(part.sourceId, part.text) })) };
+    await curate(task, evidence, { routeByTask: true, write: async (prompt) => { prompts.push(prompt); return ''; } });
+    const baselineRequests = requests.map((request) => ({ ...request,
+      questions: request.questions.map((question) => ({ ...question,
+        text: baselineText(question.sourceId, question.text) })),
+    }));
     runs[task] = { selected: sha256(picked.selected.map((c) => c.id)), record: sha256(asBaseline(picked.record)),
-      requests: sha256(requests), prompts: sha256(prompts) };
+      requests: sha256(baselineRequests), prompts: sha256(prompts) };
   }
   return runs;
 }

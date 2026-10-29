@@ -67,6 +67,7 @@ const source = chat({ providers: ['claude-code', 'codex'], since: '14 days' });
   and `b: 0`, Porter word stems, short identifiers, noun weights, and
   merged rankings for the full query, content words and names. Markdown
   and git use their own settings. No model or network call is made.
+- **Meaning search:** Each part embeds with the previous part from the same file. A reply therefore carries its question's context. Decision text stays unchanged.
 - **Read results:** Missing folders return `absent` when none can be read.
   Missing folders alongside readable folders, skipped symbolic links,
   undated messages, and a candidate limit make the read incomplete.
@@ -127,7 +128,7 @@ title without it.
 
 ## Defaults and overrides
 
-`chat()` reads with `chatSettings`, `{ rare: false, labels: true, names: true, bar: 0.0146 }`: no rare-word round, core's seven label kinds, a name lane for each name the task names, and references kept when scored 0.0146 or more,
+`chat()` reads with `chatSettings` and the `AGENT_CHAT_CASCADE` question set: no rare-word round, core's seven label kinds, a name lane for each name the task names, and references kept when scored 0.0146 or more,
 ordered and weighted by decision probability.
 Set `everyScored: true` on the pick to keep every scored reference from every source.
 The curator receives exact scores. Its `tiers` instructions ask for less space for low-scored items.
@@ -136,22 +137,22 @@ To change a setting, build the source with core's `historySource()`. To turn lab
 
 ```ts
 import { historySource } from '@curatejs/core';
-import { chat, chatSettings } from '@curatejs/chat';
+import { chat, chatSettings, AGENT_CHAT_CASCADE } from '@curatejs/chat';
 
-const source = historySource({ reader: chat({ paths: ['transcripts'] }), ...chatSettings, labels: false });
+const source = historySource({ reader: chat({ paths: ['transcripts'] }), ...chatSettings, labels: false, questions: AGENT_CHAT_CASCADE });
 ```
 
 See [core's measured reason](https://github.com/jonny981/curate/blob/main/packages/core/README.md#defaults-and-evidence) for the saved-decision sweep's answer-turn losses.
 
 - **Keyword settings:** `CHAT_KEYWORD_SETTINGS` exports the ranking defaults. Pass a partial `keyword` object to the reader to override them.
-- **Questions:** `chatSettings` carries `CHAT_CASCADE`, the fitted question set `chat()` asks of each part. Core's `memory()` and `pickFromSources()` ask it. Change it with `historySource({ reader: chat(), ...chatSettings, questions: mySet })`.
-- **Question band:** `CHAT_CASCADE.band`, `[0.1, 0.9]`, decides when the other questions are asked. A part whose answer to the first question, `relevant`, falls outside the band is scored on that answer alone. Set your own band through `questions`:
+- **Questions:** `chat()` uses `AGENT_CHAT_CASCADE`: `relevant` first, then `needed` inside the question band. It leaves out `own`. Core's `memory()` and `pickFromSources()` ask this set. Shared `chatSettings` keeps `CHAT_CASCADE`, including `own`, for host-provided personal histories. Spreading `chatSettings` into `historySource()` selects that shared set. Set `questions: AGENT_CHAT_CASCADE` to preserve agent questions when you change other settings.
+- **Question band:** `AGENT_CHAT_CASCADE.band`, `[0.1, 0.9]`, decides when the other questions are asked. A part whose answer to the first question, `relevant`, falls outside the band is scored on that answer alone. Set your own band through `questions`:
 
   ```ts
   import { historySource } from '@curatejs/core';
-  import { chat, CHAT_CASCADE, chatSettings } from '@curatejs/chat';
+  import { chat, AGENT_CHAT_CASCADE, chatSettings } from '@curatejs/chat';
 
-  const source = historySource({ reader: chat(), ...chatSettings, questions: { ...CHAT_CASCADE, band: [0.05, 0.95] } });
+  const source = historySource({ reader: chat(), ...chatSettings, questions: { ...AGENT_CHAT_CASCADE, band: [0.05, 0.95] } });
   ```
 - **Personal questions:** `PERSONAL_CHAT_CASCADE` is a question set for histories of a person's own life: events, purchases, people, ages, places and numbers. It asks first whether the user says something about their own life that bears on the task, then `needed`, `aside` and `preference` inside the 0.1 to 0.9 band. On saved answers for chat-history tasks, it ranked the parts holding an answer above the hard non-answers of their own task more often than `CHAT_CASCADE` did: 0.815 against 0.778. It is not the default because `chat()` mostly reads coding-agent transcripts. A clear "no" to its first question settles a part with no further question, so a coding decision such as "we'll use Postgres" would likely be dropped. Use it through `historySource`:
 
@@ -178,7 +179,7 @@ See [core's measured reason](https://github.com/jonny981/curate/blob/main/packag
     pick: { writeQuestions: taskQuestionWriter(write) },
   });
   ```
-- **Label bar:** `labelBar` sets how sure a label must be, 0.5 when absent. A higher bar brings fewer parts in through the label lane: `historySource({ reader: chat(), ...chatSettings, labelBar: 0.7 })`.
+- **Label bar:** `labelBar` sets how sure a label must be, 0.5 when absent. A higher bar brings fewer parts in through the label lane: `historySource({ reader: chat(), ...chatSettings, labelBar: 0.7, questions: AGENT_CHAT_CASCADE })`.
 - **Labels:** `labels: true` asks core's seven `LABEL_KINDS` for transcript facts; a list of kinds asks your own set instead. See [core's label options](https://github.com/jonny981/curate/blob/main/packages/core/README.md#label-gate).
 - **Search wording:** `CHAT_SEARCH_LINE_REGISTER` describes the wording for host-written extra search lines. Copy or replace this text in your host; the package generates no lines.
 - **Kind phrases:** `CHAT_KIND_PHRASES` exports phrases in the chat register for `directions`, `decisions` and `corrections`. Pass one list to core's `kindLanes` option, for example `{ chat: CHAT_KIND_PHRASES.directions }`; kind lanes stay off by default.

@@ -40,7 +40,7 @@ Four packages:
   objects, `chatSettings`, `gitSettings`, `markdownSettings` and
   `rulesSettings`. `historySource({ reader, ...settings })` builds a source
   with any settings, for example a chat source with labels off:
-  `historySource({ reader: chat(), ...chatSettings, labels: false })`. Pick
+  `historySource({ reader: chat(), ...chatSettings, labels: false, questions: AGENT_CHAT_CASCADE })`. Pick
   and curate records name each source's settings under `levers.sources`.
 - **A rule library.** `rules(dir)` reads `.md`, Cursor `.mdc` and Copilot
   `*.instructions.md` rule files, one candidate per rule, with `globs` and

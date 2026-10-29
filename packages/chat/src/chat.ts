@@ -10,6 +10,7 @@ import { scrubChat } from './chat-scrub.js';
 import { DEFAULT_MAX_QUESTION_TEXT, type MemoryCandidate } from '@curatejs/core';
 import { historySource, SourceReadError, type CandidateReadRequest, type CandidateSource } from '@curatejs/core';
 import { chatSettings } from './defaults.js';
+import { AGENT_CHAT_CASCADE } from './questions.js';
 
 export type ChatProvider = 'claude-code' | 'codex';
 
@@ -383,6 +384,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           const partFile: number[] = [];
           const fileRanges: { provider: ChatProvider; root: string; file: string; start: number }[] = [];
           let pending: string[] = [];
+          let previous: { file: string; text: string } | undefined;
           const flush = async () => {
             if (pending.length === 0) return;
             const scores = await embedSimilarities(embed, query, pending, request.signal);
@@ -396,7 +398,9 @@ export function chat(options: ChatOptions = {}): CandidateSource {
             }
             partFile.push(fileRanges.length - 1);
             ids.push(partId(part));
-            pending.push(/[^\s\p{Cf}]/u.test(part.text) ? part.text : partTitle(part, zone));
+            const text = /[^\s\p{Cf}]/u.test(part.text) ? part.text : partTitle(part, zone);
+            pending.push(previous?.file === part.file ? `${previous.text}\n${text}` : text);
+            previous = { file: part.file, text };
             if (pending.length === 32) await flush();
           }
           await flush();
@@ -674,5 +678,5 @@ export function chat(options: ChatOptions = {}): CandidateSource {
       }
     },
   };
-  return historySource({ reader, ...chatSettings });
+  return historySource({ reader, ...chatSettings, questions: AGENT_CHAT_CASCADE });
 }

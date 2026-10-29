@@ -46,7 +46,7 @@ Explicit `read`, `pick` and `curate` options apply to the whole call:
 
 ```ts
 const mem = memory({
-  sources: [historySource({ reader: chat(), ...chatSettings }), git('.')],
+  sources: [historySource({ reader: chat(), ...chatSettings, questions: AGENT_CHAT_CASCADE }), git('.')],
   decide,
   write,
   read: { wholeLanes: true },
@@ -358,9 +358,11 @@ try {
   only whitespace or invisible formatting characters uses its title for
   embedding, including a commit with only a subject.
   Its original body and title remain in the returned evidence.
-- **Storage:** Candidate vectors exist only while a batch is scored and
-  are discarded afterward. Curate writes no database, vector index or
-  candidate cache. The model file stays on disk.
+- **Storage:** Set `cacheDirectory` on `createLocalEmbedder()` to persist vectors by model bytes and complete input text.
+  Repeated inputs reuse these files across calls. The files contain hashes and vectors, not source text.
+  With no directory supplied, vectors exist only while a batch is scored.
+- **GPU:** Set `gpu: 'metal'` to require the Mac GPU. An unavailable explicit backend stops the call instead of selecting CPU.
+  The returned `gpu` field names the backend in use.
 - **Candidate reads:** A supplied keyword `request.limit` still controls
   keyword results. Each meaning query first asks the source to serve the
   lane itself (`meaningLane` on the read request): a streaming reader
@@ -601,13 +603,18 @@ source id: `questionsBySource: { conversations: CHAT_CASCADE }`.
 candidates.
 
 The chat package’s `CHAT_CASCADE` contains the fitted relevance, own-situation and needed
-questions, with relevance asked first. `GIT_HISTORY_CASCADE` and
+questions, with relevance asked first. `chat()` uses `AGENT_CHAT_CASCADE`, which leaves out `own`.
+Host-provided personal histories can keep `CHAT_CASCADE`. `GIT_HISTORY_CASCADE` and
 `MARKDOWN_CASCADE`, exported by git and markdown respectively, share four fitted questions: `current`, `needed`,
 `when`, and `offtopic`. They ask about relevance, needed information,
 timing, and a different subject. The negative `offtopic` weight lowers
 the score when an item is about a different subject. These sets ask
 neither `own` nor `preference` of commits or notes. Fitted scores order
 evidence; they do not measure the chance of a correct final answer.
+
+Identical text shares answers to matching decision questions within one pick, including copies in one batch.
+A part with no text shares on its title instead, so two title-only commits with different subjects get their own answers.
+Each copy keeps its source and uses that source's question weights and score bar.
 
 ### Answer types
 
@@ -705,13 +712,13 @@ carries it. Add it to a set with `answerTypes` on:
 ```ts
 import { COUNT_MARKER, historySource, memory } from '@curatejs/core';
 import { chatWriter, jev } from '@curatejs/core/models';
-import { chat, chatSettings, CHAT_CASCADE } from '@curatejs/chat';
+import { chat, chatSettings, AGENT_CHAT_CASCADE } from '@curatejs/chat';
 
 const decide = jev({ apiKey: process.env.TYPESAFE_API_KEY });
 const write = chatWriter({ apiKey: process.env.CHAT_API_KEY, model: 'gpt-5-mini' });
 
 const mem = memory({
-  sources: [historySource({ reader: chat(), ...chatSettings, questions: { ...CHAT_CASCADE, typed: [COUNT_MARKER] } })],
+  sources: [historySource({ reader: chat(), ...chatSettings, questions: { ...AGENT_CHAT_CASCADE, typed: [COUNT_MARKER] } })],
   decide,
   write,
   pick: { answerTypes: true },
@@ -1471,11 +1478,11 @@ Each source carries seven settings, tuned for its kind of history:
 - **`questions`:** the decision questions asked of each reference part; absent means the built-in question for the part's kind.
 - **`decay`:** rank older notes lower by their age at the task date, as `{ halfLife: '365 days' }`; absent or `false` is off, as in every preset. Markdown sources only; see the [Markdown reader](https://github.com/jonny981/curate/blob/main/packages/markdown/README.md#decay).
 
-Each reader package exports its settings as one plain object, and its convenience functions carry it:
+Each reader package exports its settings as one plain object:
 
 | Settings object | Value | Carried by |
 | --- | --- | --- |
-| `chatSettings` (`@curatejs/chat`) | `{ rare: false, labels: true, names: true, bar: 0.0146, questions: CHAT_CASCADE }` | `chat()` |
+| `chatSettings` (`@curatejs/chat`) | `{ rare: false, labels: true, names: true, bar: 0.0146, questions: CHAT_CASCADE }` | `chat()` overrides questions with `AGENT_CHAT_CASCADE` |
 | `gitSettings` (`@curatejs/git`) | `{ rare: true, labels: false, names: true, bar: 0.0146, questions: GIT_HISTORY_CASCADE }` | `git()` |
 | `markdownSettings` (`@curatejs/markdown`) | `{ rare: true, labels: false, names: true, bar: 0.0146, questions: MARKDOWN_CASCADE }` | `markdown()`, `knowledgeBase()` |
 | `rulesSettings` (`@curatejs/markdown`) | `{ ...markdownSettings, names: false, ruleBar: 0.5 }`; 0.5 is a starting value, not yet tuned; it will be fitted on the 160-task rules test | `rules()` |
@@ -1509,11 +1516,11 @@ Set your own with `historySource()`.
 
 ```ts
 import { historySource, pickFromSources } from '@curatejs/core';
-import { chat, chatSettings } from '@curatejs/chat';
+import { chat, chatSettings, AGENT_CHAT_CASCADE } from '@curatejs/chat';
 import { markdown, markdownSettings } from '@curatejs/markdown';
 
 const sources = [
-  historySource({ reader: chat(), ...chatSettings, labels: false }),
+  historySource({ reader: chat(), ...chatSettings, labels: false, questions: AGENT_CHAT_CASCADE }),
   historySource({ reader: markdown({ paths: ['docs'], kind: 'docs' }), ...markdownSettings, rare: false, bar: 0.05 }),
 ];
 const picked = await pickFromSources(sources, { task }, { task, decide });
