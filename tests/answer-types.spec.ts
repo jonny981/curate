@@ -73,11 +73,27 @@ const baseline = (): Baseline => JSON.parse(readFileSync(BASELINE, 'utf8'));
  *  summary names, which the label bar setting added, without the names the presets' name lanes
  *  looked for and their `names` entries, which the name lanes added, and without the moment, the
  *  time zone and the task-period entries, which the task date added. */
-const asBaseline = ({ names: _names, asOf: _asOf, timeZone: _timeZone, ...record }: PickRecord): PickRecord => ({ ...record,
-  levers: { ...record.levers, sources: Object.fromEntries(Object.entries(record.levers.sources)
-    .map(([id, { labelBar: _labelBar, ...settings }]) => [id, settings])) },
-  effects: record.effects.filter((entry) => entry.setting !== 'names' && entry.setting !== 'taskPeriod').map((entry) => entry.setting !== 'labels' ? entry
-    : { ...entry, summary: entry.summary.replace(` at the label bar ${LABEL_LANE_BAR}:`, ':') }) });
+const asBaseline = (record: PickRecord): PickRecord => {
+  const slim: Partial<Record<keyof PickRecord, unknown>> = { ...record,
+    // `pick`'s decide-call counts and the lane-0 ranks single-search
+    // reads now carry were added since the baseline: strip both. The
+    // old build wrote `pick` only under a dial, so counts alone go too.
+    candidates: record.candidates.map(({ searchRanks: _ranks, ...candidate }) => candidate),
+    levers: { ...record.levers, sources: Object.fromEntries(Object.entries(record.levers.sources)
+      .map(([id, { labelBar: _labelBar, ...settings }]) => [id, settings])) },
+    effects: record.effects.filter((entry) => entry.setting !== 'names' && entry.setting !== 'taskPeriod')
+      .map((entry) => entry.setting !== 'labels' ? entry
+        : { ...entry, summary: entry.summary.replace(` at the label bar ${LABEL_LANE_BAR}:`, ':') }) };
+  delete slim.names;
+  delete slim.asOf;
+  delete slim.timeZone;
+  if (record.pick !== undefined) {
+    const { sent: _sent, questions: _questions, ...pick } = record.pick;
+    if (pick.rare === undefined && pick.c === undefined) delete slim.pick;
+    else slim.pick = pick;
+  }
+  return slim as PickRecord;
+};
 
 const baselineEvidence = (picked: PickResult): PickResult => ({ ...picked,
   selected: picked.selected.map((part) => ({ ...part, text: baselineText(part.sourceId, part.text) })),
@@ -89,7 +105,8 @@ async function snapshot(): Promise<Baseline> {
   for (const [name, sources] of Object.entries(RUNS)) {
     freshStore();
     const { requests, decide: how } = recording();
-    const picked = await pickFromSources(sources(), { task }, { task, decide: how });
+    // The baseline these runs reproduce was recorded on the everyRanked feed.
+    const picked = await pickFromSources(sources(), { task }, { task, decide: how, everyRanked: true });
     const selected = picked.selected.map((c) => c.id);
     const baselineRequests = requests.map((request) => ({ ...request,
       questions: request.questions.map((question) => ({ ...question,
@@ -298,7 +315,8 @@ describe('a typed answer moves a part across its bar', () => {
 /** The `defaults all` pick, with an answerTypes record whose needed types are given. */
 async function allPick(needed: readonly AnswerType[]): Promise<PickResult> {
   freshStore();
-  const picked = await pickFromSources(RUNS['defaults all']!(), { task }, { task, decide });
+  // The baseline evidence these runs reuse was recorded on the everyRanked feed.
+  const picked = await pickFromSources(RUNS['defaults all']!(), { task }, { task, decide, everyRanked: true });
   return { ...baselineEvidence(picked), record: { ...picked.record, answerTypes: { bar: 0.5, answers: [], needed } } };
 }
 const HINT = 'The answer likely needs: a date, a number.';

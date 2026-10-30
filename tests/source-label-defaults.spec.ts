@@ -43,6 +43,9 @@ describe('source label questions', () => {
       const task = 'billing currency';
       const result = await pickFromSources([source], { task }, {
         task,
+        // The label gate pulling a pool member into the decide step is
+        // an everyRanked feed behavior; a level leaves it unassessed.
+        everyRanked: true,
         labels: { directory: join(directory, 'cache'), deciderId: 'custom-source-labels' },
         decide: async (batch) => {
           questions.push(...batch.questions);

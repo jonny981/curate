@@ -87,6 +87,15 @@ export interface CandidateReadRequest {
    *  that ignores it answers a plain keyword read, and the pick then
    *  scores the pool itself. */
   readonly meaningLane?: MeaningSearchOptions;
+  /** Internal to pickFromSources: set while a thoroughness level is in
+   *  force: the pick's fused order reads each part's meaning position,
+   *  its best similarity over every query measured before any lane
+   *  cut. The meaning lane reads then keep every part's similarity
+   *  (`wholeLanes` on, no `limit`), and the marks say which parts each
+   *  lane's own bend kept. `meaning.wholeLanes` still decides whether
+   *  the position reaches every part or only the ones a lane kept.
+   *  Leave unset otherwise: the score is unused without a level. */
+  readonly meaningPositions?: boolean;
   /** Internal to pickFromSources: 'gate' when the pick's label gate is
    *  on, 'count' when only a decide-feed dial is (`everyRanked: { c }`
    *  or `rare`). The read result also carries the reference source's
@@ -672,6 +681,29 @@ async function readSearches(
       ...(missed || (laneCut && union.size === 0) ? { noSearchMatch: true } : {}),
       ...(partial === '' ? {} : { partial }) };
   }
+  // A single-search read leaves its candidates without lane-0 ranks;
+  // order them by signal sum per source, the same rank the scored
+  // meaning paths assign. A pool member is no keyword result.
+  const unranked = read.candidates.filter((candidate) =>
+    candidate.searchRanks === undefined && candidate.poolOnly !== true);
+  if (unranked.length > 0) {
+    const groups = new Map<string, MemoryCandidate[]>();
+    for (const candidate of unranked) {
+      const group = groups.get(candidate.sourceId);
+      if (group === undefined) groups.set(candidate.sourceId, [candidate]);
+      else group.push(candidate);
+    }
+    const ranks = new Map<MemoryCandidate, number>();
+    for (const group of groups.values()) {
+      [...group].sort((left, right) =>
+        Object.values(right.signals).reduce((sum, value) => sum + value, 0)
+        - Object.values(left.signals).reduce((sum, value) => sum + value, 0)
+        || left.id.localeCompare(right.id)
+      ).forEach((candidate, rank) => ranks.set(candidate, rank));
+    }
+    read = { ...read, candidates: read.candidates.map((candidate) =>
+      ranks.has(candidate) ? { ...candidate, searchRanks: [ranks.get(candidate)!] } : candidate) };
+  }
   if (!request.meaning) return read;
   // One meaning lane per distinct search text that is not a kind phrase
   // or a name: the task and each search line or phrase.
@@ -702,8 +734,12 @@ async function readSearches(
     const laneRead = await source.read({ ...request, task: query,
       searchLines: undefined, searchPhrases: undefined, kindLanes: undefined,
       meaning: undefined, phraseLane: undefined, speakerOnly: undefined,
-      limit: request.meaning.nearest,
-      wholeLanes: request.meaning.wholeLanes ?? !laneCut,
+      // A meaning position is each part's best similarity over every
+      // query, measured before any lane cut: under a level the lane
+      // read keeps every part's similarity with its bend's marks, and
+      // `nearest` applies in the merge rather than hiding parts here.
+      limit: request.meaningPositions === true ? undefined : request.meaning.nearest,
+      wholeLanes: request.meaningPositions === true ? true : request.meaning.wholeLanes ?? !laneCut,
       meaningLane: request.meaning,
       ...(read.revision === undefined ? {} : { revision: read.revision }) }, context);
     if (laneRead.status === 'absent') {
@@ -718,32 +754,20 @@ async function readSearches(
   if (native) {
     const union = new Map(read.candidates.map((candidate) =>
       [JSON.stringify([candidate.sourceId, candidate.id]), candidate] as const));
-    // A single-search read leaves its candidates without lane-0 ranks;
-    // order them by signal sum per source, the same rank the scored
-    // path below assigns. A pool member is no keyword result.
-    const unraked = [...union.values()].filter((candidate) =>
-      candidate.searchRanks === undefined && candidate.poolOnly !== true);
-    if (unraked.length > 0) {
-      const groups = new Map<string, MemoryCandidate[]>();
-      for (const candidate of unraked) {
-        const group = groups.get(candidate.sourceId);
-        if (group === undefined) groups.set(candidate.sourceId, [candidate]);
-        else group.push(candidate);
-      }
-      for (const group of groups.values()) {
-        [...group].sort((left, right) =>
-          Object.values(right.signals).reduce((sum, value) => sum + value, 0)
-          - Object.values(left.signals).reduce((sum, value) => sum + value, 0)
-          || left.id.localeCompare(right.id)
-        ).forEach((candidate, rank) => {
-          union.set(JSON.stringify([candidate.sourceId, candidate.id]),
-            { ...candidate, searchRanks: [rank] });
-        });
-      }
-    }
     const laneCount = tasks.length + queries.length;
     const bestRank = (ranks: readonly (number | null)[] | undefined) =>
       (ranks ?? []).reduce<number>((best, rank) => (rank === null ? best : Math.min(best, rank)), Number.POSITIVE_INFINITY);
+    // Whether a part's meaning position attaches to every part or only
+    // to the parts a lane keeps inside its bend, resolved as the
+    // scored path below resolves it.
+    const meaningWhole = request.meaning.wholeLanes ?? !laneCut;
+    const nearest = request.meaning.nearest;
+    // Each part's best similarity over every lane read (measured
+    // before any lane cut, the same `meaningScore` `addMeaningRanks`
+    // computes), so a lane that did not keep the part still counts
+    // toward its best.
+    const bestSims = new Map<string, number>();
+    const meaningKept = new Set<string>();
     for (const { offset, query, read: laneRead } of meaningReads) {
       const lane = tasks.length + offset;
       const groups = new Map<string, MemoryCandidate[]>();
@@ -756,6 +780,15 @@ async function readSearches(
       for (const group of groups.values()) {
         group.forEach((candidate, rank) => {
           const key = JSON.stringify([candidate.sourceId, candidate.id]);
+          if (candidate.signals.similarity !== undefined) {
+            bestSims.set(key, Math.max(bestSims.get(key) ?? Number.NEGATIVE_INFINITY,
+              candidate.signals.similarity));
+          }
+          // The lane holds the part when its bend kept it (every part
+          // under `meaning.wholeLanes`), inside the caller's `nearest`.
+          const held = (meaningWhole || candidate.pastLaneCut !== true)
+            && rank < (nearest ?? Number.POSITIVE_INFINITY);
+          if (!held) return;
           const existing = union.get(key);
           const ranks = Array<number | null>(laneCount).fill(null);
           existing?.searchRanks?.forEach((value, at) => { ranks[at] = value; });
@@ -765,21 +798,31 @@ async function readSearches(
           // Past the cut only while every lane holding it holds it past the cut; a pool member holds no lane.
           const past = marking && candidate.pastLaneCut === true
             && (existing === undefined || existing.poolOnly === true || existing.pastLaneCut === true);
-          union.set(key, { ...unmarked(existing !== undefined && bestRank(existing.searchRanks) <= rank ? existing : value),
-            searchRanks: ranks, ...(past ? { pastLaneCut: true as const } : {}) });
+          const chosen = existing !== undefined && bestRank(existing.searchRanks) <= rank ? existing : value;
+          // A lane rank ends pool-only membership, as `addMeaningRanks` does.
+          const { poolOnly: _poolOnly, ...rest } = unmarked(chosen);
+          union.set(key, { ...rest, searchRanks: ranks,
+            ...(past ? { pastLaneCut: true as const } : {}) });
           kept += 1;
+          meaningKept.add(candidate.id);
         });
       }
       meaningReports[offset] = { task: query, lane: 'meaning', read: laneRead.matched ?? laneRead.candidates.length, kept };
     }
     lanes.push(...meaningReports.filter((report) => report !== undefined));
-    const combined = [...union.values()];
+    // A part a meaning lane kept holds its best similarity over every
+    // query (the meaning position a thoroughness level's fused order
+    // reads), as `addMeaningRanks` attaches it below.
+    const combined = [...union.values()].map((candidate) => {
+      const kept = candidate.searchRanks?.slice(tasks.length).some((rank) => rank !== null) === true;
+      const sim = bestSims.get(JSON.stringify([candidate.sourceId, candidate.id]));
+      return kept && sim !== undefined ? { ...candidate, meaningScore: sim } : candidate;
+    });
     const partial = [read.partial, ...reasons].filter(Boolean).join('; ');
     // The flag reads the combined read: a meaning lane that matched
     // rescues a keyword miss, and only a read that kept nothing is one.
     const { noSearchMatch: _keywordMiss, ...rest } = read;
     // A part a meaning lane keeps is kept with or without decay.
-    const meaningKept = new Set(meaningReads.flatMap(({ read: laneRead }) => laneRead.candidates.map((candidate) => candidate.id)));
     return { ...rest, complete: read.complete && reasons.length === 0,
       candidates: combined, lanes,
       ...(rest.decay === undefined ? {} : { decay: { actedOn: rest.decay.actedOn,
@@ -824,6 +867,10 @@ async function readSearches(
   const scoredMeaning = await addMeaningRanks(candidates, tasks[0]!.task, {
     ...request.meaning, wholeLanes: request.meaning.wholeLanes ?? !laneCut,
     searchLines: queries.filter((query) => query !== tasks[0]!.task.trim()),
+    // The read's own lane indexes: inferring them from `searchRanks`
+    // reads 1 when every candidate is unranked, which would write the
+    // meaning lanes' ranks onto keyword slots.
+    keywordLanes: tasks.length,
     ...(request.signal === undefined ? {} : { signal: request.signal }),
   });
   // Only a reference source read with `wholeLanes` on keeps the meaning lanes' marks.
@@ -946,10 +993,16 @@ export async function pickFromSources(
       ...(source.decay === undefined ? {} : { decayHalfLife: durationMs(source.decay.halfLife, 'decay.halfLife') }),
       maxQuestionText: options.limits?.maxQuestionText ?? request.maxQuestionText
         ?? (source.maxQuestionText === Number.POSITIVE_INFINITY ? undefined : source.maxQuestionText ?? DEFAULT_MAX_QUESTION_TEXT),
+      // With a thoroughness level in force (`everyRanked` unset) the
+      // fused order positions every pool member, so the history's size
+      // and a pool member's own meaning score come from the uncut pool,
+      // as 'count' reads it for the other feed dials.
       labelPool: (source.labelKinds?.length ?? 0) > 0 ? 'gate'
-        : (options.everyRanked !== undefined && options.everyRanked !== true)
-          || (options.rare ?? source.rare ?? false) !== false
+        : options.everyRanked !== true || (options.rare ?? source.rare ?? false) !== false
           ? 'count' : undefined,
+      // The fused order reads every part's meaning position, so the
+      // meaning lanes keep every part's similarity for it.
+      ...(options.everyRanked === undefined ? { meaningPositions: true } : {}),
     };
     const read = await readSearches(source, sourceRequest, context, namesFor(source));
     return period === undefined ? read : addTaskPeriod(source, sourceRequest, period, read, context);
@@ -1009,10 +1062,15 @@ export async function pickFromSources(
       });
       const chosen = bestRank(candidate) < bestRank(existing) ? candidate : existing;
       const past = existing.pastLaneCut === true && candidate.pastLaneCut === true ? { pastLaneCut: true as const } : {};
+      const meaningScore = Math.max(
+        existing.meaningScore ?? Number.NEGATIVE_INFINITY,
+        candidate.meaningScore ?? Number.NEGATIVE_INFINITY);
       // A merged candidate still needs at least one lane rank.
       unique.set(key, ranks.some((rank) => rank !== null)
-        ? { ...unmarked(chosen), searchRanks: ranks, ...past }
-        : { ...unmarked(chosen), searchRanks: undefined, ...past });
+        ? { ...unmarked(chosen), searchRanks: ranks,
+            ...(Number.isFinite(meaningScore) ? { meaningScore } : {}), ...past }
+        : { ...unmarked(chosen), searchRanks: undefined,
+            ...(Number.isFinite(meaningScore) ? { meaningScore } : {}), ...past });
     }
     combined = [...unique.values()];
   }

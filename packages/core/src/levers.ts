@@ -24,11 +24,17 @@ export interface LeverStates {
     readonly keyword: boolean;
     readonly meaning: boolean;
   };
-  /** Read every ranked part, on by default. `{ c }` turns it off and
-   *  keeps only the top `round(c × N^0.8)` reference parts of the
-   *  ranking the decide step reads, where N is every reference part
-   *  the pick received. */
-  readonly everyRanked: true | { readonly c: number };
+  /** Read every ranked part. `{ c }` turns it off and keeps only the
+   *  top `round(c × N^0.8)` reference parts of the ranking the decide
+   *  step reads, where N is every reference part the pick received.
+   *  Present only when the call gave it; a pick without it records
+   *  `thoroughness` instead, 'deep' when no level was named. */
+  readonly everyRanked?: true | { readonly c: number };
+  /** The appetite for look-back the pick ran with: the level whose
+   *  `THOROUGHNESS` depth cut the fused order's short list. Present
+   *  whenever `everyRanked` was not given; 'deep' unless the call
+   *  chose a level. */
+  readonly thoroughness?: 'quick' | 'normal' | 'deep';
   /** Present only when the call gave it, in place of every source's
    *  own `bar`: `true` keeps every scored part, `{ bar }` cuts references
    *  below a flat decision bar, `{ bySize }` cuts below a bar that rises

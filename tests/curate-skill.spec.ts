@@ -7,7 +7,7 @@ import { join, resolve } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { LABEL_KINDS, curate, historySource, jevRequest, pickFromSources, type CandidateReadRequest, type CandidateSource, type MemoryCandidate } from '@curatejs/core';
+import { LABEL_KINDS, THOROUGHNESS, curate, historySource, jevRequest, pickFromSources, type CandidateReadRequest, type CandidateSource, type MemoryCandidate } from '@curatejs/core';
 import { chat, CHAT_CASCADE, chatSettings } from '@curatejs/chat';
 import { git as gitSource } from '@curatejs/git';
 // @ts-expect-error The standalone JavaScript command has no type declarations.
@@ -113,6 +113,15 @@ describe('curate command input', () => {
   it.each(['userFirst', 'recentFirst'])('requires a boolean for %s', (key) => {
     expect(() => parseSources({ sources: [{ type: 'markdown', path: 'documents' }], [key]: 'true' })).toThrow();
     expect(parseSources({ sources: [{ type: 'markdown', path: 'documents' }], [key]: false })[key]).toBe(false);
+  });
+
+  it.each(['quick', 'normal', 'deep'])('keeps thoroughness %s', (level) => {
+    expect(parseSources({ sources: [{ type: 'markdown', path: 'documents' }], thoroughness: level }).thoroughness).toBe(level);
+  });
+
+  it.each([['exhaustive'], ['QUICK'], [true], [0]])('rejects thoroughness %j', (value) => {
+    expect(() => parseSources({ sources: [{ type: 'markdown', path: 'documents' }], thoroughness: value }))
+      .toThrow("'quick', 'normal' or 'deep'");
   });
 
   it('runs from another folder through a symlinked script or a symlinked skill folder', async () => {
@@ -491,7 +500,9 @@ it('skips label-only pool reads for sources without kinds while retaining ranked
   const source: CandidateSource = { id: 'git', kind: 'git-history', role: 'reference', read };
   const options = { task: 'hit', decide: async ({ questions }: { questions: { key: string }[] }) =>
     Object.fromEntries(questions.map((q) => [q.key, { status: 'answered', probability: 0.9 }])) };
-  await pickFullSources([source], { task: 'hit' }, options);
+  // The old feed skips the pool read without a kind; the new default
+  // always reads it for the fused order.
+  await pickFullSources([source], { task: 'hit' }, { ...options, everyRanked: true });
   expect(read).toHaveBeenCalledTimes(1);
   read.mockClear();
   const counted = await pickFullSources([source], { task: 'hit' }, {
@@ -516,8 +527,10 @@ it('recovers a part outside cut reads through the source label kinds', async () 
       return { status: 'read', complete: true, candidates: request.wholeLanes ? parts : parts.slice(0, 1) };
     } };
   const asked: string[] = [];
+  // The label gate's rescue of an outside part is an everyRanked feed
+  // behavior; under a level the part stays outside the fused order.
   const picked = await pickFullSources([source], { task: 'Which bicycle does the user own?' }, {
-    task: 'Which bicycle does the user own?',
+    task: 'Which bicycle does the user own?', everyRanked: true,
     decide: async ({ questions }: { questions: { key: string; id: string; text: string; questionKey?: string }[] }) =>
       Object.fromEntries(questions.map((question) => {
         if (question.questionKey === undefined) asked.push(question.text);
@@ -544,7 +557,7 @@ it('preserves an incomplete limited read beside the complete explicit label pool
       ? { status: 'read', complete: false, partial: 'the limit kept 1 of 2 candidates', candidates: parts.slice(0, 1) }
       : { status: 'read', complete: true, candidates: parts } };
   const picked = await pickFullSources([source], { task: 'orchard', wholeLanes: true, limit: 1 }, {
-    task: 'orchard', decide: async ({ questions }: { questions: { key: string }[] }) =>
+    task: 'orchard', everyRanked: true, decide: async ({ questions }: { questions: { key: string }[] }) =>
       Object.fromEntries(questions.map((question) => [question.key, { status: 'answered', probability: 0.8 }])),
   });
   expect(picked.reads[0]).toMatchObject({
@@ -853,6 +866,36 @@ describe('a run through core decision calls', () => {
     expect(record.reads.some((read: { task: string }) => read.task === 'Ada')).toBe(true);
     expect(record.jev.length).toBeGreaterThan(0);
     expect(await readFile(join(runFolder, 'log.md'), 'utf8')).toContain('2026-01-01');
+  });
+
+  it('runs the pick at the thoroughness level the sources file names', async () => {
+    const directory = await folder();
+    const home = join(directory, 'home');
+    const notes = join(directory, 'notes');
+    await mkdir(home);
+    await mkdir(notes);
+    await writeFile(join(notes, 'orchard.md'), '# Orchard\n\nThe orchard has trees. Fruit trees grow here.\n');
+    const sourcesFile = join(directory, 'sources.json');
+    await writeFile(sourcesFile, JSON.stringify({
+      sources: [{ type: 'markdown', path: notes }], thoroughness: 'quick',
+    }));
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
+    vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
+    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => new Response(JSON.stringify({
+      usage: null,
+      answers: Object.fromEntries(Object.keys(JSON.parse(String(init.body)).questions).map((key) => [key, { noul: 0.8 }])),
+    }))));
+    const { call, folders } = subscriptionReply(searches());
+    const runFolder = await run(['--sources', sourcesFile, 'orchard'], call);
+    expect(runFolder).toBe(folders[0]);
+
+    const record = JSON.parse(await readFile(join(runFolder, 'record.json'), 'utf8'));
+    expect(record.status).toBe('complete');
+    expect(record.pick?.pick?.thoroughness).toEqual({ level: 'quick', depth: THOROUGHNESS.quick });
+    expect(record.pick?.pick?.sent).toBeLessThanOrEqual(THOROUGHNESS.quick);
+    expect(record.pick?.levers?.thoroughness).toBe('quick');
+    expect(record.pick?.levers).not.toHaveProperty('everyRanked');
   });
 });
 

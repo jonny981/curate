@@ -29,12 +29,15 @@ describe('reader rare-word defaults', () => {
       [q.key, { status: 'answered', probability: 0.9 }]));
     const git = reader('git', true);
     const transcript = reader('chat', false);
-    const result = await pickFullSources([git, transcript], { task: 'one' }, { task: 'one', decide });
+    // On the old feed a full-pool read happens only where rare is on; a
+    // thoroughness level reads every source's pool for the fused order.
+    const result = await pickFullSources([git, transcript], { task: 'one' },
+      { task: 'one', decide, everyRanked: true });
     expect(git.read).toHaveBeenCalledTimes(2);
     expect(transcript.read).toHaveBeenCalledTimes(1);
     expect(result.record.levers.sources).toEqual({ git: { labels: false, rare: true, bar: 0.0146 }, chat: { labels: false, rare: false, bar: 0.0146 } });
     vi.mocked(git.read).mockClear();
-    await pickFullSources([git], { task: 'one' }, { task: 'one', decide, rare: false });
+    await pickFullSources([git], { task: 'one' }, { task: 'one', decide, everyRanked: true, rare: false });
     expect(git.read).toHaveBeenCalledTimes(1);
   });
 });

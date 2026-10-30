@@ -36,8 +36,10 @@ function counting(fail?: () => Promise<void>, hold?: () => Promise<unknown>) {
   return { asked, how, first };
 }
 
+// The sharing these tests measure happens inside the label gate's
+// work on the whole pool: an everyRanked feed shape.
 const run = (how: PickDecide, directory: string) =>
-  pickFromSources([source()], { task }, { task, decide: how, labels: { directory } });
+  pickFromSources([source()], { task }, { task, decide: how, everyRanked: true, labels: { directory } });
 
 describe('picks running together share label work in flight', () => {
   it('asks each part once across two picks on one label directory, and both use the same labels', async () => {
@@ -86,7 +88,7 @@ describe('picks running together share label work in flight', () => {
     const directory = join(folder, 'labels');
     const cancel = new AbortController();
     const first = pickFromSources([source()], { task },
-      { task, decide: one.how, labels: { directory }, signal: cancel.signal });
+      { task, decide: one.how, everyRanked: true, labels: { directory }, signal: cancel.signal });
     while (one.asked.size === 0) await new Promise((resolve) => setTimeout(resolve, 5));
     const second = run(two.how, directory);
     await two.first;

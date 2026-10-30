@@ -72,7 +72,15 @@ export interface MeaningSearchOptions {
 export async function addMeaningRanks(
   candidates: readonly MemoryCandidate[],
   task: string,
-  options: MeaningSearchOptions & { readonly searchLines?: readonly string[]; readonly signal?: AbortSignal },
+  options: MeaningSearchOptions & {
+    readonly searchLines?: readonly string[];
+    readonly signal?: AbortSignal;
+    /** Internal to pickFromSources: the read's keyword lane count, the
+     *  index its meaning lanes start at. Inferred from the
+     *  candidates' `searchRanks` when unset, which reads 1 when no
+     *  candidate carries ranks at all. */
+    readonly keywordLanes?: number;
+  },
 ): Promise<MemoryCandidate[]> {
   if (options.nearest !== undefined && (!Number.isSafeInteger(options.nearest) || options.nearest < 1)) {
     throw new TypeError('nearest must be a positive safe integer.');
@@ -103,7 +111,8 @@ export async function addMeaningRanks(
     });
   }
   options.signal?.throwIfAborted();
-  const keywordLanes = unique.reduce((count, candidate) => Math.max(count, candidate.searchRanks?.length ?? 1), 1);
+  const keywordLanes = options.keywordLanes
+    ?? unique.reduce((count, candidate) => Math.max(count, candidate.searchRanks?.length ?? 1), 1);
   const ranks = unique.map((candidate) => Array.from({ length: keywordLanes + queries.length }, (_, lane) =>
     lane < keywordLanes ? candidate.searchRanks?.[lane] ?? null : null));
   // With `wholeLanes` on, whether every meaning lane that holds a part
@@ -146,6 +155,11 @@ export async function addMeaningRanks(
     const { poolOnly: _poolOnly, pastLaneCut: keywordPast, ...rest } = candidate;
     const keywordHeld = ranks[index]!.slice(0, keywordLanes).some((rank) => rank !== null);
     const past = keywordHeld ? keywordPast === true && pastMeaning[index] !== false : pastMeaning[index] === true;
-    return [{ ...rest, searchRanks: ranks[index]!, ...(past ? { pastLaneCut: true as const } : {}) }];
+    // A part a meaning lane kept holds its best similarity over the
+    // queries, for the fused order a thoroughness level reads.
+    const meaningKept = ranks[index]!.slice(keywordLanes).some((rank) => rank !== null);
+    return [{ ...rest, searchRanks: ranks[index]!,
+      ...(meaningKept ? { meaningScore: Math.max(...scores.map((lane) => lane[index]!)) } : {}),
+      ...(past ? { pastLaneCut: true as const } : {}) }];
   });
 }

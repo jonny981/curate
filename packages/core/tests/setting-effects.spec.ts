@@ -51,7 +51,7 @@ describe('the record says what each pick setting did', () => {
   });
 
   it('labels count the kept parts only the label lane brought in', async () => {
-    const picked = await pickFromSources([chat({ labels: true })], { task }, { task, decide });
+    const picked = await pickFromSources([chat({ labels: true })], { task }, { task, decide, everyRanked: true });
     expect(effect(picked.record, 'labels', 'chat')).toEqual({
       setting: 'labels',
       source: 'chat',
@@ -67,7 +67,7 @@ describe('the record says what each pick setting did', () => {
       ['git', () => git(), 1],
       ['markdown', () => markdown(), 5],
     ] as const)('counts the parts the round added on %s', async (id, source, added) => {
-      const picked = await pickFromSources([source()], { task }, { task, decide });
+      const picked = await pickFromSources([source()], { task }, { task, decide, everyRanked: true });
       const rare = picked.record.pick!.rare!;
       expect(effect(picked.record, 'rare', id)).toMatchObject({
         actedOn: rare.pulled.filter((entry) => entry.sourceId === id).length, added, dropped: 0,
@@ -78,7 +78,7 @@ describe('the record says what each pick setting did', () => {
     });
 
     it('says no pulled part cleared the rare bar when every part was already decided', async () => {
-      const picked = await pickFromSources([git()], { task, wholeLanes: true }, { task, decide });
+      const picked = await pickFromSources([git()], { task, wholeLanes: true }, { task, decide, everyRanked: true });
       const entry = effect(picked.record, 'rare', 'git')!;
       expect(entry.actedOn).toBeGreaterThan(0);
       expect(entry).toMatchObject({ added: 0, dropped: 0 });
@@ -86,7 +86,7 @@ describe('the record says what each pick setting did', () => {
     });
 
     it('sums each source\'s added count to the round\'s total', async () => {
-      const picked = await pickFromSources([git(), markdown()], { task }, { task, decide });
+      const picked = await pickFromSources([git(), markdown()], { task }, { task, decide, everyRanked: true });
       const entries = picked.record.effects.filter((entry) => entry.setting === 'rare');
       expect(entries.map((entry) => entry.source)).toEqual(['git', 'markdown']);
       expect(entries.reduce((sum, entry) => sum + entry.added, 0)).toBe(picked.record.pick!.rare!.added);
@@ -142,7 +142,7 @@ describe('the record says what each pick setting did', () => {
 
   describe('wholeLanes', () => {
     it('counts the kept parts only the whole-lane read brought in', async () => {
-      const picked = await pickFromSources([chat()], { task, wholeLanes: true }, { task, decide });
+      const picked = await pickFromSources([chat()], { task, wholeLanes: true }, { task, decide, everyRanked: true });
       const past = selectedFrom(picked, 'chat').filter((c) => Number(c.id.split('#')[1]) >= 60).length;
       expect(past).toBeGreaterThan(0);
       expect(effect(picked.record, 'wholeLanes', 'chat')).toEqual({
@@ -154,7 +154,7 @@ describe('the record says what each pick setting did', () => {
 
     it('says when the read held no part past the cut', async () => {
       const picked = await pickFromSources([chat({}, parts('chat', 'chatword').slice(0, 60))],
-        { task, wholeLanes: true }, { task, decide });
+        { task, wholeLanes: true }, { task, decide, everyRanked: true });
       expect(effect(picked.record, 'wholeLanes', 'chat')).toEqual({
         setting: 'wholeLanes', source: 'chat', actedOn: 0, added: 0, dropped: 0,
         summary: 'wholeLanes on chat: the read held no part past the lane cut, so it added none. It added no part.',
@@ -169,7 +169,7 @@ describe('the record says what each pick setting did', () => {
           candidates: [part('notes', 'a'), part('notes', 'b'), part('notes', 'x', request.wholeLanes ? { pastLaneCut: true } : {})] }),
       };
       const picked = await pickFromSources([reader], { task, wholeLanes: true },
-        { task, decide: fixed(() => 0.9), rare: false, limits: { maxCandidates: 2 } });
+        { task, decide: fixed(() => 0.9), everyRanked: true, rare: false, limits: { maxCandidates: 2 } });
       expect(picked.selected.map((c) => c.id)).toEqual(['a', 'b']);
       expect(effect(picked.record, 'wholeLanes', 'notes')).toEqual({
         setting: 'wholeLanes', source: 'notes', actedOn: 1, added: 0, dropped: 0,
@@ -192,7 +192,7 @@ describe('the record says what each pick setting did', () => {
       part('markdown', 'other', { repository: 'repo-1', path: 'docs/other.md' })]), ...markdownSettings, bar: 0.6 });
     const answers: Record<string, number> = { commit: 0.9, ops: 0.45, other: 0.45 };
     const run = (gitBar: number) => pickFromSources([historySource({ reader: commits, ...gitSettings, bar: gitBar }), notes],
-      { task }, { task, decide: fixed((q) => answers[q.id]!) });
+      { task }, { task, decide: fixed((q) => answers[q.id]!), everyRanked: true });
 
     it('counts the note the commit link kept', async () => {
       const picked = await run(0.0146);
@@ -328,7 +328,7 @@ describe('the record says what each pick setting did', () => {
           candidates: (request.task === 'line' ? ['x', 'a'] : ['a', 'x']).map((id) => part('notes', id)) }),
       };
       const picked = await pickFromSources([crossed], { task, searchLines: ['line'] },
-        { task, decide: fixed(() => 0.9), rare: false, limits: { maxCandidates: 1 } });
+        { task, decide: fixed(() => 0.9), everyRanked: true, rare: false, limits: { maxCandidates: 1 } });
       expect(picked.selected.map((c) => c.id).sort()).toEqual(['a', 'x']);
       expect(effect(picked.record, 'searchLines', 'notes')).toEqual({
         setting: 'searchLines', source: 'notes', actedOn: 2, added: 1, dropped: 0,
@@ -344,7 +344,7 @@ describe('the record says what each pick setting did', () => {
           candidates: (request.task === 'line' ? ['a', 'b', 'x'] : ['a', 'b']).map((id) => part('notes', id)) }),
       };
       const picked = await pickFromSources([past], { task, searchLines: ['line'] },
-        { task, decide: fixed(() => 0.9), rare: false, limits: { maxCandidates: 2 } });
+        { task, decide: fixed(() => 0.9), everyRanked: true, rare: false, limits: { maxCandidates: 2 } });
       expect(picked.selected.map((c) => c.id)).toEqual(['a', 'b']);
       expect(effect(picked.record, 'searchLines', 'notes')).toEqual({
         setting: 'searchLines', source: 'notes', actedOn: 3, added: 0, dropped: 0,
@@ -382,15 +382,18 @@ describe('the record says what each pick setting did', () => {
 
   describe('taskPeriod', () => {
     // m is dated in March and no search lane held it: the period and the label lane both bring it in.
-    const periodPick = (labels: boolean) => pick([part('notes', 'a', { searchRanks: [0] }),
+    const periodPick = (labels: boolean, oldFeed = false) => pick([part('notes', 'a', { searchRanks: [0] }),
       part('notes', 'm', { poolOnly: true, dateWindow: 'task-period', date: { value: '2025-03-15', meaning: 'recorded' } })], {
       task: 'What did I decide in March?', taskDate: '2025-06-02', timeZone: 'Europe/London',
       decide: fixed(() => 0.9), rare: false, ...(labels ? { labelKindsBySource: { notes: LABEL_KINDS } } : {}),
+      ...(oldFeed ? { everyRanked: true as const } : {}),
     });
     const head = 'taskPeriod on notes: 1 part dated from 2025-03-01T00:00:00.000+00:00 to 2025-03-31T23:59:59.999+01:00';
 
     it('counts the kept part only the period brought in', async () => {
-      expect(effect((await periodPick(false)).record, 'taskPeriod', 'notes')).toEqual({
+      // Under a level the depth is a way in for every feed part, so the
+      // period is a sole way in only on the `everyRanked` feed.
+      expect(effect((await periodPick(false, true)).record, 'taskPeriod', 'notes')).toEqual({
         setting: 'taskPeriod', source: 'notes', actedOn: 1, added: 1, dropped: 0,
         summary: `${head}; 1 reached the decide step only through the period, and 1 of them was kept.`,
       });
@@ -407,7 +410,7 @@ describe('the record says what each pick setting did', () => {
   });
 
   it('gives no entry for a setting that was off', async () => {
-    const picked = await pickFromSources([chat()], { task }, { task, decide });
+    const picked = await pickFromSources([chat()], { task }, { task, decide, everyRanked: true });
     expect(picked.record.effects.map((entry) => `${entry.setting} ${entry.source}`)).toEqual(['bar chat', 'taskPeriod chat']);
   });
 });

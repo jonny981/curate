@@ -41,7 +41,7 @@ const { log, rules, picked, result } = await mem.recall('What billing constraint
 
 Each source carries its own settings: whether the rare-word round runs on it, which label kinds its parts are asked, and the decision-score bars its parts are cut at.
 Git and Markdown run the rare-word round and chat leaves it off; chat asks the seven label kinds and git and Markdown ask none; every reader keeps references scored 0.0146 or more.
-Out of the box the call decides every ranked part, with routing off.
+Out of the box the call decides the top of the fused order at the `deep` thoroughness depth, with routing off.
 Explicit `read`, `pick` and `curate` options apply to the whole call:
 
 ```ts
@@ -290,8 +290,9 @@ as an exact phrase that ignores case, like a `searchPhrases` entry. The
 reason is recall: a part the search loses never reaches the decision
 step, and a name is the most exact search a task offers. A name lane is
 never cut on its score curve. Like every lane, it holds at most the
-read's `limit` matches, `maxCandidates` caps it on its own, and an
-`everyRanked: { c }` cut can leave one of its matches undecided. Its
+read's `limit` matches, `maxCandidates` caps it on its own, and a feed
+cut, `everyRanked: { c }` or the `thoroughness` depth, can leave one
+of its matches undecided. Its
 entry in the read's `lanes` has the type `name` and the name as its
 search text. A task with no names opens no name lane, and neither does
 a name another phrase lane already searches. A name gets no meaning
@@ -970,14 +971,17 @@ probability. Two sources that share a kind set share the task's
 labels, but each reads them at its own bar. The decide step then sees
 the union of the keyword lanes and the label lane, ordered by
 reciprocal-rank fusion of the two orders. Through `pickFromSources` the gate
-labels the source's full uncut search pool, so a part the keyword lanes
-dropped can still reach the decide step through the label lane; through
+labels the source's full uncut search pool: on the `everyRanked` feed a
+part the keyword lanes dropped can still reach the decide step through
+the label lane, while under `thoroughness` the lane reorders only parts
+already inside the depth and admits none. Through
 `pick` directly it labels reference parts with kinds in `labelKindsBySource`.
 Label batches
 count against `maxBatches` and `maxElapsedMs`, so a stop while labelling
 leaves the decide step unasked. The label lane is not capped by
-`maxCandidates`: every part in it reaches the decide step unless
-`everyRanked` caps the merged ranking.
+`maxCandidates`: every part in it reaches the decide step unless a feed
+bound caps the merged ranking: `everyRanked: { c }`, or the
+`thoroughness` depth.
 
 The record's `labelKindsBySource` lists the full kind definitions applied
 to each source, or `[]` when it carries none.
@@ -1061,8 +1065,9 @@ pick without it.
 ### Optional scaled top-k
 
 `everyRanked: { c }` decides only the top `round(c × N^0.8)` reference parts
-of the ranking the decide step reads; `everyRanked` is on by default
-and `true` reads them all. N is the number
+of the ranking the decide step reads. `everyRanked` is unset by
+default, `thoroughness` bounds the feed instead, and `true` reads
+every ranked part with no depth, the earlier feed. N is the number
 of reference parts the pick received: the history's size, not the
 ranking's. Through `pickFromSources` the read carries the source's
 full uncut pool, so lane cuts and read limits do not shrink it; a pool
@@ -1073,9 +1078,8 @@ when the gate fused its lane into the keyword order, the keyword
 order otherwise. Rules pass through uncounted and are never cut. A
 part below the keep count is never asked; it records `unassessed` with
 reason `'pick'`. `c` must be a positive finite number, and an invalid
-`c` throws a `TypeError` before any decide call. The record's `pick`
-field keeps `n`, `c`, `kept` and which ranking was cut (`'fusion'` or
-`'keyword'`).
+`c` throws a `TypeError` before any decide call, as does an
+`everyRanked` combined with `thoroughness`.
 
 Measured on the tuning half's saved rankings (249 questions, 445 answer
 messages) with the label gate on and `wholeLanes` on, over every part of
@@ -1092,10 +1096,52 @@ by item id, where the package's fused order breaks them by keyword
 position. It checks the study's coverage, not identical coverage for
 the package's own ranking.
 
-It is a dial, never the default: the default keeps every part the
-ranking holds because no fixed count is safe everywhere. The dial's
-point is cost: the decide step's work grows sublinearly with the
-history's size instead of with the whole ranking.
+It is a dial, never the default: a fitted `thoroughness` depth bounds
+the feed instead, because no caller-chosen count is safe everywhere.
+The dial's point is cost: the decide step's work grows sublinearly with
+the history's size instead of with the whole ranking.
+
+### Thoroughness
+
+`thoroughness` sets the appetite for look-back: how deep into the
+ranked candidates the decide step reads. The pick searches and ranks
+broadly, then sends one bounded short list to `decide`: the top
+`THOROUGHNESS[level]` reference parts of a fused order that gives each
+candidate the best of its keyword-lane positions (a keyword lane is
+one `searchRanks` index across every source) and its position in the
+history's own best-similarity ranking. `quick`, `normal` and `deep`
+hold 672, 3,674 and 12,896 parts. The level defaults to `deep` whenever
+`everyRanked` is unset and records under `levers.thoroughness`. A part
+outside the depth is never asked by the first pass and records
+`unassessed` with reason `'thoroughness'`; the rare-word round can
+still pull one in, but only while the depth still has room, so the
+decide step is never asked about more reference parts than the depth.
+Pool members sit in the record the same way, so an unordered member is
+unassessed rather than absent. A lane's candidate limit, not the
+depth, leaves its cut parts unassessed with reason `'limits'`, and
+`memory()` still rejects that collection. The record's `pick` field
+keeps `n`, `sent`, `questions`, `kept`, the level and depth under
+`thoroughness`, and which ranking the feed followed (`'fusion'` or
+`'keyword'`); under `everyRanked: { c }` it keeps `n`, `sent`,
+`questions`, `c`, `kept` and `ranking`, and a rare-word round adds
+`rare`.
+
+The depths are fitted numbers, not round ones. A replay of recorded
+picks over about 116,000 parts (coding-agent transcripts, Git history
+and Markdown notes) swept the depth against eight task sets with known
+answer parts. `deep` is the smallest depth that kept every known answer
+part in all eight sets (14 of 14, 13 of 13, 12 of 12, 3 of 3 four
+times, 5 of 5), at about 17 pence of questions on the largest set.
+`quick` and `normal` were fitted to about 1 and 5 pence on the same
+history. On the largest set, the seven smaller sets together and the
+largest of them `quick` kept 4 of 14, 20 of 42 and 9 of 13 known
+answer parts, and `normal` kept 12 of 14, 37 of 42 and 13 of 13.
+Decide-step minutes on the largest set, 30 seconds plus
+33 ms per asked part and leaving out reading and the curator, were about
+0.8, 2.3 and 6.6 at `quick`, `normal` and `deep`. The replay also
+compared meaning lanes cut at each query's score bend with whole
+lanes: the bend kept every answer part at the smaller depth, so a
+level reads the bend lanes.
 
 ### Optional rare-word round
 
@@ -1455,9 +1501,10 @@ record holds `levers.wholeLanes: { keyword, meaning }`.
 | Lever | What "on" does | Cost when on | Measured impact | Where measured |
 | --- | --- | --- | --- | --- |
 | Read `wholeLanes` | Keeps every candidate each keyword and meaning lane returned. Off, each lane cuts where its own score curve flattens (chat: the pre-merge keyword score; `searchPhrases` lanes are never cut, and kind lanes are never cut on phrase counts). | The decide feed grows by the parts the curves would have cut; kept counts vary with each lane's scores, and deciding is the expensive stage. | The cut the off state applies missed 6 of 445 answer messages on the tuning half: three shared no words with the question, three ranked below the cut. Its score and cost impact, and the loss under the label gate, are not yet measured. | Saved tuning-half lanes, 249 questions. |
-| Pick `everyRanked` | Every ranked reference part reaches the decide step. Off as `{ c }`, only the top `round(c × N^0.8)` reach it, where N is the number of reference parts the pick received; rules pass through uncut and dropped parts record `unassessed` with reason `'pick'`. | The decide step reads every ranked part, the whole ranking: all 850 of 850 parts at one measured size and all 8,475 of 8,475 at the largest. The off dial at c = 0.68 read 150 of the 850 and 944 of the 8,475. | On the keyword-and-label ranking the off dial at c = 0.68 kept 437–442 of 445 answer messages (98–99%) at every size from 127 to 8,475 parts (on keeps the whole ranking) and scored 229 of 249 at $0.18 a question; the on state's score and cost under the label gate are not yet measured. | Saved tuning-half rankings replayed, label gate on and `wholeLanes` on; the tuning dials in the root README. |
+| Pick `thoroughness` | The decide step reads the top `THOROUGHNESS[level]` reference parts of the fused order: 672 for `quick`, 3,674 for `normal`, 12,896 for `deep` (the default whenever `everyRanked` is unset). Parts deeper than the level record `unassessed` with reason `'thoroughness'`; the rare-word round can pull one in only while the depth still has room. | On the replayed ~116,000-part history the levels cost about 1, 5 and 17 pence of questions on the largest set, with an estimated 0.8, 2.3 and 6.6 decide-step minutes (30 s plus 33 ms a part, reading and curator excluded). `quick` kept 24 of the 56 known answer parts across the eight sets and `normal` 49 of 56; `deep` kept all 56. | `deep` is the smallest depth that kept every known answer part in all eight replayed sets. | Recorded-pick replay over ~116,000 parts from chat transcripts, Git history and Markdown notes, eight task sets. |
+| Pick `everyRanked` | Unset by default: `thoroughness` bounds the feed instead. `true` gives the earlier feed: every ranked reference part reaches the decide step. `{ c }` reads only the top `round(c × N^0.8)`, where N is the number of reference parts the pick received; rules pass through uncut and dropped parts record `unassessed` with reason `'pick'`. | With `true`, the decide step reads every ranked part, the whole ranking: all 850 of 850 parts at one measured size and all 8,475 of 8,475 at the largest. The off dial at c = 0.68 read 150 of the 850 and 944 of the 8,475. | On the keyword-and-label ranking the off dial at c = 0.68 kept 437–442 of 445 answer messages (98–99%) at every size from 127 to 8,475 parts (on keeps the whole ranking) and scored 229 of 249 at $0.18 a question; the on state's score and cost under the label gate are not yet measured. | Saved tuning-half rankings replayed, label gate on and `wholeLanes` on; the tuning dials in the root README. |
 | Source `bar`, pick `everyScored` | Off by default: each source cuts its references below its own `bar`, 0.0146 for every reader. `everyScored` sets one cut for every source in place of their bars: `true` keeps every part with a valid decision probability, including zero; `{ bar }` cuts below a flat bar; `{ bySize }` cuts below a bar that rises with the decided count. | The curator receives every scored part. At the 0.0146 bar it receives about 70 of a LongMemEval history's 850 parts. | At the 0.0146 bar: 225 of the 249 tuning questions at $0.13 a question (223 on the all-500 replay), and 458 of 500. A saved 0.6 bar removed every fed fragment of 183 labelled answer turns; a 0.05 bar lost 8 of 438 answer messages. 0.0146 is the highest cut that lost no answer message on the tuning questions. | Saved-decision sweep and the LongMemEval runs in the root README. |
-| Source `labels` | Per source: a source that carries label kinds has its reference parts labelled with those kind questions, and the task is asked once per distinct kind set. Sources with no kinds receive no label questions. Stores each set under `directory` and adds a label lane so parts the keyword lanes dropped can reach decide. Uses a default cache directory and decision-function ID; `pick.labels` overrides both. | One question per kind for each part and task, once per text, kind set and `deciderId`; later picks reuse the store. | Keyword alone reached 439 of the tuning half's 445 answer messages; with each part labelled, all 445 were reached at 38% of each history. Its score and cost impact is not yet measured. | Saved label run on the tuning half, in the root README. |
+| Source `labels` | Per source: a source that carries label kinds has its reference parts labelled with those kind questions, and the task is asked once per distinct kind set. Sources with no kinds receive no label questions. Stores each set under `directory` and adds a label lane so parts the keyword lanes dropped can reach decide on the `everyRanked` feed; under a `thoroughness` level the lane reorders only parts already inside the depth. Uses a default cache directory and decision-function ID; `pick.labels` overrides both. | One question per kind for each part and task, once per text, kind set and `deciderId`; later picks reuse the store. | Keyword alone reached 439 of the tuning half's 445 answer messages; with each part labelled, all 445 were reached at 38% of each history. Its score and cost impact is not yet measured. | Saved label run on the tuning half, in the root README. |
 | Pick `route`, `curate` `route` | `route: 'jev'` on the pick asks the task the four route questions once. `route: 'jev'` on `curate` applies the recorded answers to the curator's guidance: worked notes, the preference lines. | Four questions asked of the task once a pick, sharing the task's label request when that runs and asked in one separate request otherwise; the curator adds the lines the answers chose. | Not yet measured. | Not yet measured. |
 | Source `rare`, pick `rare` | Per source: after the selection pass, pulls in the source's unselected references sharing a rare word with one of its selected references. Each source turns it on with its own `rare` setting; `pick.rare` sets it for every source. Each source's round counts word frequency over its own references only and pulls only its own parts, pool members included; parts at or above `rare.bar` (default `0.0146`) join the selection. A word is rare at a document frequency of at most `rare.share × N` (default `5/850`), where N is that source's reference count. | The parts it pulls are asked or their scores reused: 12.9 parts a question at the defaults on the tuning half. On a history under 340 parts the default share can pull nothing. | Holding the selection bar at 0.05 lost 15 answer messages and the round recovered 6 of them. Its score impact is not yet measured. | Saved tuning-half decisions, 249 questions. |
 
@@ -1490,12 +1537,12 @@ Each reader package exports its settings as one plain object:
 Rules have no name lanes because they are chosen by where they apply, not by search.
 
 The 0.0146 bar is the highest cut that lost no answer message on the tuning questions.
-The levers for the whole call start at: `wholeLanes` off, `everyRanked` on, and `route` off.
+The levers for the whole call start at: `thoroughness` at `'deep'`, `wholeLanes` off, and `route` off; `everyRanked` is unset.
 `everyScored` and `rare` are unset, so each source's own `bar` and `rare` apply.
 
 A source's settings change only that source's pick, with one exception: a selected commit brings in a note it changed, through the changed-path link.
-That holds while `everyRanked` stays on and no stopping limit is set.
-`everyRanked: { c }` ranks every source's parts in one list before it cuts, and a stopping limit in `limits` is shared by every source, so with either one, one source's settings can change another's pick.
+That holds only under `everyRanked: true` with no stopping limit set.
+The `thoroughness` depth, the default, and `everyRanked: { c }` both rank every source's parts in one fused list before they cut, and a stopping limit in `limits` is shared by every source, so with either one, one source's settings can change another's pick.
 
 The record's `levers.sources` maps each source id to the settings it ran with, a `SourceSettings`:
 
@@ -1510,6 +1557,7 @@ The record's `levers.sources` maps each source id to the settings it ran with, a
 
 So a run reads as, for example, `{ kind: 'chat', labels: true, labelBar: 0.5, rare: false, bar: 0.0146 }`: a chat source with labels on.
 `levers.rare` is `false` or `{ share, bar }`, and `levers.everyScored` is present only when the call gave it.
+`levers.thoroughness` holds the level whenever `everyRanked` is unset, `'deep'` by default; `levers.everyRanked` is present only when the call gave it, and the two never appear together.
 
 Set your own with `historySource()`.
 `reader` is any source, a reader's or your own, and `rare`, `labels`, `names` and `bar` are required, so spread a settings object to start from its values:
@@ -1558,12 +1606,13 @@ A search line that repeats the task opens no lane, and its entry says so.
 | `alwaysOnSkipped` | The source's read skipped files the agent's harness loads every session; the summary names each file and why | The files skipped | 0 | `null`. A skipped file is never split into parts |
 | `everyScored` | The call gave the override | As `bar`; it replaces the source's `bar` entry | 0 | As `bar` |
 | `everyRanked` | The call gave `{ c }` | Ranked parts | 0 | `null`. The summary says how many parts the cut left undecided |
+| `thoroughness` | The level is in force, every pick without `everyRanked` | The source's ranked reference parts | 0 | `null`. The summary says how many ranked parts the depth kept and how many it left undecided |
 | `typed` | The source's question set has typed questions | Parts asked at least one typed question | Kept parts whose score reaches the source's bar only with the typed terms, and parts a typed question's `keepAt` kept | Parts below the bar only because of the typed terms that no later pass kept |
 | `written` | The source's question set has `written` weights | Parts asked at least one written question | Kept parts whose score reaches the source's bar only with the written terms, other than parts a typed question's `keepAt` keeps | Parts below the bar only because of the written terms that no later pass kept |
 | `named` | The source's question set has `named` | Parts asked at least one name question | Kept parts whose score reaches the source's bar only with the name terms, other than parts a typed question's `keepAt` keeps | Parts below the bar only because of the name terms that no later pass kept |
 
 Labels, extra lanes, `wholeLanes` and the task's period also change the order of the decide feed.
-That order matters only when something ends the feed early: an `everyRanked: { c }` cut or a stopping limit.
+That order matters only when something ends the feed early: an `everyRanked: { c }` cut, a `thoroughness` depth, or a stopping limit.
 Then one of these settings can swap one kept part for another even when every part had two ways in.
 One pick cannot say which parts would have been decided without the setting, so `dropped` is `null` and the summary says the feed ended early.
 
@@ -1573,7 +1622,7 @@ The mark is on the part and on its pick entry, and the read returns the same par
 
 ### Reading a record
 
-A direct `pick()` over every part of a 400-part chat history, with labels on, decides every part.
+A direct `pick()` over every part of a 400-part chat history, with labels on, decides every part: all 400 sit inside the default `deep` depth.
 Labels had nothing to add:
 
 ```json
@@ -1638,6 +1687,7 @@ A curate record's `effects` covers `curate`'s own options; the pick's entries st
 - **`PickRecord.answerTypes`:** present when `answerTypes` was on: `bar`, `answers` with one answer per type, and `needed`, the types at or above the bar.
 - **`PickRecord.writtenQuestions`:** present when `writeQuestions` ran: `questions`, the questions it wrote, keyed `task1` to `task4`.
 - **`PickRecord.names`:** present when the pick looked for names: `found`, the names, and `by`, `'code'` when `taskNames` found them or `'caller'` when `findNames` did.
+- **`PickRecord.pick`:** present on every pick. `n` is the history's size in reference parts; `sent` the reference parts the decide port was asked at least one task question about, where an answer the decision cache supplied does not count; `questions` the task question slots actually sent, where label questions keep their own count on `labels`; `thoroughness` the level and depth in force, present whenever `everyRanked` was unset; `c` and `kept` a scaled top-k cut's coefficient and keep count; `ranking` the order the feed read; and `rare` the rare-word round's numbers when it ran.
 - **`keptBy`:** on a selected `PickRecordEntry`, the key of the typed question whose `keepAt` kept the part below its bar.
 - **`CurateRecord.answerHint`:** the line `answerHint` added to the curator's task, absent when it added none.
 - **`pastLaneCut`:** on a part and its `PickRecordEntry`, true when a read with `wholeLanes` on returned the part although the lane cut would have dropped it.
@@ -1649,13 +1699,17 @@ A direct `pick` without it gets no extra-lane or `wholeLanes` entries.
 
 ## Optional evidence limits
 
-The defaults decide every candidate admitted by keyword matches and show its full text.
-Enabled labels can add more candidates. Reader parts are 700 characters by default;
+The defaults feed the decide step the top `THOROUGHNESS.deep` reference
+parts of the fused order and show each part's full text.
+Enabled labels can add more candidates on the `everyRanked` feed; under a
+`thoroughness` level the label lane reorders only parts already inside
+the depth. Reader parts are 700 characters by default;
 every part is preserved. `DEFAULT_MAX_QUESTION_TEXT` names that reader size, not a
 decision cut. A source can return more candidates than the union
 keeps, since reference-source keyword and meaning lanes cut at their
-own score curves before any decision. Labels can add parts those curves
-left out. Pass `wholeLanes: true` to keep every returned candidate in its lane.
+own score curves before any decision. On the `everyRanked` feed, labels
+can add parts those curves left out. Pass `wholeLanes: true` to keep
+every returned candidate in its lane.
 
 | Dial | Default | Cost and loss |
 | --- | --- | --- |

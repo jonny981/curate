@@ -66,7 +66,7 @@ describe('pick rare-word round', () => {
     });
 
     expect(decidedIds(counter.calls)).toEqual(parts(4).map((item) => item.id));
-    expect(result.record.pick).toEqual({ n: 10, c: 0.68, kept: 4, ranking: 'keyword' });
+    expect(result.record.pick).toEqual({ n: 10, sent: 4, questions: 4, c: 0.68, kept: 4, ranking: 'keyword' });
     expect(result.record.pick).not.toHaveProperty('rare');
     expect(result.selected.map((item) => item.id)).toEqual(['p0', 'p1', 'p2']);
   });

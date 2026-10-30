@@ -22,6 +22,7 @@ const PICK_OPTION_KEYS: readonly (keyof PickOptions)[] = [
   'ranking', 'task', 'decide', 'questionsBySource', 'sourceKinds', 'labelKindsBySource', 'labelBarBySource',
   'keepTop', 'rankProtection', 'bestPartFirst', 'tags', 'tagsByKind',
   'labels', 'cache', 'route', 'answerTypes', 'writeQuestions', 'findNames', 'everyRanked', 'everyScored', 'rare', 'rareBySource',
+  'thoroughness',
   'barBySource', 'ruleBarBySource', 'rulesEnumerationComplete', 'readsBySource', 'limits', 'thresholds',
   'taskDate', 'timeZone', 'taskPeriod', 'signal',
 ];
@@ -34,7 +35,7 @@ const LABEL_KEYS: readonly (keyof PickLabels)[] = ['directory', 'deciderId', 'qu
 const CACHE_KEYS: readonly (keyof PickCache)[] = ['store', 'deciderId', 'questionVersion'];
 const READ_REQUEST_KEYS: readonly (keyof CandidateReadRequest)[] = [
   'task', 'searchLines', 'searchPhrases', 'meaning', 'kindLanes', 'wholeLanes',
-  'speakerOnly', 'phraseLane', 'topic', 'meaningLane', 'labelPool',
+  'speakerOnly', 'phraseLane', 'topic', 'meaningLane', 'meaningPositions', 'labelPool',
   'stripSearchInstructions', 'paths', 'exclude', 'revision', 'limit',
   'maxQuestionText', 'taskDate', 'timeZone', 'asOf', 'taskPeriod', 'decayHalfLife', 'decayLimit', 'signal',
 ];
@@ -189,6 +190,15 @@ export function checkPickOptions(options: PickOptions): void {
   }
   checkKeys(options.cache, CACHE_KEYS, 'cache');
   checkKeys(options.everyRanked, ['c'], 'everyRanked');
+  if (options.thoroughness !== undefined) {
+    if (options.thoroughness !== 'quick' && options.thoroughness !== 'normal' && options.thoroughness !== 'deep') {
+      throw new TypeError(`thoroughness must be 'quick', 'normal' or 'deep'.`);
+    }
+    // The dials name two different feeds and are never combined.
+    if (options.everyRanked !== undefined) {
+      throw new TypeError('everyRanked and thoroughness cannot both be set; thoroughness applies only when everyRanked is not given.');
+    }
+  }
   checkKeys(options.everyScored, ['bar', 'bySize'], 'everyScored');
   checkKeys(options.rare, ['share', 'bar'], 'rare');
   checkKeys(options.answerTypes, ['bar'], 'answerTypes');

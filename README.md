@@ -174,7 +174,8 @@ These levers act on the whole call:
 | Lever | Out of the box |
 | --- | --- |
 | `read.wholeLanes` | Off: cut each search lane |
-| `pick.everyRanked` | On: decide every ranked part |
+| `pick.thoroughness` | `'deep'`: decide the top 12,896 of the fused order; `quick` 672, `normal` 3,674 |
+| `pick.everyRanked` | Unset: `thoroughness` bounds the feed. `true` decides every ranked part; `{ c }` a scaled top-k |
 | `pick.route` and `curate.route` | Off |
 | `pick.everyScored` | Unset: each source's bar. When set, one bar for every source |
 | `pick.rare` | Unset: each source's setting. When set, one setting for every source |
@@ -184,8 +185,8 @@ These levers act on the whole call:
 
 The default batch size acts only when neither `curate.batchTokens` nor `curate.contextLimit` is given.
 
-`pick.everyRanked: { c }` ranks every source's parts in one list before it cuts, and a stopping limit in `pick.limits` (questions, batches, time) is shared by every source.
-With either one, one source's settings can change what Curate picks from another.
+`pick.thoroughness` and `pick.everyRanked: { c }` rank every source's parts in one fused list before they cut, and a stopping limit in `pick.limits` (questions, batches, time) is shared by every source.
+With any of them, one source's settings can change what Curate picks from another.
 
 ### Set your own
 
@@ -482,6 +483,7 @@ Save `sources.json` with your own paths:
     }
   ],
   "embeddingModel": "~/models/embeddinggemma-300M-Q8_0.gguf",
+  "thoroughness": "normal",
   "envFile": "~/.curate/credentials.env"
 }
 ```
@@ -490,6 +492,8 @@ Paths must be absolute or start with `~/`.
 Set `TYPESAFE_API_KEY` in the environment or the `KEY=VALUE` file named by `envFile`.
 Without `--sources`, the script reads `~/.curate/sources.json`.
 Supply a local embedding GGUF through `embeddingModel`. The script requires Metal on macOS and downloads no model.
+Optional `thoroughness` sets how deep the fused order feeds the decision step: `quick` reads the top 672 parts, `normal` 3,674 and `deep` 12,896, the default.
+Measured on a replayed ~116,000-part history, each level cost about 1, 5 and 17 pence of questions on the largest of eight task sets; `quick` kept 24 of the 56 known answer parts, `normal` 49 and `deep` all 56.
 The skill combines keyword and meaning lanes, and disables label admission and the rare-word round.
 Vectors persist by model bytes and input text. Identical text shares matching decision answers within each pick.
 It prints the log and saves the log, source reads, model usage and timings under `~/.curate/runs/`.
@@ -521,13 +525,13 @@ Set `read.wholeLanes: true` to keep every part the readers return.
 ### Decide
 
 The decision function answers each reader's narrow questions.
-Out of the box Curate decides every ranked part and keeps the references that reach their source's decision-score bar, 0.0146 for every reader, strongest first.
+Out of the box Curate searches and ranks broadly, then decides the top of one fused order, the `deep` thoroughness depth of 12,896 reference parts, and keeps the references that reach their source's decision-score bar, 0.0146 for every reader, strongest first.
 Unanswered candidates and unfinished decisions stay visible in the record and stop `recall()`.
 Parts intentionally excluded by the label questions stay in the record without stopping recall.
 
-- **Fewer decisions:** `pick.everyRanked: { c }` keeps the top `round(c × N^0.8)` reference parts, where N is the number of reference parts. Rules pass through uncut. The skipped parts are unassessed, so use the separate selection API to inspect them.
+- **Feed depth:** `pick.thoroughness` sets how deep the fused order feeds the decision step: `quick` 672 parts, `normal` 3,674, `deep` 12,896 (the default). Parts deeper than the level stay unasked and record `thoroughness`. `pick.everyRanked: true` decides every ranked part instead, and `pick.everyRanked: { c }` keeps the top `round(c × N^0.8)` reference parts, where N is the number of reference parts. Rules pass through uncut in every mode. The skipped parts are unassessed, so use the separate selection API to inspect them. Measured on a replayed ~116,000-part history of chat transcripts, Git history and Markdown notes: each level cost about 1, 5 and 17 pence of questions on the largest of eight task sets (about 0.8, 2.3 and 6.6 decide-step minutes), and `quick` kept 24 of the 56 known answer parts, `normal` 49 of 56 and `deep` all 56.
 - **Writer inputs:** a source's `bar` sets its score cut. `pick.everyScored: { bar }` sets one cut for every source, and `pick.everyScored: true` keeps every scored reference.
-- **More evidence:** Git and Markdown run the rare-word round through their settings, each within its own parts. `pick.rare: true` runs it on every source; `pick.rare: false` turns it off.
+- **More evidence:** Git and Markdown run the rare-word round through their settings, each within its own parts. `pick.rare: true` runs it on every source; `pick.rare: false` turns it off. Under a thoroughness level the round asks its pulled parts only while the depth still has room.
 - **Tags:** `pick.tags` labels selected items with their intent, importance, emphasis and whether they correct something earlier.
 
 ### Curate

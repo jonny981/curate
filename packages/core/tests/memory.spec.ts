@@ -73,7 +73,11 @@ describe('memory', () => {
     const reader = { ...source(), read: async () => read };
     const attempt = memory({ sources: [reader], decide, write }).recall(TASK);
     await expect(attempt).rejects.toThrow(INCOMPLETE);
-    await expect(attempt).rejects.toMatchObject({ cause: { reads: [expect.objectContaining(read)] } });
+    // Lane ranks join the candidates inside the read, so the members
+    // compare on the fields the reader itself returned.
+    await expect(attempt).rejects.toMatchObject({ cause: { reads: [expect.objectContaining(
+      read.status === 'read' ? { ...read, candidates: read.candidates.map((candidate) => expect.objectContaining(candidate)) } : read,
+    )] } });
     expect(write).not.toHaveBeenCalled();
   });
 

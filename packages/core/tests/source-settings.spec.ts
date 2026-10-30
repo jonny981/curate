@@ -40,8 +40,10 @@ let cache: string;
 beforeEach(() => { cache = mkdtempSync(join(tmpdir(), 'curate-source-settings-')); vi.stubEnv('XDG_CACHE_HOME', cache); });
 afterEach(() => { vi.unstubAllEnvs(); rmSync(cache, { recursive: true, force: true }); });
 
+// The baseline ran under `everyRanked`: pass it so the comparison reads
+// the same feed the recorded picks did.
 const run = (sources: readonly CandidateSource[], how: PickDecide = decide) =>
-  pickFromSources(sources, { task }, { task, decide: how });
+  pickFromSources(sources, { task }, { task, decide: how, everyRanked: true });
 
 async function expectBaseline(sources: readonly CandidateSource[], name: string) {
   const want = baseline[name]!;

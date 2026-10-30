@@ -55,7 +55,8 @@ describe('the presets reproduce the picks made with each kind\'s set passed in',
   ] as const)('%s', async (name, sources) => {
     const want = baseline[name]!;
     const { requests, how } = recording();
-    const picked = await pickFromSources(sources(), { task }, { task, decide: how });
+    // The baseline these runs reproduce was recorded on the everyRanked feed.
+    const picked = await pickFromSources(sources(), { task }, { task, decide: how, everyRanked: true });
     const selected = picked.selected.map((c) => c.id);
     const candidates = picked.record.candidates.map((c) => [c.sourceId, c.id, c.status,
       'probability' in c ? c.probability ?? null : null, 'reason' in c ? c.reason ?? null : null]);

@@ -345,11 +345,11 @@ describe('chat labels', () => {
     const store = await folder();
     const questions: PickQuestion[] = [];
     const reader = source(directory);
-    const result = await pickFromSources([reader], { task: 'dog' }, {
-      task: 'dog', labels: { directory: store, deciderId: 'chat-labels-test' },
+    const result = await pickFromSources([reader], { task: 'adopted dog' }, {
+      task: 'adopted dog', labels: { directory: store, deciderId: 'chat-labels-test' },
       decide: async (batch) => {
         // Label batches only: decision batches carry the pick's own task and ask chat's question set.
-        if (batch.task !== 'dog') questions.push(...batch.questions);
+        if (batch.task !== 'adopted dog') questions.push(...batch.questions);
         return Object.fromEntries(batch.questions.map((question) => [question.key, { status: 'answered', probability: 0.9 }]));
       },
     });

@@ -37,7 +37,7 @@ describe('settings per source', () => {
     const git = source('git', true);
     const chat = source('chat');
     const calls = recorder();
-    const result = await pickFromSources([git, chat], { task }, { task, decide: calls.decide });
+    const result = await pickFromSources([git, chat], { task }, { task, decide: calls.decide, everyRanked: true });
     expect(result.record.levers).toMatchObject({ everyRanked: true, route: false,
       rare: { share: 5 / 850, bar: 0.0146 },
       sources: { git: { labels: false, rare: true, bar: 0.0146 }, chat: { labels: false, rare: false, bar: 0.0146 } } });
@@ -53,6 +53,7 @@ describe('settings per source', () => {
   it('asks labels only of the source that carries label kinds', async () => {
     const calls = recorder();
     const recalled = await memory({ sources: [source('git', true, 2), source('chat', false, 2, true)], decide: calls.decide,
+      pick: { everyRanked: true },
       write: async () => '[2026-01-12] A constraint (said 2026-01-12; E1)' }).recall(task);
     expect(recalled.picked.record.levers.sources).toEqual({ git: { labels: false, rare: true, bar: 0.0146 }, chat: { labels: true, labelBar: 0.5, rare: false, bar: 0.0146 } });
     expect(recalled.result.record.levers.sources).toEqual(recalled.picked.record.levers.sources);
@@ -62,7 +63,7 @@ describe('settings per source', () => {
 
   it('records a call\'s rare override on every source it changed', async () => {
     const run = (sources: CandidateSource[], rare?: boolean) => pickFromSources(sources, { task }, {
-      task, decide: recorder().decide, ...(rare === undefined ? {} : { rare }),
+      task, decide: recorder().decide, everyRanked: true, ...(rare === undefined ? {} : { rare }),
     });
     for (const rare of [false, true]) {
       const result = await run([source('git', true, 2), source('chat', false, 2)], rare);
@@ -78,13 +79,13 @@ describe('settings per source', () => {
   it('does not count or seed disabled sources in the rare-word round', async () => {
     const git = [part('git', 'seed', 'plain zephyr'), { ...part('git', 'extra', 'plain zephyr'), poolOnly: true }];
     const chat = Array.from({ length: 400 }, (_, i) => part('chat', `c${i}`, 'plain'));
-    const result = await pick([...git, ...chat], { task, decide: recorder().decide, rareBySource: { git: true, chat: false } });
+    const result = await pick([...git, ...chat], { task, decide: recorder().decide, everyRanked: true, rareBySource: { git: true, chat: false } });
     expect(result.selected.some((c) => c.id === 'extra')).toBe(false);
     expect(result.record.pick?.rare?.sources.git?.words).not.toContain('zephyr');
     const seedOnlyInChat = await pick([
       part('chat', 'seed', 'plain zephyr'),
       ...Array.from({ length: 400 }, (_, i) => ({ ...part('git', `g${i}`, i === 399 ? 'plain zephyr' : 'plain'), poolOnly: true })),
-    ], { task, decide: recorder().decide, rareBySource: { git: true, chat: false } });
+    ], { task, decide: recorder().decide, everyRanked: true, rareBySource: { git: true, chat: false } });
     expect(seedOnlyInChat.selected.map((c) => c.id)).toEqual(['seed']);
   });
 
@@ -93,7 +94,7 @@ describe('settings per source', () => {
       ...part(i < 200 ? 'git' : 'notes', `p${i}`, i === 0 || i === 399 ? 'plain zephyr' : 'plain'),
       ...(i === 0 ? {} : { poolOnly: true }),
     }));
-    const result = await pick(candidates, { task, decide: recorder().decide, rareBySource: { git: true, notes: true } });
+    const result = await pick(candidates, { task, decide: recorder().decide, everyRanked: true, rareBySource: { git: true, notes: true } });
     // git's p0 seeds 'zephyr', which notes' p399 shares; a source's round
     // never pulls another source's parts.
     expect(result.selected.map((c) => c.id)).toEqual(['p0']);

@@ -63,7 +63,10 @@ describe('a name lane brings in a part the search missed', () => {
 
   it('never decides it with names off', async () => {
     const picked = await pickFromSources([source(false)], { task }, { task, decide: keepClub });
-    expect(picked.record.candidates.find((c) => c.id === club.id)).toBeUndefined();
+    // Under a thoroughness level a pool member sits in the record as
+    // unassessed: no lane ranked it, so it stayed outside the feed.
+    expect(picked.record.candidates.find((c) => c.id === club.id)).toMatchObject(
+      { status: 'unassessed', reason: 'thoroughness' });
     expect(picked.record).not.toHaveProperty('names');
     expect(picked.record.effects.find((e) => e.setting === 'names')).toBeUndefined();
   });

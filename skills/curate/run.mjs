@@ -47,6 +47,10 @@ export function parseSources(value) {
   if (value.threshold !== undefined && (!Number.isFinite(value.threshold) || value.threshold < 0 || value.threshold > 1)) {
     throw new Error('threshold must be between 0 and 1.');
   }
+  if (value.thoroughness !== undefined
+    && !['quick', 'normal', 'deep'].includes(value.thoroughness)) {
+    throw new Error("thoroughness must be 'quick', 'normal' or 'deep'.");
+  }
   if (value.maxCandidates !== undefined || value.userMaxCandidates !== undefined) {
     throw new Error('Remove maxCandidates and userMaxCandidates; the decision feed has no count limit.');
   }
@@ -250,9 +254,13 @@ export async function pickFullSources(sources, request, options) {
       // Lane cuts narrow each task and search line inside the read, so the
       // cached results held for the pick carry only the kept candidates.
       for (const meaningLane of request.meaning === undefined ? [undefined] : [undefined, request.meaning]) {
+        // Under a thoroughness level the pick's own meaning reads keep
+        // every part's similarity, so the cached read must match them.
         const readRequest = { wholeLanes: false, ...request, task,
           ...(meaningLane === undefined ? {} : { meaning: undefined, searchLines: undefined, meaningLane,
-            wholeLanes: meaningLane.wholeLanes ?? request.wholeLanes ?? false, limit: meaningLane.nearest }),
+            wholeLanes: options.everyRanked === undefined ? true
+              : meaningLane.wholeLanes ?? request.wholeLanes ?? false,
+            limit: options.everyRanked === undefined ? undefined : meaningLane.nearest }),
           ...(revision === undefined ? {} : { revision }) };
         const read = await source.read(readRequest);
         if (read.status === 'read' && read.revision !== undefined) revision ??= read.revision;
@@ -261,7 +269,9 @@ export async function pickFullSources(sources, request, options) {
     }
     let pool;
     if (source.role === 'reference' && (source.labelKinds?.length
-      || (options.everyRanked !== undefined && options.everyRanked !== true)
+      // A thoroughness level is in force whenever everyRanked is unset;
+      // the fused order it feeds positions every pool member.
+      || options.everyRanked !== true
       || (options.rare ?? source.rare ?? false) !== false)) {
       pool = await source.read({ ...request, task: request.task, wholeLanes: true, limit: undefined,
         ...(revision === undefined ? {} : { revision }) });
@@ -398,6 +408,7 @@ export async function run(args = process.argv.slice(2), callSubscription = subsc
       meaning: { embed: local.embed } };
     const pickOptions = { task: options.task, decide,
       limits: { maxBatchChars },
+      ...(settings.thoroughness === undefined ? {} : { thoroughness: settings.thoroughness }),
       ...(settings.threshold === undefined ? {} : { everyScored: { bar: settings.threshold } }) };
     const picked = await pickFullSources(sources.map((source) =>
       searchSource({ ...source, labelKinds: [], rare: false }, record.searches, record.reads, folder, settings)), request, pickOptions);

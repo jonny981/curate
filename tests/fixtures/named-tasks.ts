@@ -29,9 +29,23 @@ export const offSources = (): CandidateSource[] => [
 ];
 
 /** The record as the baseline build wrote it: without the moment, the time zone and the task-period
- *  entries, which the task date added. */
-const asBaseline = ({ asOf: _asOf, timeZone: _timeZone, ...record }: PickRecord) => ({ ...record,
-  effects: record.effects.filter((entry) => entry.setting !== 'taskPeriod') });
+ *  entries, which the task date added, without `pick`'s decide-call counts, which the thoroughness
+ *  accounting added (the old build wrote `pick` only under a dial, so a `pick` holding counts alone
+ *  goes too), and without lane-0 ranks, which the fused order's need for positions added to
+ *  single-search reads. */
+const asBaseline = (record: PickRecord): PickRecord => {
+  const slim: Partial<Record<keyof PickRecord, unknown>> = { ...record,
+    candidates: record.candidates.map(({ searchRanks: _ranks, ...candidate }) => candidate),
+    effects: record.effects.filter((entry) => entry.setting !== 'taskPeriod') };
+  delete slim.asOf;
+  delete slim.timeZone;
+  if (record.pick !== undefined) {
+    const { sent: _sent, questions: _questions, ...pick } = record.pick;
+    if (pick.rare === undefined && pick.c === undefined) delete slim.pick;
+    else slim.pick = pick;
+  }
+  return slim as PickRecord;
+};
 
 /** One pick and one curate call per task, each run's selected ids and the hashes of its record, decide
  *  requests and curator prompts. */
@@ -43,7 +57,8 @@ export async function offRuns(tasks: readonly string[]) {
       requests.push(batch);
       return decide(batch, signal);
     }, { deciderId: 'fixture' });
-    const picked = await pickFromSources(offSources(), { task }, { task, decide: how });
+    // The baseline these runs reproduce was recorded on the everyRanked feed.
+    const picked = await pickFromSources(offSources(), { task }, { task, decide: how, everyRanked: true });
     const prompts: CuratePrompt[] = [];
     const evidence = { ...picked, selected: picked.selected.map((part) => ({ ...part,
       text: baselineText(part.sourceId, part.text) })) };

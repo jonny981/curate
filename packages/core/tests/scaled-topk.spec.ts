@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   LABEL_KINDS,
+  THOROUGHNESS,
   pick,
   pickFromSources,
   type CandidateSource,
@@ -66,7 +67,7 @@ afterEach(() => {
 });
 
 describe('pick scaled top-k', () => {
-  it('is identical to a pick without the dial when the option is absent', async () => {
+  it('sends the same parts as a pick without the dial on a history smaller than the depth', async () => {
     const candidates = parts(20);
     const task = 'Recall the plan';
     const baseline = stubDecide(() => answered(0.9));
@@ -74,10 +75,12 @@ describe('pick scaled top-k', () => {
     // The known baseline: every candidate is decided and selected.
     expect(decidedIds(baseline.calls)).toEqual(candidates.map((item) => item.id));
     expect(plain.selected.map((item) => item.id)).toEqual(candidates.map((item) => item.id));
-    expect(plain.record).not.toHaveProperty('pick');
     const absent = await pick(candidates, { ...uncutPick, task, decide: allAnswered.decide, everyRanked: undefined });
+    // With `everyRanked` unset the thoroughness lever runs at 'deep'; on
+    // a history inside its depth the same parts are decided.
     expect(absent.selected).toEqual(plain.selected);
-    expect({ ...absent.record, asOf: plain.record.asOf }).toEqual(plain.record);
+    expect(absent.record.pick).toEqual({ n: 20, sent: 20, questions: 20, kept: 20,
+      thoroughness: { level: 'deep', depth: THOROUGHNESS.deep }, ranking: 'fusion' });
   });
 
   it.each([
@@ -91,7 +94,7 @@ describe('pick scaled top-k', () => {
     const result = await pick(parts(count), { ...uncutPick, task: 'Recall the plan', decide: counter.decide, everyRanked: { c } });
 
     expect(decidedIds(counter.calls)).toEqual(parts(kept).map((item) => item.id));
-    expect(result.record.pick).toEqual({ n: count, c, kept, ranking: 'keyword' });
+    expect(result.record.pick).toEqual({ n: count, sent: kept, questions: kept, c, kept, ranking: 'keyword' });
     expect(result.selected).toHaveLength(kept);
     const dropped = result.record.candidates.slice(kept);
     expect(dropped).toHaveLength(count - kept);
@@ -110,7 +113,7 @@ describe('pick scaled top-k', () => {
       task: 'Recall the plan', decide: counter.decide, everyRanked: { c: 0.68 },
     });
 
-    expect(result.record.pick).toEqual({ n: 500, c: 0.68, kept: 50, ranking: 'keyword' });
+    expect(result.record.pick).toEqual({ n: 500, sent: 50, questions: 50, c: 0.68, kept: 50, ranking: 'keyword' });
     expect(decidedIds(counter.calls)).toEqual(laneMembers.map((item) => item.id));
     expect(result.selected).toHaveLength(50);
     // With the gate off the pool parts only count toward N: they never
@@ -133,7 +136,7 @@ describe('pick scaled top-k', () => {
       task: 'Recall the plan', decide: counter.decide,
     });
 
-    expect(result.record).not.toHaveProperty('pick');
+    expect(result.record.pick).toEqual({ n: 5, sent: 3, questions: 3, kept: 3, ranking: 'keyword' });
     expect(decidedIds(counter.calls)).toEqual(laneMembers.map((item) => item.id));
     const entries = result.record.candidates.filter((entry) => entry.poolOnly === true);
     expect(entries).toHaveLength(2);
@@ -149,7 +152,7 @@ describe('pick scaled top-k', () => {
 
     // N counts reference parts only: 100, not 101. The bound keeps 27
     // references; the rule is decided and selected on top of them.
-    expect(result.record.pick).toEqual({ n: 100, c: 0.68, kept: 27, ranking: 'keyword' });
+    expect(result.record.pick).toEqual({ n: 100, sent: 28, questions: 28, c: 0.68, kept: 27, ranking: 'keyword' });
     expect(decidedIds(counter.calls)).toEqual(['rule-1', ...parts(27).map((item) => item.id)]);
     expect(result.record.candidates.find((entry) => entry.id === 'rule-1'))
       .toMatchObject({ status: 'selected', asked: true });
@@ -170,7 +173,7 @@ describe('pick scaled top-k', () => {
     const result = await pickFromSources([source], { task: 'Recall the plan' },
       { ...uncutPick, task: 'Recall the plan', decide: counter.decide, everyRanked: { c: 0.68 } });
 
-    expect(result.record.pick).toEqual({ n: 120, c: 0.68, kept: 3, ranking: 'keyword' });
+    expect(result.record.pick).toEqual({ n: 120, sent: 3, questions: 3, c: 0.68, kept: 3, ranking: 'keyword' });
     // The 117 pool members count toward N but, with the gate off, stay
     // out of the feed and the record: it holds only the three lane
     // members, all decided and selected — nothing records 'limits'
@@ -201,7 +204,7 @@ describe('pick scaled top-k', () => {
       expect(read.candidates).toHaveLength(120);
       expect(read.candidates.every((item) => item.poolOnly === true)).toBe(true);
     }
-    expect(result.record.pick).toEqual({ n: 120, c: 0.68, kept: 0, ranking: 'keyword' });
+    expect(result.record.pick).toEqual({ n: 120, sent: 0, questions: 0, c: 0.68, kept: 0, ranking: 'keyword' });
     expect(result.record.candidates).toHaveLength(0);
     expect(counter.calls).toHaveLength(0);
   });
@@ -227,7 +230,7 @@ describe('pick scaled top-k', () => {
     // 0.68 × 3^0.8 rounds to 2: the fused order's top two are a and p3;
     // the keyword order alone would have kept a and b.
     expect(decidedIds(counter.calls)).toEqual(['a', 'p3']);
-    expect(result.record.pick).toEqual({ n: 3, c: 0.68, kept: 2, ranking: 'fusion' });
+    expect(result.record.pick).toEqual({ n: 3, sent: 2, questions: 2, c: 0.68, kept: 2, ranking: 'fusion' });
     expect(result.record.labels!.gate).toBe(3);
     expect(result.record.candidates.find((entry) => entry.id === 'b'))
       .toMatchObject({ status: 'unassessed', reason: 'pick' });
@@ -250,7 +253,7 @@ describe('pick scaled top-k', () => {
     expect(result.record.labels).toBeDefined();
     // 0.68 × 3^0.8 rounds to 2 on the keyword order: a and b, not the
     // fused order's a and p3.
-    expect(result.record.pick).toEqual({ n: 3, c: 0.68, kept: 2, ranking: 'keyword' });
+    expect(result.record.pick).toEqual({ n: 3, sent: 2, questions: 2, c: 0.68, kept: 2, ranking: 'keyword' });
     expect(decidedIds(counter.calls)).toEqual(['a', 'b']);
     expect(result.record.candidates.find((entry) => entry.id === 'p3'))
       .toMatchObject({ status: 'unassessed', reason: 'pick' });

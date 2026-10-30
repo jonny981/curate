@@ -41,8 +41,10 @@ describe('label kinds per source', () => {
     const chat = source('chat', LABEL_KINDS);
     const git = source('git');
     const calls = recorder((q) => q.questionKey === undefined ? 0.9 : 0);
-    const result = await pickFromSources([chat, git], { task }, { task, decide: calls.decide });
-    expect(calls.questions.filter((q) => q.sourceId === 'git').map((q) => q.questionKey)).toEqual([undefined]);
+    const result = await pickFromSources([chat, git], { task }, { task, decide: calls.decide, everyRanked: true });
+    // Identical texts share one keyword decision; the representative may
+    // sit on either source, so the git part's check is its selection.
+    expect(calls.questions.filter((q) => q.questionKey === undefined)).toHaveLength(1);
     expect(calls.questions.filter((q) => q.sourceId === 'chat' && q.questionKey)).toHaveLength(14);
     expect(result.selected.map((c) => `${c.sourceId}/${c.id}`).sort()).toEqual(['chat/hit', 'git/hit']);
     expect(git.read).toHaveBeenCalledTimes(1);
@@ -76,7 +78,8 @@ describe('label kinds per source', () => {
     const calls = recorder();
     const reordered = [{ part: { false: custom[0]!.part.false, true: custom[0]!.part.true },
       name: custom[0]!.name, key: custom[0]!.key }];
-    const result = await pickFromSources([source('one', custom), source('two', reordered)], { task }, { task, decide: calls.decide });
+    const result = await pickFromSources([source('one', custom), source('two', reordered)], { task },
+      { task, decide: calls.decide, everyRanked: true });
     expect(calls.questions.filter((q) => q.sourceId === 'labels')).toHaveLength(1);
     expect(result.selected).toHaveLength(4);
     expect(calls.questions.filter((q) => q.questionKey === 'constraint').every((q) =>
@@ -87,7 +90,7 @@ describe('label kinds per source', () => {
     const taste = [{ ...custom[0]!, key: 'taste' }];
     const calls = recorder((q) => ROUTE_QUESTIONS.some((route) => route.question === q.question) ? 0 : 0.9);
     const run = () => pickFromSources([source('one', custom), source('two', taste)], { task }, {
-      task, decide: calls.decide, route: 'jev',
+      task, decide: calls.decide, everyRanked: true, route: 'jev',
     });
     for (let attempt = 0; attempt < 2; attempt += 1) {
       calls.questions.length = 0;
@@ -106,7 +109,8 @@ describe('label kinds per source', () => {
         : { status: 'answered', probability: q.questionKey === undefined ? 0.9 : 0 },
     ]));
     const write = vi.fn(async () => '[2026-01-12] A constraint (said 2026-01-12; E1)');
-    await expect(memory({ sources: [source('one', custom), source('two', other)], decide, write }).recall(task))
+    await expect(memory({ sources: [source('one', custom), source('two', other)], decide, write,
+      pick: { everyRanked: true } }).recall(task))
       .rejects.toMatchObject({ cause: { record: { candidates: expect.arrayContaining([
         expect.objectContaining({ sourceId: 'two', id: 'extra', status: 'unassessed', reason: 'limits' }),
       ]) } } });

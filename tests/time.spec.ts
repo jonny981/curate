@@ -263,10 +263,10 @@ describe("the task's period lets missed parts in", () => {
   }
   const textOf = (read: CandidateReadResult, id: string) => candidates(read).find((c) => c.id === id)?.text;
 
-  async function picked() {
+  async function picked(oldFeed = false) {
     const { asked, decide } = recording();
     const result = await pickFromSources([await source()], { task, taskDate: '2025-06-02', timeZone: 'Europe/London' },
-      { task, decide });
+      { task, decide, ...(oldFeed ? { everyRanked: true as const } : {}) });
     return { asked: new Set(asked.map((q) => q.text)), result };
   }
 
@@ -284,7 +284,9 @@ describe("the task's period lets missed parts in", () => {
   });
 
   it('counts the March part in the taskPeriod effects entry', async () => {
-    const { result } = await picked();
+    // A sole way in exists only on the everyRanked feed: under a level
+    // the depth also carries every part the period brought in.
+    const { result } = await picked(true);
     const effect = result.record.effects.find((entry) => entry.setting === 'taskPeriod');
     expect(effect).toMatchObject({ source: result.record.candidates[0]!.sourceId, actedOn: 1, added: 1, dropped: 0 });
   });
@@ -292,7 +294,7 @@ describe("the task's period lets missed parts in", () => {
   it('leaves the March part out with taskPeriod off', async () => {
     const { asked, decide } = recording();
     const picked = await pickFromSources([await source()], { task, taskDate: '2025-06-02', timeZone: 'Europe/London' },
-      { task, decide, taskPeriod: false });
+      { task, decide, taskPeriod: false, everyRanked: true });
     expect(asked.map((q) => q.text)).not.toContain('Pricing stays flat for every plan.');
     expect(picked.record.taskPeriod).toBeUndefined();
     expect(picked.record.effects.some((entry) => entry.setting === 'taskPeriod')).toBe(false);

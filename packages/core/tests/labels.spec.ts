@@ -234,9 +234,9 @@ describe('pick labels', () => {
         : question.id === 'question' ? (question.questionKey === 'owns' ? 0.9 : 0.1)
           : question.questionKey === 'owns' ? (question.id === 'p3' ? 0.9 : 0.2) : 0.1);
     const options = {
-      task: 'Recall the plan', decide: counter.decide,
+      task: 'Recall the plan', decide: counter.decide, everyRanked: true,
       limits: { maxCandidates: 1 }, ...labelOptions(directory),
-    };
+    } as const;
     const result = await pick(threeParts(), options);
 
     const decided = new Set(counter.calls.flatMap((batch) => batch.questions)
@@ -286,9 +286,9 @@ describe('pick labels', () => {
           : question.questionKey === 'habit' && question.id === 'p1'
             ? (question.text.includes('runs every morning') ? 0.9 : 0) : 0.1);
     const options = {
-      task: 'How often does the user run?', decide: counter.decide,
+      task: 'How often does the user run?', decide: counter.decide, everyRanked: true,
       ...labelOptions(directory),
-    };
+    } as const;
     const first = await pick([p1, p2], { ...options, limits: { maxQuestionText: 30 } });
     // The label batch carried the whole text; the rescued part's
     // decision ask kept the 30-character cut, and the part that never
@@ -374,7 +374,8 @@ describe('pick labels', () => {
       candidate({ sourceId: 'notes', id: 'p2', searchRanks: [1] }),
       candidate({ sourceId: 'notes', id: 'p3', poolOnly: true }),
     ];
-    const options = { task: 'Recall the plan', decide: counter.decide, ...labelOptions(directory) };
+    const options = { task: 'Recall the plan', decide: counter.decide, everyRanked: true,
+      ...labelOptions(directory) } as const;
     const first = await pick(parts, options);
     expect(new Set(first.selected.map((item) => item.id))).toEqual(new Set(['p1', 'p2', 'p3']));
     expect(first.record.labels).toMatchObject({ asked: 4, reused: 0, gate: 3, failedWrites: 4 });
@@ -427,7 +428,7 @@ describe('pick labels', () => {
       candidate({ sourceId: 'notes', id: 'p3', poolOnly: true }),
     ];
     const result = await pick(parts, {
-      task: 'Recall the plan', decide: counter.decide, ...labelOptions(directory),
+      task: 'Recall the plan', decide: counter.decide, everyRanked: true, ...labelOptions(directory),
     });
     expect(result.record.labels!.gate).toBe(2);
     expect(result.record.candidates.find((entry) => entry.id === 'p3'))
@@ -445,7 +446,7 @@ describe('pick labels', () => {
     // Every label answers under the bar, so no part joins the lane and
     // the gate is the keyword lanes alone: identical output to plain.
     const gated = await pick(parts, {
-      task: 'Recall the plan',
+      task: 'Recall the plan', everyRanked: true,
       decide: counting((question) => question.questionKey === undefined ? 0.8 : 0.1).decide,
       ...labelOptions(store()),
     });

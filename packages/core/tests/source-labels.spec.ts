@@ -42,7 +42,7 @@ describe('labels carried by a source', () => {
   it('cuts weak decisions and asks no labels when no source carries label kinds', async () => {
     const result = await pick(parts, { task, decide });
     expect(result.record.levers).toEqual({
-      everyRanked: true, route: false, rare: false,
+      thoroughness: 'deep', route: false, rare: false,
       sources: { notes: { labels: false, rare: false, bar: 0.0146 } },
     });
     expect(result.selected.map((part) => part.id)).toEqual(['billing']);
@@ -62,7 +62,7 @@ describe('labels carried by a source', () => {
       ? Object.fromEntries(batch.questions.map((q) => [q.key, { status }])) : decide(batch, signal);
     const write = vi.fn(async () => log);
     await expect(memory({ sources: [source], decide: incomplete, write,
-      pick: { labels: { directory: cacheRoot, deciderId: 'incomplete' } },
+      pick: { everyRanked: true, labels: { directory: cacheRoot, deciderId: 'incomplete' } },
     }).recall(task)).rejects.toMatchObject({ cause: { record: { candidates: expect.arrayContaining([
       expect.objectContaining({ id: 'unrelated', status: 'unassessed', reason: 'limits' }),
     ]) } } });
@@ -72,12 +72,13 @@ describe('labels carried by a source', () => {
   it('writes labels without configuration and reuses them in a fresh memory instance', async () => {
     const calls = vi.fn(decide);
     await memory({ sources: [source], decide: calls, write: async () => log }).recall(task);
-    expect(readdirSync(join(cacheRoot, 'curate', 'labels'))).toHaveLength(4);
+    // The pool member outside the fused order is never labelled.
+    expect(readdirSync(join(cacheRoot, 'curate', 'labels'))).toHaveLength(3);
     expect(calls.mock.calls.some(([batch]) => batch.questions.some((q) => q.questionKey === 'personal'))).toBe(true);
 
     calls.mockClear();
     const second = await memory({ sources: [source], decide: calls, write: async () => log }).recall(task);
-    expect(second.picked.record.labels).toMatchObject({ asked: 0, reused: 4 });
+    expect(second.picked.record.labels).toMatchObject({ asked: 0, reused: 3 });
     // Relevance is task-specific; only the seven kind labels are cached.
     expect(calls.mock.calls.flatMap(([batch]) => batch.questions).every((q) => q.questionKey === undefined)).toBe(true);
   });

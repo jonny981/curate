@@ -34,7 +34,8 @@ export async function fixturePick(sources: CandidateSource[]) {
     requests.push(batch);
     return decide(batch, signal);
   }, { deciderId: 'fixture' });
-  const picked = await pickFromSources(sources, { task }, { task, decide: how });
+  // The baseline these runs reproduce was recorded on the everyRanked feed.
+  const picked = await pickFromSources(sources, { task }, { task, decide: how, everyRanked: true });
   return { picked, requests };
 }
 

@@ -98,7 +98,7 @@ describe('levers', () => {
       candidate({ sourceId: 'notes', id: `p${index}`, signals: { score: 1 } }));
     const decide = async (batch: PickBatch) => Object.fromEntries(
       batch.questions.map((question) => [question.key, answered(0.8)]));
-    const plain = await pick(candidates, { task: 'Recall the plan', decide, everyScored: true });
+    const plain = await pick(candidates, { task: 'Recall the plan', decide, everyScored: true, everyRanked: true });
     const uncut = await pick(candidates, { task: 'Recall the plan', decide, ...uncutPick });
     expect({ ...uncut.record, asOf: plain.record.asOf }).toEqual(plain.record);
     expect(uncut.selected).toEqual(plain.selected);
@@ -111,7 +111,7 @@ describe('levers', () => {
     });
 
     const readPlain = await pickFromSources([laneSource()], { task: 'task' },
-      { task: 'task', decide, everyScored: true });
+      { task: 'task', decide, everyScored: true, everyRanked: true });
     const readUncut = await pickFromSources([laneSource()], { task: 'task', wholeLanes: false },
       { task: 'task', decide, ...uncutPick });
     expect({ ...readUncut.record, asOf: readPlain.record.asOf }).toEqual(readPlain.record);
@@ -134,7 +134,7 @@ describe('levers', () => {
     // The default cut references below 0.0146.
     expect(defaults.selected.map((item) => item.id)).toEqual(['p0', 'p1']);
     expect(defaults.record.levers).toEqual({
-      everyRanked: true,
+      thoroughness: 'deep',
       route: false,
       rare: false,
       sources: { notes: { labels: false, rare: false, bar: 0.0146 } },
@@ -142,10 +142,12 @@ describe('levers', () => {
     expect(literal.record.levers.everyScored).toEqual({ bar: 0.0146 });
 
     const read = await pickFromSources([laneSource()], { task: 'task' }, { task: 'task', decide });
-    // The lane cut stays on: the curve keeps the head only.
-    expect(read.reads[0]?.status === 'read' && read.reads[0].candidates).toHaveLength(1);
+    // The lane cut stays on: the curve keeps the head only; the rest
+    // of the read's candidates are pool members, not lane parts.
+    expect(read.reads[0]?.status === 'read'
+      && read.reads[0].candidates.filter((c) => c.poolOnly !== true)).toHaveLength(1);
     expect(read.record.levers).toEqual({
-      wholeLanes: false, everyRanked: true, route: false, rare: false, sources: { notes: { labels: false, rare: false, bar: 0.0146 } },
+      wholeLanes: false, thoroughness: 'deep', route: false, rare: false, sources: { notes: { labels: false, rare: false, bar: 0.0146 } },
     });
 
     const plain = await curate('Recall the plan', defaults, { write: writer().write });
@@ -164,7 +166,7 @@ describe('levers', () => {
     // Only everyRanked changed: the decide step read the top 27, the
     // 0.0146 bar still stood.
     expect(decidedIds(counter.calls)).toHaveLength(27);
-    expect(result.record.pick).toEqual({ n: 100, c: 0.68, kept: 27, ranking: 'keyword' });
+    expect(result.record.pick).toEqual({ n: 100, sent: 27, questions: 27, c: 0.68, kept: 27, ranking: 'keyword' });
     expect(result.record.levers).toEqual({
       everyRanked: { c: 0.68 },
       route: false,
