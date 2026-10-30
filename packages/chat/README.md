@@ -32,6 +32,11 @@ const source = chat({ providers: ['claude-code', 'codex'], since: '14 days' });
   back from the task date: the read request's `taskDate`, else its `asOf`,
   else now. Only messages at or after the cutoff are emitted. Omit it to read all dated messages. With `taskDate`,
   a message dated after it is not read.
+- **Exclusions:** `exclude: ['project/old-sessions']` joins the read
+  request's `exclude` for this source's reads only. An entry is an
+  absolute path or one relative to the provider folder; an excluded file
+  or folder is never opened. Another source over the same transcripts
+  still reads them.
 - **Records read:** Claude Code `user` and `assistant` records, and the
   `attachment` records whose `attachment.type` is `queued_command`. Claude
   Code saves a message typed while an agent works as a queued attachment;
@@ -67,7 +72,7 @@ const source = chat({ providers: ['claude-code', 'codex'], since: '14 days' });
   and `b: 0`, Porter word stems, short identifiers, noun weights, and
   merged rankings for the full query, content words and names. Markdown
   and git use their own settings. No model or network call is made.
-- **Meaning search:** Each part embeds with the previous part from the same file. A reply therefore carries its question's context. Decision text stays unchanged.
+- **Meaning search:** Each part embeds with the previous part from the same file. For a reply that is often its question, but it can be a tool output or an earlier slice of the same message. Decision text stays unchanged.
 - **Read results:** Missing folders return `absent` when none can be read.
   Missing folders alongside readable folders, skipped symbolic links,
   undated messages, and a candidate limit make the read incomplete.

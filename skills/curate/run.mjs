@@ -29,11 +29,33 @@ export function parseArgs(args) {
   return options;
 }
 
+const SOURCE_ENTRY_KEYS = {
+  'claude-code': ['type', 'path', 'since', 'exclude'],
+  codex: ['type', 'path', 'since', 'exclude', 'allowedCwd'],
+  git: ['type', 'path', 'since', 'exclude', 'include'],
+  markdown: ['type', 'path', 'since', 'exclude'],
+};
+
 export function parseSources(value) {
   if (!value || !Array.isArray(value.sources) || !value.sources.length) throw new Error('sources must be a nonempty array.');
   const sources = value.sources.map((source) => {
     if (!source || !['claude-code', 'codex', 'git', 'markdown'].includes(source.type)
       || typeof source.path !== 'string' || !source.path.trim()) throw new Error('Each source needs a type and a path.');
+    const keys = SOURCE_ENTRY_KEYS[source.type];
+    for (const key of Object.keys(source)) {
+      if (!keys.includes(key)) {
+        throw new Error(`Unknown key "${key}" on a ${source.type} source; allowed keys are ${keys.join(', ')}.`);
+      }
+    }
+    if (source.since !== undefined && (typeof source.since !== 'string' || !source.since.trim())) {
+      throw new Error('since must be an ISO date or a duration such as "14 days".');
+    }
+    for (const key of ['exclude', 'include']) {
+      if (source[key] !== undefined
+        && (!Array.isArray(source[key]) || source[key].some((entry) => typeof entry !== 'string' || !entry.trim()))) {
+        throw new Error(`${key} must be an array of paths.`);
+      }
+    }
     const allowed = source.allowedCwd;
     if (source.type === 'codex') {
       const folders = Array.isArray(allowed) ? allowed : [allowed];
@@ -90,12 +112,22 @@ export async function allowedSession(header, allowedCwd) {
   return false;
 }
 
-export async function filterSessions(folder, allowedCwd) {
+// The entry's own exclusions match the way chat's do under the folder:
+// relative to it, an excluded file is never opened and an excluded
+// folder is never descended into.
+export async function filterSessions(folder, allowedCwd, exclude) {
   const admitted = [], excluded = [];
+  const entries = (exclude ?? []).map((entry) =>
+    entry.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '') || '.');
+  const blocked = (path) => {
+    const name = relative(folder, path).split(sep).join('/');
+    return entries.some((entry) => entry === '.' || name === entry || name.startsWith(`${entry}/`));
+  };
   const walk = async (path) => {
+    if (blocked(path)) return;
     for (const entry of await readdir(path, { withFileTypes: true })) {
       const file = join(path, entry.name);
-      if (entry.isSymbolicLink()) continue;
+      if (entry.isSymbolicLink() || blocked(file)) continue;
       if (entry.isDirectory()) await walk(file);
       else if (entry.isFile() && entry.name.endsWith('.jsonl')) {
         (await allowedSession(sessionHeader(file), allowedCwd) ? admitted : excluded).push(file);
@@ -107,14 +139,21 @@ export async function filterSessions(folder, allowedCwd) {
 }
 
 export async function snapshotCodex(entry, folder) {
-  const filter = await filterSessions(entry.path, entry.allowedCwd);
+  // The snapshot mirrors the entry's layout, so its exclusions stay
+  // relative to match under it; an absolute entry inside the entry's
+  // path relativises against it. They apply to the original folder
+  // first, before any transcript's header is read or body copied.
+  const exclude = entry.exclude?.map((entry_) => isAbsolute(entry_) ? relative(entry.path, entry_) : entry_);
+  const filter = await filterSessions(entry.path, entry.allowedCwd, exclude);
   await mkdir(folder, { recursive: true, mode: 0o700 });
   for (const original of filter.admitted) {
     const target = join(folder, relative(entry.path, original));
     await mkdir(dirname(target), { recursive: true, mode: 0o700 });
     await copyFile(original, target, constants.COPYFILE_FICLONE);
   }
-  const source = chat({ id: `chat:codex:${entry.path}`, providers: ['codex'], paths: [folder] });
+  const source = chat({ id: `chat:codex:${entry.path}`, providers: ['codex'], paths: [folder],
+    ...(entry.since === undefined ? {} : { since: entry.since }),
+    ...(exclude === undefined ? {} : { exclude }) });
   return { filter, source: { ...source, async read(request) {
     const result = await source.read(request);
     return result.status !== 'read' ? result : { ...result, candidates: result.candidates.map((candidate) =>
@@ -357,15 +396,30 @@ export async function run(args = process.argv.slice(2), callSubscription = subsc
     if (!apiKey) throw new Error('Set TYPESAFE_API_KEY or name a KEY=VALUE envFile in the sources file.');
     const sources = [];
     for (const entry of settings.sources) {
-      if (entry.type === 'git') sources.push(git(entry.path));
-      else if (entry.type === 'markdown') sources.push(knowledgeBase(entry.path));
-      else {
+      // An entry's include/exclude paths resolve inside its own path.
+      const inside = (list) => list?.map((entry_) => isAbsolute(entry_) ? entry_ : join(entry.path, entry_));
+      if (entry.type === 'git') {
+        sources.push(git(entry.path, {
+          ...(entry.since === undefined ? {} : { since: entry.since }),
+          ...(entry.exclude === undefined ? {} : { exclude: inside(entry.exclude) }),
+          ...(entry.include === undefined ? {} : { paths: inside(entry.include) }),
+        }));
+      } else if (entry.type === 'markdown') {
+        sources.push(knowledgeBase(entry.path, {
+          ...(entry.since === undefined ? {} : { since: entry.since }),
+          ...(entry.exclude === undefined ? {} : { exclude: inside(entry.exclude) }),
+        }));
+      } else {
         if (entry.type === 'codex') {
           const snapshot = join(folder, `codex-${record.sessions.length + 1}`);
           const { source, filter } = await snapshotCodex(entry, snapshot);
           record.sessions.push({ path: entry.path, allowedCwd: entry.allowedCwd, snapshot, ...filter });
           sources.push(source);
-        } else sources.push(chat({ providers: [entry.type], paths: [entry.path] }));
+        } else {
+          sources.push(chat({ providers: [entry.type], paths: [entry.path],
+            ...(entry.since === undefined ? {} : { since: entry.since }),
+            ...(entry.exclude === undefined ? {} : { exclude: inside(entry.exclude) }) }));
+        }
       }
     }
     record.timings.filterMs = Date.now() - started;

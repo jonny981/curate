@@ -1,6 +1,6 @@
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { readFileSync, readSync, writeFileSync } from 'node:fs';
+import { openSync, readFileSync, readSync, writeFileSync } from 'node:fs';
 import { copyFile, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -24,7 +24,7 @@ vi.mock('@curatejs/core/local-embeddings', () => ({
 
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
-  return { ...actual, readSync: vi.fn(actual.readSync) };
+  return { ...actual, openSync: vi.fn(actual.openSync), readSync: vi.fn(actual.readSync) };
 });
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
@@ -122,6 +122,42 @@ describe('curate command input', () => {
   it.each([['exhaustive'], ['QUICK'], [true], [0]])('rejects thoroughness %j', (value) => {
     expect(() => parseSources({ sources: [{ type: 'markdown', path: 'documents' }], thoroughness: value }))
       .toThrow("'quick', 'normal' or 'deep'");
+  });
+
+  it('keeps since, exclude and include on the sources that accept them', () => {
+    expect(parseSources({
+      sources: [
+        { type: 'claude-code', path: 'transcripts', since: '7 days', exclude: ['archive'] },
+        { type: 'codex', path: 'sessions', allowedCwd: 'projects', since: '2026-10-01', exclude: ['old'] },
+        { type: 'git', path: 'repository', since: '14 days', include: ['src'], exclude: ['secret.md'] },
+        { type: 'markdown', path: 'documents', since: '30 days', exclude: ['drafts'] },
+      ],
+    }).sources).toEqual([
+      { type: 'claude-code', path: resolve('transcripts'), since: '7 days', exclude: ['archive'] },
+      { type: 'codex', path: resolve('sessions'), allowedCwd: resolve('projects'), since: '2026-10-01', exclude: ['old'] },
+      { type: 'git', path: resolve('repository'), since: '14 days', include: ['src'], exclude: ['secret.md'] },
+      { type: 'markdown', path: resolve('documents'), since: '30 days', exclude: ['drafts'] },
+    ]);
+  });
+
+  it.each([
+    { type: 'claude-code', path: 'transcripts', include: ['src'] },
+    { type: 'codex', path: 'sessions', allowedCwd: 'projects', include: ['src'] },
+    { type: 'markdown', path: 'documents', include: ['src'] },
+    { type: 'git', path: 'repository', only: 'src' },
+    { type: 'claude-code', path: 'transcripts', since: ' ' },
+    { type: 'markdown', path: 'documents', since: 14 },
+    { type: 'markdown', path: 'documents', exclude: 'drafts' },
+    { type: 'markdown', path: 'documents', exclude: [' '] },
+    { type: 'git', path: 'repository', include: 'src' },
+    { type: 'git', path: 'repository', include: [7] },
+  ])('rejects source settings %j', (source) => {
+    expect(() => parseSources({ sources: [source] })).toThrow();
+  });
+
+  it('names the unknown key, the source type and its accepted keys', () => {
+    expect(() => parseSources({ sources: [{ type: 'git', path: 'repository', only: 'src' }] }))
+      .toThrow('Unknown key "only" on a git source; allowed keys are type, path, since, exclude, include');
   });
 
   it('runs from another folder through a symlinked script or a symlinked skill folder', async () => {
@@ -260,6 +296,49 @@ describe('Codex session folder restrictions', () => {
       new Set(await Promise.all(['allowed', 'root'].map(async (name) =>
         realpath(join(snapshot, '2026', '01', `${name}.jsonl`))))),
     );
+  });
+
+  it('never opens or copies a session its entry excludes, which another source still reads', async () => {
+    const directory = await folder();
+    const root = join(directory, 'projects');
+    const child = join(root, 'project');
+    const sessions = join(directory, 'sessions');
+    const archive = join(sessions, 'archive');
+    await mkdir(child, { recursive: true });
+    await mkdir(archive, { recursive: true });
+    const open = join(sessions, 'open.jsonl');
+    const secret = join(archive, 'secret.jsonl');
+    await writeFile(open, `${JSON.stringify(metadata(child))}\n${JSON.stringify(message)}\n`);
+    await writeFile(secret, `${JSON.stringify(metadata(child))}\n${JSON.stringify(message)}\n`);
+
+    const snapshot = join(directory, 'snapshot');
+    const { filter, source }: { filter: { admitted: string[]; excluded: string[] }; source: CandidateSource } =
+      await snapshotCodex(
+        { type: 'codex', path: sessions, allowedCwd: root, exclude: ['archive'] },
+        snapshot);
+    // The excluded folder was never descended into: the only header
+    // opened and the only body copied belong to the open session.
+    expect(filter.admitted).toEqual([open]);
+    expect(filter.excluded).toEqual([]);
+    expect(vi.mocked(openSync).mock.calls.map((call) => call[0])).toEqual([open]);
+    expect(vi.mocked(copyFile).mock.calls.map((call) => call[0])).toEqual([open]);
+    expect(await readdir(snapshot)).toEqual(['open.jsonl']);
+
+    const result = await source.read({ task: 'orchard evidence' });
+    expect(result.status).toBe('read');
+    if (result.status !== 'read') return;
+    expect(result.candidates.map((candidate) => candidate.text)).toEqual(['Useful orchard evidence.']);
+
+    // A second source over the same folder, without the exclusion,
+    // still admits and reads the session the first refused.
+    const other = await snapshotCodex(
+      { type: 'codex', path: sessions, allowedCwd: root },
+      join(directory, 'snapshot-2'));
+    expect(other.filter.admitted.sort()).toEqual([open, secret].sort());
+    const rest = await other.source.read({ task: 'orchard evidence' });
+    expect(rest.status).toBe('read');
+    if (rest.status !== 'read') return;
+    expect(rest.candidates).toHaveLength(2);
   });
 });
 
@@ -896,6 +975,83 @@ describe('a run through core decision calls', () => {
     expect(record.pick?.pick?.sent).toBeLessThanOrEqual(THOROUGHNESS.quick);
     expect(record.pick?.levers?.thoroughness).toBe('quick');
     expect(record.pick?.levers).not.toHaveProperty('everyRanked');
+  });
+
+  it('carries each entry\'s since, include and exclude into the recorded source settings', async () => {
+    const directory = await folder();
+    const home = join(directory, 'home');
+    const notes = join(directory, 'notes');
+    const transcripts = join(directory, 'transcripts');
+    const sessions = join(directory, 'sessions');
+    const repo = join(directory, 'repo');
+    const project = join(directory, 'project');
+    await mkdir(home);
+    await mkdir(join(notes, 'archive'), { recursive: true });
+    await mkdir(join(transcripts, 'old'), { recursive: true });
+    await mkdir(join(sessions, 'archive'), { recursive: true });
+    await mkdir(join(repo, 'src'), { recursive: true });
+    await mkdir(join(repo, 'docs'), { recursive: true });
+    await mkdir(project, { recursive: true });
+    const now = new Date().toISOString();
+    await writeFile(join(notes, 'orchard.md'), '## Orchard\nThe orchard has trees.\n');
+    await writeFile(join(notes, 'archive', 'hidden.md'), '## Hidden\nAn orchard secret.\n');
+    const claudeLine = (file: string, text: string) => writeFile(file, [
+      JSON.stringify({ type: 'user', sessionId: 's1', timestamp: now, message: { content: text } }),
+    ].join('\n'));
+    await claudeLine(join(transcripts, 'session.jsonl'), 'The orchard has trees.');
+    await claudeLine(join(transcripts, 'old', 'session.jsonl'), 'An old orchard note.');
+    const codexLine = (file: string) => writeFile(file, [
+      JSON.stringify({ type: 'session_meta', payload: { id: 'session', cwd: project } }),
+      JSON.stringify({ type: 'response_item', timestamp: now,
+        payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'The orchard has trees.' }] } }),
+    ].join('\n'));
+    await codexLine(join(sessions, 'open.jsonl'));
+    await codexLine(join(sessions, 'archive', 'secret.jsonl'));
+    const git = (...args: string[]) => execFileSync('git', ['-C', repo, '-c', 'core.hooksPath=/dev/null',
+      '-c', 'commit.gpgsign=false', '-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { stdio: 'pipe' });
+    await writeFile(join(repo, 'src', 'app.ts'), 'export const orchard = 1;\n');
+    git('init', '-q', '-b', 'main');
+    git('add', 'src/app.ts');
+    git('commit', '-q', '-m', 'orchard wiring');
+    await writeFile(join(repo, 'docs', 'secret.md'), 'hidden orchard\n');
+    git('add', 'docs/secret.md');
+    git('commit', '-q', '-m', 'hidden orchard docs');
+    const sourcesFile = join(directory, 'sources.json');
+    await writeFile(sourcesFile, JSON.stringify({ sources: [
+      { type: 'git', path: repo, since: '400 days', include: ['src'], exclude: ['docs/secret.md'] },
+      { type: 'markdown', path: notes, since: '30 days', exclude: ['archive'] },
+      { type: 'claude-code', path: transcripts, since: '14 days', exclude: ['old'] },
+      { type: 'codex', path: sessions, allowedCwd: project, since: '7 days', exclude: ['archive'] },
+    ] }));
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
+    vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
+    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => new Response(JSON.stringify({
+      usage: null,
+      answers: Object.fromEntries(Object.keys(JSON.parse(String(init.body)).questions).map((key) => [key, { noul: 0.8 }])),
+    }))));
+    const { call, folders } = subscriptionReply(searches());
+    const runFolder = await run(['--sources', sourcesFile, 'orchard'], call);
+    expect(runFolder).toBe(folders[0]);
+
+    const record = JSON.parse(await readFile(join(runFolder, 'record.json'), 'utf8'));
+    expect(record.status).toBe('complete');
+    const settings = record.pick?.levers?.sources ?? {};
+    // Git's include arrives as `paths`; every entry's paths resolve
+    // inside its own path. The Codex entry's exclusions relativise
+    // against its path so they match inside the snapshot.
+    expect(settings[`git:${repo}`]).toMatchObject({
+      since: '400 days', paths: [join(repo, 'src')], exclude: [join(repo, 'docs', 'secret.md')],
+    });
+    expect(settings[`knowledge-base:${notes}`]).toMatchObject({
+      since: '30 days', exclude: [join(notes, 'archive')],
+    });
+    expect(settings[`chat:claude-code:${transcripts}`]).toMatchObject({
+      since: '14 days', exclude: [join(transcripts, 'old')],
+    });
+    expect(settings[`chat:codex:${sessions}`]).toMatchObject({
+      since: '7 days', exclude: ['archive'],
+    });
   });
 });
 

@@ -92,6 +92,15 @@ describe('the presets reproduce the picks made before settings moved to the sour
     expect(picked.selected).toEqual([]);
     expect(picked.record.levers.sources).toEqual(presetSettings);
   });
+
+  it('records each source\'s own since, paths and exclude, even when the source returns no parts', async () => {
+    const scoped = { ...git({}, []), since: '14 days', paths: ['src'], exclude: ['secret.md'] };
+    const picked = await run([scoped]);
+    expect(picked.record.levers.sources.git).toEqual({
+      kind: 'git-history', labels: false, rare: true, bar: 0.0146,
+      since: '14 days', paths: ['src'], exclude: ['secret.md'],
+    });
+  });
 });
 
 /** One source's parts in the record and the selection: ids, statuses and probabilities. */

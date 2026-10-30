@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { type CandidateSource } from '@curatejs/core';
+import { pickFromSources, type CandidateSource } from '@curatejs/core';
 import { git as gitSource } from '../src/index.js';
 import { commitDate } from '@curatejs/core/internal';
 
@@ -431,6 +431,74 @@ describe('git', () => {
       gitCalls.length = 0;
       gitInputs.length = 0;
     }
+  });
+
+  it('reads only commits dated on or after its own since, measured from the task date', async () => {
+    const directory = await repository([
+      { subject: 'day before', body: 'the old body', date: '2026-10-20T12:00:00Z', files: { 'a.md': 'a' } },
+      { subject: 'on the day', body: 'the new body', date: '2026-10-21T13:00:00Z', files: { 'b.md': 'b' } },
+    ]);
+
+    const result = await read(
+      gitSource(directory, { since: '7 days' }),
+      { task: 'work', taskDate: '2026-10-28T12:00:00Z' },
+    );
+
+    expect(result.status).toBe('read');
+    if (result.status !== 'read') return;
+    // 2026-10-28T12:00:00Z less seven days is 2026-10-21T12:00:00Z: the
+    // commit a day earlier is never read, the one later that day is.
+    expect(result.candidates.map((candidate) => candidate.title)).toEqual(['on the day']);
+    // The bound reaches git itself on the metadata pass, so the older
+    // commit is never even enumerated.
+    const logs = gitCalls.filter((args) => args.includes('log') && !args.includes('--stdin'));
+    expect(logs[0]!.some((arg) => arg === `--since=@${Math.ceil(Date.parse('2026-10-21T12:00:00Z') / 1000)}`)).toBe(true);
+  });
+
+  it('reads only commits that changed a path its own paths names', async () => {
+    const directory = await repository([
+      { subject: 'src change', body: 'the src body', files: { 'src/a.ts': 'a' } },
+      { subject: 'docs change', body: 'the docs body', files: { 'docs/b.md': 'b' } },
+    ]);
+
+    const result = await read(gitSource(directory, { paths: ['src'] }), { task: 'work' });
+
+    expect(result.status).toBe('read');
+    if (result.status !== 'read') return;
+    expect(result.candidates.map((candidate) => candidate.title)).toEqual(['src change']);
+  });
+
+  it('keeps its own exclusions to itself: another source on the same repository still reads the path', async () => {
+    const directory = await repository([
+      { subject: 'kept', body: 'the kept body', files: { 'a.md': 'a' } },
+      { subject: 'hidden', body: 'the hidden body', files: { 'secret.md': 's' } },
+    ]);
+    const hidden = (await git(directory, ['rev-parse', 'HEAD'])).trim();
+
+    const excluding = gitSource(directory, { id: 'git:a', exclude: ['secret.md'] });
+    const picked = await pickFromSources(
+      [excluding, gitSource(directory, { id: 'git:b' })],
+      { task: 'work' },
+      {
+        task: 'work',
+        everyRanked: true,
+        everyScored: true,
+        rare: false,
+        decide: async (batch) => Object.fromEntries(
+          batch.questions.map((question) => [question.key, { status: 'answered' as const, probability: 0.9 }])),
+      },
+    );
+
+    expect(picked.reads[0]!.status).toBe('read');
+    if (picked.reads[0]!.status !== 'read') return;
+    expect(picked.reads[0]!.candidates.map((candidate) => candidate.title)).toEqual(['kept']);
+    expect(picked.reads[1]!.status).toBe('read');
+    if (picked.reads[1]!.status !== 'read') return;
+    expect(picked.reads[1]!.candidates.map((candidate) => candidate.title).sort()).toEqual(['hidden', 'kept']);
+    // The excluding source never fetched the hidden commit's body;
+    // the other source did.
+    expect(gitInputs.filter((input) => input?.includes(hidden))).toHaveLength(1);
+    expect(picked.record.levers.sources['git:a']).toMatchObject({ exclude: ['secret.md'] });
   });
 
   it('lists the old and new names of a rename in changedPaths', async () => {

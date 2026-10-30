@@ -19,6 +19,20 @@ const uncutPick = { everyRanked: true, everyScored: true, rare: false } as const
 const gitEnvs: (NodeJS.ProcessEnv | undefined)[] = [];
 let onGitChild: ((child: ChildProcess, args: readonly string[]) => void) | undefined;
 
+// Every file the reader opens for text, so a spec can see an excluded
+// file was never read.
+const fileReads: string[] = [];
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return {
+    ...actual,
+    readFile: (file: unknown, options?: unknown) => {
+      fileReads.push(String(file));
+      return (actual.readFile as (f: unknown, o?: unknown) => Promise<unknown>)(file, options);
+    },
+  };
+});
+
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>();
   const wrapped = (...rest: unknown[]) => {
@@ -470,6 +484,134 @@ describe('knowledgeBase', () => {
     expect(byFile('effective.md')[0]!.date).toEqual({ value: '2025-02-01', meaning: 'effective' });
     const modified = { value: (await stat(join(directory, 'plain.md'))).mtime.toISOString(), meaning: 'modified' };
     expect(byFile('plain.md').every((c) => c.date?.value === modified.value && c.date.meaning === modified.meaning)).toBe(true);
+  });
+
+  it('reads only parts dated on or after its own since, declared or by log section', async () => {
+    const directory = await tree({
+      'old.md': '---\ndate: 2026-10-20\n---\n## Old\nDated a day before the bound.\n',
+      'boundary.md': '---\ndate: 2026-10-21\n---\n## Boundary\nDated on the bound day.\n',
+      'log.md': '## [2026-10-20] update | Old entry\nAn old entry.\n\n## [2026-10-21] update | New entry\nA new entry.\n',
+      'plain.md': '## Plain\nAn undated body.\n',
+    });
+
+    const result = await read(
+      knowledgeBase(directory, { since: '7 days' }),
+      { task: 'entries', taskDate: '2026-10-28T12:00:00Z' },
+    );
+
+    expect(result.status).toBe('read');
+    if (result.status !== 'read') return;
+    // 2026-10-28T12:00:00Z less seven days is 2026-10-21T12:00:00Z. A
+    // day-precision date keeps the whole bound day, so the declared
+    // 2026-10-20 note and the log section dated 2026-10-20 are never
+    // read; the undated note has no bound to fail.
+    const files = [...new Set(result.candidates.map((candidate) => candidate.id.split('#')[0]))].sort();
+    expect(files).toEqual(['boundary.md', 'log.md', 'plain.md']);
+    expect(result.candidates.filter((candidate) => candidate.id.startsWith('log.md'))
+      .map((candidate) => candidate.title)).toEqual(['log.md: [2026-10-21] update | New entry']);
+  });
+
+  it('bounds the read by its since before the limit and the lane cut, so an old winner cannot starve newer parts', async () => {
+    const directory = await tree({
+      'old.md': `---\ndate: 2026-10-01\n---\n## Old\n${'orchard '.repeat(200)}\n`,
+      'first.md': '---\ndate: 2026-10-26\n---\n## Note\nAn orchard note.\n',
+      'second.md': '---\ndate: 2026-10-27\n---\n## Note\nAn orchard note.\n',
+      'third.md': '---\ndate: 2026-10-28\n---\n## Note\nAn orchard note.\n',
+    });
+    const source = knowledgeBase(directory, { since: '7 days' });
+    const day = { task: 'orchard', taskDate: '2026-10-28T12:00:00Z' };
+    const inWindow = ['first.md#1', 'second.md#1', 'third.md#1'];
+
+    // The old note outscores every in-window part; the bound removes it
+    // before the limit slices, so the read still returns one part.
+    const limited = await read(source, { ...day, limit: 1 });
+    expect(limited.status).toBe('read');
+    if (limited.status !== 'read') return;
+    expect(limited.candidates).toHaveLength(1);
+    expect(inWindow).toContain(limited.candidates[0]!.id);
+
+    // It is also out of the lane before the score curve finds its bend:
+    // the three equal in-window scores form a flat curve and all pass.
+    const cut = await read(source, { ...day, wholeLanes: false });
+    expect(cut.status).toBe('read');
+    if (cut.status !== 'read') return;
+    expect(cut.candidates.map((candidate) => candidate.id)).toEqual(inWindow);
+
+    // The same bound holds on a meaning lane, whose curve runs on the
+    // similarity order over the whole history. The old note's vector is
+    // the query's own, so its similarity tops the in-window parts': a
+    // bound applied after the bend would let it through.
+    const embed = async (texts: readonly string[]) =>
+      texts.map((text) => (text.includes('orchard orchard') || text === 'orchard' ? [1, 0] : [1, 1]));
+    const meaning = await read(source, { ...day, meaningLane: { embed }, wholeLanes: false });
+    expect(meaning.status).toBe('read');
+    if (meaning.status !== 'read') return;
+    expect(meaning.candidates.map((candidate) => candidate.id)).toEqual(inWindow);
+  });
+
+  it('never embeds a part outside its own since, and counts only the parts it read', async () => {
+    const directory = await tree({
+      'old.md': '---\ndate: 2026-10-01\n---\n## Old\nAn old body.\n',
+      'new.md': '---\ndate: 2026-10-27\n---\n## New\nA new body.\n',
+    });
+    const embedded: string[] = [];
+    const embed = async (texts: readonly string[]) => {
+      embedded.push(...texts);
+      return texts.map(() => [1, 0]);
+    };
+
+    const result = await read(
+      knowledgeBase(directory, { since: '7 days' }),
+      { task: 'body', taskDate: '2026-10-28T12:00:00Z', meaningLane: { embed }, wholeLanes: false },
+    );
+
+    expect(result.status).toBe('read');
+    if (result.status !== 'read') return;
+    // The query text itself is embedded; no text from the note outside
+    // the look-back ever reaches the embedder, and the lane's matched
+    // count is the part inside the look-back alone.
+    expect(embedded).toContain('body');
+    expect(embedded.some((text) => text.includes('new body'))).toBe(true);
+    expect(embedded.some((text) => text.includes('old body'))).toBe(false);
+    expect(result.candidates.map((candidate) => candidate.id)).toEqual(['new.md#1']);
+    expect(result.matched).toBe(1);
+  });
+
+  it('leaves a file its own exclude names unopened while another source reads it', async () => {
+    const directory = await tree({
+      'open.md': '## Open\nThe open body.\n',
+      'secret.md': '## Secret\nThe hidden body.\n',
+    });
+    const blocked = join(directory, 'secret.md');
+
+    fileReads.length = 0;
+    const own = await read(knowledgeBase(directory, { exclude: [blocked] }), { task: 'body' });
+    expect(own.status).toBe('read');
+    if (own.status !== 'read') return;
+    expect([...new Set(own.candidates.map((candidate) => candidate.id.split('#')[0]))]).toEqual(['open.md']);
+    expect(fileReads.some((file) => file.endsWith('secret.md'))).toBe(false);
+
+    const excluding = knowledgeBase(directory, { exclude: [blocked] });
+    const picked = await pickFromSources(
+      [excluding, { ...knowledgeBase(directory), id: 'kb:b' }],
+      { task: 'body' },
+      {
+        task: 'body',
+        everyRanked: true,
+        everyScored: true,
+        rare: false,
+        decide: async (batch) => Object.fromEntries(
+          batch.questions.map((question) => [question.key, { status: 'answered' as const, probability: 0.9 }])),
+      },
+    );
+    expect(picked.reads[0]!.status).toBe('read');
+    if (picked.reads[0]!.status !== 'read') return;
+    expect([...new Set(picked.reads[0]!.candidates.map((candidate) => candidate.id.split('#')[0]))]).toEqual(['open.md']);
+    expect(picked.reads[1]!.status).toBe('read');
+    if (picked.reads[1]!.status !== 'read') return;
+    expect([...new Set(picked.reads[1]!.candidates.map((candidate) => candidate.id.split('#')[0]))].sort())
+      .toEqual(['open.md', 'secret.md']);
+    expect(picked.record.levers.sources[excluding.id]).toMatchObject({ exclude: [blocked] });
   });
 
   it('reports a missing directory as absent with its reason', async () => {

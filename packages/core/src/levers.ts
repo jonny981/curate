@@ -85,6 +85,16 @@ export interface SourceSettings {
    *  present when the source has `decay` on. Only a record
    *  pickFromSources produced carries it. */
   readonly decay?: { readonly halfLife: string };
+  /** The lower date bound this source read with, as its caller wrote
+   *  it: an ISO date, or a duration such as '14 days' counted back from
+   *  the task's moment. Present only when the caller set it. */
+  readonly since?: string;
+  /** The paths this source limited its read to, as its caller wrote
+   *  them: for git, commits that changed none of them were not read. */
+  readonly paths?: readonly string[];
+  /** The paths this source excluded for itself, joined onto the read
+   *  request's `exclude` for its reads only. */
+  readonly exclude?: readonly string[];
 }
 
 /** The lever set a curate record carries: the pick's resolved states

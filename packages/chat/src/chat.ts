@@ -3,7 +3,8 @@ import { homedir } from 'node:os';
 import { basename, join, relative, resolve, sep } from 'node:path';
 
 import {
-  canonicalPath, phraseCount, laneBend, embedQuery, embedSimilarities, taskMoment, timeZoneOf, zonedIso,
+  canonicalPath, phraseCount, laneBend, embedQuery, embedSimilarities, sinceCutoff, taskMoment, timeZoneOf,
+  zonedIso,
 } from '@curatejs/core/internal';
 import { startChatRank, type ChatKeywordSettings } from './chat-rank.js';
 import { scrubChat } from './chat-scrub.js';
@@ -27,6 +28,10 @@ export interface ChatOptions {
    * request's `taskDate`, else its `asOf`, else now. Omitted means all
    * messages. */
   readonly since?: string;
+  /** Paths this source alone refuses, joined onto the read request's
+   *  `exclude` for its reads only: an excluded file or folder is never
+   *  opened. */
+  readonly exclude?: readonly string[];
   readonly includeTools?: boolean;
   /** Tightens the 700-character part size, as does the read request. */
   readonly maxQuestionText?: number;
@@ -193,19 +198,6 @@ const READERS: Record<ChatProvider, ProviderReader> = {
   },
 };
 
-function cutoff(since: string | undefined, now: number): number {
-  if (since === undefined) return Number.NEGATIVE_INFINITY;
-  const duration = /^(\d+(?:\.\d+)?)\s+(seconds?|minutes?|hours?|days?|weeks?)$/i.exec(since.trim());
-  if (duration) {
-    const units: Record<string, number> = { second: 1_000, minute: 60_000, hour: 3_600_000, day: 86_400_000, week: 604_800_000 };
-    const value = now - Number(duration[1]) * units[duration[2]!.toLowerCase().replace(/s$/, '')]!;
-    if (Number.isFinite(value)) return value;
-  }
-  const value = /^\d{4}-\d{2}-\d{2}(?:T.*)?$/.test(since) ? Date.parse(since) : NaN;
-  if (!Number.isFinite(value)) throw new TypeError('since must be an ISO date or a duration such as "14 days".');
-  return value;
-}
-
 function positive(value: number, name: string): number {
   if (!Number.isSafeInteger(value) || value < 1) throw new TypeError(`${name} must be a positive safe integer.`);
   return value;
@@ -328,10 +320,16 @@ export function chat(options: ChatOptions = {}): CandidateSource {
   const roots = new Map(providers.map((provider) => [provider, [...new Set((options.paths ?? [READERS[provider].folder]).map((path) => resolve(path)))]]));
   if (options.paths?.length === 0 || options.paths?.some((path) => !path.trim())) throw new TypeError('paths must contain directory paths.');
   const budget = positive(options.maxQuestionText ?? DEFAULT_MAX_QUESTION_TEXT, 'maxQuestionText');
-  cutoff(options.since, Date.now());
+  sinceCutoff(options.since, Date.now());
+  const exclude = options.exclude?.map((entry) => {
+    if (typeof entry !== 'string' || entry.trim() === '') throw new TypeError('exclude must contain non-empty strings.');
+    return entry;
+  });
   const id = scrubChat(options.id ?? `chat:${providers.map((provider) => `${provider}:${roots.get(provider)!.join(',')}`).join(';')}`);
   const reader: CandidateSource = {
     id, kind: 'chat', role: 'reference',
+    ...(options.since === undefined ? {} : { since: options.since }),
+    ...(exclude === undefined ? {} : { exclude }),
     async read(request: CandidateReadRequest) {
       cancelled(request.signal);
       const size = Math.min(DEFAULT_MAX_QUESTION_TEXT, budget, positive(request.maxQuestionText ?? DEFAULT_MAX_QUESTION_TEXT, 'maxQuestionText'));
@@ -341,7 +339,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
       const moment = taskMoment(request.taskDate ?? request.asOf, zone);
       // A period read keeps only the parts dated inside the task's period.
       const period = request.taskPeriod;
-      const since = Math.max(cutoff(options.since, moment),
+      const since = Math.max(sinceCutoff(options.since, moment),
         period === undefined ? Number.NEGATIVE_INFINITY : Date.parse(period.from));
       const until = Math.min(request.taskDate === undefined ? Number.POSITIVE_INFINITY : moment,
         period === undefined ? Number.POSITIVE_INFINITY : Date.parse(period.to));
@@ -351,7 +349,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
       const skips = { n: 0 };
       const walkable: { provider: ChatProvider; root: string }[] = [];
       try {
-        const exclusions = await Promise.all((request.exclude ?? []).map(async (entry) =>
+        const exclusions = await Promise.all([...(exclude ?? []), ...(request.exclude ?? [])].map(async (entry) =>
           entry.startsWith('/') ? await canonicalPath(entry) : entry.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '') || '.'));
         for (const provider of providers) for (const directory of roots.get(provider)!) {
           if (excluded(directory, directory, exclusions)) continue;

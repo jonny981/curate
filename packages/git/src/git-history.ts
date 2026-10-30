@@ -12,6 +12,7 @@ import {
   probeWorkTree,
   resolveCommit,
   runGit,
+  sinceCutoff,
   taskMoment,
 } from '@curatejs/core/internal';
 import { hits, taskTerms, phraseCount, laneBend, embedQuery, embedSimilarities } from '@curatejs/core/internal';
@@ -41,6 +42,20 @@ export interface GitOptions {
    *  historically change with the task's named paths. Costs extra log
    *  passes, so it runs only when asked. */
   readonly coChange?: boolean;
+  /** Read only commits dated at or after an ISO date or a duration
+   *  before the task date (for example, '14 days'); the task date is
+   *  the read request's `taskDate`, else its `asOf`, else now. Omitted
+   *  means the whole history. */
+  readonly since?: string;
+  /** Read only commits that changed at least one of these paths: a
+   *  filter, unlike the read request's `paths`, which only hints at
+   *  ranking. Entries are repository paths, or absolute paths inside
+   *  the work tree. */
+  readonly paths?: readonly string[];
+  /** Paths this source alone refuses, joined onto the read request's
+   *  `exclude` for its reads only: a commit that touched one is dropped
+   *  before its body is ever fetched. */
+  readonly exclude?: readonly string[];
 }
 
 interface LogCommit {
@@ -192,10 +207,22 @@ export function git(
   }
   const resolved = resolve(directory);
   const id = options.id ?? `git:${resolved}`;
+  sinceCutoff(options.since, Date.now());
+  const paths = options.paths?.map((entry) => {
+    if (typeof entry !== 'string' || entry.trim() === '') throw new TypeError('paths must contain non-empty strings.');
+    return entry;
+  });
+  const exclude = options.exclude?.map((entry) => {
+    if (typeof entry !== 'string' || entry.trim() === '') throw new TypeError('exclude must contain non-empty strings.');
+    return entry;
+  });
   const reader: CandidateSource = {
     id,
     kind: 'git-history',
     role: 'reference',
+    ...(options.since === undefined ? {} : { since: options.since }),
+    ...(paths === undefined ? {} : { paths }),
+    ...(exclude === undefined ? {} : { exclude }),
     async read(request) {
       const signal = request.signal;
       if (signal?.aborted) throw new SourceReadError('cancelled', 'The read was cancelled.');
@@ -258,13 +285,19 @@ export function git(
         // /var tmpdir, a linked workspace) would otherwise escape the
         // toplevel spelling and be dropped, failing the exclusion open.
         const excluded = new Set<string>();
-        for (const entry of request.exclude ?? []) {
+        for (const entry of [...(exclude ?? []), ...(request.exclude ?? [])]) {
           const path = repoPath(
             isAbsolute(entry) ? await canonicalPath(entry) : entry,
             toplevel,
           );
           if (path !== undefined) excluded.add(path);
         }
+        // The source's own `paths` is a filter, resolved to
+        // repository-relative paths like an exclusion. An entry outside
+        // the repository resolves to nothing: it can admit nothing.
+        const only = paths === undefined ? undefined : (await Promise.all(paths.map(async (entry) =>
+          repoPath(isAbsolute(entry) ? await canonicalPath(entry) : entry, toplevel))))
+          .filter((path): path is string => path !== undefined);
         // A kind lane's `task` is the phrase; its `topic` is the task
         // the lane serves, and that is what the matches are scored on.
         const terms = taskTerms(request.topic ?? request.task, request.paths ?? [], keyword.stopWords);
@@ -280,15 +313,21 @@ export function git(
         // '.' under `git -C <toplevel>` names the same whole tree.
         const pathspec = named.map((name) => (name === '' ? '.' : name));
         // With a task date, a commit dated after it is not read; a period
-        // read keeps only the commits dated inside the task's period.
+        // read keeps only the commits dated inside the task's period, and
+        // the source's own `since` bounds the history from below.
         const period = request.taskPeriod;
+        const sinceMs = Math.max(sinceCutoff(options.since, now),
+          period === undefined ? Number.NEGATIVE_INFINITY : Date.parse(period.from));
         const until = Math.min(request.taskDate === undefined ? Number.POSITIVE_INFINITY : now,
           period === undefined ? Number.POSITIVE_INFINITY : Date.parse(period.to));
         // Git reads `@<seconds>` exactly; commit dates hold whole seconds.
         const range = [
-          ...(period === undefined ? [] : [`--since=@${Math.ceil(Date.parse(period.from) / 1000)}`]),
+          ...(Number.isFinite(sinceMs) ? [`--since=@${Math.ceil(sinceMs / 1000)}`] : []),
           ...(Number.isFinite(until) ? [`--until=@${Math.floor(until / 1000)}`] : []),
         ];
+        // A commit must pass both filters before its body is fetched:
+        // the exclusions and the source's own path list each gate it.
+        const filtered = excluded.size !== 0 || only !== undefined;
         const cut = request.wholeLanes === false;
         // With `wholeLanes` on a lane read keeps every commit and marks
         // each one the cut would have dropped.
@@ -306,7 +345,7 @@ export function git(
         // phrase, kind and meaning lanes and exclusions enumerate the
         // whole history, since the limit then slices a filtered set, not
         // the enumeration.
-        const wanted = excluded.size === 0 && request.limit !== undefined
+        const wanted = !filtered && request.limit !== undefined
           && request.phraseLane !== true && request.meaningLane === undefined
           ? request.limit + 1
           : undefined;
@@ -327,14 +366,14 @@ export function git(
           const batch = parseLog(
             await runGit(toplevel, [
               'log', '--no-merges', '--no-renames', '-z',
-              `--format=${excluded.size === 0 ? FULL_FORMAT : META_FORMAT}`,
+              `--format=${filtered ? META_FORMAT : FULL_FORMAT}`,
               '--name-only', '-n', String(page), ...range,
               ...(offset === 0 ? [] : ['--skip', String(offset)]), sha,
             ], { signal }),
-            excluded.size === 0,
+            !filtered,
           );
           for (const commit of batch) {
-            if (excluded.size !== 0) {
+            if (filtered) {
               enumerated.push(scored(commit));
             } else if (embedding !== undefined) {
               // The page's body is embedded and released with it; only
@@ -366,10 +405,13 @@ export function git(
         }
         await flushEmbed();
         // A commit touching any excluded path is not admitted, even when
-        // it also touched an allowed one; its body is never fetched.
-        const admitted = excluded.size === 0
+        // it also touched an allowed one; its body is never fetched. A
+        // path list admits only the commits that changed one of its
+        // paths.
+        const admitted = !filtered
           ? enumerated
-          : enumerated.filter((commit) => !touches(commit.changedPaths, [...excluded]));
+          : enumerated.filter((commit) => !touches(commit.changedPaths, [...excluded])
+            && (only === undefined || touches(commit.changedPaths, only)));
 
         // A meaning lane embeds each admitted commit's subject and body
         // in bounded batches, keeps the similarity curve's side, and
@@ -377,7 +419,7 @@ export function git(
         // bodies it needs arrive in the same bounded batches, after the
         // path filter has dropped their commits.
         if (embedding !== undefined) {
-          if (excluded.size !== 0) {
+          if (filtered) {
             for (let start = 0; start < admitted.length; start += BODY_PAGE) {
               const slice = admitted.slice(start, start + BODY_PAGE);
               const bodies = await readBodies(toplevel, slice.map((commit) => commit.sha), signal);
@@ -441,7 +483,7 @@ export function git(
         // compact scores until the curve cut picks the kept set; only
         // those bodies are fetched.
         if (request.phraseLane === true && request.topic !== undefined) {
-          if (excluded.size !== 0) {
+          if (filtered) {
             for (let start = 0; start < admitted.length; start += BODY_PAGE) {
               const slice = admitted.slice(start, start + BODY_PAGE);
               const bodies = await readBodies(toplevel, slice.map((commit) => commit.sha), signal);
@@ -518,7 +560,7 @@ export function git(
           // bounded batches for counting; without them the page loop
           // counted each commit as its page arrived and `phrases` is
           // already complete.
-          if (excluded.size !== 0) {
+          if (filtered) {
             for (let start = 0; start < admitted.length; start += BODY_PAGE) {
               const slice = admitted.slice(start, start + BODY_PAGE);
               const bodies = await readBodies(toplevel, slice.map((commit) => commit.sha), signal);
@@ -621,7 +663,7 @@ export function git(
         // carried metadata only, the bodies come in bounded batches whose
         // contents are measured and released. A lane-cut read keeps just
         // the shared-word count; a bare read keeps the body it will emit.
-        if (excluded.size !== 0) {
+        if (filtered) {
           for (let start = 0; start < scoped.length; start += BODY_PAGE) {
             const slice = scoped.slice(start, start + BODY_PAGE);
             const bodies = await readBodies(toplevel, slice.map((commit) => commit.sha), signal);
@@ -662,7 +704,7 @@ export function git(
         const signalSum = (entry: { signals: Record<string, number> }) =>
           Object.values(entry.signals).reduce((sum, value) => sum + value, 0);
         const partial = truncated
-          ? (excluded.size === 0
+          ? (!filtered
             ? `the limit kept ${scoped.length} ${scoped.length === 1 ? 'commit' : 'commits'}; more exist`
             : `the limit kept ${scoped.length} of ${admitted.length} admitted commits`)
           : undefined;

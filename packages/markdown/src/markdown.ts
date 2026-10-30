@@ -11,8 +11,10 @@ import {
   embedSimilarities,
   datedIn,
   decayWeight,
+  sinceCutoff,
   taskMoment,
   timeZoneOf,
+  zonedIso,
 } from '@curatejs/core/internal';
 import { lstat, readdir, readFile, realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -43,6 +45,15 @@ import {
 export interface RulesOptions {
   /** Override the exported MARKDOWN_KEYWORD_SETTINGS. */
   readonly keyword?: Partial<MarkdownKeywordSettings>;
+  /** Read only parts whose emitted date is at or after an ISO date or a
+   *  duration before the task date (for example, '14 days'); the task
+   *  date is the read request's `taskDate`, else its `asOf`, else now.
+   *  A part emitted with no date is read. Omitted means no lower
+   *  bound. */
+  readonly since?: string;
+  /** Paths this source alone refuses, joined onto the read request's
+   *  `exclude` for its reads only: an excluded file is never opened. */
+  readonly exclude?: readonly string[];
 }
 
 export interface KnowledgeBaseOptions extends RulesOptions {
@@ -590,6 +601,7 @@ async function openDirectory(
   select: (file: string) => boolean,
   context: CandidateReadContext,
   legacy?: 'knowledge' | 'rules',
+  own: readonly string[] = [],
 ): Promise<ReadState | CandidateReadResult> {
   if (legacy === 'rules' && request.revision !== undefined) return { status: 'absent', reason: PIN_REASON };
   if (request.signal?.aborted) throw new SourceReadError('cancelled', 'The read was cancelled.');
@@ -631,7 +643,7 @@ async function openDirectory(
   // the marker the commit reader's repoPath resolves for it, and every
   // path beneath an anchor is refused.
   const exclude = new Set<string>();
-  for (const entry of request.exclude ?? []) {
+  for (const entry of [...own, ...(request.exclude ?? [])]) {
     if (typeof entry !== 'string' || entry.trim() === '') continue;
     const absolute = resolve(entry);
     exclude.add(absolute);
@@ -927,9 +939,16 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
     : legacy === 'rules' ? `rules:${paths[0]}` : `markdown:${options.kind}:${JSON.stringify(paths)}`;
   const keyword = { ...MARKDOWN_KEYWORD_SETTINGS, ...options.keyword };
   const role = options.kind === 'rules' || options.kind === 'instructions' ? 'rule' : 'reference';
+  sinceCutoff(options.since, Date.now());
+  const exclude = options.exclude?.map((entry) => {
+    if (typeof entry !== 'string' || entry.trim() === '') throw new TypeError('exclude must contain non-empty strings.');
+    return entry;
+  });
   return {
     id, role, kind: 'markdown',
     ...(legacy === undefined ? { maxQuestionText: options.maxQuestionText ?? Number.POSITIVE_INFINITY } : {}),
+    ...(options.since === undefined ? {} : { since: options.since }),
+    ...(exclude === undefined ? {} : { exclude }),
     async read(request, context = { files: new Map() }) {
       if (request.maxQuestionText !== undefined
         && (!Number.isSafeInteger(request.maxQuestionText) || request.maxQuestionText < 1)) {
@@ -981,7 +1000,7 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
             select = (file) => file === realFile;
           }
         }
-        const state = await openDirectory(root, request, select, context, legacy);
+        const state = await openDirectory(root, request, select, context, legacy, exclude);
         if ('status' in state) {
           if (state.status === 'absent') reasons.push(state.reason);
           continue;
@@ -1077,7 +1096,8 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
           if (always === undefined && !deferred && (!phraseLane || kindLane)) {
             for (const part of noteParts(note, file, name, legacy, role === 'rule', partBudget)) {
               if (meaningLane) {
-                parts.push({ file: meta.index, id: part.id, len: 0, headingHits: 0, namedPath: false });
+                parts.push({ file: meta.index, id: part.id, len: 0, headingHits: 0, namedPath: false,
+                  ...(part.date === undefined ? {} : { date: part.date }) });
                 continue;
               }
               const tokens = tokenize(part.text);
@@ -1158,7 +1178,8 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
               const note = parseNote(text);
               for (const part of noteParts(note, meta.file, meta.name, legacy, role === 'rule', partBudget)) {
                 if (meaningLane) {
-                  parts.push({ file: meta.index, id: part.id, len: 0, headingHits: 0, namedPath: false });
+                  parts.push({ file: meta.index, id: part.id, len: 0, headingHits: 0, namedPath: false,
+                    ...(part.date === undefined ? {} : { date: part.date }) });
                   continue;
                 }
                 const tokens = tokenize(part.text);
@@ -1194,6 +1215,23 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
         throw new TypeError('limit must be a positive safe integer.');
       }
 
+      // The source's own `since` bounds the history from below on the
+      // date each part carries as the reader emits it: a part emitted
+      // with no date is read; a bare day compares as a day, as the task
+      // period's check does.
+      const zone = timeZoneOf(request.timeZone);
+      const sinceMs = sinceCutoff(options.since,
+        taskNow ??= taskMoment(request.taskDate ?? request.asOf, zone));
+      const keepDate = (date: MemoryCandidate['date']) => date === undefined
+        || !Number.isFinite(sinceMs)
+        || (/^\d{4}-\d{2}-\d{2}$/.test(date.value)
+          ? date.value >= zonedIso(sinceMs, zone).slice(0, 10)
+          : Date.parse(date.value) >= sinceMs);
+      // A part's own date, else its file's, the same date `emit` gives
+      // it. The bound applies before any limit or lane cut, so an old
+      // high-scoring part can never spend a newer part's place.
+      const dateOf = (index: number) => parts[index]!.date ?? metas[parts[index]!.file]!.date;
+      const inside = (index: number) => keepDate(dateOf(index));
       const emit = (meta: FileMeta, part: EnumeratedPart, signals: Record<string, number>): MemoryCandidate => ({
         sourceId: id, role, ...(legacy === undefined ? { kind: options.kind } : {}),
         id: part.id,
@@ -1231,14 +1269,18 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
               // A file that grew between passes emits extra parts; they
               // have no slot in the part list, so they are skipped.
               if (local >= meta.partCount) break;
-              pending.push({ index: meta.partStart + local, text: part.text });
+              const index = meta.partStart + local;
               local += 1;
+              // A part outside the look-back is never embedded.
+              if (!inside(index)) continue;
+              pending.push({ index, text: part.text });
               if (pending.length === 32) await flush();
             }
           }
         }
         await flush();
         const order = parts.map((_, index) => index)
+          .filter(inside)
           .sort((left, right) => (simOf.get(right) ?? 0) - (simOf.get(left) ?? 0)
             || (parts[left]!.id < parts[right]!.id ? -1 : parts[left]!.id > parts[right]!.id ? 1 : 0));
         const cut = request.wholeLanes === false;
@@ -1299,7 +1341,7 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
           ...(partial.length === 0 && reasons.length === 0
             ? {}
             : { partial: [...reasons, ...partial].join('; ') }),
-          matched: parts.length,
+          matched: order.length,
           ...(cut ? { laneCutApplied: true as const } : {}),
         };
       }
@@ -1322,10 +1364,11 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
           }
         }
         matched.sort((left, right) => right.count - left.count || left.candidate.id.localeCompare(right.candidate.id));
-        const limited = limit !== undefined && matched.length > limit;
-        const kept = limited ? matched.slice(0, limit) : matched;
+        const inLookBack = matched.filter(({ candidate }) => keepDate(candidate.date));
+        const limited = limit !== undefined && inLookBack.length > limit;
+        const kept = limited ? inLookBack.slice(0, limit) : inLookBack;
         const partial: string[] = [];
-        if (limited) partial.push(`the phrase limit kept ${limit} of ${matched.length} candidates`);
+        if (limited) partial.push(`the phrase limit kept ${limit} of ${inLookBack.length} candidates`);
         if (skipped > 0) partial.push(`skipped ${skipped} symbolic-link ${skipped === 1 ? 'entry' : 'entries'}`);
         const candidates = kept.map(({ candidate, count }) => ({ ...candidate, laneScore: count }));
         if (reasons.length === 0) {
@@ -1384,8 +1427,6 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
         }
       }
 
-      // A part's own date, else its file's.
-      const dateOf = (index: number) => parts[index]!.date ?? metas[parts[index]!.file]!.date;
       // Decay ranks each dated part lower by its age at the task date;
       // undefined for an undated part or one dated after it.
       const halfLife = request.decayHalfLife;
@@ -1411,7 +1452,8 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
       const sums = aged === undefined ? plain : plain.map((sum, index) => sum + (aged[index] ?? 0));
       // A period read keeps only the parts dated inside the task's period.
       const period = request.taskPeriod;
-      const dated = (index: number) => period === undefined || datedIn(dateOf(index)?.value ?? '', period);
+      const dated = (index: number) => inside(index)
+        && (period === undefined || datedIn(dateOf(index)?.value ?? '', period));
       const cut = request.wholeLanes === false;
       // With `wholeLanes` on the read keeps every part and marks each one
       // the cut would have dropped.

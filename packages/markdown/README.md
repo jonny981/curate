@@ -136,6 +136,14 @@ const sources = [
   - **A pinned read:** the revision's commit dates, never a modified time.
 - **Pins:** Every kind reads the requested revision's contents and dates.
   Explicit exclusions still apply before content is opened.
+- **Look-back and exclusions:** `since` accepts an ISO date or a duration
+  such as `'14 days'`, counted back from the task date (the read request's
+  `taskDate`, else its `asOf`, else now). A part whose emitted date is
+  before the cutoff is not read; a part emitted with no date is read, and
+  a bare day keeps the whole cutoff day. `exclude` joins the read
+  request's `exclude` for this source's reads only; an excluded file is
+  never opened, and another source over the same folder still reads it.
+  Both are recorded in the pick's levers.
 - **Ranking:** `pick` accepts `ranking: { docs: { bm25: 2 } }` to weight signals
   by candidate kind when candidates have no search ranks. Omitted weights are 1. The pick record stores these weights.
   The source's `keyword` settings retain the exported Markdown defaults.

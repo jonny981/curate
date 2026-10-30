@@ -494,6 +494,7 @@ Without `--sources`, the script reads `~/.curate/sources.json`.
 Supply a local embedding GGUF through `embeddingModel`. The script requires Metal on macOS and downloads no model.
 Optional `thoroughness` sets how deep the fused order feeds the decision step: `quick` reads the top 672 parts, `normal` 3,674 and `deep` 12,896, the default.
 Measured on a replayed ~116,000-part history, each level cost about 1, 5 and 17 pence of questions on the largest of eight task sets; `quick` kept 24 of the 56 known answer parts, `normal` 49 and `deep` all 56.
+Each source can also set `since` (an ISO date or a duration such as `"14 days"`, counted back from the task date), `exclude` (paths that source alone refuses, resolved inside `path`), and, for `git` only, `include` (only commits that changed one of the paths).
 The skill combines keyword and meaning lanes, and disables label admission and the rare-word round.
 Vectors persist by model bytes and input text. Identical text shares matching decision answers within each pick.
 It prints the log and saves the log, source reads, model usage and timings under `~/.curate/runs/`.

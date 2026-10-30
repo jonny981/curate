@@ -254,6 +254,18 @@ export interface CandidateSource {
   readonly ruleBar?: number;
   /** The decay half-life this source's Markdown parts rank with; set by `historySource()`. */
   readonly decay?: { readonly halfLife: string };
+  /** The look-back this source read with, as its caller wrote it: an
+   *  ISO date, or a duration such as '14 days' counted back from the
+   *  task's moment. Set by the reader; recorded in the pick's levers. */
+  readonly since?: string;
+  /** The paths this source limited its read to, as its caller wrote
+   *  them. For git a commit that changed none is not read. Recorded in
+   *  the pick's levers. */
+  readonly paths?: readonly string[];
+  /** The paths this source excluded for itself, joined onto the read
+   *  request's `exclude` for its reads only. Recorded in the pick's
+   *  levers. */
+  readonly exclude?: readonly string[];
   /** 'reference' | 'rule' | 'mixed'; declared so the caller knows
    *  whether this source can feed the applicable-rule set. */
   readonly role: 'reference' | 'rule' | 'mixed';
@@ -1103,6 +1115,18 @@ export async function pickFromSources(
   // Decay acts inside the read, so its half-life and its effects entry join here.
   const sourceLevers = { ...result.record.levers.sources };
   const effects = [...result.record.effects];
+  // The look-back and include/exclude each source ran with join its
+  // record, as decay's half-life does below.
+  for (const source of sources) {
+    const entry = sourceLevers[source.id];
+    if (entry === undefined) continue;
+    const own = {
+      ...(source.since === undefined ? {} : { since: source.since }),
+      ...(source.paths === undefined ? {} : { paths: source.paths }),
+      ...(source.exclude === undefined ? {} : { exclude: source.exclude }),
+    };
+    if (Object.keys(own).length > 0) sourceLevers[source.id] = { ...entry, ...own };
+  }
   for (const [index, source] of sources.entries()) {
     if (source.decay === undefined) continue;
     const { halfLife } = source.decay;

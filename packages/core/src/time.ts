@@ -126,6 +126,22 @@ export function durationMs(text: unknown, name: string): number {
   return ms;
 }
 
+/** The moment a `since` look-back resolves to: an ISO date or a
+ *  duration such as '14 days' counted back from `now` (the read's task
+ *  moment). Undefined means no lower bound. Anything else throws a
+ *  TypeError. */
+export function sinceCutoff(since: string | undefined, now: number): number {
+  if (since === undefined) return Number.NEGATIVE_INFINITY;
+  const duration = /^(\d+(?:\.\d+)?)\s+(seconds?|minutes?|hours?|days?|weeks?)$/i.exec(since.trim());
+  if (duration) {
+    const value = now - Number(duration[1]) * UNITS[duration[2]!.toLowerCase().replace(/s$/, '')]!;
+    if (Number.isFinite(value)) return value;
+  }
+  const value = /^\d{4}-\d{2}-\d{2}(?:T.*)?$/.test(since) ? Date.parse(since) : NaN;
+  if (!Number.isFinite(value)) throw new TypeError('since must be an ISO date or a duration such as "14 days".');
+  return value;
+}
+
 /** How much lower decay ranks a part: `weight × (1 − 2^(−age / halfLife))`,
  *  where the age runs from the part's date to `asOf`. A bare date is the
  *  start of that day in the zone. Undefined for a part with no readable

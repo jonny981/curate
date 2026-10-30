@@ -9,6 +9,20 @@ import { chat, chatSettings, type ChatProvider } from '../src/index.js';
 import { CHAT_KEYWORD_SETTINGS, rankChat } from '../src/chat-rank.js';
 import { porterStem } from '../src/porter.js';
 
+// Every transcript file the reader opens, so a spec can see an excluded
+// file was never read.
+const fileReads: string[] = [];
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return {
+    ...actual,
+    readFile: (file: unknown, options?: unknown) => {
+      fileReads.push(String(file));
+      return (actual.readFile as (f: unknown, o?: unknown) => Promise<unknown>)(file, options);
+    },
+  };
+});
+
 const uncutPick = { everyRanked: true, everyScored: true, rare: false } as const;
 
 const directories: string[] = [];
@@ -128,6 +142,43 @@ describe.each(['claude-code', 'codex'] as const)('chat %s', (provider) => {
     vi.setSystemTime(new Date('2026-10-15T12:00:00Z'));
     const result = await read(provider, directory, { since: '14 days' });
     expect(result.candidates.map((candidate) => candidate.text).sort()).toEqual(['boundary message', 'new message']);
+  });
+
+  it('leaves a transcript its own exclude names unopened while another source reads it', async () => {
+    const directory = await transcript(provider, [message(provider, 'user', 'open message')]);
+    const sessions = join(directory, provider === 'codex' ? '2026/10/02' : 'project');
+    const metadata = provider === 'codex' ? [{ type: 'session_meta', timestamp: OLD, payload: { id: 'blocked' } }] : [];
+    const blocked = join(sessions, 'blocked.jsonl');
+    await writeFile(blocked, [...metadata, message(provider, 'user', 'hidden message')]
+      .map((record) => JSON.stringify(record)).join('\n') + '\n');
+
+    // A direct read with the exclusion never opens the file.
+    fileReads.length = 0;
+    const own = await read(provider, directory, { exclude: [blocked] });
+    expect(own.candidates.map((candidate) => candidate.text)).toEqual(['open message']);
+    expect(fileReads.some((file) => file.endsWith('blocked.jsonl'))).toBe(false);
+
+    // Another chat source on the same directory still reads it.
+    const picked = await pickFromSources(
+      [
+        chat({ id: 'chat:a', providers: [provider], paths: [directory], exclude: [blocked] }),
+        chat({ id: 'chat:b', providers: [provider], paths: [directory] }),
+      ],
+      { task: 'find useful evidence' },
+      {
+        ...uncutPick,
+        task: 'find useful evidence',
+        decide: async (batch) => Object.fromEntries(
+          batch.questions.map((question) => [question.key, { status: 'answered' as const, probability: 0.9 }])),
+      },
+    );
+    expect(picked.reads[0]!.status).toBe('read');
+    if (picked.reads[0]!.status !== 'read') return;
+    expect(picked.reads[0]!.candidates.map((candidate) => candidate.text)).toEqual(['open message']);
+    expect(picked.reads[1]!.status).toBe('read');
+    if (picked.reads[1]!.status !== 'read') return;
+    expect(picked.reads[1]!.candidates.map((candidate) => candidate.text).sort()).toEqual(['hidden message', 'open message']);
+    expect(picked.record.levers.sources['chat:a']).toMatchObject({ exclude: [blocked] });
   });
 
   it('splits at line ends and hard-cuts long lines without losing text', async () => {

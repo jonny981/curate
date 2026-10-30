@@ -452,6 +452,7 @@ The readers use them:
 
 - **Git:** the `recency` signal is measured from the task date.
 - **Chat:** a `since` duration counts back from the task date, and each date carries the zone's offset, such as `2025-06-02T00:30:00.000+01:00`.
+- **A source's own look-back:** every reader accepts a `since`: an ISO date or a duration such as `'14 days'`, counted back from the same task date. Git passes it to `git log`; chat emits only messages at or after it; Markdown drops parts whose emitted date is older, keeping undated parts. Each source sets its own, and the pick records it under `levers.sources`.
 - **After the task date:** with `taskDate` given, a chat message or a git commit dated after it is not read. Without it nothing is left out for its date. Markdown keeps notes dated after it, since a note can declare an `effective` date ahead. A `revision` pin reads a knowledge base as it stood.
 
 ### The task's period
@@ -1524,6 +1525,11 @@ Each source carries seven settings, tuned for its kind of history:
 - **`ruleBar`:** keep a rule scored at or above this; absent means 0. Only sources whose parts are rules use it.
 - **`questions`:** the decision questions asked of each reference part; absent means the built-in question for the part's kind.
 - **`decay`:** rank older notes lower by their age at the task date, as `{ halfLife: '365 days' }`; absent or `false` is off, as in every preset. Markdown sources only; see the [Markdown reader](https://github.com/jonny981/curate/blob/main/packages/markdown/README.md#decay).
+
+A source can also carry the look-back and path settings its reader ran
+with (`since`, `paths` and `exclude`), which the record keeps beside
+these under `levers.sources`. They are the reader's own options, not
+`historySource` settings; each reader's README describes them.
 
 Each reader package exports its settings as one plain object:
 
