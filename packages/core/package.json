@@ -1,7 +1,7 @@
 {
   "name": "@curatejs/core",
   "version": "0.1.0",
-  "description": "Select and curate task evidence from host-supplied sources.",
+  "description": "A semantic compression library.",
   "author": "Jonny Neill <jonnyneill@hotmail.com>",
   "type": "module",
   "license": "MIT",

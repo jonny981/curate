@@ -1,6 +1,8 @@
 # Curate
 
-Best in class memory that just works - simple, performant and precise without embeddings, vector databases or third party platforms
+A semantic compression library
+
+93.4% on LongMemEval with about 230 times less context for the task model.
 
 Curate gives an agent the context it needs for a task, drawn from chat transcripts, Markdown and git history.
 It chooses evidence and turns it into a dated, cited log that the agent reads before starting work.
@@ -29,7 +31,7 @@ DolphinBench: **22 of 30 tests passed**, at $0.24 a test at list prices. [See th
 - **Go straight to the source.** [Mem0](https://docs.mem0.ai/core-concepts/memory-operations/add) extracts facts with a model, [Mastra](https://mastra.ai/docs/memory/observational-memory) keeps observations written by a model, and [Zep](https://help.getzep.com/v4/how-graph-creation-works) builds a knowledge graph. Curate selects from the original history for each task.
 - **Keep the task model focused.** It gets a dated, cited log chosen for its task, even when the history spans thousands of parts.
 
-[LongMemEval](benchmarks/longmemeval/2026-10-22/README.md): **449 to 485 task-model tokens** from about **50 sessions**. [DolphinBench slice](benchmarks/dolphinbench/2026-10-22/results.md): a median log of **about 4,500 tokens** from **5,400–5,900 history parts** (o200k tokens of the logs the agent read; the published copies, whose part IDs are shorter, count about 3,200).
+[LongMemEval](benchmarks/longmemeval/2026-10-22/README.md): **449 to 485 task-model tokens** from histories of about **50 sessions** and **102,580 tokens** on average (o200k, every turn's role and text): about 230 times less with GPT-5. [DolphinBench slice](benchmarks/dolphinbench/2026-10-22/results.md): a median log of **about 4,500 tokens** from **5,400–5,900 history parts** (o200k tokens of the logs the agent read; the published copies, whose part IDs are shorter, count about 3,200).
 
 ## Install only what you need
 
