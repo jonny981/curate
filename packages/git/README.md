@@ -30,9 +30,24 @@ With no exclusions, `git log` enumerates the history in pages so one
 call's output stays small; with exclusions, paths are listed first and a
 commit that touched an excluded path is dropped before its body is ever
 fetched. Commit bodies are read in bounded batches. When a pick's lane
-cut is on, the read scores each page or batch as it arrives, keeps a
-compact score per commit, and fetches bodies only for the commits its
-own score curve kept.
+cut is on, the read counts each task word in each page or batch as it
+arrives, keeps those counts per commit, and fetches bodies only for the
+commits its own score curve kept.
+
+A keyword search ranks each commit by the sum of its signals.
+`bm25` scores the task's words in the subject and body joined.
+A word scores more the rarer it is among the commits the search ranks.
+Each repeated mention adds less than the one before.
+A long message counts each mention for less than a short one.
+The counts cover only the commits the search ranks.
+For the main search, those are the commits left after `since`, `paths`, `exclude` and the task's date or period, up to the read's `limit`.
+For a kind search, they are the commits that contain its phrase.
+`recency` adds up to 1 and falls with the commit's age.
+`named_path_touch` and `co_change` add their weights when they apply.
+`live_lines` adds its weight plus the base-10 log of the commit's live lines.
+The subject carries no extra weight.
+On a test repository of about 2,900 commits, weighting it as a title kept no more of the expected commits than plain BM25.
+
 `blame: true` adds a signal for commits that wrote lines still live in
 the task's named paths; `coChange: true` adds one for commits that
 touched files which historically change with them. Both are off unless
@@ -77,7 +92,13 @@ See [core's measured reason](https://github.com/jonny981/curate/blob/main/packag
 ```ts
 import { git, GIT_KEYWORD_SETTINGS, GIT_HISTORY_CASCADE, GIT_SEARCH_LINE_REGISTER } from '@curatejs/git';
 
-const source = git('.', { keyword: { recencyDays: 90 } });
+const source = git('.', {
+  keyword: {
+    k1: 1.2,
+    b: 0.75,
+    recencyDays: 90,
+  },
+});
 ```
 
 See [core](https://github.com/jonny981/curate/blob/main/packages/core/README.md) for selection, search lines, optional cuts and curation.

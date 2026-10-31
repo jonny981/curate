@@ -15,7 +15,7 @@ import {
   sinceCutoff,
   taskMoment,
 } from '@curatejs/core/internal';
-import { hits, taskTerms, phraseCount, laneBend, embedQuery, embedSimilarities } from '@curatejs/core/internal';
+import { bm25Term, tokenize, taskTerms, phraseCount, laneBend, embedQuery, embedSimilarities } from '@curatejs/core/internal';
 import type { MemoryCandidate } from '@curatejs/core';
 import {
   historySource,
@@ -67,17 +67,26 @@ interface LogCommit {
   readonly changedPaths: readonly string[];
 }
 
+/** Each task word's mentions in a commit's subject and body joined, in
+ *  task-word order, and that text's word count: all BM25 needs. */
+interface Mentions {
+  readonly counts: readonly number[];
+  readonly length: number;
+}
+
 /** What a read keeps per commit once its page or body batch is released:
- *  the candidate's fields and its measured shared-word count, never the
- *  body unless the result emits it. */
+ *  the candidate's fields and its measured mentions, never the body
+ *  unless the result emits it. */
 interface ScoredCommit {
   readonly sha: string;
   readonly short: string;
   readonly date: string;
   readonly subject: string;
   readonly changedPaths: readonly string[];
-  /** Shared task-term hits, set when a body was measured for this commit. */
-  shared?: number;
+  /** Task-word mentions, set when a body was measured for this commit. */
+  mentions?: Mentions;
+  /** The commit's BM25 score, set once the lane's counts are complete. */
+  bm25?: number;
   /** The body, held only while the result still needs it. */
   body?: string;
 }
@@ -87,12 +96,46 @@ interface ScoredCommit {
  *  result keeps are copied flat before they are stored. */
 const flat = (text: string): string => Buffer.from(text).toString('utf8');
 
-const scored = (commit: Omit<LogCommit, 'body'>, extra: { shared?: number; body?: string } = {}): ScoredCommit => ({
+const scored = (commit: Omit<LogCommit, 'body'>, extra: { mentions?: Mentions; body?: string } = {}): ScoredCommit => ({
   sha: flat(commit.sha), short: flat(commit.short), date: flat(commit.date),
   subject: flat(commit.subject), changedPaths: commit.changedPaths.map(flat),
-  ...(extra.shared === undefined ? {} : { shared: extra.shared }),
+  ...(extra.mentions === undefined ? {} : { mentions: extra.mentions }),
   ...(extra.body === undefined ? {} : { body: flat(extra.body) }),
 });
+
+/** Counts each task word's mentions in a commit's subject and body. */
+function measure(subject: string, body: string, termIndex: ReadonlyMap<string, number>): Mentions {
+  const tokens = tokenize(`${subject}\n${body}`);
+  const counts = new Array<number>(termIndex.size).fill(0);
+  for (const token of tokens) {
+    const at = termIndex.get(token);
+    if (at !== undefined) counts[at] = counts[at]! + 1;
+  }
+  return { counts, length: tokens.length };
+}
+
+/** Sets each commit's BM25 score. The commit count, how many commits hold
+ *  each word and the average length all count these commits only, so a
+ *  word common inside the lane ranks as common. */
+function scoreBm25(commits: readonly ScoredCommit[], k1: number, b: number): void {
+  const count = commits.length;
+  const average = count === 0 ? 0 : commits.reduce((sum, commit) => sum + commit.mentions!.length, 0) / count;
+  const holding: number[] = [];
+  for (const commit of commits) {
+    commit.mentions!.counts.forEach((f, at) => {
+      if (f > 0) holding[at] = (holding[at] ?? 0) + 1;
+    });
+  }
+  for (const commit of commits) {
+    let score = 0;
+    if (average > 0) {
+      commit.mentions!.counts.forEach((f, at) => {
+        if (f > 0) score += bm25Term(f, holding[at]!, count, commit.mentions!.length, average, k1, b);
+      });
+    }
+    commit.bm25 = score;
+  }
+}
 
 /** Records are separated by \x1e and fields by \x1f; `-z` leaves paths
  *  literal and NUL-separated, so a name with spaces or non-ASCII bytes is
@@ -190,11 +233,12 @@ const NO_COMMIT = /Needed a single revision|does not have any commits|unknown re
  * request's abort signal reaching the process.
  *
  * With no exclusions, `git log` pages enumerate commits and paths, and
- * each page is scored as it arrives. With exclusions, a metadata pass
- * lists paths first and a commit that touched any excluded path is
- * dropped before its body is ever fetched. A lane-cut read keeps compact
- * per-commit scores and fetches bodies only for the commits the curve
- * kept. `blame` and `coChange` are opt-in extras on top.
+ * each page's task words are counted as it arrives. With exclusions, a
+ * metadata pass lists paths first and a commit that touched any excluded
+ * path is dropped before its body is ever fetched. A lane-cut read keeps
+ * compact per-commit word counts, scores them with BM25 once they are
+ * complete, and fetches bodies only for the commits the curve kept.
+ * `blame` and `coChange` are opt-in extras on top.
  */
 export function git(
   repo: string | URL,
@@ -301,6 +345,7 @@ export function git(
         // A kind lane's `task` is the phrase; its `topic` is the task
         // the lane serves, and that is what the matches are scored on.
         const terms = taskTerms(request.topic ?? request.task, request.paths ?? [], keyword.stopWords);
+        const termIndex = new Map(terms.map((term, at) => [term, at]));
         const named: string[] = [];
         for (const path of request.paths ?? []) {
           const name = repoPath(
@@ -335,7 +380,7 @@ export function git(
 
         // With no exclusions the log pages carry bodies: a bare read keeps
         // them for its candidates, a lane-cut read measures each page's
-        // shared words and releases the bodies, and a phrase read counts
+        // task-word mentions and releases the bodies, and a phrase read counts
         // each page's phrase and keeps only the matching bodies. With
         // exclusions the pages carry metadata only; the bodies of admitted
         // commits come from bounded `git log --stdin` batches, so a commit
@@ -387,7 +432,7 @@ export function git(
               const count = phraseCount(commit.subject, request.task) + phraseCount(commit.body, request.task);
               if (count > 0) {
                 phrases.push({
-                  commit: scored(commit, { shared: hits(`${commit.subject}\n${commit.body}`, terms) }),
+                  commit: scored(commit, { mentions: measure(commit.subject, commit.body, termIndex) }),
                   count,
                 });
               }
@@ -395,7 +440,7 @@ export function git(
               const count = phraseCount(commit.subject, request.task) + phraseCount(commit.body, request.task);
               if (count > 0) phrases.push({ commit: scored(commit, { body: commit.body }), count });
             } else if (cut) {
-              enumerated.push(scored(commit, { shared: hits(`${commit.subject}\n${commit.body}`, terms) }));
+              enumerated.push(scored(commit, { mentions: measure(commit.subject, commit.body, termIndex) }));
             } else {
               enumerated.push(scored(commit, { body: commit.body }));
             }
@@ -480,7 +525,7 @@ export function git(
         // the exact phrase, then ranks them by the task's own signal
         // score — never by how often the phrase occurs, so a direction
         // said once survives a phrase everyone says. Matches carry
-        // compact scores until the curve cut picks the kept set; only
+        // compact word counts until the curve cut picks the kept set; only
         // those bodies are fetched.
         if (request.phraseLane === true && request.topic !== undefined) {
           if (filtered) {
@@ -492,17 +537,18 @@ export function git(
                   + phraseCount(bodies[index]!, request.task);
                 if (count > 0) {
                   phrases.push({
-                    commit: { ...commit, shared: hits(`${commit.subject}\n${bodies[index]!}`, terms) },
+                    commit: { ...commit, mentions: measure(commit.subject, bodies[index]!, termIndex) },
                     count,
                   });
                 }
               });
             }
           }
+          // BM25 counts over the phrase matches this lane ranks.
+          scoreBm25(phrases.map(({ commit }) => commit), keyword.k1, keyword.b);
           const laneSignals = (commit: ScoredCommit): Record<string, number> => {
             const out: Record<string, number> = {};
-            const shared = commit.shared ?? 0;
-            if (shared > 0) out['shared_words'] = Math.min(keyword.sharedWordCap, shared);
+            if (commit.bm25! > 0) out['bm25'] = commit.bm25!;
             const ageDays = (now - Date.parse(commit.date)) / 86_400_000;
             out['recency'] = Math.exp(-Math.max(0, ageDays) / keyword.recencyDays);
             if (named.length > 0 && touches(commit.changedPaths, named)) {
@@ -662,22 +708,26 @@ export function git(
         // Scoring needs each scoped commit's body once: when the pages
         // carried metadata only, the bodies come in bounded batches whose
         // contents are measured and released. A lane-cut read keeps just
-        // the shared-word count; a bare read keeps the body it will emit.
+        // the mentions; a bare read keeps the body it will emit.
         if (filtered) {
           for (let start = 0; start < scoped.length; start += BODY_PAGE) {
             const slice = scoped.slice(start, start + BODY_PAGE);
             const bodies = await readBodies(toplevel, slice.map((commit) => commit.sha), signal);
             slice.forEach((commit, index) => {
-              commit.shared = hits(`${commit.subject}\n${bodies[index]!}`, terms);
+              commit.mentions = measure(commit.subject, bodies[index]!, termIndex);
               if (!cut) commit.body = bodies[index]!;
             });
           }
         }
+        // BM25 counts over the commits this lane ranks: those left after
+        // the look-back, the path filter, the exclusions, the task's date
+        // or period, and the limit.
+        for (const commit of scoped) commit.mentions ??= measure(commit.subject, commit.body ?? '', termIndex);
+        scoreBm25(scoped, keyword.k1, keyword.b);
 
         const signals = (commit: ScoredCommit) => {
           const out: Record<string, number> = {};
-          const shared = commit.shared ?? hits(`${commit.subject}\n${commit.body ?? ''}`, terms);
-          if (shared > 0) out['shared_words'] = Math.min(keyword.sharedWordCap, shared);
+          if (commit.bm25! > 0) out['bm25'] = commit.bm25!;
           const ageDays = (now - Date.parse(commit.date)) / 86_400_000;
           out['recency'] = Math.exp(-Math.max(0, ageDays) / keyword.recencyDays);
           if (named.length > 0 && touches(commit.changedPaths, named)) {

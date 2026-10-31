@@ -11,7 +11,8 @@ export const gitSettings: HistorySettings = {
 };
 
 export interface GitKeywordSettings {
-  readonly sharedWordCap: number;
+  readonly k1: number;
+  readonly b: number;
   readonly recencyDays: number;
   readonly namedPathWeight: number;
   readonly liveLinesWeight: number;
@@ -20,7 +21,8 @@ export interface GitKeywordSettings {
 }
 
 export const GIT_KEYWORD_SETTINGS: GitKeywordSettings = {
-  sharedWordCap: 3,
+  k1: 1.2,
+  b: 0.75,
   recencyDays: 60,
   namedPathWeight: 3,
   liveLinesWeight: 2,

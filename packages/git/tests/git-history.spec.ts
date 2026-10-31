@@ -587,7 +587,7 @@ describe('git', () => {
     expect(result.candidates[0]!.changedPaths).toEqual(['docs/a.md']);
   });
 
-  it('scores shared words against the task and marks named-path touches', async () => {
+  it('scores task words with BM25 and marks named-path touches', async () => {
     const directory = await repository([
       {
         subject: 'billing work',
@@ -605,8 +605,8 @@ describe('git', () => {
     expect(result.status).toBe('read');
     if (result.status !== 'read') return;
     const byTitle = new Map(result.candidates.map((candidate) => [candidate.title, candidate]));
-    expect(byTitle.get('billing work')!.signals['shared_words']!).toBeGreaterThan(0);
-    expect(byTitle.get('chore')!.signals['shared_words']).toBeUndefined();
+    expect(byTitle.get('billing work')!.signals['bm25']!).toBeGreaterThan(0);
+    expect(byTitle.get('chore')!.signals['bm25']).toBeUndefined();
     expect(byTitle.get('chore')!.signals['named_path_touch']).toBe(3);
     expect(byTitle.get('billing work')!.signals['named_path_touch']).toBeUndefined();
     expect(result.candidates.every((candidate) => typeof candidate.signals['recency'] === 'number')).toBe(true);
@@ -911,10 +911,10 @@ describe('git', () => {
     if (result.status !== 'read' || kindResult.status !== 'read'
       || meaningResult.status !== 'read') return;
     expect(result.candidates).toHaveLength(750);
-    expect(result.candidates.every((candidate) => candidate.signals['shared_words'] === 3)).toBe(true);
+    expect(result.candidates.every((candidate) => (candidate.signals['bm25'] ?? 0) > 0)).toBe(true);
     expect(kindResult.candidates).toHaveLength(750);
     expect(kindResult.candidates.every((candidate) =>
-      (candidate.signals['phrase'] ?? 0) > 0 && candidate.signals['shared_words'] === 3)).toBe(true);
+      (candidate.signals['phrase'] ?? 0) > 0 && (candidate.signals['bm25'] ?? 0) > 0)).toBe(true);
     expect(meaningResult.meaningLane).toBe(true);
     expect(meaningResult.candidates).toHaveLength(750);
     expect(meaningResult.candidates.every((candidate) => candidate.signals['similarity'] === 1)).toBe(true);
@@ -950,8 +950,131 @@ it('marks the commits the cut would drop when a read keeps whole lanes', async (
 
 it('allows a host to override commit keyword weights', async () => {
   const directory = await repository([{ subject: 'backup evidence', files: { 'backup.md': 'backup' } }]);
-  const result = await read(gitSource(directory, { keyword: { sharedWordCap: 0 } }), { task: 'backup evidence' });
+  // With k1 at 0 each word scores its idf alone: ln(1 + 0.5 / 1.5) for a
+  // word held by the only commit.
+  const result = await read(gitSource(directory, { keyword: { k1: 0 } }), { task: 'backup evidence' });
   expect(result.status).toBe('read');
   if (result.status !== 'read') throw new Error('Expected commit candidates');
-  expect(result.candidates[0]!.signals.shared_words).toBe(0);
+  expect(result.candidates[0]!.signals.bm25).toBeCloseTo(2 * Math.log(1 + 0.5 / 1.5), 12);
+});
+
+describe('the BM25 keyword score', () => {
+  const asOf = '2026-10-25T16:00:00Z';
+  const sum = (signals: Record<string, number>) => Object.values(signals).reduce((total, value) => total + value, 0);
+  // Commits sharing no task word, so each task word's idf has a real
+  // commit count to weigh against.
+  const fillers = (count: number, date = '2026-09-01T10:00:00Z') => Array.from({ length: count }, (_, index) => ({
+    subject: `routine note ${index}`, body: 'assorted chores', date, files: { [`filler/${index}.md`]: String(index) },
+  }));
+  const byFile = async (source: CandidateSource, request: Parameters<typeof read>[1]) => {
+    const result = await read(source, { asOf, ...request });
+    if (result.status !== 'read') throw new Error('Expected commit candidates');
+    return { result, of: (file: string) => result.candidates.find((candidate) => candidate.changedPaths?.includes(file))! };
+  };
+
+  it('ranks a commit sharing more task words above one sharing three', async () => {
+    // The commit with three words is a day newer, so a score that stops
+    // counting at three words would rank it first on recency.
+    const directory = await repository([
+      ...fillers(10),
+      { subject: 'billing ledger refund', body: 'invoice', date: '2026-10-01T10:00:00Z', files: { 'four.md': '4' } },
+      { subject: 'billing ledger refund', body: 'notes', date: '2026-10-02T10:00:00Z', files: { 'three.md': '3' } },
+    ]);
+    const { of } = await byFile(gitSource(directory), { task: 'billing ledger refund invoice' });
+    expect(sum(of('four.md').signals)).toBeGreaterThan(sum(of('three.md').signals));
+  });
+
+  it('ranks a rare task word above a common one', async () => {
+    // Battery sits in eight commits and zephyr in one; the battery commit
+    // is a day newer and the same length.
+    const directory = await repository([
+      ...Array.from({ length: 7 }, (_, index) => ({
+        subject: `battery note ${index}`, date: '2026-09-01T10:00:00Z', files: { [`b/${index}.md`]: String(index) },
+      })),
+      { subject: 'zephyr check done', date: '2026-10-01T10:00:00Z', files: { 'rare.md': 'r' } },
+      { subject: 'battery check done', date: '2026-10-02T10:00:00Z', files: { 'common.md': 'c' } },
+    ]);
+    const { of } = await byFile(gitSource(directory), { task: 'zephyr battery' });
+    expect(of('rare.md').signals['bm25']!).toBeGreaterThan(of('common.md').signals['bm25']!);
+    expect(sum(of('rare.md').signals)).toBeGreaterThan(sum(of('common.md').signals));
+  });
+
+  it('adds for repeated mentions, but less each time', async () => {
+    // Three commits of three words each, so only the mentions differ.
+    const directory = await repository([
+      ...fillers(4),
+      { subject: 'zephyr alpha gamma', date: '2026-10-01T10:00:00Z', files: { 'one.md': '1' } },
+      { subject: 'zephyr zephyr gamma', date: '2026-10-01T10:00:00Z', files: { 'two.md': '2' } },
+      { subject: 'zephyr zephyr zephyr', date: '2026-10-01T10:00:00Z', files: { 'three.md': '3' } },
+    ]);
+    const { of } = await byFile(gitSource(directory), { task: 'zephyr' });
+    const [one, two, three] = ['one.md', 'two.md', 'three.md'].map((file) => of(file).signals['bm25']!);
+    expect(two!).toBeGreaterThan(one!);
+    expect(three!).toBeGreaterThan(two!);
+    expect(three! - two!).toBeLessThan(two! - one!);
+  });
+
+  it('counts the same mention in a long body for less than in a short one', async () => {
+    const directory = await repository([
+      ...fillers(4),
+      { subject: 'zephyr check', date: '2026-10-01T10:00:00Z', files: { 'short.md': 's' } },
+      {
+        subject: 'zephyr check',
+        body: 'a long body of routine words that pads the commit well past the average length '.repeat(4),
+        date: '2026-10-01T10:00:00Z',
+        files: { 'long.md': 'l' },
+      },
+    ]);
+    const { of } = await byFile(gitSource(directory), { task: 'zephyr' });
+    expect(of('short.md').signals['bm25']!).toBeGreaterThan(of('long.md').signals['bm25']!);
+  });
+
+  it('ranks a word common inside the commits a read keeps as common', async () => {
+    // The whole history holds zephyr in seven commits and battery in four.
+    // The recent commits hold battery in four and zephyr in one.
+    const directory = await repository([
+      ...Array.from({ length: 6 }, (_, index) => ({
+        subject: `zephyr archive ${index}`, date: '2025-03-01T10:00:00Z', files: { [`old/${index}.md`]: String(index) },
+      })),
+      { subject: 'battery fix one', date: '2026-10-01T10:00:00Z', files: { 'recent/battery.md': 'b' } },
+      { subject: 'zephyr fix two', date: '2026-10-01T10:00:00Z', files: { 'recent/zephyr.md': 'z' } },
+      ...['three', 'four', 'five'].map((word) => ({
+        subject: `battery tune ${word}`, date: '2026-10-01T10:00:00Z', files: { [`recent/${word}.md`]: word },
+      })),
+    ]);
+    const task = 'battery zephyr';
+    const whole = await byFile(gitSource(directory), { task });
+    expect(whole.of('recent/battery.md').signals['bm25']!)
+      .toBeGreaterThan(whole.of('recent/zephyr.md').signals['bm25']!);
+    for (const options of [{ since: '2026-06-01' }, { paths: ['recent'] }, { exclude: ['old'] }]) {
+      const { result, of } = await byFile(gitSource(directory, options), { task });
+      expect(result.candidates).toHaveLength(5);
+      expect(of('recent/zephyr.md').signals['bm25']!).toBeGreaterThan(of('recent/battery.md').signals['bm25']!);
+    }
+    // An exclusion lists the whole history before the limit cuts it, so
+    // only the limit keeps the old commits out of the counts.
+    const limited = await byFile(gitSource(directory, { exclude: ['elsewhere'] }), { task, limit: 5 });
+    expect(limited.result.candidates).toHaveLength(5);
+    expect(limited.of('recent/zephyr.md').signals['bm25']!)
+      .toBeGreaterThan(limited.of('recent/battery.md').signals['bm25']!);
+  });
+
+  it('ranks a kind search by BM25 counted over its phrase matches', async () => {
+    // Battery is common among the matches and zephyr rare, though zephyr
+    // is common in the whole history. The battery match is a day newer.
+    const directory = await repository([
+      ...Array.from({ length: 6 }, (_, index) => ({
+        subject: `zephyr archive ${index}`, date: '2026-09-01T10:00:00Z', files: { [`old/${index}.md`]: String(index) },
+      })),
+      ...['cells', 'packs', 'tests'].map((word) => ({
+        subject: `we chose battery ${word}`, date: '2026-09-15T10:00:00Z', files: { [`${word}.md`]: word },
+      })),
+      { subject: 'we chose zephyr today', date: '2026-10-01T10:00:00Z', files: { 'zephyr.md': 'z' } },
+      { subject: 'we chose battery today', date: '2026-10-02T10:00:00Z', files: { 'battery.md': 'b' } },
+    ]);
+    const { result, of } = await byFile(gitSource(directory), { task: 'we chose', phraseLane: true, topic: 'battery zephyr' });
+    expect(result.candidates).toHaveLength(5);
+    expect(of('zephyr.md').signals['bm25']!).toBeGreaterThan(of('battery.md').signals['bm25']!);
+    expect(result.candidates[0]!.changedPaths).toEqual(['zephyr.md']);
+  });
 });

@@ -1,5 +1,6 @@
 import { MARKDOWN_KEYWORD_SETTINGS, markdownSettings, rulesSettings, type MarkdownKeywordSettings } from './defaults.js';
 import {
+  bm25Term,
   hits,
   taskTerms,
   tokenize,
@@ -1416,9 +1417,7 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
                 const n = documentFrequency.get(term) ?? 0;
                 const f = counts.get(term) ?? 0;
                 if (n === 0 || f === 0) continue;
-                const idf = Math.log(1 + (count - n + 0.5) / (n + 0.5));
-                score += idf * (f * (keyword.k1 + 1))
-                  / (f + keyword.k1 * (1 - keyword.b + keyword.b * (tokens.length / average)));
+                score += bm25Term(f, n, count, tokens.length, average, keyword.k1, keyword.b);
               }
               scores[meta.partStart + local] = score;
               local += 1;

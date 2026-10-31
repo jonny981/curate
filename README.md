@@ -517,7 +517,7 @@ flowchart LR
 
 Each reader ranks evidence using settings suited to its source.
 Chat and Markdown use BM25, a score for matching words.
-Git uses shared words, age and changed paths.
+Git uses BM25 over each commit's subject and body, plus age and changed paths.
 Each search lane cuts where its own score curve flattens, rather than at a fixed count.
 Set `read.wholeLanes: true` to keep every part the readers return.
 

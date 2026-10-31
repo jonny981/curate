@@ -273,7 +273,7 @@ export function searchSource(source, searches, audit, folder, settings = {}) {
     const terms = new Set(words(task));
     const result = read.status !== 'read' || request.meaningLane !== undefined ? read : { ...read, candidates: rankMatches(read.candidates.filter((candidate) =>
       request.wholeLanes === true
-      || ['keyword', 'shared_words', 'bm25', 'heading-words', 'file-words'].some((key) => candidate.signals[key] > 0)
+      || ['keyword', 'bm25', 'heading-words', 'file-words'].some((key) => candidate.signals[key] > 0)
       || words(`${candidate.title} ${candidate.text}`).some((word) => terms.has(word))), settings) };
     const file = `read-${audit.length + 1}.json`;
     audit.push({ source: source.id, task, ...(request.meaningLane === undefined ? {} : { lane: 'meaning' }), ms: Date.now() - started, status: result.status,

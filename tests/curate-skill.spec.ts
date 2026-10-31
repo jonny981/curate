@@ -527,7 +527,7 @@ it('sends the full long commit text rather than cutting it at the default part s
   const text = 'Orchard evidence. '.repeat(100) + 'Keep the final constraint.';
   const source: CandidateSource = { id: 'commits', kind: 'git-history', role: 'reference',
     read: async () => ({ status: 'read', complete: true, candidates: [{
-      sourceId: 'commits', id: 'commit abc', role: 'reference', title: 'Orchard', text, signals: { shared_words: 1 },
+      sourceId: 'commits', id: 'commit abc', role: 'reference', title: 'Orchard', text, signals: { bm25: 1 },
     }] }),
   };
   const searches = { 'git-history': { keywords: ['orchard'], answers: ['orchard trees'] } };
