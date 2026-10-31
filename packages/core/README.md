@@ -1234,8 +1234,19 @@ When at least one header names an author, the instructions add two rules:
 - Words quoted as the person's must come from an item marked 'by the
   person'. An item by an agent may report what the person wants: say it is
   the agent's account, and do not quote it as the person's words.
-- When an item by the person and a later item by an agent say the same
-  thing, cite the person's item and keep the person's words.
+- When an item by the person and any item not by the person say the same
+  thing, or the other item quotes or reports the person's words, cite the
+  person's item and keep the person's words. This covers an item from any
+  source, such as a note that records what the person said. The other item
+  is cited beside the person's only for facts the person's item does not
+  hold.
+
+A chained write's later passes add one more rule. When an item by the
+person in that batch says what an earlier log line states from items not
+by the person, the pass writes the fact again from the person's item, in
+the person's words, and ends the new line with
+`(replaces Ln: the person's own words)`, where `Ln` is the earlier line's
+id. The earlier line stays in the log.
 
 A call where no header names an author sends the same prompt as before
 authors existed.
@@ -1463,7 +1474,9 @@ pass adds may end with `(replaces L7: the subject it corrects)` to
 tell the reader it is newer; the marked line stays in the log either
 way. The writer is asked to mark only a newer correction or decision
 about the same subject that is at least as important, and to write no
-mark when it is unclear. A `(replaces [YYYY-MM-DD])` marker is never
+mark when it is unclear. When a header names an author, it is also asked
+to mark an earlier line that an item by the person restates, as the
+author rules above describe. A `(replaces [YYYY-MM-DD])` marker is never
 honoured in a chained write: the first pass is asked for none, and in
 any pass a date marker, or a mark naming an id the log does not hold,
 is stripped from the line it sits on.

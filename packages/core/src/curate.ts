@@ -195,7 +195,11 @@ const INSTRUCTIONS = [
 ].join('\n');
 // Sent only when an item header names its author, so a call with no
 // author marks sends the prompt it sent before marks existed.
-const AUTHOR_RULES = '\nWords quoted as the person\'s must come from an item marked \'by the person\'. An item by an agent may report what the person wants: say it is the agent\'s account, and do not quote it as the person\'s words.\nWhen an item by the person and a later item by an agent say the same thing, cite the person\'s item and keep the person\'s words.';
+const AUTHOR_RULES = '\nWords quoted as the person\'s must come from an item marked \'by the person\'. An item by an agent may report what the person wants: say it is the agent\'s account, and do not quote it as the person\'s words.\nWhen an item by the person and an item not by the person say the same thing, or the other item quotes or reports the person\'s words, cite the person\'s item and keep the person\'s words. This holds for an item from any source, whether or not its header names an author. Cite the other item beside the person\'s only for facts the person\'s item does not hold.';
+// Sent to a later batch's pass under the same condition: the log so
+// far may already state, from a copy, what the person says in this
+// batch, and the pass otherwise adds no line for a fact the log holds.
+const LAYER_AUTHOR_RULE = '\nWhen an item by the person in this batch says what an earlier log line states from items not by the person, write that fact again as a new line from the person\'s item, in the person\'s words, citing the person\'s item. End it with "(replaces L3: the person\'s own words)", with that earlier line\'s id in place of L3. Keep every figure and date the earlier line gives, and cite its item beside the person\'s for any the person\'s item does not hold. This is the one case where you write a fact the log already states, and the one mark that is not a correction.';
 const AUTHOR_HEADERS = { person: 'by the person', agent: 'by an agent', tool: 'by a tool', system: 'system' } as const;
 const authorHeader = ({ chat }: MemoryCandidate): string => chat?.author === undefined || chat.author === 'unmarked' ? ''
   : `, ${chat.author === 'agent' && chat.authorName !== undefined ? `by agent ${chat.authorName}` : AUTHOR_HEADERS[chat.author]}`;
@@ -637,8 +641,8 @@ export async function curate(
     '- In the log itself, do not judge: give every observation its dates, including ones near the edge of a period the task names.')
     + '\nAfter the log, add a short section headed "Working (the curator\'s; check it against the log):". For a count or a list: number each distinct instance that falls inside the period the task names, with its date and the item ids in brackets, then name any instance you left out and why (outside the period, or the same as another). For a question about time or order: the dates involved and the computed difference or order. For something that changed: the latest value and its date. Leave out any part the task does not need.';
   const instructions = instructionsWorking + (taskKinds?.includes('count') ? COUNT : '');
-  const additions = preferences + (context ? CONTEXT : '')
-    + (items.some(({ candidate }) => authorHeader(candidate)) ? AUTHOR_RULES : '');
+  const marked = items.some(({ candidate }) => authorHeader(candidate));
+  const additions = preferences + (context ? CONTEXT : '') + (marked ? AUTHOR_RULES : '');
   // Each item's header shows a short `En` id in selected order, fixed
   // for the curation so a rerun sees the same ids. The writer cites
   // them, the format check knows only them, and `fullIds` swaps the
@@ -803,7 +807,7 @@ export async function curate(
           marks: [] });
       } else {
         const checked = await writeChecked({
-          instructions: layerInstructions(instructions) + additions,
+          instructions: layerInstructions(instructions) + additions + (marked ? LAYER_AUTHOR_RULE : ''),
           body: `TASK:\n${datedTask}\n\nLOG SO FAR:\n${log}\n\nEVIDENCE:\n\n${indexes.map((index) => blocks[index]).join('\n\n')}`,
         }, true, available);
         // The pass returns only its additions; an empty reply means the

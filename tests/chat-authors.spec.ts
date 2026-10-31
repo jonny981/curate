@@ -37,5 +37,5 @@ it('gives the curator the person\'s message and an agent\'s later summary of it,
   expect(person).toMatch(/^E\d \(2026-10-06T08:00:00\.000\+00:00, 0\.9, by the person\): claude-code session user \(the person\) 2026-10-06T08:00:00\.000\+00:00\n/);
   expect(summary).toMatch(/^E\d \(2026-10-07T08:00:00\.000\+00:00, 0\.9, by an agent\): claude-code session user \(agent\) 2026-10-07T08:00:00\.000\+00:00\n/);
   expect(calls[0]!.instructions).toContain('Words quoted as the person\'s must come from an item marked \'by the person\'.');
-  expect(calls[0]!.instructions).toContain('When an item by the person and a later item by an agent say the same thing, cite the person\'s item and keep the person\'s words.');
+  expect(calls[0]!.instructions).toContain('When an item by the person and an item not by the person say the same thing, or the other item quotes or reports the person\'s words, cite the person\'s item and keep the person\'s words.');
 });
