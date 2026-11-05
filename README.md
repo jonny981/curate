@@ -2,14 +2,26 @@
 
 A semantic compression library
 
-93.4% on LongMemEval with about 230 times less context for the task model.
+93.8% on LongMemEval under its official grader (markup setting), with about 121 times less context than the raw history.
 
 Curate gives an agent the context it needs for a task, drawn from chat transcripts, Markdown and git history.
 It chooses evidence and turns it into a dated, cited log that the agent reads before starting work.
 
 ## Results at a glance
 
-Top tier benchmark scores with up to 62 times fewer tokens
+On LongMemEval's own grader (`evaluate_qa.py`, GPT-4o), all 500 questions, answered by gpt-6.1-sol:
+
+| Curate setting | Score | Memory tokens a question (mean) | Less than the raw history |
+| --- | --- | --- | --- |
+| **Markup** | **93.8** (469/500) | **844** | **121x** |
+| Cited-only markup | 93.0 (465/500) | 854 | 120x |
+| Log | 92.6 (463/500) | 449 | 229x |
+
+- **Against Mem0's published answers, marked by the same grader in the same session:** Curate's markup setting 467 (93.4), Mem0 455 (91.0). The same Curate answers scored 469 when marked the day before. Mem0's answers come from GPT-5, Curate's from gpt-6.1-sol.
+- **Against the context other systems report on LongMemEval:** about 6 to 35 times less than Zep (4,408 median, against Curate's 685 median), Mem0 (6,787 mean) and Mastra (about 30,000 mean).
+- **The markup settings run outside the published packages.** Their answers, memory texts and grader output are in [`benchmarks/longmemeval/2026-11-04/`](benchmarks/longmemeval/2026-11-04/README.md). The log setting is what the packages write.
+
+The packages' published results beside other systems' published results, with up to 62 times fewer tokens. Answering models and markers differ:
 
 | Benchmark | System | Task model | Score | Task model tokens |
 | --- | --- | --- | --- | --- |
@@ -583,6 +595,8 @@ The same answers, judged by LongMemEval's own `evaluate_qa.py` (commit `9e0b455`
 
 The answers are in LongMemEval's own format (`question_id`, `hypothesis`), with the scorer's output for every question, in [`official-scorer/`](benchmarks/longmemeval/2026-10-22/official-scorer/) for the GPT-5 run and [`official-scorer/`](benchmarks/longmemeval/2026-10-14-gpt-5-mini/official-scorer/) for the GPT-5-mini run. Anyone with the dataset and an OpenAI key can score them again.
 
+With gpt-6.1-sol answering, the same scorer gives the markup setting 93.8 (469/500), the cited-only markup setting 93.0 (465/500) and the log setting 92.6 (463/500). Mem0's published answers score 90.6 (453/500) on it, and 91.0 (455/500) when marked in the same session as Curate's markup answers, which then scored 467. Files: [`benchmarks/longmemeval/2026-11-04/`](benchmarks/longmemeval/2026-11-04/README.md).
+
 ### Against published systems
 
 | System | What you run | Answering model | Score | Answering context | Answering input cost | Full pipeline cost |
@@ -596,6 +610,7 @@ The answers are in LongMemEval's own format (`question_id`, `hypothesis`), with 
 
 Costs are per question.
 
+- **On LongMemEval's own grader, Curate is ahead of Mem0's published answers:** 467 against 455, both marked in one session, with Curate's markup setting reading 844 tokens a question against Mem0's 6,787. The answering models differ: gpt-6.1-sol for Curate, GPT-5 for Mem0.
 - **On GPT-5, Curate matches Mem0 with 15 times less context** (93.4 against 93.4, both marked by GPT-5; 449 tokens against 6,787).
 - **On GPT-5-mini, Mastra's raw score is higher:** 93.6 against Curate's 91.6 per question, and 94.87 against 90.22 as an equal average of the six question types. Its answering model reads about 62 times more context.
 - **Curate has the highest adjusted score** of these systems, because its answering model reads the least context.

@@ -1,0 +1,12 @@
+
+Evaluation results by task:
+	single-session-user: 0.9857 (70)
+	single-session-preference: 0.9 (30)
+	single-session-assistant: 0.9821 (56)
+	multi-session: 0.8647 (133)
+	temporal-reasoning: 0.9173 (133)
+	knowledge-update: 0.9615 (78)
+
+Task-averaged Accuracy: 0.9352
+Overall Accuracy: 0.926
+Abstention Accuracy: 1.0 (30)

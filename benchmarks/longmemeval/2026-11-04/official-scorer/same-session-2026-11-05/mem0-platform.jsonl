@@ -1,0 +1,500 @@
+{"question_id": "001be529", "hypothesis": "More than a year."}
+{"question_id": "00ca467f", "hypothesis": "2 \u2014 Dr. Smith on Mar 3 (bronchitis diagnosis) and Dr. Thompson on Mar 20 (knee follow\u2011up)."}
+{"question_id": "0100672e", "hypothesis": "$12 per mug."}
+{"question_id": "01493427", "hypothesis": "25."}
+{"question_id": "031748ae", "hypothesis": "You started with 4 engineers. Now you lead 5."}
+{"question_id": "031748ae_abs", "hypothesis": "I don\u2019t have a \u201cSoftware Engineer Manager\u201d role on record. When you started your new role as Senior Software Engineer, you led 5 engineers."}
+{"question_id": "06878be2", "hypothesis": "Here are accessories that fit your A7R IV + 24\u201170/2.8 + Godox V1 setup:\n\n- Extra power: NP\u2011FZ100 spare batteries and a dual USB\u2011C PD charger; a PD power bank for on\u2011the\u2011go top\u2011ups.\n- Fast storage: UHS\u2011II SD cards (U3/V90) to keep up with A7R IV burst rates.\n- Flash control/modifiers: Godox XPro\u2011S (or X2T\u2011S) trigger for off\u2011camera use; AK\u2011R1 magnetic kit (dome, bounce card, grids) for the V1; a compact light stand + umbrella/softbox; spare VB26 battery.\n- Support: If you go with the Gitzo GT3543LS, pair it with a low\u2011profile ball head (e.g., GH3382QD) and an Arca\u2011type quick\u2011release plate; add an L\u2011bracket for the A7R IV for easy portrait/landscape swaps.\n- Filters (match your lens\u2019 thread): circular polarizer; 3\u20136 stop ND for long exposures/video; protective UV if you prefer.\n- Remote shooting: Sony RMT\u2011P1BT Bluetooth remote (long exposures, no shake).\n- Carry/comfort: A padded, weather\u2011resistant bag (e.g., Peak Design or Think Tank) and a comfortable strap (Peak Design Slide/Cuff).\n- Tethering/data: High\u2011quality USB\u2011C tether cable (e.g., Tether Tools) if you shoot to laptop; fast card reader for UHS\u2011II.\n- Weather + cleaning: Rain cover for the body/lens; rocket blower, microfiber cloths, and lens cleaner to avoid streaks.\n\nTell me your main genres (e.g., portraits, landscapes, events), and I\u2019ll prioritize this list further."}
+{"question_id": "06db6396", "hypothesis": "5 projects."}
+{"question_id": "06f04340", "hypothesis": "Here are four easy, healthy dinner menus for this weekend (June 3\u20134) using your cherry tomatoes, basil, and mint:\n\n- Mediterranean grill:\n  - Main: Grilled chicken or fish with a basil\u2011mint chimichurri (basil, mint, parsley, lemon, olive oil).\n  - Sides: Caprese with your cherry tomatoes + basil; garlicky roasted veggies (toaster oven).\n  \n- Roasted cherry tomato pasta:\n  - Main: Whole\u2011grain pasta tossed with slow\u2011roasted cherry tomatoes, garlic, olive oil, and fresh basil; finish with parmesan.\n  - Side: Cucumber\u2011mint yogurt salad (raita) for a cool, probiotic boost.\n  \n- Basil\u2011mint pesto bowls:\n  - Main: Zucchini noodles or quinoa topped with basil\u2011mint pesto and blistered cherry tomatoes.\n  - Add\u2011ons: Grilled shrimp or tofu; sprinkle toasted pine nuts or walnuts.\n  \n- Thai\u2011inspired:\n  - Main: Thai basil chicken (or tofu) stir\u2011fry with cherry tomatoes at the end for bursty sweetness.\n  - Side: Crisp cucumber\u2011mint salad with lime\u2011fish sauce (or lime\u2011soy) dressing; serve with jasmine or brown rice.\n\nIf you want a light finish: Greek yogurt with chopped mint, berries, and a drizzle of honey."}
+{"question_id": "07741c44", "hypothesis": "Under the bed."}
+{"question_id": "07741c45", "hypothesis": "In a shoe rack in your closet."}
+{"question_id": "078150f1", "hypothesis": "$50 more."}
+{"question_id": "07b6f563", "hypothesis": "Here are a few useful, personalized picks for your iPhone 13 Pro:\n\n- Tempered\u2011glass screen protector: Zagg InvisibleShield or Belkin. Look for 9H hardness and an easy install kit to replace your cracked one.\n- Case (slim wallet): Bellroy or Nomad if you want card storage without the OtterBox bulk you noted.\n- Case (rugged): UAG or OtterBox Defender if you need maximum drop protection.\n- Wireless charging power bank: Anker or Mophie (Qi\u2011certified, ~10,000 mAh, 5W+ wireless, USB\u2011C PD, foreign\u2011object detection). Nice complement to your current Best Buy power bank.\n- Cables: MFi\u2011certified braided USB\u2011C to Lightning for faster, more durable charging.\n- Simple stand/dock: A compact desk or bedside stand to keep the phone upright while charging/FaceTime.\n\nWant me to narrow these to exact models and current prices?"}
+{"question_id": "0862e8bf", "hypothesis": "Luna."}
+{"question_id": "0862e8bf_abs", "hypothesis": "I don\u2019t have that info. What\u2019s your hamster\u2019s name?"}
+{"question_id": "08e075c7", "hypothesis": "About 9 months (roughly 9 months and 2 days as of today)."}
+{"question_id": "08f4fc43", "hypothesis": "30 days."}
+{"question_id": "0977f2af", "hypothesis": "The Instant Pot."}
+{"question_id": "099778bb", "hypothesis": "20% (20 out of 100)."}
+{"question_id": "09ba9854", "hypothesis": "About $50 (using your friend\u2019s ~$10 train fare vs. the ~$60 taxi)."}
+{"question_id": "09ba9854_abs", "hypothesis": "I only have your taxi estimate (~$60). I don\u2019t have your bus fare. Tell me the bus ticket price (or which airport and bus service), and I\u2019ll compute it. For now: Savings = $60 \u2212 [your bus fare]."}
+{"question_id": "09d032c9", "hypothesis": "Here are quick, high\u2011impact ways to stretch your phone\u2019s battery:\n\n- Find the culprits: In Settings > Battery, check which apps are draining most and limit or uninstall the worst offenders.\n- Screen savings: Lower brightness, shorten screen timeout, use dark mode (great on OLED), disable Always\u2011On Display/Raise to Wake if available.\n- Radios & signal: Prefer Wi\u2011Fi over cellular; turn off 5G when not needed; disable Bluetooth/GPS when unused; avoid hotspot; use Airplane Mode in poor\u2011signal areas.\n- Background cuts: Turn off Background App Refresh/auto\u2011sync for nonessential apps, limit push notifications, and restrict battery usage for power\u2011hungry apps.\n- Power modes: Enable Low Power/Battery Saver whenever you\u2019re below ~40% or expect long gaps between charges.\n- Streaming/commute: Download podcasts/music for offline listening; lower streaming quality; for live streams, plug into a charger and close other apps.\n- Charging care: Keep the phone cool (remove thick case if it gets hot while charging), use certified cables, avoid full discharges; try to stay roughly 20\u201380%. If Battery Health (if available) is <80%, consider a battery replacement.\n- On the go: Since you already use compact pouches, a small power bank like the Anker PowerCore 5000 or Mophie Powerstation Mini (previously suggested) fits well and covers a full top\u2011up.\n\nWant tailored steps? Tell me your phone model/OS and what the Battery screen shows as top drains."}
+{"question_id": "0a34ad58", "hypothesis": "You\u2019ve got this\u2014Tokyo is very doable with a few basics:\n\n- Lean on Suica: You already have one\u2014just tap in/out. Top up at green JR machines or any 7\u2011Eleven/Lawson/FamilyMart (there are 7\u2011Eleven ATMs in Shinjuku Station).\n- Use Shinjuku as your hub: From Park Hyatt, Shinjuku Station gets you everywhere. Follow the color\u2011coded line signs; exits are numbered\u2014match the exit number to your destination when possible.\n- Navigation apps: Google Maps or Japan Transit Guide works great in English. Save key places offline. Keep TripIt handy for addresses/confirmations.\n- Ask station staff: Booths are everywhere, and they\u2019re used to tourists\u2014show your destination on your phone.\n- Timing: Avoid rush hours (around 7:30\u20139:30 and 17:30\u201319:30) if crowds stress you. Build 10\u201315 minutes of buffer for big stations like Shinjuku.\n- Etiquette that helps: Queue at platform markers; let riders off first. On escalators in Tokyo, stand on the left. Some morning cars are women\u2011only\u2014look for pink signs.\n- Cash + cards: Many places take cards, but markets (like Tsukiji) may be cash\u2011only\u2014carry a small amount of yen.\n- Connectivity: Consider a local SIM or pocket Wi\u2011Fi for smooth maps and translation.\n- Airport \u2194 Shinjuku: JR Narita Express goes directly to Shinjuku and is the simplest.\n- Taxis as backup: If you miss a train or feel overwhelmed, taxis are easy to hail at station taxi ranks.\n\nWant me to pin simple routes from Park Hyatt to Tokyo Tower and Tsukiji in Google Maps for you?"}
+{"question_id": "0bb5a684", "hypothesis": "7 days."}
+{"question_id": "0bc8ad92", "hypothesis": "5 months and 3 days."}
+{"question_id": "0bc8ad93", "hypothesis": "No\u2014you didn\u2019t mention a friend. You attended a History Museum lecture in January 2023 on your own."}
+{"question_id": "0db4c65d", "hypothesis": "18 days."}
+{"question_id": "0ddfec37", "hypothesis": "15"}
+{"question_id": "0ddfec37_abs", "hypothesis": "The information provided is not enough. I don\u2019t have any record of you collecting autographed footballs. Share your start date and how many you added in the first three months, and I\u2019ll calculate it."}
+{"question_id": "0e4e4c46", "hypothesis": "132 points."}
+{"question_id": "0e5e2d1a", "hypothesis": "38 subjects."}
+{"question_id": "0ea62687", "hypothesis": "2 mpg more."}
+{"question_id": "0edc2aef", "hypothesis": "You\u2019ve said you like unique hotel amenities\u2014especially rooftop pools or balcony hot tubs\u2014with great city views. I can shortlist Miami options that fit. What\u2019s your budget range, preferred area (South Beach, Brickell, or Downtown), and your dates? Any must\u2011haves besides a rooftop pool or balcony (e.g., spa, room service)?"}
+{"question_id": "10d9b85a", "hypothesis": "3 days \u2014 Apr 10 (lecture) and Apr 17\u201318 (two-day workshop)."}
+{"question_id": "10e09553", "hypothesis": "7"}
+{"question_id": "118b2229", "hypothesis": "45 minutes each way (about 90 minutes round trip)."}
+{"question_id": "129d1232", "hypothesis": "$5,850 total."}
+{"question_id": "0f05491a", "hypothesis": "120 stars (within a 12\u2011month period)."}
+{"question_id": "1192316e", "hypothesis": "About 1 hour 30 minutes (1 hour to get ready + ~30 minutes to commute)."}
+{"question_id": "1568498a", "hypothesis": "28.Kg3."}
+{"question_id": "15745da0", "hypothesis": "About 3 months and 9 days."}
+{"question_id": "15745da0_abs", "hypothesis": "The information provided is not enough. I don\u2019t have any record of when you started collecting vintage films. When did you begin?"}
+{"question_id": "157a136e", "hypothesis": "43 years."}
+{"question_id": "16c90bf4", "hypothesis": "A pilsner or a lager\u2014light/medium\u2011bodied, ideally a local Ancash brew."}
+{"question_id": "184da446", "hypothesis": "220 pages."}
+{"question_id": "18bc8abd", "hypothesis": "Kansas City Masterpiece BBQ sauce."}
+{"question_id": "18dcd5a5", "hypothesis": "Four mummies."}
+{"question_id": "1903aded", "hypothesis": "Transcriptionist."}
+{"question_id": "195a1a1b", "hypothesis": "Here are easy, wind\u2011down\u2011friendly options you can finish by 9:30 pm:\n\n- 20\u201330 min relaxed neighborhood walk (flat route) to loosen up joints.\n- 10\u201315 min gentle yoga/stretching or Tai Chi, then 5 min deep breathing.\n- Guided meditation: Headspace \u201cSleep\u201d or Insight Timer \u201cBody Scan\u201d (10\u201320 min).\n- Light reading (no screens) from a book with a memorable ending.\n- Quiet creative time (15\u201325 min): jot poem lines or outline ideas\u2014no pressure on word count.\n- Herb\u2011garden prep (10\u201315 min): clean pots, plan placement, label herbs.\n- Tomorrow\u2011prep (10 min): list top 3 tasks, lay out clothes/bag, fill water bottle.\n- Soothing audio (15\u201320 min): a mellow street\u2011dance/lo\u2011fi playlist to unwind.\n- Gentle mobility routine (10 min): neck/shoulder rolls, hip circles, ankle pumps.\n- Early\u2011evening (before 9 pm): short stroll around Shimokitazawa\u2019s quieter streets or browse a used bookstore, then head home to wind down."}
+{"question_id": "19b5f2b3", "hypothesis": "Two weeks."}
+{"question_id": "19b5f2b3_abs", "hypothesis": "The information provided is not enough. I only have that you planned a solo trip to Seoul in July 2023 with flexible dates, but no recorded duration. How many days were you there?"}
+{"question_id": "1a1907b4", "hypothesis": "Top picks for a crowd (using your Hendrick\u2019s, cucumber, and grapefruit syrup):\n\n- Cucumber\u2013Grapefruit Collins (refreshing, pretty in a Collins)\n  2 oz Hendrick\u2019s + 0.75 oz Ruby Red grapefruit simple + 0.75 oz lemon juice; top with soda. Garnish cucumber ribbon + mint. Batch\u2011friendly.\n\n- Gin\u2011Gin Mule (super crowd\u2011pleaser)\n  2 oz Hendrick\u2019s + 0.5 oz lime + ginger beer to top; slap in mint, optional muddled cucumber. Build over ice; great as a pitcher.\n\n- Rose Petal Spritz (light, festive)\n  1 oz Hendrick\u2019s + 0.5 oz rose syrup + 0.5 oz lemon; top with Prosecco and a splash of lemon\u2011lime soda. Garnish a single rose petal or edible flower.\n\nQuick tip: Pre\u2011slice cucumber ribbons and mint sprigs; keep in ice water so they stay crisp for garnishing.\n\nHow many guests and what vibe (bright/refreshing vs. bubbly)? I\u2019ll scale the recipe and prep list for you."}
+{"question_id": "1a8a66a6", "hypothesis": "2 \u2014 The New Yorker and Architectural Digest."}
+{"question_id": "1b9b7252", "hypothesis": "Mindful.org \u2014 they have free guided practices like the Mountain Meditation and Body Scan Meditation."}
+{"question_id": "1c0ddc50", "hypothesis": "Here are some focused, low-effort commute ideas tailored to how you travel:\n\nIf you\u2019re on the bus\n- Podcasts (40\u2011min slots): How I Built This, Hardcore History (pick a single segment), Lore, Stuff You Should Know, The Dollop, The Tim Ferriss Show.\n- Audiobook chapters (download ahead) to fill one leg per day.\n- Short guided meditation in Headspace (5\u201310 minutes), then a podcast or audiobook.\n- Language practice with audio\u2011only lessons.\n- Voice\u2011note your top 3 priorities and a quick plan for the day.\n- Curate a \u201cmorning uplift\u201d playlist for energy; save calmer tracks for the ride home.\n\nIf you\u2019re on the bike (audio only, eyes up)\n- One engaging podcast episode or a concise news briefing.\n- Language\u2011learning drills that are listen\u2011and\u2011repeat only.\n- Breath\u2011paced riding (steady inhales/exhales) for calm focus.\n- Mental rehearsal: outline your first task, key talking points, or a gratitude list.\n- Music with a steady tempo to keep cadence; keep volume low to hear traffic.\n\nTips\n- Download episodes/playlists before you leave.\n- Set a simple \u201cno email/social scrolling\u201d rule for commutes.\n- Keep content length ~40 minutes to match each leg."}
+{"question_id": "1c549ce4", "hypothesis": "$140 total."}
+{"question_id": "1cea1afa", "hypothesis": "600 (last recorded on May 28, 2023)"}
+{"question_id": "1d4da289", "hypothesis": "I was referring to biometrics (fingerprint and facial recognition) and one\u2011time passwords (OTP)."}
+{"question_id": "1d4e3b97", "hypothesis": "Likely reasons:\n- You replaced the chain and cassette 19 days ago (Feb 1), so the drivetrain is fresher, smoother, and more efficient\u2014shifting and power transfer feel better.\n- Your fitness is up: you\u2019ve been training since Jan 1 and just ran a 35\u2011minute \u201cRun for the Cure,\u201d which boosts cardio for the bike.\n- If you\u2019ve been doing the pre\u2011ride checks and hydration we discussed, that also helps performance.\n\nWant a quick Sunday pre\u2011ride checklist to keep the gains going?"}
+{"question_id": "1de5cff2", "hypothesis": "Veja."}
+{"question_id": "1e043500", "hypothesis": "Summer Vibes"}
+{"question_id": "1f2b8d4f", "hypothesis": "$750. ($800 luxury boots \u2212 $50 budget pair)"}
+{"question_id": "1faac195", "hypothesis": "Denver, Colorado."}
+{"question_id": "2133c1b5_abs", "hypothesis": "I don\u2019t have any record of you living in Shinjuku. The latest note says you\u2019re in a Harajuku studio and have been there about 3 months as of today (2023/10/15). Did you recently move to Shinjuku?"}
+{"question_id": "21436231", "hypothesis": "Twelve."}
+{"question_id": "21d02d0d", "hypothesis": "2"}
+{"question_id": "22d2cb42", "hypothesis": "At a music shop on Main Street."}
+{"question_id": "2311e44b", "hypothesis": "190 pages left."}
+{"question_id": "2311e44b_abs", "hypothesis": "I don\u2019t have enough info. What page are you on in Sapiens, and how many pages are in your edition (or share the ISBN)? Then I\u2019ll tell you exactly how many pages you have left."}
+{"question_id": "25e5aa4f", "hypothesis": "UCLA."}
+{"question_id": "2698e78f", "hypothesis": "Once per week."}
+{"question_id": "2698e78f_abs", "hypothesis": "I don\u2019t have any record of you seeing Dr. Johnson. The only therapist in your notes is Dr. Smith, whom you see weekly. If you meant Dr. Johnson, please clarify."}
+{"question_id": "26bdc477", "hypothesis": "5 trips."}
+{"question_id": "27016adc", "hypothesis": "10%.\n\nCalculation: $20,000 (renovations) \u00f7 $200,000 (countryside property) = 0.10 = 10%."}
+{"question_id": "2788b940", "hypothesis": "Five classes: BodyPump (Mon), Zumba (Tue & Thu), Hip Hop Abs (Sat), and Yoga (Sun)."}
+{"question_id": "28bcfaac", "hypothesis": "MusicTheory.net (www.musictheory.net)."}
+{"question_id": "28dc39ac", "hypothesis": "140 hours total (70h AC Odyssey + 30h TLOU2 Hard + 25h TLOU2 Normal + 10h Celeste + 5h Hyper Light Drifter)."}
+{"question_id": "29f2956b", "hypothesis": "30 minutes a day."}
+{"question_id": "29f2956b_abs", "hypothesis": "I don\u2019t have info on your violin practice. I only have that you practice guitar 30 minutes daily. What\u2019s your daily violin routine?"}
+{"question_id": "2a1811e2", "hypothesis": "21 days."}
+{"question_id": "2b8f3739", "hypothesis": "$495 total (Herbs: $120 + Jam: $225 + Plants: $150)."}
+{"question_id": "2bf43736", "hypothesis": "Chapter 4 of Book 1 in the second part\u2014\u201cVocal Prayer and Meditation.\u201d"}
+{"question_id": "2c63a862", "hypothesis": "14 days."}
+{"question_id": "2ce6a0f2", "hypothesis": "4 events: Feb 10 \u201cWomen in Art\u201d exhibition; Feb 17 \u201cArt Afternoon\u201d (volunteered); Feb 24 History Museum guided tour; Mar 3 \u201cThe Evolution of Street Art\u201d lecture."}
+{"question_id": "2e6d26dc", "hypothesis": "Five: Max (March), Charlotte (March), Ava & Lily (April), and Jasper (April)."}
+{"question_id": "2ebe6c90", "hypothesis": "21 days."}
+{"question_id": "2ebe6c92", "hypothesis": "The Nightingale by Kristin Hannah."}
+{"question_id": "311778f1", "hypothesis": "About 10 hours in April 2023."}
+{"question_id": "3249768e", "hypothesis": "Absinthe."}
+{"question_id": "352ab8bd", "hypothesis": "About 20% increase."}
+{"question_id": "35a27287", "hypothesis": "I can tailor picks if you share your city or ZIP. Meanwhile, for this weekend (June 3\u20134), try:\n\n- French/Spanish language\u2011exchange meetups at caf\u00e9s\n- Alliance Fran\u00e7aise or Instituto Cervantes: film screenings, conversation nights, talks\n- Salsa/bachata socials and Latin food pop\u2011ups\n- Multicultural street fairs, museum cultural nights, or international markets\n\nQuick search:\n- Eventbrite: filter \u201cThis weekend\u201d + keywords: \u201cFrench conversation,\u201d \u201cintercambio,\u201d \u201clanguage exchange,\u201d \u201csalsa,\u201d \u201cLatin festival,\u201d \u201ccultural fair\u201d\n- Meetup: same filters; join local language\u2011exchange groups\n- Check local Alliance Fran\u00e7aise/Cervantes, consulates, and cultural centers\u2019 calendars and Instagram\n\nSend me your location and I\u2019ll pull 3\u20135 specific events with times and links."}
+{"question_id": "36580ce8", "hypothesis": "Bronchitis."}
+{"question_id": "37d43f65", "hypothesis": "16 GB"}
+{"question_id": "38146c39", "hypothesis": "Here are quick ways to add \u201csomething extra\u201d to your chocolate chip cookies:\n\n- Brown the butter for deep, nutty flavor.\n- Swap 2\u20134 tbsp of white sugar with muscovado or demerara for caramel notes; sprinkle turbinado on top for crunch.\n- Finish with a light pinch of flaky sea salt just out of the oven.\n- Add 1 tsp espresso powder to boost chocolate flavor.\n- Fold in toasted nuts you like (walnuts, pecans, hazelnuts, or sliced almonds).\n- Try a citrus twist: 1 tsp orange zest in the dough.\n- For subtle umami: 1\u20132 tsp white miso or 2 tbsp tahini in place of some butter.\n- Chill dough 24\u201348 hours for better texture and flavor.\n- Use a mix of chips and chopped dark chocolate for melty pools.\n- Optional heat (since you enjoy spicy): a tiny pinch of cayenne or chipotle.\n\nA great combo: brown butter + a bit of muscovado + dark chocolate chunks + flaky sea salt + 24h chill."}
+{"question_id": "3a704032", "hypothesis": "3 plants (peace lily, succulent on May 6, plus a snake plant in April)."}
+{"question_id": "3b6f954b", "hypothesis": "The University of Melbourne."}
+{"question_id": "3ba21379", "hypothesis": "A 1/25\u2011scale Ford F\u2011150 pickup truck model."}
+{"question_id": "3c1045c8", "hypothesis": "2.5 years."}
+{"question_id": "3d86fd0a", "hypothesis": "At a coffee shop in the city."}
+{"question_id": "3e321797", "hypothesis": "10 minutes."}
+{"question_id": "3f1e9474", "hypothesis": "Your friend Sarah."}
+{"question_id": "3fdac837", "hypothesis": "12 days total (Japan: 8 days; Chicago: 4 days)."}
+{"question_id": "3fe836c9", "hypothesis": "$25,000 more."}
+{"question_id": "4100d0a0", "hypothesis": "You're of mixed Irish and Italian ethnicity."}
+{"question_id": "41275add", "hypothesis": "Mayo Clinic video: \u201cHow to Sit Properly at a Desk to Avoid Back Pain\u201d\nLink: https://www.youtube.com/watch?v=UfOvNlX9Hh0"}
+{"question_id": "41698283", "hypothesis": "Your most recent lens purchase was a Canon EF 70\u2013200mm f/2.8L IS III USM telephoto zoom."}
+{"question_id": "42ec0761", "hypothesis": "Yes\u2014you have a spare screwdriver you picked up while organizing your computer desk (before Aug 15), so you\u2019re set to open your laptop."}
+{"question_id": "4388e9dd", "hypothesis": "An untidy, stained white shirt."}
+{"question_id": "45dc21b6", "hypothesis": "3"}
+{"question_id": "46a3abf7", "hypothesis": "3"}
+{"question_id": "488d3006", "hypothesis": "The GR\u201190 circular trail."}
+{"question_id": "4adc0475", "hypothesis": "You have 3 goals and 2 assists, for a total of 5."}
+{"question_id": "4b24c848", "hypothesis": "Five."}
+{"question_id": "4baee567", "hypothesis": "12 (regular-season games at Arrowhead, excluding playoffs)."}
+{"question_id": "4bc144e2", "hypothesis": "$65 total \u2014 $15 for the car wash + $50 for the parking ticket."}
+{"question_id": "4c36ccef", "hypothesis": "Roscioli."}
+{"question_id": "4d6b87c8", "hypothesis": "25 titles."}
+{"question_id": "4dfccbf7", "hypothesis": "24 days."}
+{"question_id": "4dfccbf8", "hypothesis": "You started ukulele lessons with Rachel (on Feb 1, 2023)."}
+{"question_id": "4f54b7c9", "hypothesis": "Five items: the antique tea set (from cousin Rachel), the vintage typewriter (from your dad), the vintage diamond necklace (from your grandmother), the antique music box (from your great\u2011aunt), and the Depression\u2011era glassware set (from your mother)."}
+{"question_id": "4fd1909e", "hypothesis": "At the Xfinity Center."}
+{"question_id": "5025383b", "hypothesis": "Photography and cooking."}
+{"question_id": "505af2f5", "hypothesis": "Here are three low\u2011sugar, quick creamers to switch things up:\n\n1) Lemon\u2011Ginger Almond Creamer\n- 1 cup unsweetened almond milk\n- 1 tsp lemon zest, 1/2 tsp fresh grated ginger\n- 1/2 tsp vanilla, pinch of salt\n- Sweeten lightly (1/2\u20131 tsp honey or a few drops monk fruit/stevia)\nSimmer 3\u20134 min, cool, strain.\n\n2) Vanilla\u2011Cardamom Cashew Creamer (extra creamy)\n- 1/2 cup soaked cashews + 3/4 cup water\n- 1 tsp vanilla, 1/4 tsp ground cardamom, pinch of salt\n- Optional: 1\u20132 drops stevia/monk fruit\nBlend until silky; strain if needed.\n\n3) Cocoa\u2011Cinnamon Oat Creamer (mocha vibe)\n- 1 cup unsweetened oat milk\n- 1 tsp cocoa powder, 1/4 tsp cinnamon, 1/2 tsp vanilla, pinch of salt\n- Light sweetener to taste\nWarm to dissolve cocoa, cool.\n\nTip: Store in a glass bottle 4\u20135 days; shake before use. Optional add\u2011in: a pinch of probiotic powder once cooled. Want one tailored to your exact sweetness level or milk base?"}
+{"question_id": "50635ada", "hypothesis": "Premier Silver."}
+{"question_id": "51b23612", "hypothesis": "Nu, pogodi!"}
+{"question_id": "54026fce", "hypothesis": "Here are a few low\u2011lift ways that fit your remote setup:\n- Start optional 15\u201320 min virtual coffee breaks (weekly/biweekly). Keep it light: no work talk, set a clear end time, rotate hosts or icebreakers.\n- Create a #watercooler channel in Slack/Teams for casual chat, wins, and shout\u2011outs.\n- Set up a persistent \u201cvirtual coffee shop\u201d room anyone can drop into during core hours.\n- Run quick online activities (trivia, mini escape room, show\u2011and\u2011tell) once a month.\n- Spin up interest groups (book club, fitness challenge, foodie/cooking) to connect across teams.\n- Celebrate milestones virtually (birthdays, launches) with a 10\u2011minute toast.\n- Keep it collaborative: ask for feedback after a trial month and tweak timing/format.\n\nWant me to draft a short invite and ground rules to pilot a 2\u2011week trial?"}
+{"question_id": "545bd2b5", "hypothesis": "About 2 hours per day (measured over May 13\u201327, 2023)."}
+{"question_id": "55241a1f", "hypothesis": "33 comments (12 on your Facebook Live + 21 on your most popular YouTube video)."}
+{"question_id": "561fabcd", "hypothesis": "Fissionator."}
+{"question_id": "577d4d32", "hypothesis": "7 PM."}
+{"question_id": "57f827a0", "hypothesis": "Here are quick, practical tips for a weekend bedroom refresh:\n\n- Start with a plan: measure the room and big pieces, sketch options, and mark layouts on the floor with painter\u2019s tape.\n- Place the bed first: headboard on a solid wall, ideally facing the door; keep 24\u201336\" clearance on each side and don\u2019t block windows/vents.\n- Rug sizing: for a queen, 6\u00d79 or 8\u00d710; slide it 2/3 under the bed to frame the space.\n- Dresser placement: give 30\u201336\" drawer clearance; center it on a wall if you\u2019ll add a mirror; anchor it to the wall for safety. (Your walnut/brass mid\u2011century piece will pop opposite the bed or near the entry as a focal point.)\n- Flow: keep a 36\" pathway to the closet/bathroom; avoid blocking outlets and heat/AC.\n- Lighting: add two warm bedside lamps + one overhead or floor lamp; keep bulbs warm (2700\u20133000K) to support sleep.\n- Cables: tidy with clips or a small management box; route cords behind furniture to keep surfaces clean.\n- Sleep habits: create a no\u2011screen charging spot away from the bed; keep a book on the nightstand if you read before sleep.\n- Wi\u2011Fi: don\u2019t tuck the laptop/smart speaker behind large/metal furniture; if possible, move the range extender closer to the bedroom side of the home.\n- Move smart: use furniture sliders, lift with legs, and work largest to smallest; take a pic of each layout to compare before committing.\n\nWant a quick layout suggestion? Share room dimensions, door/window/closet locations, and your main pieces."}
+{"question_id": "5809eb10", "hypothesis": "2014."}
+{"question_id": "5831f84d", "hypothesis": "15 videos."}
+{"question_id": "58470ed2", "hypothesis": "He says the Library is a sphere whose exact center is any hexagon and whose circumference is unattainable."}
+{"question_id": "58bf7951", "hypothesis": "The Glass Menagerie."}
+{"question_id": "58ef2f1c", "hypothesis": "February 14, 2023 (Valentine\u2019s Day), at the \u201cLove is in the Air\u201d fundraising dinner."}
+{"question_id": "59524333", "hypothesis": "6:00 pm (typically on Mondays, Wednesdays, and Fridays)."}
+{"question_id": "5a4f22c0", "hypothesis": "TechCorp."}
+{"question_id": "5a7937c8", "hypothesis": "3 days."}
+{"question_id": "5c40ec5b", "hypothesis": "Twice."}
+{"question_id": "5d3d2817", "hypothesis": "Marketing specialist at a small startup."}
+{"question_id": "5e1b23de", "hypothesis": "3 months ago."}
+{"question_id": "60036106", "hypothesis": "Approximately 12,000 people (2,000 from the Facebook ad + 10,000 from the influencer collaboration)."}
+{"question_id": "60159905", "hypothesis": "3. You attended:\n- Italian feast at Sarah\u2019s (~May 15)\n- Alex\u2019s dinner party (May 20)\n- David\u2019s birthday party (week of May 13\u201319)"}
+{"question_id": "603deb26", "hypothesis": "10 times."}
+{"question_id": "60472f9c", "hypothesis": "2"}
+{"question_id": "6071bd76", "hypothesis": "Less water per tablespoon \u2014 from 1 tbsp per 6 oz to 1 tbsp per 5 oz."}
+{"question_id": "60bf93ed", "hypothesis": "5 days."}
+{"question_id": "60bf93ed_abs", "hypothesis": "The information provided is not enough. Please share the purchase date and the delivery date of your iPad case, and I\u2019ll calculate the days for you."}
+{"question_id": "60d45044", "hypothesis": "Japanese short-grain rice."}
+{"question_id": "618f13b2", "hypothesis": "Six times."}
+{"question_id": "61f8c8f8", "hypothesis": "10 minutes faster."}
+{"question_id": "6222b6eb", "hypothesis": "6S."}
+{"question_id": "6456829e_abs", "hypothesis": "Tomatoes: 5 plants.\nChili peppers: The information provided is not enough\u2014I don\u2019t have a record of how many you planted."}
+{"question_id": "65240037", "hypothesis": "1:10 \u2014 one part tea tree oil to ten parts carrier oil."}
+{"question_id": "6613b389", "hypothesis": "Just over 2 months."}
+{"question_id": "66f24dbb", "hypothesis": "A yellow dress and a matching pair of earrings."}
+{"question_id": "67e0d0f2", "hypothesis": "20 online courses (12 on Coursera + 8 on edX)."}
+{"question_id": "681a1674", "hypothesis": "Two \u2014 Avengers: Endgame and Spider-Man: No Way Home."}
+{"question_id": "69fee5aa", "hypothesis": "38"}
+{"question_id": "6a1eabeb", "hypothesis": "25 minutes 50 seconds."}
+{"question_id": "6a27ffc2", "hypothesis": "30 videos."}
+{"question_id": "6ade9755", "hypothesis": "At Serenity Yoga\u2014and on days you can\u2019t make it, you practice at home with the Down Dog app."}
+{"question_id": "6ae235be", "hypothesis": "Lake Charles uses atmospheric distillation, fluid catalytic cracking (FCC), alkylation, and hydrotreating."}
+{"question_id": "6aeb4375", "hypothesis": "Four."}
+{"question_id": "6aeb4375_abs", "hypothesis": "The information provided is not enough. I don\u2019t have any record of you trying Italian restaurants in your city. If you share the names, I\u2019ll track them going forward."}
+{"question_id": "6b168ec8", "hypothesis": "Three \u2014 road, mountain, and commuter."}
+{"question_id": "6b7dfb22", "hypothesis": "Here are quick ways to spark fresh ideas, tailored to you:\n\n- Paint your herb garden up close: macro studies of basil/mint with palette\u2011knife texture.\n- Do a \u201ccocktail still life\u201d mini\u2011series: your Cucumber\u2011Basil Gimlet ingredients under window light.\n- Geeky still lifes: arrange your Spider\u2011Man issue + Funko or a vintage Star Wars figure and paint the setup.\n- Tokyo memories: a limited\u2011palette study of Shibuya at night (e.g., ultramarine, crimson, lemon yellow, white).\n- Wedding vibes: small plein\u2011air studies at a park/beach you like for the ceremony; explore soft, intimate palettes.\n- Switch constraints: palette\u2011knife\u2011only piece; monochrome value study; or paint with your non\u2011dominant hand.\n- Change scale: one tiny 5x7 study per day for a week, then one larger impasto piece on the weekend.\n- Inspiration refresh: follow 5 new acrylic/botanical painters and 1 abstract artist; save 10 refs and pick 1 to paint today.\n\nFast 7\u2011day prompt plan (30\u201345 min each):\n1) Herb macro\n2) Gimlet still life\n3) Spider\u2011Verse still life\n4) Shibuya night\n5) Palette\u2011knife florals\n6) Monochrome flower\n7) Texture swatch sheet (gel/paste, sgraffito)\n\nTip: Time\u2011box with a Pomodoro (25\u201330 min) to avoid stalling, and snap quick, well\u2011lit reference photos near a window to keep momentum. Want me to turn this into a printable prompt sheet?"}
+{"question_id": "6c49646a", "hypothesis": "3,000 miles."}
+{"question_id": "6cb6f249", "hypothesis": "17 days total (7 days in mid\u2011January + 10 days in mid\u2011February)."}
+{"question_id": "6e984302", "hypothesis": "You bought a set of sculpting tools: a modeling tool set, a wire cutter, and a sculpting mat."}
+{"question_id": "6f9b354f", "hypothesis": "A lighter shade of gray."}
+{"question_id": "70b3e69b", "hypothesis": "Manolo Garc\u00eda. He\u2019s publicly pro\u2011unity, even if his songs aren\u2019t overtly political."}
+{"question_id": "71017276", "hypothesis": "4 weeks ago (on March 4, 2023)."}
+{"question_id": "71017277", "hypothesis": "Your aunt."}
+{"question_id": "71315a70", "hypothesis": "About 10\u201312 hours so far."}
+{"question_id": "7161e7e2", "hypothesis": "Admon was on the day shift (8 am\u20134 pm) on Sunday."}
+{"question_id": "71a3fd6b", "hypothesis": "+49 (0) 62 32 / 14 23 - 0"}
+{"question_id": "720133ac", "hypothesis": "$75 ($50 vet visit + $25 flea medication)"}
+{"question_id": "726462e0", "hypothesis": "10%"}
+{"question_id": "72e3ee87", "hypothesis": "50 episodes."}
+{"question_id": "73d42213", "hypothesis": "Around 9:00 AM (Monday, May 15, 2023)."}
+{"question_id": "7401057b", "hypothesis": "Two free nights."}
+{"question_id": "7527f7e2", "hypothesis": "$800."}
+{"question_id": "75499fd8", "hypothesis": "Golden Retriever."}
+{"question_id": "75832dbd", "hypothesis": "Here are a few you\u2019ll likely find useful, given your focus on medical\u2011image DL and XAI:\n\nPublications (recent surveys/reviews and an application):\n- Explainable AI in Medical Imaging: A Survey (Rajpurkar et al., 2020)\n- Explainable AI in Healthcare: A Review of the Current State and Future Directions (Topol, 2020)\n- Explainable AI in Medical Imaging: Opportunities and Challenges (Liu et al., 2020)\n- Explanation Methods for Medical Image Analysis: A Systematic Review (Jimenez\u2011S\u00e1nchez et al., 2020)\n- Attention\u2011based Deep Neural Networks for Medical Image Analysis (Schlemper et al., 2019)\n- Domain Adaptation for Medical Image Analysis: A Survey (Dou et al., 2020)\n- Medical Image Synthesis using GANs: A Review (Wang et al., 2020)\n- Deep Learning for Medical Image Registration: A Survey (Shen et al., 2020)\n- Explainable AI for Lung Nodule Detection in CT Scans (Chen et al., 2020)\n\nConferences to watch/submit to:\n- NeurIPS, CVPR, ICML, ICLR, ICCV\n\nIf you want, I can filter these by subtopic (e.g., saliency vs. model\u2011agnostic XAI, domain shift, or federated learning) and pull key takeaways."}
+{"question_id": "76d63226", "hypothesis": "55-inch"}
+{"question_id": "778164c6", "hypothesis": "You\u2019re thinking of Grilled Snapper with Mango Salsa. Note: the Jamaican snapper dish I recommended was Escovitch Fish (that one doesn\u2019t include fruit)."}
+{"question_id": "77eafa52", "hypothesis": "$300 more."}
+{"question_id": "7a87bd0c", "hypothesis": "Four weeks."}
+{"question_id": "7a8d0b71", "hypothesis": "$2,000."}
+{"question_id": "7e00a6cb", "hypothesis": "International Budget Hostel."}
+{"question_id": "7e974930", "hypothesis": "$420."}
+{"question_id": "8077ef71", "hypothesis": "26 days ago."}
+{"question_id": "80ec1f4f", "hypothesis": "2 \u2014 the Natural History Museum (Feb 8) and The Art Cube (Feb 15)."}
+{"question_id": "80ec1f4f_abs", "hypothesis": "0"}
+{"question_id": "81507db6", "hypothesis": "3."}
+{"question_id": "830ce83f", "hypothesis": "She moved back to the suburbs."}
+{"question_id": "8464fc84", "hypothesis": "Roscioli."}
+{"question_id": "852ce960", "hypothesis": "$400,000."}
+{"question_id": "853b0a1d", "hypothesis": "18 years old."}
+{"question_id": "8550ddae", "hypothesis": "A lavender gin fizz."}
+{"question_id": "85fa3a3f", "hypothesis": "$50 total."}
+{"question_id": "86b68151", "hypothesis": "IKEA."}
+{"question_id": "86f00804", "hypothesis": "The Seven Husbands of Evelyn Hugo."}
+{"question_id": "8752c811", "hypothesis": "Sound effects."}
+{"question_id": "87f22b4a", "hypothesis": "$120"}
+{"question_id": "88432d0a_abs", "hypothesis": "0"}
+{"question_id": "89527b6b", "hypothesis": "Blue."}
+{"question_id": "89941a93", "hypothesis": "You currently own four bikes."}
+{"question_id": "89941a94", "hypothesis": "I don\u2019t have any record of you buying a gravel bike. But yes\u2014besides your mountain and commuter bikes, you already had a road bike (as of 2023/05/25), and by 2023/05/28 you\u2019d added a hybrid too."}
+{"question_id": "8a137a7f", "hypothesis": "A Philips LED bulb."}
+{"question_id": "8a2466db", "hypothesis": "Here are solid places to level up your video editing (especially for Premiere Pro):\n\n- Official: Adobe Premiere Pro Learn & Support and Lumetri Color tutorials on Adobe\u2019s site.\n- YouTube: Premiere Bro, Video Copilot, Adobe Creative Cloud.\n- Courses: Udemy, LinkedIn Learning, Skillshare (search for Premiere Pro and color grading tracks).\n- Communities: Reddit r/premierepro and Adobe\u2019s Premiere Pro forum for Q&A, feedback, and workflows.\n\nIf you tell me what you want to focus on (color grading, multicam, proxies, motion graphics), I\u2019ll point you to specific playlists/courses."}
+{"question_id": "8aef76bc", "hypothesis": "Mod Podge."}
+{"question_id": "8b9d4367", "hypothesis": "Jaipur Rugs."}
+{"question_id": "8cf4d046", "hypothesis": "3.83 on a 4.0 scale."}
+{"question_id": "8cf51dda", "hypothesis": "The three objectives were:\n1) Identify molecular subtypes of endometrial cancer using genomic and transcriptomic approaches.\n2) Investigate the clinical and biological significance of these subtypes, including patient outcomes and therapy response.\n3) Develop biomarkers for early detection and prognosis based on the identified subtypes."}
+{"question_id": "8e91e7d9", "hypothesis": "4"}
+{"question_id": "8e9d538c", "hypothesis": "17 skeins."}
+{"question_id": "8ebdbe50", "hypothesis": "Your Data Science certification."}
+{"question_id": "8fb83627", "hypothesis": "Five."}
+{"question_id": "91b15a6e", "hypothesis": "At least $5,150 ($5,000 for the necklace + $150 for the vanity)."}
+{"question_id": "92a0aa75", "hypothesis": "About 1 year and 5 months."}
+{"question_id": "945e3d21", "hypothesis": "Three times per week."}
+{"question_id": "94f70d80", "hypothesis": "4 hours."}
+{"question_id": "95228167", "hypothesis": "Great plan. Here\u2019s a quick, targeted checklist for the store:\n\n- Define the target sound: Try guitars that cover your core tones (your Strat\u2019s snap vs. a Les Paul\u2019s mid\u2011push). If \u201cBlackbird\u201d\u2011style fingerpicking matters, test clarity on arpeggios.\n- Neck feel first: Compare 50s (chunkier) vs. 60s (slimmer) Les Paul necks; check nut width and fret size for fingerpicking comfort.\n- Scale length & tension: Strat (25.5\") vs. Les Paul (24.75\") feels looser\u2014see which helps your touch and open\u2011tuning stability.\n- Weight & balance: Some Les Pauls are heavy. Play standing with a strap to check shoulder comfort and neck dive.\n- Pickups/electronics: Try PAF\u2011style humbuckers for warmth; test models with coil\u2011split/tap for single\u2011coil\u2011like sparkle. Also try P\u201190 options if you want bite.\n- Hardware: Smooth, stable tuners; solid bridge; quiet pots/switches. Check tuning stability with bends and open D retunes.\n- Open\u2011tuning check: Bring a tuner. Retune to open D in\u2011store, verify nut slots don\u2019t bind, check intonation up the neck, and listen for sympathetic buzzes.\n- String gauge/action: Ask to try or simulate your planned gauge (heavier for open D). Ensure low\u2011noise, comfortable action for fingerpicking.\n- Test method: Play clean first (chords, arpeggios, dynamics), then add your typical gain. Try both neck and split positions for \u201cStrat\u2011ish\u201d chime.\n- Unplugged resonance: Strum unplugged\u2014feel sustain and body resonance; it often translates when amplified.\n- Practicals: Ask about setup included, return window, and minor nut/intonation tweaks for open tunings.\n\nIf you share your budget and whether coil\u2011split is a must\u2011have, I can narrow specific models to try first. Enjoy the hunt this weekend!"}
+{"question_id": "95bcc1c8", "hypothesis": "10"}
+{"question_id": "982b5123", "hypothesis": "About 5 months ago."}
+{"question_id": "982b5123_abs", "hypothesis": "The information provided is not enough. I don\u2019t have any record of you booking an Airbnb in Sacramento."}
+{"question_id": "993da5e2", "hypothesis": "About one week."}
+{"question_id": "9a707b81", "hypothesis": "21 days."}
+{"question_id": "9a707b82", "hypothesis": "A chocolate cake for your friend\u2019s birthday party."}
+{"question_id": "9aaed6a3", "hypothesis": "I don\u2019t have a record for a SaveMart purchase on Thu, May 25. The last one I have is Thu, May 18 for $75\u2014at 1% cashback, you earned $0.75. If you shopped on May 25, tell me the subtotal and I\u2019ll calculate it."}
+{"question_id": "9bbe84a2", "hypothesis": "Reaching level 100 by December 31, 2023."}
+{"question_id": "9d25d4e0", "hypothesis": "3 pieces. (Emerald earrings on May 20\u201321, silver necklace on Apr 15, engagement ring around Apr 28.)"}
+{"question_id": "a06e4cfe", "hypothesis": "3:1 (gin to vermouth)."}
+{"question_id": "a08a253f", "hypothesis": "4 days a week."}
+{"question_id": "a1cc6108", "hypothesis": "11 years old."}
+{"question_id": "a1eacc2a", "hypothesis": "Seven short stories."}
+{"question_id": "a2f3aa27", "hypothesis": "About 1,300 followers."}
+{"question_id": "a3045048", "hypothesis": "7 days."}
+{"question_id": "a3332713", "hypothesis": "$200 total \u2014 $100 for your coworker\u2019s baby\u2011shower gift and $100 for your brother\u2019s graduation gift."}
+{"question_id": "a346bb18", "hypothesis": "12 minutes."}
+{"question_id": "a3838d2b", "hypothesis": "4"}
+{"question_id": "a40e080f", "hypothesis": "Southwest Airlines and Patagonia."}
+{"question_id": "a4996e51", "hypothesis": "50 hours per week."}
+{"question_id": "a82c026e", "hypothesis": "The Dark Souls 3 DLC (you beat its final boss)."}
+{"question_id": "a89d7624", "hypothesis": "Here are Denver ideas tailored to your interests:\n\n- Catch a show at Red Rocks Park & Amphitheatre; arrive early and have dinner at The Ship Rock Grille (you liked the idea of a patio table with a view).\n- Hit classic venues: The Ogden Theatre, The Bluebird Theater, The Fillmore Auditorium, and Larimer Lounge.\n- Dig for music at Twist & Shout Records; check The hi\u2011dive and The Marquis Theater for smaller gigs.\n- Watch for festivals you\u2019ve shown interest in: Grandoozy, Denver Folk Festival, Denver Jazz Festival, Westword Music Showcase, and Riot Fest Denver.\n- Use Songkick or Bandsintown (plus venue/promoter socials) to line up shows while you\u2019re in town.\n- If you want a workout, fit in a hill session\u2014your hill repeats would pair well with Denver\u2019s terrain.\n\nWant food recs (e.g., BBQ near Red Rocks) or non\u2011music activities too?"}
+{"question_id": "a96c20ee", "hypothesis": "Harvard University."}
+{"question_id": "a9f6b44c", "hypothesis": "2 bikes \u2014 your road bike (serviced on Mar 10) and your commuter bike (tire replacement planned for March)."}
+{"question_id": "aae3761f", "hypothesis": "15 hours total (Outer Banks ~4h + Tennessee mountains ~5h + Washington, D.C. ~6h)."}
+{"question_id": "ac031881", "hypothesis": "LIV"}
+{"question_id": "ad7109d1", "hypothesis": "500 Mbps."}
+{"question_id": "af082822", "hypothesis": "2 weeks ago."}
+{"question_id": "af8d2e46", "hypothesis": "7 shirts."}
+{"question_id": "afdc33df", "hypothesis": "Quick, practical ways to keep the kitchen tidy:\n\n- Keep counters clear: use your utensil holder to group by task (stirring, flipping, serving), purge duplicates, and put the most\u2011used tools front and center. Add dividers and small containers (mason jars) for tiny items; stand long tools upright to use vertical space. Label sections and clean the holder regularly.\n- Add wall hooks or a rail for ladles/tongs to free up counter and drawer space.\n- Granite care: wipe daily with a soft cloth/stone\u2011safe cleaner, avoid harsh/abrasive products, use cutting boards and coasters/pads, and reseal periodically to prevent stains.\n- Garbage disposal: deodorize weekly\u20141/2 cup baking soda + 1 cup vinegar, rinse hot; or grind ice with a tablespoon of rock salt; finish with citrus peels. Always run cold water during use.\n- Fix little leaks fast: turn off water supply, check/clean the aerator, replace worn O\u2011rings/gaskets, tighten handle screws. Prevent drips that lead to grime buildup.\n- Do a 5\u201310 minute nightly reset: clear and wipe counters, load/run the dishwasher, and set out what you need for tomorrow so clutter doesn\u2019t accumulate."}
+{"question_id": "affe2881", "hypothesis": "32 species."}
+{"question_id": "b01defab", "hypothesis": "Yes. You finished it on 2023/03/30 and described it as amazing."}
+{"question_id": "b0479f84", "hypothesis": "Here are great one\u2011night picks (mostly on Netflix) you haven\u2019t watched yet:\n- My Octopus Teacher (~85 min): Intimate ocean story; calming and moving.\n- Virunga (~100 min): Park rangers vs. poachers in DRC; tense, powerful conservation doc.\n- Chasing Coral (~89 min): Stunning look at coral bleaching and why reefs matter.\n- David Attenborough: A Life on Our Planet (~83 min): Reflective, urgent, beautifully filmed.\n- The Dawn Wall (~100 min): Epic Yosemite climb\u2014perfect if you loved Free Solo\u2019s vibe.\n- Abducted in Plain Sight (~90 min): Jaw\u2011dropping true\u2011crime single\u2011sitter.\n\nWant a vibe check (nature vs. true crime) and I\u2019ll pick just one for tonight?"}
+{"question_id": "b29f3365", "hypothesis": "Four weeks."}
+{"question_id": "b320f3f8", "hypothesis": "A rare blue Snaggletooth action figure."}
+{"question_id": "b3c15d39", "hypothesis": "5 days."}
+{"question_id": "b46e15ed", "hypothesis": "2 months. (Since Feb 15, 2023, it\u2019s 2 months and 3 days as of Apr 18, 2023.)"}
+{"question_id": "b46e15ee", "hypothesis": "The Walk for Hunger 5K on March 19, 2023."}
+{"question_id": "b5ef892d", "hypothesis": "8 days."}
+{"question_id": "b6019101", "hypothesis": "5"}
+{"question_id": "b6025781", "hypothesis": "Here are fresh, meal\u2011prep friendly ideas for next week:\n\n- Lemon\u2011rosemary chicken + zucchini sheet pan: Toss thighs with lemon, garlic, rosemary, olive oil; roast with zucchini/onion. Serve over quinoa. Keeps 4 days.\n- Chickpea shawarma bowls: Roast chickpeas with cumin, coriander, paprika; add cucumbers, tomatoes, herbs, and tahini\u2011yogurt. Great with quinoa or greens.\n- Turkey picadillo: Ground turkey saut\u00e9ed with onions, peppers, tomatoes, olives, raisins, cumin. Spoon over quinoa; add roasted sweet potatoes on the side.\n- Miso\u2011ginger salmon + broccoli: Brush fillets with miso, ginger, soy, honey; roast with broccoli. Reheat gently; add sesame seeds and scallions.\n- Mushroom\u2011walnut \u201ctaco meat\u201d: Pulse mushrooms/walnuts; saut\u00e9 with chipotle, cumin, oregano. Use for taco bowls with quinoa, corn, and avocado.\n- Rosemary white bean & veggie stew: Cannellini beans simmered with garlic, tomatoes, kale, and rosemary. Ladles well over quinoa; freezes nicely.\n\nBonus tweaks\n- Sweet potatoes: Try a smoky\u2011lime rub (olive oil, cumin, paprika, garlic, lime zest) for a new flavor.\n- Granola: Make a cardamom\u2011pistachio batch (honey, cardamom, chopped pistachios, coconut flakes).\n\nWant a quick shopping list for any of these?"}
+{"question_id": "b759caee", "hypothesis": "@jessica_poole_jewellery"}
+{"question_id": "b86304ba", "hypothesis": "About three times what you paid."}
+{"question_id": "b9cfe692", "hypothesis": "About 5.5 weeks total (2.5 weeks for Evelyn Hugo + 3 weeks for The Nightingale)."}
+{"question_id": "ba358f49", "hypothesis": "33 years old."}
+{"question_id": "ba358f49_abs", "hypothesis": "The information provided is not enough. I don\u2019t have your wedding date (or year) or Rachel\u2019s age/birthday. Share those, and I\u2019ll calculate her age for your wedding."}
+{"question_id": "ba61f0b9", "hypothesis": "6 women."}
+{"question_id": "bb7c3b45", "hypothesis": "You saved $300."}
+{"question_id": "bbf86515", "hypothesis": "4 days."}
+{"question_id": "bc149d6b", "hypothesis": "70 pounds."}
+{"question_id": "bc8a6e93", "hypothesis": "A lemon blueberry cake."}
+{"question_id": "bc8a6e93_abs", "hypothesis": "The information provided is not enough. I don\u2019t have a record of what you baked for your uncle\u2019s birthday party. I do have that you baked a lemon\u2011blueberry cake for your niece\u2019s party. Could you remind me what you made for your uncle so I can save it?"}
+{"question_id": "bcbe585f", "hypothesis": "About 4 weeks and 2 days ago (\u22484.3 weeks), on April 1, 2023."}
+{"question_id": "c14c00dd", "hypothesis": "Trader Joe\u2019s lavender-scented shampoo."}
+{"question_id": "c18a7dc8", "hypothesis": "7 years."}
+{"question_id": "c2ac3c61", "hypothesis": "5 (3 on Coursera + 2 on edX)."}
+{"question_id": "c4a1ceb8", "hypothesis": "3 \u2014 lime, orange, and lemon."}
+{"question_id": "c4ea545c", "hypothesis": "Yes. You used to go 3 times a week (Tue/Thu/Sat); as of Aug 15, 2023 you go 4 times a week\u2014up by one session."}
+{"question_id": "c4f10528", "hypothesis": "Miss Bee Providore \u2014 they do \u201cMiss Bee\u2019s Nasi Goreng.\u201d"}
+{"question_id": "c5e8278d", "hypothesis": "Johnson."}
+{"question_id": "c6853660", "hypothesis": "Increased."}
+{"question_id": "c7cf7dfd", "hypothesis": "Nostalgia."}
+{"question_id": "c7dc5443", "hypothesis": "5\u20132."}
+{"question_id": "c8090214", "hypothesis": "7 days."}
+{"question_id": "c8090214_abs", "hypothesis": "I don\u2019t have your iPad purchase date on record. I do have that you attended the Holiday Market on November 17, 2023. Tell me when you bought your iPad, and I\u2019ll calculate the exact number of days."}
+{"question_id": "c8c3f81d", "hypothesis": "Nike."}
+{"question_id": "c8f1aeed", "hypothesis": "Pennsylvania."}
+{"question_id": "c960da58", "hypothesis": "20 playlists."}
+{"question_id": "c9f37c46", "hypothesis": "About two months."}
+{"question_id": "caf03d32", "hypothesis": "Here are quick wins to level up your slow\u2011cooker results:\n\n- Cut liquid by ~30\u201350% vs stovetop; slow cookers don\u2019t evaporate much.\n- Don\u2019t overfill; keep it 1/2\u20132/3 full for even heating.\n- Brown meats and aromatics first; deglaze the pan into the pot for extra flavor.\n- Layer smart: dense roots at the bottom, proteins/beans in the middle; add delicate veg in the last hour.\n- Keep the lid closed; every peek can add ~15\u201320 minutes.\n- Season late. Add fresh herbs and a splash of acid (lemon, vinegar) at the end for brightness.\n- Thicken at the finish: cornstarch slurry, mash some veg/beans, or crack the lid and reduce 20\u201330 minutes.\n- For stews: use chuck, cut carrots/potatoes larger so they don\u2019t go mushy; add dairy at the end.\n- For veg/vegan dishes: bloom spices in a little oil first; boost umami with tomato paste, soy/tamari, miso, dried mushrooms, or kombu.\n- For yogurt (incl. cashew): use a thermometer\u2014heat dairy to 180\u2013185\u00b0F, cool to 110\u2013115\u00b0F; incubate undisturbed 8\u201312 hrs. For cashew, blend very smooth, strain, and consider a little agar/pectin if you want a firmer set.\n- Calibrate your cooker: do a \u201cwater test\u201d on Low/High once to learn its real temps/timing.\n\nTell me the exact dish that\u2019s giving you trouble and what\u2019s going wrong (watery, bland, mushy, not setting, etc.), and I\u2019ll troubleshoot step\u2011by\u2011step."}
+{"question_id": "caf9ead2", "hypothesis": "About 5 hours."}
+{"question_id": "cc06de0d", "hypothesis": "$6 more expensive (taxi $12 vs. train $6)."}
+{"question_id": "cc539528", "hypothesis": "Ruby, Python, and PHP. I also pointed you to Java (Spring/Hibernate) and JavaScript via Node.js."}
+{"question_id": "cc5ded98", "hypothesis": "About two hours per day."}
+{"question_id": "cc6d1ec1", "hypothesis": "About two months."}
+{"question_id": "ccb36322", "hypothesis": "Spotify."}
+{"question_id": "ce6d2d27", "hypothesis": "Fridays."}
+{"question_id": "ceb54acb", "hypothesis": "The four were:\n- Sexual fixations\n- Problematic sexual behaviors\n- Sexual impulsivity\n- Compulsive sexuality"}
+{"question_id": "cf22b7bf", "hypothesis": "10 pounds."}
+{"question_id": "d01c6aa8", "hypothesis": "About 27 years old."}
+{"question_id": "d24813b1", "hypothesis": "Great picks for a low\u2011mess, crowd\u2011pleasing spread:\n- Chewy chocolate chip cookies: Use your 375\u00b0F recipe; chill dough 30\u201360 min and finish with a pinch of flaky sea salt.\n- Mini lemon\u2011lavender loaves: Your pound cake as minis with a simple lemon glaze\u2014easy to portion and serve.\n- Oatmeal raisin + nuts: Swap ~25% flour for whole wheat, add walnuts/cranberries, boost cinnamon, and reduce sugar slightly.\n- Brownie bites with caramel ganache swirl: Bake in a mini muffin tin for clean, one\u2011bite pieces.\n- Savory balance: Parmesan\u2011herb mini scones or cheddar\u2011jalape\u00f1o cornbread muffins.\n\nTips:\n- Bake the night before; store airtight. \n- Use liners/mini sizes to keep crumbs minimal.\n- Label anything with nuts and consider a vegan batch (e.g., banana bread muffins with a flax egg) for dietary needs."}
+{"question_id": "d3ab962e", "hypothesis": "8 miles total (5 mi at Red Rock Canyon + 3 mi at Valley of Fire)."}
+{"question_id": "d52b4f67", "hypothesis": "At the Grand Ballroom."}
+{"question_id": "d596882b", "hypothesis": "By Chloe."}
+{"question_id": "d6062bb9", "hypothesis": "1,998 views total (542 on YouTube + 1,456 on TikTok)."}
+{"question_id": "d6233ab6", "hypothesis": "Yes\u2014given your fond memories of debate and AP econ, and that many of your old friends are heading into the workforce, a reunion could be a meaningful way to reconnect, catch up, and even expand your network.\n\nQuick check before saying yes:\n- What do you want out of it\u2014seeing a few close friends, broad reconnection, or networking?\n- Do the people you care about plan to go?\n- Are the time/cost/energy worth it to you?\n\nIf you\u2019re unsure, you could go for the first hour or set up a smaller meetup with a few classmates. Want help drafting a quick \u201cYou going to the reunion?\u201d message to your old debate/econ friends?"}
+{"question_id": "d7c942c3", "hypothesis": "Yes\u2014since April 30 (two weeks ago), your mom\u2019s using the same grocery list app as you, and you share lists."}
+{"question_id": "d905b33f", "hypothesis": "The information provided is not enough. I only know it was originally $30. If that was the $24 book you bought on May 16, then you got 20% off; otherwise, tell me what you paid."}
+{"question_id": "dad224aa", "hypothesis": "7:30 am."}
+{"question_id": "db467c8c", "hypothesis": "About nine months."}
+{"question_id": "dc439ea3", "hypothesis": "You\u2019re thinking of the Hoop Dance\u2014performed by skilled dancers manipulating multiple hoops. It\u2019s a performance rather than a game."}
+{"question_id": "dccbc061", "hypothesis": "You were a staunch atheist."}
+{"question_id": "dcfa8644", "hypothesis": "14 days."}
+{"question_id": "dfde3500", "hypothesis": "Wednesday evenings."}
+{"question_id": "e01b8e2f", "hypothesis": "Hawaii."}
+{"question_id": "e25c3b8d", "hypothesis": "You saved $300 ($500 original \u2212 $200 paid)."}
+{"question_id": "e3fc4d6e", "hypothesis": "Dr. Arati Prabhakar."}
+{"question_id": "e47becba", "hypothesis": "Business Administration."}
+{"question_id": "e48988bc", "hypothesis": "Patagonia \u2014 we talked about their sustainable sourcing (organic cotton, recycled polyester), greener logistics, recycled/recyclable packaging, and a take\u2011back program for repair and recycling."}
+{"question_id": "e493bb7c", "hypothesis": "Above the bed in the bedroom."}
+{"question_id": "e4e14d04", "hypothesis": "About two weeks\u2014roughly 15 days."}
+{"question_id": "e56a43b9", "hypothesis": "$5 off (you have 500 points, and it\u2019s $1 per 100 points)."}
+{"question_id": "e5ba910e_abs", "hypothesis": "The information provided is not enough. I have your headphones at $378, but I don\u2019t have the iPad\u2019s price. Share the iPad price (or model and what you paid), and I\u2019ll total them."}
+{"question_id": "e6041065", "hypothesis": "40% (you wore 2 of the 5 pairs: sneakers and sandals)."}
+{"question_id": "e61a7584", "hypothesis": "About nine months."}
+{"question_id": "e66b632c", "hypothesis": "27 minutes 45 seconds."}
+{"question_id": "e831120c", "hypothesis": "MCU: 2 weeks. Star Wars (main saga): 1.5 weeks. Total: 3.5 weeks."}
+{"question_id": "e8a79c70", "hypothesis": "2\u20133 eggs."}
+{"question_id": "e9327a54", "hypothesis": "The Sugar Factory at ICON Park."}
+{"question_id": "eac54adc", "hypothesis": "19 days."}
+{"question_id": "eac54add", "hypothesis": "You signed a contract with your first freelance client (on March 1, 2023)."}
+{"question_id": "eaca4986", "hypothesis": "The chorus progression for the second song was: C D E F G A B A G F E D C."}
+{"question_id": "eace081b", "hypothesis": "On Oahu."}
+{"question_id": "ed4ddc30", "hypothesis": "20 dozen eggs."}
+{"question_id": "edced276", "hypothesis": "15 days (10 in Hawaii + 5 in NYC)."}
+{"question_id": "edced276_abs", "hypothesis": "I have 10 days for Hawaii. I don\u2019t have any record of your Seattle trip. How many days was Seattle? I\u2019ll add it up."}
+{"question_id": "eeda8a6d", "hypothesis": "17 fish total (16 in the community tank + 1 betta)."}
+{"question_id": "eeda8a6d_abs", "hypothesis": "I don\u2019t have info on a 30\u2011gallon tank. Last I have is your 20\u2011gallon with 16 fish (10 neon tetras, 5 golden honey gouramis, 1 small pleco). If you\u2019ve upgraded, tell me what\u2019s in the 30\u2011gallon and I\u2019ll count it."}
+{"question_id": "ef66a6e5", "hypothesis": "2 \u2014 tennis (high school) and swimming (college)."}
+{"question_id": "ef9cf60a", "hypothesis": "About $300 total ($200 Tiffany necklace + $100 spa gift card)."}
+{"question_id": "efc3f7c2", "hypothesis": "30 minutes earlier."}
+{"question_id": "f0853d11", "hypothesis": "14 days."}
+{"question_id": "f0e564bc", "hypothesis": "$1,300 total ($800 for the Coach handbag + $500 on skincare)."}
+{"question_id": "f35224e0", "hypothesis": "27 episodes total (15 from How I Built This + 12 from My Favorite Murder)."}
+{"question_id": "f4f1d8a4", "hypothesis": "Your sister."}
+{"question_id": "f4f1d8a4_abs", "hypothesis": "I don\u2019t have a record of a birthday gift from your dad. The only recent birthday gift noted is a stand mixer from your sister in April 2023. What did your dad give you?"}
+{"question_id": "f523d9fe", "hypothesis": "Doc Martin."}
+{"question_id": "f685340e", "hypothesis": "Previously: weekly.\nNow: biweekly."}
+{"question_id": "f685340e_abs", "hypothesis": "I don\u2019t have any record of you playing table tennis. If you meant tennis at the local park with friends, you do it every other week (biweekly)."}
+{"question_id": "f8c5f88b", "hypothesis": "From a sports store downtown."}
+{"question_id": "faba32e5", "hypothesis": "24 hours."}
+{"question_id": "fca70973", "hypothesis": "Here are two easy, high\u2011impact Halloween\u2011themed weekend plans based on what you liked last time:\n\nOption A: Disneyland + Universal Studios Hollywood\n- Sat (Disneyland \u2013 Halloween Time starts mid\u2011Sep): Snack your way through Pumpkin Beignets, Mummy Dogs, Bat Wing Chicken Tenders, and Candy Corn Funnel Cake. Book a Halloween menu sit\u2011down at Blue Bayou or the Carthay Circle five\u2011course Halloween Feast. Stay for the nighttime entertainment.\n- Sun night (Universal HHN): Book the VIP Experience with the Gourmet Buffet + Behind\u2011the\u2011Scenes Tour online, and add the Terror Tipsy Turvey Lounge for cocktails and small plates between mazes.\n\nOption B: Six Flags Magic Mountain \u2013 Fright Fest + Disneyland bites\n- Sat (Six Flags Fright Fest, late Sep\u2013early Nov): Do the Fright Fest Feast (buffet, priority entry, souvenir photo), then hit the scare zones/mazes and night rides. Try the Full Throttle Sports Bar Halloween items (e.g., Zombie Brain Cupcakes, Witch\u2019s Brew).\n- Sun (Disneyland quick eats): Drop in for your favorite Halloween snacks and an evening show.\n\nQuick tips:\n- Reserve HHN VIP and Disney dining now (these sell out fast).\n- Use your frequent\u2011flyer points for a quick SoCal hop from Portland.\n- Aim for late\u2011afternoon arrivals and stay through the nighttime shows/mazes for max atmosphere."}
+{"question_id": "fca762bc", "hypothesis": "Memrise. It\u2019s the one that uses mnemonic \u201cmems\u201d to help you remember words and phrases."}
+{"question_id": "fea54f57", "hypothesis": "Evolution."}
+{"question_id": "gpt4_0a05b494", "hypothesis": "The woman selling jam at the farmer\u2019s market."}
+{"question_id": "gpt4_0b2f1d21", "hypothesis": "The stand mixer malfunction happened first (April 2023), then the coffee maker was purchased (~May 4, 2023)."}
+{"question_id": "gpt4_15e38248", "hypothesis": "4.\n\nCoffee table (bought), IKEA bookshelf (assembled), kitchen table (fixed), Casper mattress (bought)."}
+{"question_id": "gpt4_18c2b244", "hypothesis": "Chronological order:\n1) Used the BOGO Luvs coupon at Walmart (Apr 1, 2023)\n2) Redeemed $12 cashback for a $10 Amazon gift card from Ibotta (Apr 10, 2023)\n3) Signed up for the ShopRite rewards program (Apr 15, 2023)"}
+{"question_id": "gpt4_1916e0ea", "hypothesis": "54 days."}
+{"question_id": "gpt4_194be4b3", "hypothesis": "4 \u2014 black Fender Stratocaster electric guitar, Yamaha FG800 acoustic guitar, Korg B1 digital piano, and a 5\u2011piece Pearl Export drum set."}
+{"question_id": "gpt4_1a1dc16d", "hypothesis": "The meeting with Rachel\u2014on April 10, 2023\u2014happened first; the pride parade was on May 1, 2023."}
+{"question_id": "gpt4_1d4ab0c9", "hypothesis": "24 days."}
+{"question_id": "gpt4_1d80365e", "hypothesis": "3 days (May 15\u201317, 2023)."}
+{"question_id": "gpt4_1e4a8aeb", "hypothesis": "6 days."}
+{"question_id": "gpt4_1e4a8aec", "hypothesis": "You planted 12 new tomato saplings."}
+{"question_id": "gpt4_213fd887", "hypothesis": "The volleyball league\u2014you started in late March 2023, and the 5K was in late April (around Apr 24)."}
+{"question_id": "gpt4_21adecb5", "hypothesis": "Just under 6 months (about 5 months and 28 days)."}
+{"question_id": "gpt4_2312f94c", "hypothesis": "The Samsung Galaxy S22\u2014you got it on Feb 20, 2023, while the Dell XPS 13 arrived on Feb 25, 2023."}
+{"question_id": "gpt4_2487a7cb", "hypothesis": "The \u201cData Analysis using Python\u201d webinar came first (March 24, 2023), before the \u201cEffective Time Management\u201d workshop (May 20, 2023)."}
+{"question_id": "gpt4_2655b836", "hypothesis": "Your car\u2019s GPS system failed."}
+{"question_id": "gpt4_2c50253f", "hypothesis": "6:45 AM."}
+{"question_id": "gpt4_2d58bcd6", "hypothesis": "The Hate U Give."}
+{"question_id": "gpt4_2f56ae70", "hypothesis": "Disney+ \u2014 you started a free trial in April 2023."}
+{"question_id": "gpt4_2f584639", "hypothesis": "The photo album for your mom was first (ordered around May 16), then the Tiffany necklace for your sister (around May 27\u201328)."}
+{"question_id": "gpt4_2f8be40d", "hypothesis": "3."}
+{"question_id": "gpt4_31ff4165", "hypothesis": "4 \u2014 Fitbit Versa 3, Accu-Chek Aviva Nano glucose meter, nebulizer, and Phonak hearing aids."}
+{"question_id": "gpt4_372c3eed", "hypothesis": "10 years total (4 HS + 2 PCC + 4 UCLA)."}
+{"question_id": "gpt4_372c3eed_abs", "hypothesis": "I don\u2019t have any record that you\u2019ve completed a Master\u2019s yet. Based on your completed schooling (2010\u20132014 HS, ~2014\u20132016 PCC, 2016\u20132020 UCLA), you\u2019ve spent 10 years in formal education so far. If you later complete a typical 2\u2011year Master\u2019s, that would bring it to 12 years."}
+{"question_id": "gpt4_385a5000", "hypothesis": "Tomatoes were started first (Feb 20, 2023); marigolds were started after March 3, 2023."}
+{"question_id": "gpt4_45189cb4", "hypothesis": "Here\u2019s the order:\n1) Jan 5: NBA \u2014 Lakers vs Bulls at Staples Center\n2) Jan 14: College Football National Championship \u2014 Georgia vs Alabama\n3) Weekend Jan 14\u201315: NFL Divisional Round \u2014 Chiefs vs Bills at Mike\u2019s place"}
+{"question_id": "gpt4_468eb063", "hypothesis": "9 days ago."}
+{"question_id": "gpt4_468eb064", "hypothesis": "Emma, the freelance writer."}
+{"question_id": "gpt4_483dd43c", "hypothesis": "Game of Thrones. You started it around April 29, 2023; you began The Crown (Season 3) on May 14, 2023."}
+{"question_id": "gpt4_4929293a", "hypothesis": "Michael\u2019s engagement party happened first\u2014on May 6, 2023. Your cousin\u2019s wedding was later, on June 15, 2023."}
+{"question_id": "gpt4_4929293b", "hypothesis": "Your cousin\u2019s wedding\u2014you were a bridesmaid."}
+{"question_id": "gpt4_4cd9eba1", "hypothesis": "1 week."}
+{"question_id": "gpt4_4edbafa2", "hypothesis": "June 3, 2023."}
+{"question_id": "gpt4_4ef30696", "hypothesis": "1 day."}
+{"question_id": "gpt4_4fc4f797", "hypothesis": "38 days."}
+{"question_id": "gpt4_5438fa52", "hypothesis": "The start of your Spanish classes came first (February 2023), then the cultural festival (May 26, 2023)."}
+{"question_id": "gpt4_5501fe77", "hypothesis": "TikTok \u2014 about +200 followers (more than Twitter\u2019s +120)."}
+{"question_id": "gpt4_59149c77", "hypothesis": "7 days."}
+{"question_id": "gpt4_59149c78", "hypothesis": "The Metropolitan Museum of Art."}
+{"question_id": "gpt4_59c863d7", "hypothesis": "5 \u2014 Revell F\u201115 Eagle, Tamiya 1/48 Spitfire Mk.V, 1/72 B\u201129 bomber, 1/24 1969 Camaro, 1/16 Tiger I."}
+{"question_id": "gpt4_5dcc0aab", "hypothesis": "Your white Adidas sneakers."}
+{"question_id": "gpt4_61e13b3c", "hypothesis": "3 weeks and 1 day."}
+{"question_id": "gpt4_65aabe59", "hypothesis": "The smart thermostat."}
+{"question_id": "gpt4_68e94287", "hypothesis": "Your vegan chili post (Mar 9, 2023) happened before your #PlankChallenge (Mar 15, 2023)."}
+{"question_id": "gpt4_68e94288", "hypothesis": "You did the #PlankChallenge on March 15, 2023."}
+{"question_id": "gpt4_6dc9b45b", "hypothesis": "About 4 months ago."}
+{"question_id": "gpt4_6ed717ea", "hypothesis": "The training pads for Luna were purchased first (around April 29, 2023). The dog bed for Max was later (around May 8, 2023)."}
+{"question_id": "gpt4_70e84552", "hypothesis": "Fixing the fence. You repaired it around May 4, then trimmed the hooves on May 11."}
+{"question_id": "gpt4_70e84552_abs", "hypothesis": "The information provided is not enough. I only have you fixing the east-side fence around April 30, 2023, and no record of purchasing three cows from Peter. If you share the purchase date, I can compare."}
+{"question_id": "gpt4_74aed68e", "hypothesis": "29 days."}
+{"question_id": "gpt4_76048e76", "hypothesis": "Your bike\u2014repaired around Feb 15\u2014before the car wash on Feb 27."}
+{"question_id": "gpt4_7bc6cf22", "hypothesis": "12 days ago."}
+{"question_id": "gpt4_7ca326fa", "hypothesis": "Emma first (May 28, 2022), Rachel second (June 21, 2022), Alex third (around July 1, 2022)."}
+{"question_id": "gpt4_7ddcf75f", "hypothesis": "3 days ago."}
+{"question_id": "gpt4_7de946e7", "hypothesis": "The persistent cough came first (around Feb 7, 2023). The skin tag removal was on Feb 22, 2023."}
+{"question_id": "gpt4_7fce9456", "hypothesis": "Five in total (including the Brookside townhouse). Four if you mean other properties only."}
+{"question_id": "gpt4_8279ba02", "hypothesis": "10 days ago (on March 15, 2023)."}
+{"question_id": "gpt4_8279ba03", "hypothesis": "A smoker."}
+{"question_id": "gpt4_85da3956", "hypothesis": "About 3 weeks ago (22 days)."}
+{"question_id": "gpt4_88806d6e", "hypothesis": "Tom. You met Tom around February 2023, and Mark and Sarah around April 28, 2023."}
+{"question_id": "gpt4_8c8961ae", "hypothesis": "The solo trip to Thailand came first."}
+{"question_id": "gpt4_8e165409", "hypothesis": "14 days."}
+{"question_id": "gpt4_93159ced", "hypothesis": "About 4 years and 9 months."}
+{"question_id": "gpt4_93159ced_abs", "hypothesis": "I don\u2019t have any record of you starting a job at Google. As of today, you\u2019ve been at NovaTech since Feb 2019 (~4 years 3 months). If you meant NovaTech, you had about 4 years 9 months of experience before starting there."}
+{"question_id": "gpt4_93f6379c", "hypothesis": "Page Turners."}
+{"question_id": "gpt4_98f46fc6", "hypothesis": "The charity bake sale\u2014on March 15, 2023. The charity gala was on March 28, 2023."}
+{"question_id": "gpt4_9a159967", "hypothesis": "United Airlines."}
+{"question_id": "gpt4_a1b77f9c", "hypothesis": "8 weeks total."}
+{"question_id": "gpt4_a2d1d1f6", "hypothesis": "3 days ago."}
+{"question_id": "gpt4_a56e767c", "hypothesis": "4 \u2014 Seattle International Film Festival, Austin Film Festival, Portland Film Festival, and AFI Fest."}
+{"question_id": "gpt4_ab202e7f", "hypothesis": "5"}
+{"question_id": "gpt4_af6db32f", "hypothesis": "17 days ago."}
+{"question_id": "gpt4_b0863698", "hypothesis": "7 days ago (on March 19, 2023)."}
+{"question_id": "gpt4_b4a80587", "hypothesis": "The new 50mm f/1.8 prime lens arrived first."}
+{"question_id": "gpt4_b5700ca0", "hypothesis": "At the Episcopal Church."}
+{"question_id": "gpt4_b5700ca9", "hypothesis": "4 days ago (on April 6, 2023)."}
+{"question_id": "gpt4_c27434e8", "hypothesis": "The Japanese Zero fighter plane model. You began it around April 29, 2023, then started the Ferrari 288 GTO on May 7, 2023."}
+{"question_id": "gpt4_c27434e8_abs", "hypothesis": "I only have that you started the Ferrari 288 GTO on April 30, 2023. I don\u2019t have any record of a Porsche 991 Turbo S model. Share when you started the Porsche, and I\u2019ll tell you which came first."}
+{"question_id": "gpt4_cd90e484", "hypothesis": "About 14 days (two weeks)."}
+{"question_id": "gpt4_d12ceb0e", "hypothesis": "59.6 years."}
+{"question_id": "gpt4_d31cdae3", "hypothesis": "The family road trip across the American Southwest came first."}
+{"question_id": "gpt4_d84a3211", "hypothesis": "$185 total (Helmet $120 on Apr 10 + chain replacement $25 + bike lights $40)."}
+{"question_id": "gpt4_d9af6064", "hypothesis": "The new router\u2014on January 15, 2023. You set up the smart thermostat later, on February 10, 2023."}
+{"question_id": "gpt4_e05b82a6", "hypothesis": "10 times."}
+{"question_id": "gpt4_e061b84f", "hypothesis": "- June 2, 2023: Spring Sprint Triathlon\n- June 10, 2023: Midsummer 5K Run\n- June 17, 2023: Company charity soccer tournament"}
+{"question_id": "gpt4_e061b84g", "hypothesis": "Your company's annual charity soccer tournament on June 17, 2023."}
+{"question_id": "gpt4_e072b769", "hypothesis": "About 2 weeks and 6 days ago (~2.9 weeks)."}
+{"question_id": "gpt4_e414231e", "hypothesis": "4 days."}
+{"question_id": "gpt4_e414231f", "hypothesis": "Your road bike."}
+{"question_id": "gpt4_ec93e27f", "hypothesis": "Train."}
+{"question_id": "gpt4_f2262a51", "hypothesis": "3 \u2014 Dr. Lee (dermatology), Dr. Patel (ENT), and Dr. Smith (primary care)."}
+{"question_id": "gpt4_f420262c", "hypothesis": "JetBlue \u2192 Delta \u2192 United \u2192 American Airlines."}
+{"question_id": "gpt4_f49edff3", "hypothesis": "First to last:\n- Feb 5, 2023 \u2014 Helped your friend prepare the nursery.\n- Feb 9, 2023 \u2014 Helped your cousin pick baby shower items.\n- Feb 20, 2023 \u2014 Ordered a customized phone case for your friend\u2019s birthday."}
+{"question_id": "gpt4_fa19884c", "hypothesis": "6 days (from March 25 to March 31, 2023)."}
+{"question_id": "gpt4_fa19884d", "hypothesis": "You started listening to a bluegrass band with a banjo player last Friday, but you didn\u2019t specify the artist\u2019s name."}
+{"question_id": "gpt4_fe651585", "hypothesis": "Alex\u2014she adopted in January 2023, while Rachel\u2019s twins were born on February 12, 2023."}
+{"question_id": "gpt4_fe651585_abs", "hypothesis": "The information provided is not enough. I only know Alex became a parent in January 2023; I don\u2019t have any info about Tom."}
+{"question_id": "2318644b", "hypothesis": "At least $270 more per night."}
+{"question_id": "e982271f", "hypothesis": "Revolution Hall."}
+{"question_id": "6456829e", "hypothesis": "Tomatoes: 5 plants. Cucumbers: 3 plants."}
+{"question_id": "75f70248", "hypothesis": "Very possible. Your living room has the main sneeze triggers: cat dander, dust, and dust mites (worse with higher humidity).\n\nQuick fixes to try this week:\n- Vacuum rugs/sofa 2\u20133x/week with a HEPA vacuum; damp\u2011dust surfaces with a microfiber cloth.\n- Wash throws, cushion covers, and the cat\u2019s bedding weekly; mop hard floors.\n- Change your HVAC/AC filter now if it\u2019s been >1 month; set a 1\u20133 month cadence.\n- Run a dehumidifier to keep RH around 40\u201350% (dust mites thrive in higher humidity).\n- Groom the cat regularly and use a lint roller on upholstery.\n- If sneezing persists, add a true\u2011HEPA air purifier for the living room.\n\nYour spider/snake plant is fine to keep, but plants won\u2019t replace the above; avoid overwatering to prevent mold. Want me to set a simple cleaning cadence or pick a HEPA purifier size for your room?"}
+{"question_id": "0a995998", "hypothesis": "2 items \u2014 the exchanged Zara boots and the navy blue blazer from the dry cleaner."}
+{"question_id": "1da05512", "hypothesis": "If your storage is already tight and you want automated, secure backups for your laptop and Galaxy S22 Ultra (especially before your upcoming trip), buy now. A beginner 2\u2011bay like the Synology DS218j or WD My Cloud EX2 Ultra (around $150) will give you AES\u2011256 encryption, access controls, and central backups right away.\n\nWait if:\n- You want more headroom/RAID5 and easier expansion (go 4\u2011bay like DS418j or QNAP TS\u2011453D at ~$300\u2013$350).\n- You\u2019re mainly optimizing price and can hold off ~1\u20133 months for broader sales.\n\nNote: Your NAS choice is independent of your next laptop (works with macOS/Windows/Android), so you don\u2019t need to delay for that. My take given your current limits: buy now with a 2\u2011bay, unless you foresee rapid growth soon."}
+{"question_id": "2133c1b5", "hypothesis": "About 7 months (since around March 11, 2023)."}
+{"question_id": "32260d93", "hypothesis": "Here are three quick, tailored picks for tonight:\n\n- Laughs with storytelling: Hasan Minhaj: Homecoming King \u2014 ~72 min\n- True-crime vibe: Mindhunter S1E1 \u2014 ~47 min\n- Politics documentary: Knock Down the House \u2014 ~86 min\n\nWhich mood are you in?"}
+{"question_id": "36b9f61e", "hypothesis": "$2,500 total.\n\nBreakdown:\n- Gucci handbag: $1,200\n- Italian designer boots: $500\n- Evening gown: $800"}
+{"question_id": "370a8ff4", "hypothesis": "11 weeks and 4 days (81 days)."}
+{"question_id": "37f165cf", "hypothesis": "January: 341 pages.\nMarch: 440 pages."}
+{"question_id": "51a45a95", "hypothesis": "The information provided is not enough. I only have that you redeemed the $5 coffee\u2011creamer coupon on Sunday, May 28, 2023, but the store isn\u2019t specified."}
+{"question_id": "51c32626", "hypothesis": "On or before February 1, 2023. The exact day isn\u2019t noted in our past chats."}
+{"question_id": "6d550036", "hypothesis": "7 projects."}
+{"question_id": "6e984301", "hypothesis": "About 9 weeks."}
+{"question_id": "7024f17c", "hypothesis": "0 hours (Jogging: 0, Yoga: 0)."}
+{"question_id": "7405e8b1", "hypothesis": "The information provided is not enough. I know you got 40% off your first HelloFresh order, but I don\u2019t have the discount you received on your first UberEats order. What was it?"}
+{"question_id": "88432d0a", "hypothesis": "7 times."}
+{"question_id": "8979f9ec", "hypothesis": "I only have 5 lunches (from the lentil soup). I don\u2019t have how many lunches you got from the chicken fajitas\u2014tell me that number and I\u2019ll add it."}
+{"question_id": "8c18457d", "hypothesis": "I have the date you bought your brother\u2019s gift: Feb 10, 2023. For your best friend, I only know you gave the necklace on Mar 15, 2023. When did you buy it? If you bought it on Mar 15, then 33 days had passed."}
+{"question_id": "9ea5eabc", "hypothesis": "Hawaii."}
+{"question_id": "9ee3ecd6", "hypothesis": "50\u2013100 points, depending on the item. You\u2019re around 300 points now, so you can redeem a skincare reward immediately."}
+{"question_id": "a11281a2", "hypothesis": "About 100 followers (from ~250 at the start of the year to ~350 after two weeks of regular posting)."}
+{"question_id": "a96c20ee_abs", "hypothesis": "Harvard University."}
+{"question_id": "bf659f65", "hypothesis": "2: Billie Eilish\u2019s \u201cHappier Than Ever\u201d (downloaded on Spotify) and The Whiskey Wanderers\u2019 \u201cMidnight Sky\u201d EP (purchased at the festival)."}
+{"question_id": "c19f7a0b", "hypothesis": "Around 6:30 pm."}
+{"question_id": "d23cf73b", "hypothesis": "5 \u2014 Ethiopian, Korean, Indian, Italian (via vegan lasagna), and German/Eastern European (sauerkraut)."}
+{"question_id": "d682f1a2", "hypothesis": "2 (Domino\u2019s delivery and Uber Eats)."}
+{"question_id": "d851d5ba", "hypothesis": "Over $8,750 in total."}
+{"question_id": "dd2973ad", "hypothesis": "The information provided is not enough. I don\u2019t have your bedtime for Wed, May 17 (the day before your Thu, May 18 appointment). The only logged bedtime is 2 AM on Wed, May 24."}
+{"question_id": "e3038f8c", "hypothesis": "100 total (57 rare vinyl records + 12 figurines + 25 coins + 5 rare books + 1 antique vase)."}
+{"question_id": "ec81a493", "hypothesis": "The information provided is not enough. I only know the signed poster was limited to 500 copies worldwide, not the album\u2019s total copies."}
+{"question_id": "f9e8c073", "hypothesis": "You attended five sessions in 2022 and three sessions around May 2023 \u2014 eight in total."}
+{"question_id": "gpt4_2ba83207", "hypothesis": "Walmart. You spent about $120 there on May 20, 2023."}
+{"question_id": "gpt4_2f91af09", "hypothesis": "23 total (17 poems + 5 short stories + 1 writing\u2011challenge piece). If \u201cThe Smell of Old Books\u201d is one of your five short stories, then it\u2019s 22."}
+{"question_id": "gpt4_731e37d7", "hypothesis": "$220 based on the amounts you recorded (November writing workshop $200 + December mindfulness workshop $20; the Feb 22 photography workshop was free). This excludes your January entrepreneurship workshop and the five digital marketing workshops (no fees noted), so the true total may be higher. If you share those fees, I can finalize the total."}
+{"question_id": "gpt4_78cf46a3", "hypothesis": "The information provided is not enough to determine which happened first."}
+{"question_id": "gpt4_7a0daae1", "hypothesis": "0 weeks."}
+{"question_id": "gpt4_7abb270c", "hypothesis": "Earliest to latest:\n1) Museum of Contemporary Art \u2014 January 2023 (before Jan 15)\n2) Science Museum (London) \u2014 Jan 15, 2023\n3) Metropolitan Museum of Art \u2014 Feb 10, 2023\n4) Museum of History \u2014 Feb 15, 2023\n5) Modern Art Gallery \u2014 Feb 17, 2023\n6) Natural History Museum \u2014 Mar 4, 2023"}
+{"question_id": "gpt4_7f6b06db", "hypothesis": "1) Solo camping trip to Yosemite (early April 2023)\n2) Road trip to Big Sur and Monterey (returned April 20, 2023)\n3) Solo camping trip to Yosemite (started May 15, 2023)"}
+{"question_id": "gpt4_d6585ce8", "hypothesis": "Here\u2019s the order from earliest:\n\n1) 2023/03/18 \u2014 Billie Eilish at Wells Fargo Center, Philadelphia\n2) 2023/03/25 \u2014 Free outdoor concert series in a park\n3) ~2023/03/31 \u2014 Glass Animals at a Brooklyn music festival\n4) ~2023/04/15 \u2014 Queen + Adam Lambert at Prudential Center, Newark, NJ"}
+{"question_id": "gpt4_d6585ce9", "hypothesis": "Your sister."}
+{"question_id": "gpt4_f420262d", "hypothesis": "JetBlue."}

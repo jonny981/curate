@@ -1,0 +1,134 @@
+{
+  "markup-sol": {
+    "answers": "markup-sol",
+    "marker": "LongMemEval's evaluate_qa.py, gpt-4o-2024-08-06",
+    "marked": "2026-11-04",
+    "questions": 500,
+    "correct": 469,
+    "accuracy": 93.8,
+    "six_type_average": 95.05,
+    "by_type": {
+      "knowledge-update": "77/78",
+      "multi-session": "117/133",
+      "single-session-assistant": "56/56",
+      "single-session-preference": "28/30",
+      "single-session-user": "69/70",
+      "temporal-reasoning": "122/133"
+    },
+    "context_tokens_mean": 844.0,
+    "context_tokens_median": 685.0,
+    "history_tokens_mean": 102580,
+    "times_less_than_history": 121.5,
+    "adjusted": 97.9
+  },
+  "cited-only-sol": {
+    "answers": "cited-only-sol",
+    "marker": "LongMemEval's evaluate_qa.py, gpt-4o-2024-08-06",
+    "marked": "2026-11-05",
+    "questions": 500,
+    "correct": 465,
+    "accuracy": 93.0,
+    "six_type_average": 93.15,
+    "by_type": {
+      "knowledge-update": "77/78",
+      "multi-session": "117/133",
+      "single-session-assistant": "56/56",
+      "single-session-preference": "25/30",
+      "single-session-user": "68/70",
+      "temporal-reasoning": "122/133"
+    },
+    "context_tokens_mean": 854.4,
+    "context_tokens_median": 688.0,
+    "history_tokens_mean": 102580,
+    "times_less_than_history": 120.1,
+    "adjusted": 97.1
+  },
+  "log-sol": {
+    "answers": "log-sol",
+    "marker": "LongMemEval's evaluate_qa.py, gpt-4o-2024-08-06",
+    "marked": "2026-11-04",
+    "questions": 500,
+    "correct": 463,
+    "accuracy": 92.6,
+    "six_type_average": 93.52,
+    "by_type": {
+      "knowledge-update": "75/78",
+      "multi-session": "115/133",
+      "single-session-assistant": "55/56",
+      "single-session-preference": "27/30",
+      "single-session-user": "69/70",
+      "temporal-reasoning": "122/133"
+    },
+    "context_tokens_mean": 448.6,
+    "context_tokens_median": 380.0,
+    "history_tokens_mean": 102580,
+    "times_less_than_history": 228.7,
+    "adjusted": 98.1
+  },
+  "markup-sol.same_session_2026-11-05": {
+    "answers": "markup-sol",
+    "marker": "LongMemEval's evaluate_qa.py, gpt-4o-2024-08-06, same session as Mem0's answers",
+    "marked": "2026-11-05",
+    "questions": 500,
+    "correct": 467,
+    "accuracy": 93.4,
+    "six_type_average": 94.37,
+    "by_type": {
+      "knowledge-update": "77/78",
+      "multi-session": "116/133",
+      "single-session-assistant": "56/56",
+      "single-session-preference": "27/30",
+      "single-session-user": "69/70",
+      "temporal-reasoning": "122/133"
+    },
+    "context_tokens_mean": 844.0,
+    "context_tokens_median": 685.0,
+    "history_tokens_mean": 102580,
+    "times_less_than_history": 121.5,
+    "adjusted": 97.5
+  },
+  "mem0.same_session_2026-11-05": {
+    "answers": "Mem0's published answers",
+    "marker": "LongMemEval's evaluate_qa.py, gpt-4o-2024-08-06, same session as the markup setting",
+    "marked": "2026-11-05",
+    "questions": 500,
+    "correct": 455,
+    "accuracy": 91.0,
+    "six_type_average": 90.34,
+    "by_type": {
+      "knowledge-update": "76/78",
+      "multi-session": "110/133",
+      "single-session-assistant": "55/56",
+      "single-session-preference": "22/30",
+      "single-session-user": "68/70",
+      "temporal-reasoning": "124/133"
+    },
+    "context_tokens_mean_reported_by_mem0": 6787,
+    "history_tokens_mean": 102580,
+    "times_less_than_history": 15.1,
+    "source": "https://github.com/mem0ai/memory-benchmarks/blob/4b61c5d31b9c668a12b4f5e78064248a02c82d2b/results/platform/longmemeval_results.json",
+    "source_sha256": "58bd6d8934a54d8cd568ef481bbd3e37270c2c74a5d59713b661d4c3ddb332a1"
+  },
+  "mem0.2026-10-31": {
+    "answers": "Mem0's published answers",
+    "marker": "LongMemEval's evaluate_qa.py, gpt-4o-2024-08-06",
+    "marked": "2026-10-31",
+    "questions": 500,
+    "correct": 453,
+    "accuracy": 90.6,
+    "six_type_average": 90.01,
+    "by_type": {
+      "knowledge-update": "75/78",
+      "multi-session": "111/133",
+      "single-session-assistant": "55/56",
+      "single-session-preference": "22/30",
+      "single-session-user": "68/70",
+      "temporal-reasoning": "122/133"
+    },
+    "context_tokens_mean_reported_by_mem0": 6787,
+    "history_tokens_mean": 102580,
+    "times_less_than_history": 15.1,
+    "source": "https://github.com/mem0ai/memory-benchmarks/blob/4b61c5d31b9c668a12b4f5e78064248a02c82d2b/results/platform/longmemeval_results.json",
+    "source_sha256": "58bd6d8934a54d8cd568ef481bbd3e37270c2c74a5d59713b661d4c3ddb332a1"
+  }
+}
