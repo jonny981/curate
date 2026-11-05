@@ -1,4 +1,4 @@
-import type { CurateOptions } from './curate.js';
+import type { CurateLowOptions, CurateOptions } from './curate.js';
 import type {
   CandidateSourceKind, MemoryKind, PickCache, PickCascade, PickCriterion,
   PickLabels, PickLimits, PickOptions, PickTagSet, PickThresholds,
@@ -40,9 +40,10 @@ const READ_REQUEST_KEYS: readonly (keyof CandidateReadRequest)[] = [
   'maxQuestionText', 'taskDate', 'timeZone', 'asOf', 'taskPeriod', 'decayHalfLife', 'decayLimit', 'signal',
 ];
 const MEANING_KEYS: readonly (keyof MeaningSearchOptions)[] = ['embed', 'nearest', 'wholeLanes'];
-const CURATE_KEYS: readonly (keyof CurateOptions)[] = [
+const CURATE_KEYS: readonly (keyof CurateOptions | keyof CurateLowOptions)[] = [
   'write', 'working', 'context', 'routeByTask', 'route', 'preferenceAdvice',
-  'preferenceChange', 'taskDate', 'answerHint', 'contextLimit', 'batchTokens', 'weightBands', 'signal',
+  'preferenceChange', 'taskDate', 'answerHint', 'contextLimit', 'batchTokens', 'weightBands',
+  'compression', 'decide', 'signal',
 ];
 /** The fixed keys of the maps keyed by source kind — tagsByKind and
  *  the read request's kindLanes — and the values sourceKinds maps to. */
@@ -290,6 +291,34 @@ export function checkReadRequest(request: CandidateReadRequest): void {
 }
 
 /** And for the curator's options, before any write call. */
-export function checkCurateOptions(options: CurateOptions): void {
+export function checkCurateOptions(options: CurateOptions | CurateLowOptions): void {
   checkKeys(options, CURATE_KEYS, '');
+}
+
+/** And for the compression setting, before any source read or call:
+ *  'high' or 'low'; `decide` only with 'low', which needs it; and under
+ *  'low', none of the options only the log reads. */
+export function checkCompression(options: CurateOptions | CurateLowOptions): void {
+  const compression: unknown = options.compression;
+  if (compression !== undefined && compression !== 'high' && compression !== 'low') {
+    throw new TypeError("curate: compression must be 'high' or 'low'.");
+  }
+  if (options.compression !== 'low') {
+    if ('decide' in options && options.decide !== undefined) {
+      throw new TypeError("curate: decide is read only with compression: 'low'.");
+    }
+    return;
+  }
+  const given = options as Partial<Record<keyof CurateOptions, unknown>>;
+  const unsupported = [
+    ...(['working', 'context', 'routeByTask', 'preferenceAdvice', 'preferenceChange'] as const)
+      .filter((key) => given[key] === true),
+    ...(['route', 'contextLimit', 'batchTokens', 'weightBands'] as const).filter((key) => given[key] !== undefined),
+  ];
+  if (unsupported.length) {
+    throw new TypeError(`curate: compression: 'low' writes no dated log, so it cannot take ${unsupported.join(', ')}.`);
+  }
+  if (typeof options.decide !== 'function') {
+    throw new TypeError("curate: compression: 'low' needs decide, the decision function that asks whether each row counts.");
+  }
 }

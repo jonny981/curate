@@ -19,7 +19,7 @@ On LongMemEval's own grader (`evaluate_qa.py`, GPT-4o), all 500 questions, answe
 
 - **Against Mem0's published answers, marked by the same grader in the same session:** Curate's markup setting 467 (93.4), Mem0 455 (91.0). The same Curate answers scored 469 when marked the day before. Mem0's answers come from GPT-5, Curate's from gpt-6.1-sol.
 - **Against the context other systems report on LongMemEval:** about 6 to 35 times less than Zep (4,408 median, against Curate's 685 median), Mem0 (6,787 mean) and Mastra (about 30,000 mean).
-- **The markup settings run outside the published packages.** Their answers, memory texts and grader output are in [`benchmarks/longmemeval/2026-11-04/`](benchmarks/longmemeval/2026-11-04/README.md). The log setting is what the packages write.
+- **The packages write the log setting and the cited-only markup setting.** The log is `compression: 'high'`, the default, and cited-only markup is `compression: 'low'`. The markup setting's published results, including 93.8%, came from runs outside the packages. The answers, memory texts and grader output are in [`benchmarks/longmemeval/2026-11-04/`](benchmarks/longmemeval/2026-11-04/README.md).
 
 The packages' published results beside other systems' published results, with up to 62 times fewer tokens. Answering models and markers differ:
 
@@ -506,6 +506,7 @@ Paths must be absolute or start with `~/`.
 Set `TYPESAFE_API_KEY` in the environment or the `KEY=VALUE` file named by `envFile`.
 Without `--sources`, the script reads `~/.curate/sources.json`.
 Supply a local embedding GGUF through `embeddingModel`. The script requires Metal on macOS and downloads no model.
+Optional `compression` sets what the skill prints: `high`, the default, prints the log, and `low` prints the marked-up memory described in [Settings](#settings-dials-for-cost-speed-and-score).
 Optional `thoroughness` sets how deep the fused order feeds the decision step: `quick` reads the top 672 parts, `normal` 3,674 and `deep` 12,896, the default.
 Measured on a replayed ~116,000-part history, each level cost about 1, 5 and 17 pence of questions on the largest of eight task sets; `quick` kept 24 of the 56 known answer parts, `normal` 49 and `deep` all 56.
 Each source can also set `since` (an ISO date or a duration such as `"14 days"`, counted back from the task date), `exclude` (paths that source alone refuses, resolved inside `path`), and, for `git` only, `include` (only commits that changed one of the paths).
@@ -708,6 +709,8 @@ These dials were measured on 249 of the 500 questions, with gpt-6.1-sol curating
 | gpt-6-luna as the curator, at two of these inputs | 10 to 150 | 217 to 221 | $0.015 to $0.037 |
 
 - **N** is the number of parts in the history.
+
+**Compression.** `curate.compression` sets how far the kept parts are compressed. `'high'`, the default, has the curator write the dated, cited log. `'low'` lists the events in the kept parts as rows, asks the decision model which rows count, has code add them up, and marks up only the parts the rows cite in the source's own words. Its memory is those figures and rows, then that markup. On all 500 LongMemEval questions, answered by gpt-6.1-sol and marked by LongMemEval's grader, the answering model read a mean of 854 tokens a question under `'low'` and scored 465 of 500, and 449 tokens under `'high'` and scored 463 ([results](benchmarks/longmemeval/2026-11-04/README.md)). `'low'` is a larger memory that costs more calls; one run is not a promise of better answers on every task. See [the core package](packages/core/README.md#compression).
 
 ## Development
 

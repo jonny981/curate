@@ -1498,6 +1498,86 @@ a chained log's line ids, so passing both throws a `TypeError` before
 the writer runs. `batchTokens` must be a positive integer. Nothing is
 cut or dropped; batching only splits the evidence across more calls.
 
+### Compression
+
+`compression` sets how far the kept parts are compressed. `'high'`, the
+default, is the log described above. `'low'` returns a larger memory:
+figures that code computes from the events in the kept parts, then the
+source words of the parts those events come from, marked up with inline
+tags. Call it as
+`curate(task, picked, { compression: 'low', write, decide })`, or set
+`curate: { compression: 'low' }` on `memory()`, which passes its own
+`decide`. Standalone `curate` needs `decide` only for `'low'`, and
+rejects it otherwise.
+
+`'low'` runs four steps:
+
+1. **Extract:** one `write` call reads the body a one-call log would read,
+   under its own instructions, and replies with JSON rows: who, what,
+   status, the event date, the said date, any amount and quantity, the
+   items it cites (`E1`, `E2` in selected order) and a quote. A reply
+   that holds no JSON rows is asked for again, up to three calls.
+   Evidence over `DEFAULT_BATCH_TOKENS` (150,000 estimated tokens, at
+   four characters a token) goes in consecutive batches of whole items,
+   in selected order, one call each and up to four at once. Each item
+   keeps its number in the whole selection. Rows from separate batches
+   are not merged, so an event told in two batches can give two rows.
+2. **Decide:** one `decide` call asks, for each row, whether the row counts
+   toward the task. A row counts at a probability of 0.5 or more
+   (`ROW_COUNT_BAR`).
+3. **Compute:** code counts the counted rows, adds up their amounts and
+   quantities, gives the days from the earliest to the latest, and lists
+   them by date. With `taskDate`, each dated row also says how many days
+   before the task date it falls.
+4. **Mark up:** `write` rewrites only the parts some extracted row cites,
+   in the source's own words, with tags for events, amounts, counts,
+   likes and dislikes, and tone. It never sees the task. The parts are numbered again
+   for markup, by said date and then id, so a markup `E3` is not the
+   extraction's `E3`. Whole parts go in chunks of up to 40,000 characters
+   of part text (`MARKUP_CHUNK_CHARS`); a longer part goes alone. Up to
+   four chunks are marked up at once (`MARKUP_CALLS_AT_ONCE`), and the
+   memory keeps them in chunk order. A reply that is empty, or leaves out
+   the heading of a part it was sent, is asked for again, up to three
+   calls.
+
+The returned `log` is the figures and counted rows, then the marked-up
+sections of the cited parts. A said date is the first `YYYY-MM-DD` or
+`YYYY/MM/DD` in the part's date value, so date labels, ISO dates and
+timestamps all read the same. An undated part says `said unknown`.
+
+Each prompt carries `step: 'extract'` or `step: 'markup'`. Send it to the
+model with no log instructions of your own: its reply is read as returned.
+`taskDate` and `answerHint` keep their meaning: the date goes in the
+extraction's task and the decision task, and the hint line in the
+extraction's task. The log's other options are rejected before any call,
+and in `memory` before any source read:
+`working`, `context`, `routeByTask`, `preferenceAdvice` or
+`preferenceChange` set to true, and any `route`, `contextLimit`,
+`batchTokens` or `weightBands`.
+
+`record` holds `compression: 'low'`, `levers`, `items`, the extracted
+`rows`, each row's decision `probabilities`, how many were `counted`, the
+`marked` parts with their markup ids, the number of `chunks`, every model call in
+`calls` (its step, chunk, attempt, milliseconds and status), and each
+step's wall-clock time and the total in `ms`.
+`write` returns text only, so the record holds no token counts.
+
+Failed work never comes back as an empty memory. Extraction with no JSON
+rows array of objects after three calls, a row the decision model leaves
+unanswered or refuses, a markup chunk that is still empty or still leaves
+out a cited part's heading after three calls, a failed call and a call
+cancelled while it runs each throw a `CurateError`. It names the failed `step` and holds the `calls` made up
+to then. A failed markup call cancels the chunks still running.
+
+On all 500 LongMemEval S questions, with gpt-6.1-sol answering and
+LongMemEval's grader marking, `'low'` gave a mean of 854 tokens a
+question and scored 465 of 500. The log gave 449 tokens and scored 463
+of 500 ([results](../../benchmarks/longmemeval/2026-11-04/README.md)).
+In place of the log's `write` calls, `'low'` makes one extraction call
+per batch and one call per markup chunk, plus one decision call for its rows. Its
+memory is about twice the log's size. That run is one measurement, not a promise of better answers
+on every task.
+
 ## Levers and source settings
 
 Every cost and selection lever follows one rule: turning it on reads more

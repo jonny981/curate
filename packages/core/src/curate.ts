@@ -1,11 +1,16 @@
-import type { MemoryCandidate, PickRecordEntry, PickResult } from './pick.js';
+import type { MemoryCandidate, PickDecide, PickRecordEntry, PickResult } from './pick.js';
 import type { CurateLeverStates } from './levers.js';
 import { ANSWER_TYPES, classifyTask, type RouteOption, type TaskKind } from './task.js';
-import { checkCurateOptions } from './options.js';
+import { checkCompression, checkCurateOptions } from './options.js';
+import { writeMarkup, type CurateMarkupRecord } from './markup.js';
 
 export interface CuratePrompt {
   readonly instructions: string;
   readonly body: string;
+  /** Present only under `compression: 'low'`: the step the prompt is
+   *  for. Its reply is read as returned, so send it to the model with no
+   *  log-writing instructions of your own. */
+  readonly step?: 'extract' | 'markup';
 }
 
 export type CurateWrite = (prompt: CuratePrompt, signal: AbortSignal) => Promise<string>;
@@ -87,7 +92,25 @@ export interface CurateOptions {
    *  low first, then items from low to high, and to keep items at high or
    *  more whole. Omitted means [0.1, 0.6]. */
   readonly weightBands?: readonly [number, number];
+  /** `'high'`, the default, writes the dated, cited log. For `'low'`, see
+   *  CurateLowOptions. */
+  readonly compression?: 'high';
   readonly signal?: AbortSignal;
+}
+
+/** `compression: 'low'` returns a larger memory than the log: code's
+ *  figures over the rows the decision model counts, then the source
+ *  words of the parts those rows cite, marked up with inline tags. It
+ *  extracts rows with `write`, asks `decide` whether each row counts,
+ *  and marks up the cited parts with `write`. `taskDate` and
+ *  `answerHint` keep their meaning. The log's other options are
+ *  rejected before any call: `working`, `context`, `routeByTask`,
+ *  `preferenceAdvice` or `preferenceChange` set to true, and any
+ *  `route`, `contextLimit`, `batchTokens` or `weightBands`. */
+export interface CurateLowOptions extends Pick<CurateOptions, 'write' | 'taskDate' | 'answerHint' | 'signal'> {
+  readonly compression: 'low';
+  /** Asks whether each row counts toward the task. */
+  readonly decide: PickDecide;
 }
 
 /** What one curate option did to the log. */
@@ -167,6 +190,12 @@ export interface CurateRecord {
 export interface CurateResult {
   readonly log: string;
   readonly record: CurateRecord;
+}
+
+/** What `compression: 'low'` returns: the memory text in `log`. */
+export interface CurateMarkupResult {
+  readonly log: string;
+  readonly record: CurateMarkupRecord;
 }
 
 const WORKING_HEADING = "Working (the curator's; check it against the log):";
@@ -550,13 +579,20 @@ function curateEffects(log: string, input: {
   return effects;
 }
 
-/** Write the reference log. Selected rules remain the caller's instructions. */
+/** Write the reference log, or under `compression: 'low'` the marked-up
+ *  memory. Selected rules remain the caller's instructions. */
+export async function curate(task: string, picked: PickResult, options: CurateLowOptions): Promise<CurateMarkupResult>;
+export async function curate(task: string, picked: PickResult, options: CurateOptions): Promise<CurateResult>;
 export async function curate(
   task: string,
   picked: PickResult,
-  options: CurateOptions,
-): Promise<CurateResult> {
-  checkCurateOptions(options);
+  lowOrHigh: CurateOptions | CurateLowOptions,
+): Promise<CurateResult | CurateMarkupResult> {
+  checkCurateOptions(lowOrHigh);
+  checkCompression(lowOrHigh);
+  const lowOptions = lowOrHigh.compression === 'low' ? lowOrHigh : undefined;
+  // The low options are a subset of these; checkCompression rejected the rest.
+  const options = lowOrHigh as CurateOptions;
   const signal = options.signal ?? new AbortController().signal;
   signal.throwIfAborted();
   const contextLimit = options.contextLimit;
@@ -636,6 +672,22 @@ export async function curate(
     const kind = entries.get(id)?.sourceKind;
     return `### E${index + 1} (${candidate.date ? `${candidate.date.value}, ` : ''}${kind === undefined ? '' : `${kind}, `}${weight}${tagText(id)}${authorHeader(candidate)}): ${candidate.title}\n\n${candidate.text}`.trim();
   });
+  if (lowOptions !== undefined) {
+    // The extraction reads the body the log writer reads, in batches
+    // when the evidence is over the log's default batch size.
+    const markup = await writeMarkup({
+      write: lowOptions.write, decide: lowOptions.decide, signal, taskDate, items,
+      head: `TASK:\n${datedTask}`, blocks, batchTokens: DEFAULT_BATCH_TOKENS,
+      decisionTask: taskDate === undefined ? task : `${task} (asked ${taskDate})`,
+    });
+    return { log: markup.text, record: {
+      compression: 'low',
+      levers: { ...picked.record.levers, route: { asked: picked.record.levers?.route === true, applied: false } },
+      ...(taskDate === undefined ? {} : { taskDate }),
+      ...(answerHint === undefined ? {} : { answerHint }),
+      items, ...markup.record,
+    } };
+  }
   const weighted = `${INSTRUCTIONS}\n${weightInstruction(weightBands)}`;
   const instructionsWorking = !working ? weighted : weighted.replace(NO_WORKING,
     '- In the log itself, do not judge: give every observation its dates, including ones near the edge of a period the task names.')

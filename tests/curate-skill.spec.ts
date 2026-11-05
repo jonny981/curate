@@ -11,7 +11,7 @@ import { LABEL_KINDS, THOROUGHNESS, curate, historySource, jevRequest, pickFromS
 import { chat, CHAT_CASCADE, chatSettings } from '@curatejs/chat';
 import { git as gitSource } from '@curatejs/git';
 // @ts-expect-error The standalone JavaScript command has no type declarations.
-import { allowedSession, curationEvidence, decisionAnswers, instructionsProfile, pickFullSources, rankMatches, parseArgs, parseSearches, parseSources, run, sandboxAvailable, searchSource, sessionHeader, snapshotCodex, subscription } from '../skills/curate/run.mjs';
+import { allowedSession, curationEvidence, decisionAnswers, instructionsProfile, pickFullSources, rankMatches, parseArgs, parseSearches, parseSources, run, sandboxAvailable, searchSource, sessionHeader, snapshotCodex, subscription, writeLog } from '../skills/curate/run.mjs';
 
 const uncutPick = { everyRanked: true, everyScored: true, rare: false } as const;
 
@@ -153,6 +153,12 @@ describe('curate command input', () => {
     { type: 'git', path: 'repository', include: [7] },
   ])('rejects source settings %j', (source) => {
     expect(() => parseSources({ sources: [source] })).toThrow();
+  });
+
+  it("takes compression 'high' or 'low' and rejects any other value", () => {
+    const sources = [{ type: 'markdown', path: '/notes' }];
+    expect(parseSources({ sources, compression: 'low' }).compression).toBe('low');
+    expect(() => parseSources({ sources, compression: 'medium' })).toThrow("compression must be 'high' or 'low'.");
   });
 
   it('names the unknown key, the source type and its accepted keys', () => {
@@ -977,6 +983,81 @@ describe('a run through core decision calls', () => {
     expect(record.pick?.levers).not.toHaveProperty('everyRanked');
   });
 
+  it("under compression 'low', sends extraction and markup as written, marks the row decisions, and saves the memory", async () => {
+    const directory = await folder();
+    const home = join(directory, 'home');
+    const notes = join(directory, 'notes');
+    await mkdir(home);
+    await mkdir(notes);
+    await writeFile(join(notes, 'orchard.md'), '# Orchard\n\nThe orchard has trees. Fruit trees grow here.\n');
+    const sourcesFile = join(directory, 'sources.json');
+    await writeFile(sourcesFile, JSON.stringify({ sources: [{ type: 'markdown', path: notes }], compression: 'low' }));
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
+    vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
+    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => new Response(JSON.stringify({
+      usage: null,
+      answers: Object.fromEntries(Object.keys(JSON.parse(String(init.body)).questions).map((key) => [key, { noul: 0.8 }])),
+    }))));
+    const calls: { label: string; prompt: string }[] = [];
+    const call = async (prompt: string, runFolder: string, label: string,
+      record: { subscription: { label: string; attempt: number; code: number }[] }, save: () => Promise<void>) => {
+      calls.push({ label, prompt });
+      record.subscription.push({ label, attempt: record.subscription.filter((entry) => entry.label === label).length + 1, code: 0 });
+      await save();
+      if (label === 'searches') return JSON.stringify(searches());
+      if (label === 'extract') return JSON.stringify({ rows: [{ who: 'you', what: 'grew fruit trees', status: 'done', date: '',
+        said: '2026-01-01', amount: '', quantity: '', source: ['E1'], quote: 'Fruit trees grow here.' }] });
+      return [...prompt.matchAll(/^### (E\d+) \(said ([^)]*)\)/gm)]
+        .map(([, e, said]) => `## ${e} (said ${said})\nuser: <event who="you" status="done">Fruit trees grow here.</event> (kept).`).join('\n\n');
+    };
+    const runFolder = await run(['--sources', sourcesFile, 'orchard'], call);
+
+    expect(calls.map((entry) => entry.label)).toEqual(['searches', 'extract', 'markup']);
+    for (const { prompt } of calls.slice(1)) expect(prompt).not.toContain('End each line at its final closing parenthesis');
+    const record = JSON.parse(await readFile(join(runFolder, 'record.json'), 'utf8'));
+    expect(record.status).toBe('complete');
+    expect(record.curate.compression).toBe('low');
+    expect(record.curate.calls.map((entry: { step: string }) => entry.step)).toEqual(['extract', 'decide', 'markup']);
+    const rowDecisions = record.jev.filter((entry: { step?: string }) => entry.step === 'decide');
+    expect(rowDecisions).toHaveLength(1);
+    expect(rowDecisions[0]).toMatchObject({ questions: 1, usage: 'unavailable' });
+    const memoryText = await readFile(join(runFolder, 'log.md'), 'utf8');
+    expect(memoryText).toContain('- Rows counted: 1');
+    expect(memoryText).toContain('Fruit trees grow here.</event> (kept).');
+  });
+
+  it("records a failed compression 'low' step and writes no memory", async () => {
+    const directory = await folder();
+    const home = join(directory, 'home');
+    const notes = join(directory, 'notes');
+    await mkdir(home);
+    await mkdir(notes);
+    await writeFile(join(notes, 'orchard.md'), '# Orchard\n\nThe orchard has trees.\n');
+    const sourcesFile = join(directory, 'sources.json');
+    await writeFile(sourcesFile, JSON.stringify({ sources: [{ type: 'markdown', path: notes }], compression: 'low' }));
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
+    vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
+    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => new Response(JSON.stringify({
+      answers: Object.fromEntries(Object.keys(JSON.parse(String(init.body)).questions).map((key) => [key, { noul: 0.8 }])),
+    }))));
+    let runFolder = '';
+    const call = async (_prompt: string, folderOfRun: string, label: string,
+      record: { subscription: { label: string; attempt: number; code: number }[] }, save: () => Promise<void>) => {
+      runFolder = folderOfRun;
+      record.subscription.push({ label, attempt: 1, code: 0 });
+      await save();
+      return label === 'searches' ? JSON.stringify(searches()) : 'not rows';
+    };
+    await expect(run(['--sources', sourcesFile, 'orchard'], call)).rejects.toThrow(/extract failed; no reply held JSON rows/);
+    const record = JSON.parse(await readFile(join(runFolder, 'record.json'), 'utf8'));
+    expect(record.status).toBe('failed');
+    expect(record.curate.failedStep).toBe('extract');
+    expect(record.curate.calls).toHaveLength(3);
+    await expect(readFile(join(runFolder, 'log.md'), 'utf8')).rejects.toThrow();
+  });
+
   it('carries each entry\'s since, include and exclude into the recorded source settings', async () => {
     const directory = await folder();
     const home = join(directory, 'home');
@@ -1244,6 +1325,109 @@ describe('search line repair', () => {
     expect(record.searches).toEqual(searches());
     expect(record.pick.labels).toBeUndefined();
     expect(Object.values(record.pick.levers.sources as Record<string, { labels: boolean }>).every((settings) => !settings.labels)).toBe(true);
+  });
+});
+
+describe('subscription record files', () => {
+  it('gives calls that run at once under one label their own files', async () => {
+    const directory = await folder();
+    vi.mocked(spawn).mockImplementation(((_command: string, args: string[]) => {
+      const child = new EventEmitter() as EventEmitter & {
+        stdout: EventEmitter;
+        stderr: EventEmitter;
+        stdin: { on: () => void; end: (text: string) => void };
+      };
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      child.stdin = { on: () => {}, end: (text: string) => setTimeout(() => {
+        writeFileSync(args[args.indexOf('-o') + 1]!, text.slice(-1));
+        child.emit('close', 0);
+      }, 5) };
+      return child;
+    }) as unknown as typeof spawn);
+    const record = { subscription: [] as { label: string; attempt: number }[] };
+    const replies = await Promise.all(['a', 'b'].map((prompt) => subscription(prompt, directory, 'markup', record, async () => {}, false)));
+    expect(replies).toEqual(['a', 'b']);
+    expect(record.subscription.map((entry) => entry.attempt).sort()).toEqual([1, 2]);
+    expect([await readFile(join(directory, 'markup-1.txt'), 'utf8'), await readFile(join(directory, 'markup-2.txt'), 'utf8')])
+      .toEqual(['a', 'b']);
+  });
+});
+
+describe('cancelling a subscription call', () => {
+  type Child = EventEmitter & { stdout: EventEmitter; stderr: EventEmitter; kill: ReturnType<typeof vi.fn>;
+    stdin: { on: () => void; end: (text: string) => void } };
+  // Each faked Codex child answers through `answer`, given its prompt and
+  // reply file; a child stopped by kill closes with no exit code.
+  function fakeCodex(answer: (child: Child, prompt: string, output: string) => void) {
+    const children: Child[] = [];
+    vi.mocked(spawn).mockImplementation(((_command: string, args: string[]) => {
+      const child = new EventEmitter() as Child;
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      child.kill = vi.fn(() => { setTimeout(() => child.emit('close', null), 1); return true; });
+      child.stdin = { on: () => {}, end: (text: string) => answer(child, text, args[args.indexOf('-o') + 1]!) };
+      children.push(child);
+      return child;
+    }) as unknown as typeof spawn);
+    return children;
+  }
+
+  it('stops its own child process when the signal aborts, and records the call cancelled', async () => {
+    const directory = await folder();
+    const children = fakeCodex(() => {});
+    const record = { subscription: [] as { label: string; cancelled?: boolean; code: number | null }[] };
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(new Error('stopped')), 5);
+    await expect(subscription('prompt', directory, 'markup', record, async () => {}, false, controller.signal)).rejects.toThrow('stopped');
+    expect(children[0]!.kill).toHaveBeenCalledTimes(1);
+    expect(record.subscription).toMatchObject([{ label: 'markup', code: null, cancelled: true }]);
+  });
+
+  it('stops a capacity wait when the signal aborts', async () => {
+    const directory = await folder();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const children = fakeCodex((child) => setTimeout(() => {
+      child.stderr.emit('data', 'model at capacity');
+      child.emit('close', 1);
+    }, 1));
+    const record = { subscription: [] as { label: string }[] };
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(new Error('stopped')), 50);
+    await expect(subscription('prompt', directory, 'markup', record, async () => {}, false, controller.signal)).rejects.toThrow('stopped');
+    expect(children).toHaveLength(1);
+  });
+
+  it("under compression 'low', a failed markup chunk stops the other chunk's child process", async () => {
+    const directory = await folder();
+    const part = (id: string, date: string, word: string): MemoryCandidate => ({ sourceId: 'notes', id, title: id,
+      text: `${word} `.repeat(6_000), role: 'reference', signals: {}, date: { value: date, meaning: 'recorded' } });
+    const parts = [part('n1', '2026-01-01', 'apple'), part('n2', '2026-01-02', 'pear')];
+    const picked = { selected: parts, record: { questionVersion: 'test', limits: {}, thresholds: { linkedPathBar: 0 }, rulesCoverage: 'complete',
+      levers: { everyRanked: true, everyScored: true, route: false, rare: false, sources: {} }, effects: [],
+      candidates: parts.map((item, index) => ({ sourceId: item.sourceId, id: item.id, role: item.role, priority: index,
+        signals: {}, status: 'selected', asked: true, probability: 0.9 })) } };
+    const children = fakeCodex((child, prompt, output) => setTimeout(() => {
+      if (/^### E1 \(said/m.test(prompt) && /You mark up/.test(prompt)) {
+        child.stderr.emit('data', 'route down');
+        child.emit('close', 1);
+      } else if (!/You mark up/.test(prompt)) {
+        writeFileSync(output, JSON.stringify({ rows: ['E1', 'E2'].map((e) => ({ who: 'you', what: 'ate fruit', status: 'done',
+          date: '', said: '', amount: '', quantity: '', source: [e], quote: 'fruit' })) }));
+        child.emit('close', 0);
+      }
+    }, 5));
+    const record = { subscription: [] as { label: string; code: number | null; cancelled?: boolean }[] };
+    const decide = async (batch: { questions: { key: string }[] }) =>
+      Object.fromEntries(batch.questions.map((question) => [question.key, { status: 'answered', probability: 0.9 }]));
+    const error = await writeLog('fruit', picked, directory, record, async () => {}, subscription, { decide }).catch((caught: unknown) => caught);
+    expect((error as Error).message).toMatch(/markup failed; Subscription route failed during markup/);
+    expect(children).toHaveLength(3);
+    expect(children[2]!.kill).toHaveBeenCalledTimes(1);
+    expect(record.subscription.filter((call) => call.label === 'markup').map((call) => [call.code, call.cancelled ?? false]))
+      .toEqual([[1, false], [null, true]]);
+    expect((error as { calls: { step: string; status: string }[] }).calls.filter((call) => call.step === 'markup').map((call) => call.status).sort())
+      .toEqual(['cancelled', 'failed']);
   });
 });
 
