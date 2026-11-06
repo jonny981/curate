@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { closeSync, constants, openSync, readSync, realpathSync } from 'node:fs';
-import { copyFile, mkdir, readFile, readdir, realpath, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, readdir, realpath, stat, utimes, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -153,12 +153,18 @@ export async function snapshotCodex(entry, folder) {
     const target = join(folder, relative(entry.path, original));
     await mkdir(dirname(target), { recursive: true, mode: 0o700 });
     await copyFile(original, target, constants.COPYFILE_FICLONE);
+    // The stored index keys a session by the source id, which names the
+    // original folder, and by its path inside the folder. With the
+    // original's times kept, the next run's copy of an unchanged
+    // session matches what the index holds, and is not read again.
+    const { atime, mtime } = await stat(original);
+    await utimes(target, atime, mtime);
   }
   const source = chat({ id: `chat:codex:${entry.path}`, providers: ['codex'], paths: [folder],
     ...(entry.since === undefined ? {} : { since: entry.since }),
     ...(exclude === undefined ? {} : { exclude }) });
-  return { filter, source: { ...source, async read(request) {
-    const result = await source.read(request);
+  return { filter, source: { ...source, async read(request, context) {
+    const result = await source.read(request, context);
     return result.status !== 'read' ? result : { ...result, candidates: result.candidates.map((candidate) =>
       ({ ...candidate, id: candidate.id.replace(folder, entry.path) })) };
   } } };
@@ -284,7 +290,7 @@ export function rankMatches(candidates, settings = {}) {
 // Each word can admit evidence; the package's score only orders it.
 export function searchSource(source, searches, audit, folder, settings = {}) {
   const lines = [...searches[source.kind].keywords, ...searches[source.kind].answers];
-  return { ...source, async read(request) {
+  return { ...source, async read(request, context) {
     const match = /^curate-search:(\d+)$/.exec(request.task);
     const task = match ? lines[Number(match[1])] : request.task;
     if (task === undefined) return { status: 'read', candidates: [], complete: true,
@@ -293,7 +299,7 @@ export function searchSource(source, searches, audit, folder, settings = {}) {
     // The cut narrows each search lane inside the read, so the wrapped
     // source's result holds only the kept set; an explicit wholeLanes
     // on (a meaning full read, an opted-out caller) still wins.
-    const read = await source.read({ wholeLanes: false, ...request, task });
+    const read = await source.read({ wholeLanes: false, ...request, task }, context);
     const terms = new Set(words(task));
     const result = read.status !== 'read' || request.meaningLane !== undefined ? read : { ...read, candidates: rankMatches(read.candidates.filter((candidate) =>
       request.wholeLanes === true
@@ -307,8 +313,39 @@ export function searchSource(source, searches, audit, folder, settings = {}) {
   } };
 }
 
+// Hold each text's vector for the rest of one call, so a later lane over
+// the same text does not look its vector up again. A failed or cancelled
+// lookup holds nothing.
+export function holdVectors(embed) {
+  const held = new Map();
+  return (texts, signal) => {
+    const missing = [...new Set(texts)].filter((text) => !held.has(text));
+    if (missing.length > 0) {
+      const batch = Promise.resolve(embed(missing, signal)).then((vectors) => {
+        if (vectors.length !== missing.length) throw new TypeError('embed must return one vector per input text.');
+        return vectors;
+      });
+      const vectors = missing.map((text, index) => {
+        const vector = batch.then((all) => all[index]);
+        held.set(text, vector);
+        return vector;
+      });
+      batch.catch(() => missing.forEach((text, index) => {
+        if (held.get(text) === vectors[index]) held.delete(text);
+      }));
+    }
+    return Promise.all(texts.map((text) => held.get(text)));
+  };
+}
+
 // Cache keyword and meaning reads separately. Leave text limits to the caller.
-export async function pickFullSources(sources, request, options) {
+// One call shares one read context across every read of every source, so
+// a reader keeps work it already did in this call. The context and the
+// held vectors last for this call only.
+export async function pickFullSources(sources, call, options) {
+  const context = { files: new Map() };
+  const request = call.meaning === undefined ? call
+    : { ...call, meaning: { ...call.meaning, embed: holdVectors(call.meaning.embed) } };
   const cached = await Promise.all(sources.map(async (source) => {
     const reads = new Map();
     const key = (read) => JSON.stringify([read.task, read.meaningLane !== undefined, read.wholeLanes === true]);
@@ -325,7 +362,7 @@ export async function pickFullSources(sources, request, options) {
               : meaningLane.wholeLanes ?? request.wholeLanes ?? false,
             limit: options.everyRanked === undefined ? undefined : meaningLane.nearest }),
           ...(revision === undefined ? {} : { revision }) };
-        const read = await source.read(readRequest);
+        const read = await source.read(readRequest, context);
         if (read.status === 'read' && read.revision !== undefined) revision ??= read.revision;
         reads.set(key(readRequest), read);
       }
@@ -337,9 +374,9 @@ export async function pickFullSources(sources, request, options) {
       || options.everyRanked !== true
       || (options.rare ?? source.rare ?? false) !== false)) {
       pool = await source.read({ ...request, task: request.task, wholeLanes: true, limit: undefined,
-        ...(revision === undefined ? {} : { revision }) });
+        ...(revision === undefined ? {} : { revision }) }, context);
     }
-    return { ...source, async read(readRequest, context) {
+    return { ...source, async read(readRequest) {
       const { wholeLanes, limit } = readRequest;
       if (readRequest.meaningLane === undefined && wholeLanes && limit === undefined && pool !== undefined) return pool;
       const held = reads.get(key(readRequest));
@@ -383,6 +420,19 @@ export async function writeLog(task, picked, folder, record, save, callSubscript
 }
 
 function basenameDate(folder) { return folder.split(sep).at(-1).slice(0, 10); }
+
+// Wall time while at least one tracked piece of work runs, so work that
+// runs at once is counted once.
+function busyTime() {
+  let active = 0, since = 0, ms = 0;
+  return {
+    async track(work) {
+      if (active++ === 0) since = Date.now();
+      try { return await work(); } finally { if (--active === 0) ms += Date.now() - since; }
+    },
+    get ms() { return ms; },
+  };
+}
 
 // The search reply gets one repair round, like the curator's log: a reply
 // that fails JSON parsing or the shape check goes back once with the
@@ -474,13 +524,15 @@ export async function run(args = process.argv.slice(2), callSubscription = subsc
     const rows = settings.compression === 'low'
       ? { decide: jev({ apiKey, onCall: async (call) => { record.jev.push({ step: 'decide', ...call, usage: call.usage ?? 'unavailable' }); await save(); } }) }
       : undefined;
-    const decide = Object.assign(async (batch, signal) => {
+    const reading = busyTime();
+    const deciding = busyTime();
+    const decide = Object.assign((batch, signal) => deciding.track(async () => {
       const answers = await service(batch, signal);
       if (Object.values(answers).some((answer) => answer.status !== 'answered')) {
         throw new Error('Decision service left questions unanswered.');
       }
       return answers;
-    }, { deciderId: 'curate-skill:typesafe:jev-latest' });
+    }), { deciderId: 'curate-skill:typesafe:jev-latest' });
     // Jev documents 32,000 tokens for a request's state plus its longest
     // question; three characters per token is a conservative estimate for
     // English text and JSON. Subtracting the longest question's characters
@@ -499,14 +551,26 @@ export async function run(args = process.argv.slice(2), callSubscription = subsc
       limits: { maxBatchChars },
       ...(settings.thoroughness === undefined ? {} : { thoroughness: settings.thoroughness }),
       ...(settings.threshold === undefined ? {} : { everyScored: { bar: settings.threshold } }) };
-    const picked = await pickFullSources(sources.map((source) =>
-      searchSource({ ...source, labelKinds: [], rare: false }, record.searches, record.reads, folder, settings)), request, pickOptions);
+    const picked = await pickFullSources(sources.map((source) => {
+      const searched = searchSource({ ...source, labelKinds: [], rare: false }, record.searches, record.reads, folder, settings);
+      return { ...searched, read: (readRequest, context) => reading.track(() => searched.read(readRequest, context)) };
+    }), request, pickOptions);
     record.pick = picked.record;
     record.sourcesRead = picked.reads.map((read, i) => ({ source: sources[i].id, status: read.status,
       parts: read.candidates?.length ?? 0, complete: read.complete, partial: read.partial, reason: read.reason,
       ...(read.noSearchMatch === true ? { noSearchMatch: true } : {}),
       ...(read.lanes === undefined ? {} : { lanes: read.lanes }) }));
     record.timings.rankAndDecideMs = Date.now() - pickStart;
+    // Reads and decisions never overlap in a pick: every read ends before
+    // the first decision starts. Ranking is the rest.
+    record.timings.rankAndDecide = { readsMs: reading.ms, decisionsMs: deciding.ms,
+      rankingMs: record.timings.rankAndDecideMs - reading.ms - deciding.ms };
+    // Each source's reads' elapsed times added up. Reads of different
+    // sources run at once, so these sums do not add up to wall time.
+    record.timings.sourceReadMs = {};
+    for (const read of record.reads) {
+      record.timings.sourceReadMs[read.source] = (record.timings.sourceReadMs[read.source] ?? 0) + read.ms;
+    }
     await save();
     await writeFile(join(folder, 'selection.json'), JSON.stringify({ selected: picked.selected, record: { ...picked.record, candidates: picked.record.candidates.filter((entry) => entry.status === 'selected') } }), { mode: 0o600 });
     await writeLog(options.task, picked, folder, record, save, callSubscription, rows);

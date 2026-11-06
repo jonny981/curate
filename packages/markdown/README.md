@@ -58,6 +58,15 @@ which the decision model picks the ones a task needs.
 Rules and instruction sources emit role `rule`; a note can never declare
 itself one.
 
+Every reader here keeps one local file per source by default, made on
+its first read. Each call reads again only the notes that are new or
+changed in size or modification time, and every lane reads the file
+instead of parsing the notes again. The folder walk and the git date
+lookups run once per call. A read pinned to a revision reads the files
+as before. `index: { directory }` chooses the folder, and `index: false`
+reads the files directly on every read. See
+[Stored index](https://github.com/jonny981/curate/blob/main/packages/core/README.md#stored-index).
+
 ## Always-on files
 
 An agent harness loads its own always-on files every session, so Curate

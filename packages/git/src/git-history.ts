@@ -16,10 +16,15 @@ import {
   taskMoment,
 } from '@curatejs/core/internal';
 import { bm25Term, tokenize, taskTerms, phraseCount, laneBend, embedQuery, embedSimilarities } from '@curatejs/core/internal';
+import {
+  checkIndexOption, indexDirectory, indexFilePath, openIndexFile, updateIndex, wordBag, bagCount,
+  type IndexDatabase, type StoredIndexOptions, type StoredIndexReport,
+} from '@curatejs/core/internal';
 import type { MemoryCandidate } from '@curatejs/core';
 import {
   historySource,
   SourceReadError,
+  type CandidateReadContext,
   type CandidateReadRequest,
   type CandidateReadResult,
   type CandidateSource,
@@ -56,6 +61,15 @@ export interface GitOptions {
    *  `exclude` for its reads only: a commit that touched one is dropped
    *  before its body is ever fetched. */
   readonly exclude?: readonly string[];
+  /** The stored index: one local file for this source, made on its
+   *  first read and brought up to date at the start of each call with
+   *  the commits it does not hold yet. A read of the head then takes each
+   *  commit's subject, body and paths from the file; git only lists the
+   *  commit names, once per call and date range. A read pinned to a
+   *  revision reads the file only when this call brought it to that
+   *  commit; any other pinned read runs git as before. `false` reads git
+   *  directly on every read. */
+  readonly index?: StoredIndexOptions | false;
 }
 
 interface LogCommit {
@@ -142,6 +156,10 @@ function scoreBm25(commits: readonly ScoredCommit[], k1: number, b: number): voi
  *  never quoted. */
 const FULL_FORMAT = '%x1e%H%x1f%h%x1f%cI%x1f%s%x1f%b%x1f';
 const META_FORMAT = '%x1e%H%x1f%h%x1f%cI%x1f%s';
+/** The stored index's path check: no subject, so a commit it skips is
+ *  never read past its name, date and paths. The empty last field keeps
+ *  the layout `parseLog` reads. */
+const PATHS_FORMAT = '%x1e%H%x1f%h%x1f%cI%x1f';
 /** Commits per `git log` call. A long history is enumerated in pages so
  *  the parsed page's memory is released before the next. */
 const LOG_PAGE = 4096;
@@ -223,6 +241,140 @@ function touches(changedPaths: readonly string[], named: readonly string[]): boo
     || changedPaths.some((changed) => changed === path || changed.startsWith(`${path}/`)));
 }
 
+/** A commit as the stored index holds it: what a read emits, and the
+ *  words of its subject and body joined with their total. */
+interface StoredCommit {
+  readonly date: string;
+  readonly subject: string;
+  readonly body: string;
+  readonly changedPaths: readonly string[];
+  /** A `wordBag` of the same tokens `measure` counts. */
+  readonly words: string;
+  readonly length: number;
+}
+
+/** A source's stored index after this call's update, at the head it
+ *  was brought up to date to. Commits stay in the file until a lane
+ *  reads them. */
+interface GitIndex {
+  readonly path: string;
+  readonly directory: string;
+  readonly head: string;
+  /** Every commit the file holds a subject and body for. */
+  readonly held: ReadonlySet<string>;
+  /** Every non-merge commit the head reaches, in `git log` order, with
+   *  the abbreviation git gives it now. */
+  readonly order: readonly { readonly sha: string; readonly short: string }[];
+  readonly report: StoredIndexReport;
+  /** The commit list of each date range this call read, listed once. */
+  readonly ranges: Map<string, Promise<readonly { readonly sha: string; readonly short: string }[]>>;
+}
+
+/** The non-merge commits `sha` reaches inside `range`, in `git log`
+ *  order, each with its full and abbreviated name. */
+async function listCommits(
+  toplevel: string, sha: string, range: readonly string[], signal: AbortSignal | undefined,
+): Promise<{ sha: string; short: string }[]> {
+  const output = await runGit(toplevel, ['log', '--no-merges', '--format=%H%x1f%h', ...range, sha], { signal });
+  return output.split('\n').filter((line) => line !== '').map((line) => {
+    const [full = '', short = ''] = line.split('\x1f');
+    return { sha: full, short };
+  });
+}
+
+/** Bring a source's stored index up to date with the head, in one write
+ *  transaction. Commits the file does not hold are read in bounded
+ *  batches and written as each batch arrives. A commit outside the
+ *  call's date range is left unread and unrecorded, so a later call
+ *  whose range holds it reads it then. With exclusions or a path list a
+ *  commit's paths are listed first. A commit that touched one of the
+ *  source's own excluded paths, or changed none of its listed paths, is
+ *  recorded by name only: its subject and body are never read. A stored
+ *  commit the head no longer reaches empties the file, and every commit
+ *  is read again. */
+async function syncGitIndex(
+  path: string, directory: string, toplevel: string, head: string, own: readonly string[],
+  only: readonly string[] | undefined, range: readonly string[], requested: readonly string[],
+  signal: AbortSignal | undefined,
+): Promise<GitIndex> {
+  const database = await openIndexFile(path, directory);
+  try {
+    return await updateIndex(path, database, async () => {
+      const started = performance.now();
+      database.exec(`CREATE TABLE IF NOT EXISTS commits (sha TEXT PRIMARY KEY, date TEXT NOT NULL,
+          subject TEXT NOT NULL, body TEXT NOT NULL, paths TEXT NOT NULL, words TEXT NOT NULL,
+          length INTEGER NOT NULL) WITHOUT ROWID;
+        CREATE TABLE IF NOT EXISTS skipped (sha TEXT PRIMARY KEY) WITHOUT ROWID;`);
+      const order = await listCommits(toplevel, head, [], signal);
+      const reached = new Set(order.map((commit) => commit.sha));
+      const held = new Set((database.prepare('SELECT sha FROM commits').all() as { sha: string }[]).map((row) => row.sha));
+      const skipped = new Set((database.prepare('SELECT sha FROM skipped').all() as { sha: string }[]).map((row) => row.sha));
+      const rebuilt = [...held, ...skipped].some((sha) => !reached.has(sha));
+      let removed = 0;
+      if (rebuilt) {
+        removed = held.size;
+        database.exec('DELETE FROM commits; DELETE FROM skipped;');
+        held.clear();
+        skipped.clear();
+      }
+      const insert = database.prepare(`INSERT INTO commits (sha, date, subject, body, paths, words, length)
+        VALUES (?, ?, ?, ?, ?, ?, ?)`);
+      const skip = database.prepare('INSERT INTO skipped (sha) VALUES (?)');
+      const dated = range.length === 0 ? undefined
+        : new Set((await listCommits(toplevel, head, range, signal)).map((commit) => commit.sha));
+      const missing = order.map((commit) => commit.sha)
+        .filter((sha) => !held.has(sha) && !skipped.has(sha) && (dated === undefined || dated.has(sha)));
+      let added = 0;
+      for (let start = 0; start < missing.length; start += BODY_PAGE) {
+        let batch = missing.slice(start, start + BODY_PAGE);
+        if (own.length !== 0 || only !== undefined || requested.length !== 0) {
+          const listed = parseLog(await runGit(toplevel, [
+            'log', '--no-walk=unsorted', '--stdin', '--no-renames', '-z', `--format=${PATHS_FORMAT}`, '--name-only',
+          ], { input: `${batch.join('\n')}\n`, signal }), false);
+          const out = new Set<string>();
+          for (const commit of listed) {
+            if (touches(commit.changedPaths, own) || (only !== undefined && !touches(commit.changedPaths, only))) {
+              skip.run(commit.sha);
+              out.add(commit.sha);
+            } else if (touches(commit.changedPaths, requested)) {
+              // Left unread and unrecorded: a later call that does not
+              // exclude it reads it then.
+              out.add(commit.sha);
+            }
+          }
+          batch = batch.filter((sha) => !out.has(sha));
+        }
+        if (batch.length === 0) continue;
+        // A name cut from git's output would keep that whole output alive
+        // in the set of held commits; the listing's own copy is kept.
+        const names = new Map(batch.map((sha) => [sha, sha]));
+        for (const commit of parseLog(await runGit(toplevel, [
+          'log', '--no-walk=unsorted', '--stdin', '--no-renames', '-z', `--format=${FULL_FORMAT}`, '--name-only',
+        ], { input: `${batch.join('\n')}\n`, signal }), true)) {
+          const tokens = tokenize(`${commit.subject}\n${commit.body}`);
+          insert.run(commit.sha, commit.date, commit.subject, commit.body, JSON.stringify(commit.changedPaths),
+            wordBag(tokens), tokens.length);
+          held.add(names.get(commit.sha) ?? commit.sha);
+          added += 1;
+        }
+      }
+      return { path, directory, head, held, order, ranges: new Map(),
+        report: { parts: held.size, added, removed, rebuilt, ms: Math.round(performance.now() - started) } };
+    });
+  } finally {
+    database.close();
+  }
+}
+
+/** `git log` arguments for a date range in milliseconds. Git reads
+ *  `@<seconds>` exactly; commit dates hold whole seconds. */
+function dateRange(since: number, until: number): string[] {
+  return [
+    ...(Number.isFinite(since) ? [`--since=@${Math.ceil(since / 1000)}`] : []),
+    ...(Number.isFinite(until) ? [`--until=@${Math.floor(until / 1000)}`] : []),
+  ];
+}
+
 const NO_COMMIT = /Needed a single revision|does not have any commits|unknown revision|ambiguous argument/i;
 
 /**
@@ -260,6 +412,32 @@ export function git(
     if (typeof entry !== 'string' || entry.trim() === '') throw new TypeError('exclude must contain non-empty strings.');
     return entry;
   });
+  checkIndexOption(options.index);
+  // One update per call: every read of one pick shares its read
+  // context, so the index is brought up to date on the first read and
+  // reused by every later lane whose date range lies inside the one that
+  // update stored. A read with no context updates alone.
+  const calls = new WeakMap<object, Map<string,
+    { readonly since: number; readonly until: number; readonly loading: Promise<GitIndex> }[]>>();
+  const resolveExcluded = async (entries: readonly string[], toplevel: string) => {
+    const resolved = new Set<string>();
+    for (const entry of entries) {
+      const path = repoPath(isAbsolute(entry) ? await canonicalPath(entry) : entry, toplevel);
+      if (path !== undefined) resolved.add(path);
+    }
+    return [...resolved];
+  };
+  const loadIndex = async (
+    directory: string, toplevel: string, head: string, range: readonly string[], requested: readonly string[],
+    signal: AbortSignal | undefined,
+  ) => {
+    // The source's own exclusions, path list and look-back decide which
+    // commits exist: they name the file.
+    const path = indexFilePath(directory, id, { exclude: exclude ?? [],
+      ...(paths === undefined ? {} : { paths }), ...(options.since === undefined ? {} : { since: options.since }) });
+    return syncGitIndex(path, directory, toplevel, head, await resolveExcluded(exclude ?? [], toplevel),
+      paths === undefined ? undefined : await resolveExcluded(paths, toplevel), range, requested, signal);
+  };
   const reader: CandidateSource = {
     id,
     kind: 'git-history',
@@ -267,7 +445,7 @@ export function git(
     ...(options.since === undefined ? {} : { since: options.since }),
     ...(paths === undefined ? {} : { paths }),
     ...(exclude === undefined ? {} : { exclude }),
-    async read(request) {
+    async read(request: CandidateReadRequest, context?: CandidateReadContext) {
       const signal = request.signal;
       if (signal?.aborted) throw new SourceReadError('cancelled', 'The read was cancelled.');
       if (request.limit !== undefined
@@ -322,7 +500,38 @@ export function git(
         throw error;
       }
 
+      // This read's own connection to the stored index, closed when it ends.
+      let database: IndexDatabase | undefined;
       try {
+        // A read of the head brings the stored index up to date, once per
+        // call, and reads it. A pinned read reads it only when this call
+        // already brought it to the pinned commit, as the later lanes of a
+        // call are pinned to the first lane's; any other pinned read reads git.
+        const directory = indexDirectory(options.index);
+        let stored: GitIndex | undefined;
+        if (directory !== undefined) {
+          const requested = await resolveExcluded(request.exclude ?? [], toplevel);
+          // The call's date range: the source's look-back and the task
+          // date. A relative look-back moves with the clock, so a later
+          // lane's range starts later and still lies inside the first.
+          // Each read keeps its own date filter below.
+          const since = sinceCutoff(options.since, now);
+          const until = request.taskDate === undefined ? Number.POSITIVE_INFINITY : now;
+          const key = JSON.stringify(requested);
+          let byRead = context === undefined ? undefined : calls.get(context);
+          if (context !== undefined && byRead === undefined) calls.set(context, byRead = new Map());
+          let loading = byRead?.get(key)?.find((update) => update.since <= since && update.until >= until)?.loading;
+          if (loading === undefined && request.revision === undefined) {
+            loading = loadIndex(directory, toplevel, sha, dateRange(since, until), requested, signal);
+            if (byRead !== undefined) byRead.set(key, [...byRead.get(key) ?? [], { since, until, loading }]);
+          }
+          const loaded = await loading;
+          if (loaded?.head === sha) {
+            stored = loaded;
+            database = await openIndexFile(loaded.path, loaded.directory);
+          }
+        }
+        const indexed = stored === undefined ? {} : { index: stored.report };
         // Exclusions are resolved to repository-relative paths first.
         // An absolute entry is canonicalised through realpath, because
         // the toplevel is: an entry written through a symlinked path (a
@@ -346,6 +555,24 @@ export function git(
         // the lane serves, and that is what the matches are scored on.
         const terms = taskTerms(request.topic ?? request.task, request.paths ?? [], keyword.stopWords);
         const termIndex = new Map(terms.map((term, at) => [term, at]));
+        // A stored commit's row, read once per read when a lane needs it.
+        const rowOf = database?.prepare('SELECT date, subject, body, paths, words, length FROM commits WHERE sha = ?');
+        const storedCommit = (commitSha: string): StoredCommit => {
+          const row = rowOf!.get(commitSha) as Record<string, unknown>;
+          return {
+            date: row.date as string, subject: row.subject as string, body: row.body as string,
+            changedPaths: JSON.parse(row.paths as string) as string[], words: row.words as string, length: row.length as number,
+          };
+        };
+        // A stored commit's task-word mentions come from its stored word
+        // counts: the same tokens `measure` counts in its text.
+        const mentionsOf = (commit: { readonly sha: string; readonly subject: string }, body: string): Mentions => {
+          if (stored === undefined) return measure(commit.subject, body, termIndex);
+          const held = storedCommit(commit.sha);
+          return { counts: terms.map((term) => bagCount(held.words, term)), length: held.length };
+        };
+        const bodiesOf = async (shas: readonly string[]): Promise<readonly string[]> => stored === undefined
+          ? readBodies(toplevel, shas, signal) : shas.map((commitSha) => storedCommit(commitSha).body);
         const named: string[] = [];
         for (const path of request.paths ?? []) {
           const name = repoPath(
@@ -365,11 +592,7 @@ export function git(
           period === undefined ? Number.NEGATIVE_INFINITY : Date.parse(period.from));
         const until = Math.min(request.taskDate === undefined ? Number.POSITIVE_INFINITY : now,
           period === undefined ? Number.POSITIVE_INFINITY : Date.parse(period.to));
-        // Git reads `@<seconds>` exactly; commit dates hold whole seconds.
-        const range = [
-          ...(Number.isFinite(sinceMs) ? [`--since=@${Math.ceil(sinceMs / 1000)}`] : []),
-          ...(Number.isFinite(until) ? [`--until=@${Math.floor(until / 1000)}`] : []),
-        ];
+        const range = dateRange(sinceMs, until);
         // A commit must pass both filters before its body is fetched:
         // the exclusions and the source's own path list each gate it.
         const filtered = excluded.size !== 0 || only !== undefined;
@@ -406,17 +629,33 @@ export function git(
             ...await embedSimilarities(request.meaningLane!.embed, embedding, pendingEmbed, signal));
           pendingEmbed = [];
         };
+        // With the index, the commits in the date range come from the
+        // file, in `git log` order; a commit the source's own exclusions
+        // left unstored is one the direct read would drop too.
+        let listed: readonly { readonly sha: string; readonly short: string }[] | undefined;
+        if (stored !== undefined) {
+          const key = JSON.stringify(range);
+          let listing = range.length === 0 ? Promise.resolve(stored.order) : stored.ranges.get(key);
+          if (listing === undefined) stored.ranges.set(key, listing = listCommits(toplevel, stored.head, range, signal));
+          listed = (await listing).filter((commit) => stored.held.has(commit.sha));
+        }
         for (let offset = 0; wanted === undefined || offset < wanted;) {
           const page = wanted === undefined ? LOG_PAGE : Math.min(LOG_PAGE, wanted - offset);
-          const batch = parseLog(
-            await runGit(toplevel, [
-              'log', '--no-merges', '--no-renames', '-z',
-              `--format=${filtered ? META_FORMAT : FULL_FORMAT}`,
-              '--name-only', '-n', String(page), ...range,
-              ...(offset === 0 ? [] : ['--skip', String(offset)]), sha,
-            ], { signal }),
-            !filtered,
-          );
+          const batch = listed !== undefined
+            ? listed.slice(offset, offset + page).map(({ sha: commitSha, short }): LogCommit => {
+              const held = storedCommit(commitSha);
+              return { sha: commitSha, short, date: held.date, subject: held.subject,
+                body: filtered ? '' : held.body, changedPaths: held.changedPaths };
+            })
+            : parseLog(
+              await runGit(toplevel, [
+                'log', '--no-merges', '--no-renames', '-z',
+                `--format=${filtered ? META_FORMAT : FULL_FORMAT}`,
+                '--name-only', '-n', String(page), ...range,
+                ...(offset === 0 ? [] : ['--skip', String(offset)]), sha,
+              ], { signal }),
+              !filtered,
+            );
           for (const commit of batch) {
             if (filtered) {
               enumerated.push(scored(commit));
@@ -432,7 +671,7 @@ export function git(
               const count = phraseCount(commit.subject, request.task) + phraseCount(commit.body, request.task);
               if (count > 0) {
                 phrases.push({
-                  commit: scored(commit, { mentions: measure(commit.subject, commit.body, termIndex) }),
+                  commit: scored(commit, { mentions: mentionsOf(commit, commit.body) }),
                   count,
                 });
               }
@@ -440,7 +679,7 @@ export function git(
               const count = phraseCount(commit.subject, request.task) + phraseCount(commit.body, request.task);
               if (count > 0) phrases.push({ commit: scored(commit, { body: commit.body }), count });
             } else if (cut) {
-              enumerated.push(scored(commit, { mentions: measure(commit.subject, commit.body, termIndex) }));
+              enumerated.push(scored(commit, { mentions: mentionsOf(commit, commit.body) }));
             } else {
               enumerated.push(scored(commit, { body: commit.body }));
             }
@@ -467,7 +706,7 @@ export function git(
           if (filtered) {
             for (let start = 0; start < admitted.length; start += BODY_PAGE) {
               const slice = admitted.slice(start, start + BODY_PAGE);
-              const bodies = await readBodies(toplevel, slice.map((commit) => commit.sha), signal);
+              const bodies = await bodiesOf(slice.map((commit) => commit.sha));
               for (const [index, body] of bodies.entries()) {
                 pendingEmbed.push(`${slice[index]!.subject}\n${body}`);
                 if (pendingEmbed.length === 32) await flushEmbed();
@@ -489,13 +728,14 @@ export function git(
           const limited = request.limit === undefined ? kept : kept.slice(0, request.limit);
           for (let start = 0; start < limited.length; start += BODY_PAGE) {
             const slice = limited.slice(start, start + BODY_PAGE);
-            const bodies = await readBodies(toplevel, slice.map((index) => admitted[index]!.sha), signal);
+            const bodies = await bodiesOf(slice.map((index) => admitted[index]!.sha));
             slice.forEach((index, at) => { admitted[index]!.body = bodies[at]!; });
           }
           const limitedReads = request.limit !== undefined && kept.length > request.limit;
           return {
             status: 'read' as const,
             revision: sha,
+            ...indexed,
             meaningLane: true as const,
             candidates: limited.map((index): MemoryCandidate => ({
               sourceId: id,
@@ -531,13 +771,13 @@ export function git(
           if (filtered) {
             for (let start = 0; start < admitted.length; start += BODY_PAGE) {
               const slice = admitted.slice(start, start + BODY_PAGE);
-              const bodies = await readBodies(toplevel, slice.map((commit) => commit.sha), signal);
+              const bodies = await bodiesOf(slice.map((commit) => commit.sha));
               slice.forEach((commit, index) => {
                 const count = phraseCount(commit.subject, request.task)
                   + phraseCount(bodies[index]!, request.task);
                 if (count > 0) {
                   phrases.push({
-                    commit: { ...commit, mentions: measure(commit.subject, bodies[index]!, termIndex) },
+                    commit: { ...commit, mentions: mentionsOf(commit, bodies[index]!) },
                     count,
                   });
                 }
@@ -570,12 +810,13 @@ export function git(
           const kept = limitedByCount ? curveKept.slice(0, request.limit) : curveKept;
           for (let start = 0; start < kept.length; start += BODY_PAGE) {
             const slice = kept.slice(start, start + BODY_PAGE);
-            const bodies = await readBodies(toplevel, slice.map((entry) => entry.commit.sha), signal);
+            const bodies = await bodiesOf(slice.map((entry) => entry.commit.sha));
             slice.forEach((entry, index) => { entry.commit.body = bodies[index]!; });
           }
           return {
             status: 'read' as const,
             revision: sha,
+            ...indexed,
             candidates: kept.map((entry): MemoryCandidate => ({
               sourceId: id,
               sourceRevision: sha,
@@ -609,7 +850,7 @@ export function git(
           if (filtered) {
             for (let start = 0; start < admitted.length; start += BODY_PAGE) {
               const slice = admitted.slice(start, start + BODY_PAGE);
-              const bodies = await readBodies(toplevel, slice.map((commit) => commit.sha), signal);
+              const bodies = await bodiesOf(slice.map((commit) => commit.sha));
               slice.forEach((commit, index) => {
                 const count = phraseCount(commit.subject, request.task) + phraseCount(bodies[index]!, request.task);
                 if (count > 0) phrases.push({ commit: { ...commit, body: bodies[index]! }, count });
@@ -624,6 +865,7 @@ export function git(
           return {
             status: 'read' as const,
             revision: sha,
+            ...indexed,
             candidates: emitted.map(({ commit, count }): MemoryCandidate => ({
               sourceId: id,
               sourceRevision: sha,
@@ -712,9 +954,9 @@ export function git(
         if (filtered) {
           for (let start = 0; start < scoped.length; start += BODY_PAGE) {
             const slice = scoped.slice(start, start + BODY_PAGE);
-            const bodies = await readBodies(toplevel, slice.map((commit) => commit.sha), signal);
+            const bodies = await bodiesOf(slice.map((commit) => commit.sha));
             slice.forEach((commit, index) => {
-              commit.mentions = measure(commit.subject, bodies[index]!, termIndex);
+              commit.mentions = mentionsOf(commit, bodies[index]!);
               if (!cut) commit.body = bodies[index]!;
             });
           }
@@ -722,7 +964,7 @@ export function git(
         // BM25 counts over the commits this lane ranks: those left after
         // the look-back, the path filter, the exclusions, the task's date
         // or period, and the limit.
-        for (const commit of scoped) commit.mentions ??= measure(commit.subject, commit.body ?? '', termIndex);
+        for (const commit of scoped) commit.mentions ??= mentionsOf(commit, commit.body ?? '');
         scoreBm25(scoped, keyword.k1, keyword.b);
 
         const signals = (commit: ScoredCommit) => {
@@ -772,12 +1014,13 @@ export function git(
           const emitted = bend === undefined ? ranked : ranked.filter((entry) => signalSum(entry) > bend);
           for (let start = 0; start < emitted.length; start += BODY_PAGE) {
             const slice = emitted.slice(start, start + BODY_PAGE);
-            const bodies = await readBodies(toplevel, slice.map((entry) => entry.commit.sha), signal);
+            const bodies = await bodiesOf(slice.map((entry) => entry.commit.sha));
             slice.forEach((entry, index) => { entry.commit.body = bodies[index]!; });
           }
           return {
             status: 'read' as const,
             revision: sha,
+            ...indexed,
             candidates: emitted.map((entry) => emit(entry.commit, entry.signals)),
             complete: !truncated,
             laneCutApplied: true as const,
@@ -794,6 +1037,7 @@ export function git(
         return {
           status: 'read' as const,
           revision: sha,
+          ...indexed,
           candidates: scoped.map((commit, index) => ({ ...emit(commit, scopedSignals[index]!),
             ...(bend !== undefined && sums[index]! <= bend ? { pastLaneCut: true as const } : {}) })),
           complete: !truncated,
@@ -801,6 +1045,8 @@ export function git(
         };
       } catch (error) {
         throw asSourceReadError(error);
+      } finally {
+        database?.close();
       }
     },
   };

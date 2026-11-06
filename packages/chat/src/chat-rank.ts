@@ -1,3 +1,4 @@
+import { bagCount, wordBag } from '@curatejs/core/internal';
 import { porterStem } from './porter.js';
 
 export interface ChatKeywordSettings {
@@ -37,10 +38,39 @@ export interface ChatRankSession {
   /** Second pass: the part's three query scores plus its
    *  heading/name/front extras, stored internally by part order. */
   score(text: string, fields: { heading: string; name: string; front: string }): void;
+  /** `observe` for a part read from the stored index: its title, and its
+   *  text's words as `storedWords` keeps them. They count exactly as the
+   *  text's own words would. */
+  observeStored(title: string, words: StoredChatWords): void;
+  /** `score` for a stored part, as `observeStored` is for `observe`. */
+  scoreStored(title: string, words: StoredChatWords, fields: { heading: string; name: string; front: string }): void;
   /** Merge the scored parts. `ids` ties equal scores to a stable order;
    *  returns the merged ordering score (`scores`) and the pre-merge
    *  lane score (`base`) in part order. */
   finish(ids: readonly string[]): { scores: readonly number[]; base: readonly number[] };
+}
+
+/** A text's words as the stored index keeps them, worked out once when
+ *  the part is stored. A word of three characters or more counts for
+ *  every task: `long` is how many there are and `stems` their counts,
+ *  stemmed when the settings stem. A shorter word counts only when the
+ *  task names it as an identifier, so `short` keeps those as written. */
+export interface StoredChatWords {
+  readonly long: number;
+  readonly stems: string;
+  readonly short: string;
+}
+
+/** The stored form of a part's text under these keyword settings. */
+export function storedChatWords(text: string, settings: Partial<ChatKeywordSettings> = {}): StoredChatWords {
+  const stem = ({ ...CHAT_KEYWORD_SETTINGS, ...settings }).stem;
+  const words = text.toLowerCase().split(/[^a-z0-9]+/).filter((word) => word !== '');
+  const long = words.filter((word) => word.length > 2);
+  return {
+    long: long.length,
+    stems: wordBag(stem ? long.map(porterStem) : long),
+    short: wordBag(words.filter((word) => word.length <= 2)),
+  };
 }
 
 export function startChatRank(task: string, settings: Partial<ChatKeywordSettings> = {}): ChatRankSession {
@@ -78,32 +108,68 @@ export function startChatRank(task: string, settings: Partial<ChatKeywordSetting
   let length = 0;
   const parts: { raw: number; content: number; names: number; extra: number }[] = [];
   const k1 = config.k1 ?? 1.2, b = config.b ?? .75;
-  const bm25 = (tokens: string[], query: readonly string[]) => {
+  // A part as BM25 reads it: each token's count and the token total.
+  type Bag = { readonly tf: Map<string, number>; length: number };
+  const textBag = (text: string): Bag => {
+    const tokens = tok(text);
     const tf = new Map<string, number>();
     for (const word of tokens) tf.set(word, (tf.get(word) ?? 0) + 1);
+    return { tf, length: tokens.length };
+  };
+  // A stored part's tokens are its long words, stemmed when stored, and
+  // the short words the task names, stemmed here. Only the query's terms
+  // are looked up: no other token's count enters a score.
+  const shortStems = [...shortIds].map((word) => [word, stemOf(word)] as const);
+  const storedBag = (title: string, words: StoredChatWords): Bag => {
+    const bag = textBag(title);
+    bag.length += words.long;
+    for (const term of queryTerms) {
+      const count = bagCount(words.stems, term);
+      if (count > 0) bag.tf.set(term, (bag.tf.get(term) ?? 0) + count);
+    }
+    for (const [word, stem] of shortStems) {
+      const count = bagCount(words.short, word);
+      if (count === 0) continue;
+      bag.length += count;
+      bag.tf.set(stem, (bag.tf.get(stem) ?? 0) + count);
+    }
+    return bag;
+  };
+  const bm25 = (bag: Bag, query: readonly string[]) => {
+    const { tf } = bag;
     const avg = length / Math.max(1, docs);
     return query.reduce((sum, q) => {
       const f = tf.get(q) ?? 0;
       if (!f) return sum;
       const weight = config.nouns ? named.has(q) ? 2 : VERBS.has(q) || /(?:ing|ed)$/.test(q) ? .5 : 1 : 1;
-      return sum + weight * Math.log(1 + (docs - df.get(q)! + .5) / (df.get(q)! + .5)) * f * (k1 + 1) / (f + k1 * (1 - b + b * tokens.length / avg));
+      return sum + weight * Math.log(1 + (docs - df.get(q)! + .5) / (df.get(q)! + .5)) * f * (k1 + 1) / (f + k1 * (1 - b + b * bag.length / avg));
     }, 0);
+  };
+  const observeBag = (bag: Bag) => {
+    docs += 1;
+    length += bag.length;
+    for (const word of bag.tf.keys()) if (queryTerms.has(word)) df.set(word, (df.get(word) ?? 0) + 1);
+  };
+  const scoreBag = (bag: Bag, fields: { heading: string; name: string; front: string }) => {
+    parts.push({
+      raw: bm25(bag, queries.main),
+      content: queries.content === null ? 0 : bm25(bag, queries.content),
+      names: queries.names === null ? 0 : bm25(bag, queries.names),
+      extra: Math.min(2, hits(fields.heading) * 2) + Math.min(1, hits(`${fields.name} ${fields.front}`)),
+    });
   };
   return {
     observe(text) {
-      const tokens = tok(text);
-      docs += 1;
-      length += tokens.length;
-      for (const word of new Set(tokens)) if (queryTerms.has(word)) df.set(word, (df.get(word) ?? 0) + 1);
+      observeBag(textBag(text));
     },
     score(text, fields) {
-      const tokens = tok(text);
-      parts.push({
-        raw: bm25(tokens, queries.main),
-        content: queries.content === null ? 0 : bm25(tokens, queries.content),
-        names: queries.names === null ? 0 : bm25(tokens, queries.names),
-        extra: Math.min(2, hits(fields.heading) * 2) + Math.min(1, hits(`${fields.name} ${fields.front}`)),
-      });
+      scoreBag(textBag(text), fields);
+    },
+    observeStored(title, words) {
+      observeBag(storedBag(title, words));
+    },
+    scoreStored(title, words, fields) {
+      scoreBag(storedBag(title, words), fields);
     },
     finish(ids) {
       const count = parts.length;

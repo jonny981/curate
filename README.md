@@ -29,7 +29,7 @@ Every result, how each run was set up and its proof files are in [benchmarks](be
 
 ## Built for memory that keeps growing
 
-- **No work when history is written.** Curate reads transcripts, git history and Markdown where they already live, when a task asks. No extraction step, index, vector database or graph to keep in sync.
+- **No work when history is written.** Curate reads transcripts, git history and Markdown where they already live, when a task asks. No extraction step or graph to keep in sync, and no database server or hosted vector store: local index files, made on first use.
 - **Go straight to the source.** [Mem0](https://docs.mem0.ai/core-concepts/memory-operations/add) extracts facts with a model, [Mastra](https://mastra.ai/docs/memory/observational-memory) keeps observations written by a model, and [Zep](https://help.getzep.com/v4/how-graph-creation-works) builds a knowledge graph. Curate selects from the original history for each task.
 - **Keep the task model focused.** It gets a dated, cited log chosen for its task, even when the history spans thousands of parts.
 
@@ -66,7 +66,7 @@ See the [changelog](CHANGELOG.md) for what each release contains.
 
 Call Curate before a task, then give its log to your agent as text.
 Always-on files such as `CLAUDE.md` and `AGENTS.md` stay with your agent's harness, and Curate picks the rules a task needs from your rule library.
-Curate is a library: it keeps plain files and calls the models you supply, with no database or service to deploy.
+Curate is a library: it calls the models you supply, with no database server or hosted vector store to deploy: local index files, made on first use.
 Your agent keeps its own tools and can follow the citations when it needs more detail.
 
 ### Recall context for a task

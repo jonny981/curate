@@ -16,6 +16,17 @@ import {
   taskMoment,
   timeZoneOf,
   zonedIso,
+  checkIndexOption,
+  indexDirectory,
+  indexFilePath,
+  openIndexFile,
+  updateIndex,
+  wordBag,
+  bagCount,
+  type IndexDatabase,
+  type IndexStatement,
+  type StoredIndexOptions,
+  type StoredIndexReport,
 } from '@curatejs/core/internal';
 import { lstat, readdir, readFile, realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -55,6 +66,12 @@ export interface RulesOptions {
   /** Paths this source alone refuses, joined onto the read request's
    *  `exclude` for its reads only: an excluded file is never opened. */
   readonly exclude?: readonly string[];
+  /** The stored index: one local file for this source, made on its
+   *  first read and brought up to date at the start of each call. Every
+   *  lane then reads each note's parts from the file instead of parsing
+   *  it again. `false` reads the files directly on every read. A read
+   *  pinned to a revision reads git as before. */
+  readonly index?: StoredIndexOptions | false;
 }
 
 export interface KnowledgeBaseOptions extends RulesOptions {
@@ -322,7 +339,7 @@ function scopePatterns(value: string): readonly string[] {
   return patterns;
 }
 
-function ruleScope(file: string, note: Note): readonly string[] | undefined {
+function ruleScope(file: string, note: Pick<Note, 'fields'>): readonly string[] | undefined {
   const field = file.endsWith('.mdc') ? note.fields.get('globs')
     : file.endsWith('.instructions.md') ? note.fields.get('applyto') : undefined;
   return field === undefined || field.trim() === '' ? undefined : scopePatterns(field);
@@ -858,6 +875,162 @@ function* noteParts(
   }
 }
 
+/** A part and, when it came from the stored index, its text's tokens:
+ *  how many there are and a `wordBag` of them. */
+type NotePart = EnumeratedPart & { readonly tokens?: { readonly length: number; readonly words: string } };
+
+/** What the passes read from one note, from its text or from the
+ *  stored index. */
+interface NoteEntry {
+  readonly fields: ReadonlyMap<string, string>;
+  readonly frontmatter: string;
+  /** Each link's two capture groups, as LINK matches them. */
+  links(): Iterable<readonly [string | undefined, string | undefined]>;
+  /** Whether the frontmatter or a body line marks the note replaced. */
+  replaced(): boolean;
+  parts(): Iterable<NotePart>;
+}
+
+/** A note as the stored index holds it, with each part's tokens worked
+ *  out once when it was stored. */
+interface StoredNote {
+  readonly fields: readonly (readonly [string, string])[];
+  readonly frontmatter: string;
+  readonly links: readonly (readonly [string | null, string | null])[];
+  readonly replaced: boolean;
+  readonly parts: readonly (EnumeratedPart & { readonly tokens: { readonly length: number; readonly words: string } })[];
+}
+
+/** A note read from its text: its parts are cut only when a pass asks. */
+function textEntry(
+  text: string, file: string, name: string, legacy: 'knowledge' | 'rules' | undefined, rule: boolean, partBudget: number,
+): NoteEntry {
+  const note = parseNote(text);
+  return {
+    fields: note.fields,
+    frontmatter: note.frontmatter,
+    links: () => [...note.body.matchAll(LINK)].map((match) => [match[1], match[2]] as const),
+    replaced: () => REPLACED_FRONTMATTER.test(note.frontmatter) || REPLACED_LINE.test(note.body),
+    parts: () => noteParts(note, file, name, legacy, rule, partBudget),
+  };
+}
+
+/** The stored form of a note read from its text. */
+function storeEntry(entry: NoteEntry): StoredNote {
+  return {
+    fields: [...entry.fields],
+    frontmatter: entry.frontmatter,
+    links: [...entry.links()].map(([wiki, path]) => [wiki ?? null, path ?? null] as const),
+    replaced: entry.replaced(),
+    parts: [...entry.parts()].map((part) => {
+      const tokens = tokenize(part.text);
+      return { ...part, tokens: { length: tokens.length, words: wordBag(tokens) } };
+    }),
+  };
+}
+
+function storedEntry(stored: StoredNote): NoteEntry {
+  return {
+    fields: new Map(stored.fields),
+    frontmatter: stored.frontmatter,
+    links: () => stored.links.map(([wiki, path]) => [wiki ?? undefined, path ?? undefined] as const),
+    replaced: () => stored.replaced,
+    parts: () => stored.parts,
+  };
+}
+
+/** A part's BM25 inputs: its token count and how often a term occurs. */
+function measurePart(part: NotePart): { readonly length: number; count(term: string): number } {
+  if (part.tokens !== undefined) {
+    const { words } = part.tokens;
+    return { length: part.tokens.length, count: (term) => bagCount(words, term) };
+  }
+  const tokens = tokenize(part.text);
+  const counts = new Map<string, number>();
+  for (const token of tokens) counts.set(token, (counts.get(token) ?? 0) + 1);
+  return { length: tokens.length, count: (term) => counts.get(term) ?? 0 };
+}
+
+/** What bringing one root's notes up to date did, and each note's
+ *  modified time as its file reported it. */
+interface NotesUpdate {
+  readonly added: number;
+  readonly removed: number;
+  readonly ms: number;
+  readonly modified: ReadonlyMap<string, string>;
+}
+
+/** Bring one root's notes in a source's stored index up to date, in one
+ *  write transaction. A note with its stored size and modification time
+ *  is kept; a new or changed one is read again, and its parts and their
+ *  tokens are stored. With `prune`, a stored note the walk no longer
+ *  met is deleted. */
+async function syncNotes(
+  path: string, directory: string, root: string, files: readonly string[], prune: boolean,
+  build: (file: string, text: string) => NoteEntry, context: CandidateReadContext, signal: AbortSignal | undefined,
+): Promise<NotesUpdate> {
+  const database = await openIndexFile(path, directory);
+  try {
+    return await updateIndex(path, database, async () => {
+      const started = performance.now();
+      database.exec(`CREATE TABLE IF NOT EXISTS notes (path TEXT PRIMARY KEY, root TEXT NOT NULL,
+        size INTEGER NOT NULL, mtime TEXT NOT NULL, modified TEXT NOT NULL, entry TEXT NOT NULL,
+        parts INTEGER NOT NULL) WITHOUT ROWID`);
+      const rows = new Map((database.prepare('SELECT path, size, mtime, modified, parts FROM notes WHERE root = ?')
+        .all(root) as { path: string; size: number; mtime: string; modified: string; parts: number }[])
+        .map((row) => [row.path, row]));
+      const write = database.prepare(`INSERT INTO notes (path, root, size, mtime, modified, entry, parts)
+        VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (path) DO UPDATE SET root = excluded.root, size = excluded.size,
+        mtime = excluded.mtime, modified = excluded.modified, entry = excluded.entry, parts = excluded.parts`);
+      const modified = new Map<string, string>();
+      let added = 0;
+      let removed = 0;
+      for (const file of files) {
+        if (signal?.aborted) throw new SourceReadError('cancelled', 'The read was cancelled.');
+        let info;
+        try {
+          info = await stat(file, { bigint: true });
+        } catch (error) {
+          throw new SourceReadError('failed', `Could not read ${file}: ${message(error)}`);
+        }
+        const row = rows.get(file);
+        const size = Number(info.size);
+        const mtime = String(info.mtimeNs);
+        if (row !== undefined && row.size === size && row.mtime === mtime) {
+          modified.set(file, row.modified);
+          continue;
+        }
+        let text: string;
+        // The modified time a candidate carries, as a plain stat gives it.
+        let changed: string;
+        try {
+          text = await sharedFileText(context, `working:${file}`, () => readFile(file, 'utf8'));
+          changed = (await stat(file)).mtime.toISOString();
+        } catch (error) {
+          throw new SourceReadError('failed', `Could not read ${file}: ${message(error)}`);
+        }
+        const stored = storeEntry(build(file, text));
+        write.run(file, root, size, mtime, changed, JSON.stringify(stored), stored.parts.length);
+        modified.set(file, changed);
+        added += stored.parts.length;
+        removed += row?.parts ?? 0;
+      }
+      if (prune) {
+        const walked = new Set(files);
+        const remove = database.prepare('DELETE FROM notes WHERE path = ?');
+        for (const [file, row] of rows) {
+          if (walked.has(file)) continue;
+          remove.run(file);
+          removed += row.parts;
+        }
+      }
+      return { added, removed, ms: Math.round(performance.now() - started), modified };
+    });
+  } finally {
+    database.close();
+  }
+}
+
 /** What a pass knows about one file without holding its text: the
  *  fields the emitted candidates and their signals need, gathered on
  *  the statistics pass. */
@@ -945,17 +1118,74 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
     if (typeof entry !== 'string' || entry.trim() === '') throw new TypeError('exclude must contain non-empty strings.');
     return entry;
   });
+  checkIndexOption(options.index);
+  // With the index on, the walk, the git date lookups and the update run
+  // once per call: every read of one pick shares its read context.
+  const calls = new WeakMap<object, Map<string, Promise<unknown>>>();
+  const once = <T>(context: object, key: string, work: () => Promise<T>): Promise<T> => {
+    let byKey = calls.get(context);
+    if (byKey === undefined) calls.set(context, byKey = new Map());
+    let promise = byKey.get(key) as Promise<T> | undefined;
+    if (promise === undefined) byKey.set(key, promise = work());
+    return promise;
+  };
+  // With a caller's read context, each stored note is parsed once per
+  // update, so once per call for each index file: a later read of the
+  // call reuses it. The parsed notes go when the context does.
+  const parsedNotes = new WeakMap<NotesUpdate, Map<string, NoteEntry>>();
   return {
     id, role, kind: 'markdown',
     ...(legacy === undefined ? { maxQuestionText: options.maxQuestionText ?? Number.POSITIVE_INFINITY } : {}),
     ...(options.since === undefined ? {} : { since: options.since }),
     ...(exclude === undefined ? {} : { exclude }),
-    async read(request, context = { files: new Map() }) {
+    async read(request, given) {
+      const context: CandidateReadContext = given ?? { files: new Map() };
       if (request.maxQuestionText !== undefined
         && (!Number.isSafeInteger(request.maxQuestionText) || request.maxQuestionText < 1)) {
         throw new TypeError('maxQuestionText must be a positive safe integer.');
       }
       const partBudget = Math.min(maxQuestionText, request.maxQuestionText ?? maxQuestionText);
+      // The stored index, for every read that is not pinned to a revision.
+      const indexFolder = request.revision === undefined ? indexDirectory(options.index) : undefined;
+      const indexPath = indexFolder === undefined ? undefined
+        : indexFilePath(indexFolder, id, { kind: options.kind, legacy, budget: partBudget, exclude: exclude ?? [] });
+      const requestExclude = JSON.stringify(request.exclude ?? []);
+      const updates = new Map<string, NotesUpdate>();
+      const nameOf = (state: ReadState, file: string) => relative(state.root, file).split(sep).join('/');
+      /** Each listed note, from the stored index when this call brought
+       *  its root up to date, else from its text. */
+      const entries = async function* (state: ReadState, files: readonly string[]) {
+        const update = indexPath === undefined ? undefined : updates.get(state.root);
+        if (update !== undefined) {
+          let parsed = given === undefined ? undefined : parsedNotes.get(update);
+          if (given !== undefined && parsed === undefined) parsedNotes.set(update, parsed = new Map());
+          // A pass that parses a note opens its own connection and closes
+          // it when it ends.
+          let database: IndexDatabase | undefined;
+          let get: IndexStatement | undefined;
+          try {
+            for (const file of files) {
+              if (request.signal?.aborted) throw new SourceReadError('cancelled', 'The read was cancelled.');
+              let entry = parsed?.get(file);
+              if (entry === undefined) {
+                database ??= await openIndexFile(indexPath!, indexFolder!);
+                get ??= database.prepare('SELECT entry FROM notes WHERE path = ?');
+                const row = get.get(file) as { entry: string } | undefined;
+                if (row === undefined) throw new SourceReadError('failed', `The stored index is missing ${file}.`);
+                entry = storedEntry(JSON.parse(row.entry) as StoredNote);
+                parsed?.set(file, entry);
+              }
+              yield { file, entry };
+            }
+          } finally {
+            database?.close();
+          }
+          return;
+        }
+        for await (const { file, text } of fileTexts(state, files, context, request.signal)) {
+          yield { file, entry: textEntry(text, file, nameOf(state, file), legacy, role === 'rule', partBudget) };
+        }
+      };
       const seen = new Set<string>();
       const reasons: string[] = [];
       // The agent's harness loads always-on files itself; a rule read skips them and says which.
@@ -976,6 +1206,12 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
       const documentFrequency = new Map<string, number>();
       let totalLength = 0;
       let taskNow: number | undefined;
+      const selected: {
+        readonly state: ReadState;
+        readonly files: readonly string[];
+        readonly notePaths: ReadonlySet<string>;
+        readonly notesByName: ReadonlyMap<string, readonly string[]>;
+      }[] = [];
 
       // The statistics pass reads each file once: it keeps the fields the
       // emitted parts will need, counts the query terms' document
@@ -1001,7 +1237,10 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
             select = (file) => file === realFile;
           }
         }
-        const state = await openDirectory(root, request, select, context, legacy, exclude);
+        const state = indexPath === undefined
+          ? await openDirectory(root, request, select, context, legacy, exclude)
+          : await once(context, JSON.stringify(['open', path, requestExclude]),
+            () => openDirectory(root, request, select, context, legacy, exclude));
         if ('status' in state) {
           if (state.status === 'absent') reasons.push(state.reason);
           continue;
@@ -1032,20 +1271,43 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
           if (same === undefined) notesByName.set(leaf, [name]);
           else same.push(name);
         }
+        selected.push({ state, files, notePaths, notesByName });
+      }
+      if (indexPath !== undefined) {
+        // Several paths can share a root, so each root is brought up to
+        // date once with every note any of them selects. A note a request
+        // excludes is never opened; stored notes no path meets are deleted
+        // on a read that excludes none.
+        const byRoot = new Map<string, { state: ReadState; files: string[] }>();
+        for (const { state, files } of selected) {
+          if (state.pinned !== undefined) continue;
+          const root = byRoot.get(state.root);
+          if (root === undefined) byRoot.set(state.root, { state, files: [...files] });
+          else root.files.push(...files);
+        }
+        for (const [root, { state, files }] of byRoot) {
+          // The update is keyed by the index file it writes, which the
+          // part budget names.
+          updates.set(root, await once(context, JSON.stringify(['notes', indexPath, root, requestExclude]),
+            () => syncNotes(indexPath, indexFolder!, root, files, requestExclude === '[]',
+              (file, text) => textEntry(text, file, nameOf(state, file), legacy, role === 'rule', partBudget),
+              context, request.signal)));
+        }
+      }
+      for (const { state, files, notePaths, notesByName } of selected) {
         const group: CorpusGroup = { state, files, metas: [] };
         const linksByMeta: string[][] = [];
         let anyUndeclared = false;
-        for await (const { file, text } of fileTexts(state, files, context, request.signal)) {
-          const note = parseNote(text);
-          const name = relative(state.root, file).split(sep).join('/');
+        for await (const { file, entry } of entries(state, files)) {
+          const name = nameOf(state, file);
           // Links count from every file, including ones a scope rule
           // skips, like the old read's notes map.
           const links: string[] = [];
-          for (const match of note.body.matchAll(LINK)) {
-            const raw = (match[1] ?? match[2] ?? '').trim();
+          for (const match of entry.links()) {
+            const raw = (match[0] ?? match[1] ?? '').trim();
             if (raw === '') continue;
             let target: string | undefined;
-            if (match[1] === undefined) {
+            if (match[0] === undefined) {
               // A link that starts with `/` is written from the source root.
               target = relative(state.root, raw.startsWith('/') ? join(state.root, raw) : resolve(dirname(file), raw)).split(sep).join('/');
               if (target.startsWith('..')) continue;
@@ -1063,28 +1325,28 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
             links.push(target);
           }
           const marker = role !== 'rule' ? undefined
-            : note.fields.get('alwaysapply') === 'true' ? 'alwaysApply: true'
-              : note.fields.get('applies') === 'always' ? 'applies: always' : undefined;
+            : entry.fields.get('alwaysapply') === 'true' ? 'alwaysApply: true'
+              : entry.fields.get('applies') === 'always' ? 'applies: always' : undefined;
           const always = marker === undefined ? undefined
             : `declared always-on (${marker}): the agent's harness loads always-on rules`;
           if (always !== undefined) alwaysOn.push({ file: name, reason: always });
-          const scope = role === 'rule' && always === undefined ? ruleScope(file, note) : undefined;
+          const scope = role === 'rule' && always === undefined ? ruleScope(file, entry) : undefined;
           // The scope gate reads request paths against the repository
           // root, which the date lookup below can still unset; a file
           // the gate could skip defers its part count until it resolves.
           const deferred = scope !== undefined && (request.paths ?? []).length > 0;
-          const declared = declaredDate(note.fields, legacy === undefined);
+          const declared = declaredDate(entry.fields, legacy === undefined);
           if (legacy !== undefined && declared === undefined) anyUndeclared = true;
           // A page is stale at or after its `stale_after`, measured at the task's moment.
-          const staleAfter = Date.parse(note.fields.get('stale_after') ?? '');
+          const staleAfter = Date.parse(entry.fields.get('stale_after') ?? '');
           const meta: FileMeta = {
             index: metas.length,
             file, name, directory: dirname(file),
             ...(always === undefined ? {} : { alwaysOn: always }), scope, deferred,
             scopeSkipped: false,
-            replaced: REPLACED_FRONTMATTER.test(note.frontmatter) || REPLACED_LINE.test(note.body)
+            replaced: entry.replaced()
               || (Number.isFinite(staleAfter) && staleAfter <= (taskNow ??= taskMoment(request.taskDate ?? request.asOf, timeZoneOf(request.timeZone)))),
-            fileHits: hits(`${name} ${note.frontmatter}`, terms),
+            fileHits: hits(`${name} ${entry.frontmatter}`, terms),
             declared,
             partStart: parts.length,
             partCount: 0,
@@ -1095,23 +1357,23 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
           // but no keyword statistics; a kind lane needs both the
           // statistics for its topic score and each part's phrase count.
           if (always === undefined && !deferred && (!phraseLane || kindLane)) {
-            for (const part of noteParts(note, file, name, legacy, role === 'rule', partBudget)) {
+            for (const part of entry.parts()) {
               if (meaningLane) {
                 parts.push({ file: meta.index, id: part.id, len: 0, headingHits: 0, namedPath: false,
                   ...(part.date === undefined ? {} : { date: part.date }) });
                 continue;
               }
-              const tokens = tokenize(part.text);
-              totalLength += tokens.length;
-              for (const term of new Set(tokens)) {
-                if (termSet.has(term)) {
+              const measured = measurePart(part);
+              totalLength += measured.length;
+              for (const term of termSet) {
+                if (measured.count(term) > 0) {
                   documentFrequency.set(term, (documentFrequency.get(term) ?? 0) + 1);
                 }
               }
               parts.push({
                 file: meta.index,
                 id: part.id,
-                len: tokens.length,
+                len: measured.length,
                 headingHits: hits(part.heading, terms),
                 namedPath: (request.paths ?? []).some((hint) => part.text.includes(hint)),
                 ...(part.date === undefined ? {} : { date: part.date }),
@@ -1135,8 +1397,16 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
         group.repo = state.repo;
         if (state.repo !== undefined && (legacy === undefined || anyUndeclared)) {
           try {
-            lastChanged = await logDates(state.repo.toplevel, state.repo.prefix, state.pinned?.revision, request.signal);
-            if (state.pinned === undefined) dirty = await uncommitted(state.repo.toplevel, state.repo.prefix, request.signal);
+            const repo = state.repo;
+            lastChanged = indexPath === undefined
+              ? await logDates(repo.toplevel, repo.prefix, state.pinned?.revision, request.signal)
+              : await once(context, JSON.stringify(['dates', repo.toplevel, repo.prefix]),
+                () => logDates(repo.toplevel, repo.prefix, undefined, request.signal));
+            if (state.pinned === undefined) {
+              dirty = indexPath === undefined ? await uncommitted(repo.toplevel, repo.prefix, request.signal)
+                : await once(context, JSON.stringify(['dirty', repo.toplevel, repo.prefix]),
+                  () => uncommitted(repo.toplevel, repo.prefix, request.signal));
+            }
           } catch (error) {
             if (state.pinned !== undefined || isCancel(error)) throw asSourceReadError(error);
             group.repo = undefined;
@@ -1165,7 +1435,8 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
           const modified = state.pinned === undefined
             && (meta.repoPath === undefined || changed === undefined || dirty.has(meta.repoPath));
           meta.date = (legacy !== undefined || group.repo === undefined) && meta.declared !== undefined ? meta.declared
-            : modified ? { value: (await stat(meta.file)).mtime.toISOString(), meaning: 'modified' }
+            : modified ? { value: updates.get(state.root)?.modified.get(meta.file)
+              ?? (await stat(meta.file)).mtime.toISOString(), meaning: 'modified' }
             : changed === undefined ? undefined : { value: changed, meaning: 'changed' };
           meta.location = options.kind === 'instructions'
             ? instructionLocation(meta.directory, request.paths ?? [], group.repo?.toplevel ?? group.state.root) : 0;
@@ -1175,25 +1446,24 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
         if (!phraseLane || kindLane) {
           for (const meta of deferredFiles) {
             meta.partStart = parts.length;
-            for await (const { text } of fileTexts(group.state, [meta.file], context, request.signal)) {
-              const note = parseNote(text);
-              for (const part of noteParts(note, meta.file, meta.name, legacy, role === 'rule', partBudget)) {
+            for await (const { entry } of entries(group.state, [meta.file])) {
+              for (const part of entry.parts()) {
                 if (meaningLane) {
                   parts.push({ file: meta.index, id: part.id, len: 0, headingHits: 0, namedPath: false,
                     ...(part.date === undefined ? {} : { date: part.date }) });
                   continue;
                 }
-                const tokens = tokenize(part.text);
-                totalLength += tokens.length;
-                for (const term of new Set(tokens)) {
-                  if (termSet.has(term)) {
+                const measured = measurePart(part);
+                totalLength += measured.length;
+                for (const term of termSet) {
+                  if (measured.count(term) > 0) {
                     documentFrequency.set(term, (documentFrequency.get(term) ?? 0) + 1);
                   }
                 }
                 parts.push({
                   file: meta.index,
                   id: part.id,
-                  len: tokens.length,
+                  len: measured.length,
                   headingHits: hits(part.heading, terms),
                   namedPath: (request.paths ?? []).some((hint) => part.text.includes(hint)),
                   ...(part.date === undefined ? {} : { date: part.date }),
@@ -1209,6 +1479,24 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
         groups.push(group);
       }
       if (!present) return { status: 'absent', reason: reasons.join('; ') };
+      // What this call's update did, summed over the roots it brought up
+      // to date; every read of the call reports the same.
+      let indexed: { readonly index?: StoredIndexReport } = {};
+      if (indexPath !== undefined && updates.size > 0) {
+        const done = [...updates.values()];
+        const database = await openIndexFile(indexPath, indexFolder!);
+        try {
+          indexed = { index: {
+            parts: (database.prepare('SELECT COALESCE(SUM(parts), 0) AS n FROM notes').get() as { n: number }).n,
+            added: done.reduce((sum, update) => sum + update.added, 0),
+            removed: done.reduce((sum, update) => sum + update.removed, 0),
+            rebuilt: false,
+            ms: done.reduce((sum, update) => sum + update.ms, 0),
+          } };
+        } finally {
+          database.close();
+        }
+      }
       alwaysOn.sort((left, right) => (left.file < right.file ? -1 : left.file > right.file ? 1 : 0));
       const skippedAlwaysOn = alwaysOn.length === 0 ? {} : { alwaysOnSkipped: alwaysOn };
       const limit = request.limit;
@@ -1261,12 +1549,11 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
         };
         for (const group of groups) {
           let cursor = 0;
-          for await (const { file, text } of fileTexts(group.state, group.files, context, request.signal)) {
+          for await (const { entry } of entries(group.state, group.files)) {
             const meta = group.metas[cursor++]!;
             if (meta.partCount === 0) continue;
-            const note = parseNote(text);
             let local = 0;
-            for (const part of noteParts(note, file, meta.name, legacy, role === 'rule', partBudget)) {
+            for (const part of entry.parts()) {
               // A file that grew between passes emits extra parts; they
               // have no slot in the part list, so they are skipped.
               if (local >= meta.partCount) break;
@@ -1308,11 +1595,10 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
           });
           if (needed.length === 0) continue;
           let cursor = 0;
-          for await (const { file, text } of fileTexts(group.state, needed.map((meta) => meta.file), context, request.signal)) {
+          for await (const { entry } of entries(group.state, needed.map((meta) => meta.file))) {
             const meta = needed[cursor++]!;
-            const note = parseNote(text);
             let local = 0;
-            for (const part of noteParts(note, file, meta.name, legacy, role === 'rule', partBudget)) {
+            for (const part of entry.parts()) {
               const index = meta.partStart + local;
               local += 1;
               if (!wanted.has(index)) continue;
@@ -1337,6 +1623,7 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
           ...(revision === undefined ? {} : { revision }),
           candidates: emitted,
           meaningLane: true as const,
+          ...indexed,
           ...skippedAlwaysOn,
           complete: partial.length === 0 && reasons.length === 0,
           ...(partial.length === 0 && reasons.length === 0
@@ -1353,11 +1640,10 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
         const matched: { candidate: MemoryCandidate; count: number }[] = [];
         for (const group of groups) {
           let cursor = 0;
-          for await (const { file, text } of fileTexts(group.state, group.files, context, request.signal)) {
+          for await (const { entry } of entries(group.state, group.files)) {
             const meta = group.metas[cursor++]!;
             if (meta.scopeSkipped) continue;
-            const note = parseNote(text);
-            for (const part of noteParts(note, file, meta.name, legacy, role === 'rule', partBudget)) {
+            for (const part of entry.parts()) {
               const count = phraseCount(part.text, request.task) + phraseCount(part.title, request.task);
               if (count === 0) continue;
               matched.push({ candidate: emit(meta, part, { phrase: count }), count });
@@ -1377,6 +1663,7 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
             status: 'read',
             ...(revision === undefined ? {} : { revision }),
             candidates,
+            ...indexed,
             ...skippedAlwaysOn,
             complete: partial.length === 0,
             ...(partial.length === 0 ? {} : { partial: partial.join('; ') }),
@@ -1386,6 +1673,7 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
           status: 'read',
           ...(revision === undefined ? {} : { revision }),
           candidates,
+          ...indexed,
           ...skippedAlwaysOn,
           complete: false,
           partial: [...reasons, ...partial].join('; '),
@@ -1400,24 +1688,21 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
       if (average > 0) {
         for (const group of groups) {
           let cursor = 0;
-          for await (const { file, text } of fileTexts(group.state, group.files, context, request.signal)) {
+          for await (const { entry } of entries(group.state, group.files)) {
             const meta = group.metas[cursor++]!;
             if (meta.partCount === 0) continue;
-            const note = parseNote(text);
             let local = 0;
-            for (const part of noteParts(note, file, meta.name, legacy, role === 'rule', partBudget)) {
+            for (const part of entry.parts()) {
               // A file that grew between passes emits extra parts; they
               // never had statistics, so they are skipped.
               if (local >= meta.partCount) break;
-              const tokens = tokenize(part.text);
-              const counts = new Map<string, number>();
-              for (const token of tokens) counts.set(token, (counts.get(token) ?? 0) + 1);
+              const measured = measurePart(part);
               let score = 0;
               for (const term of terms) {
                 const n = documentFrequency.get(term) ?? 0;
-                const f = counts.get(term) ?? 0;
+                const f = measured.count(term);
                 if (n === 0 || f === 0) continue;
-                score += bm25Term(f, n, count, tokens.length, average, keyword.k1, keyword.b);
+                score += bm25Term(f, n, count, measured.length, average, keyword.k1, keyword.b);
               }
               scores[meta.partStart + local] = score;
               local += 1;
@@ -1513,11 +1798,10 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
         });
         if (needed.length === 0) continue;
         let cursor = 0;
-        for await (const { file, text } of fileTexts(group.state, needed.map((meta) => meta.file), context, request.signal)) {
+        for await (const { entry } of entries(group.state, needed.map((meta) => meta.file))) {
           const meta = needed[cursor++]!;
-          const note = parseNote(text);
           let local = 0;
-          for (const part of noteParts(note, file, meta.name, legacy, role === 'rule', partBudget)) {
+          for (const part of entry.parts()) {
             const index = meta.partStart + local;
             local += 1;
             if (!wanted.has(index)) continue;
@@ -1554,6 +1838,7 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
         status: 'read',
         ...(revision === undefined ? {} : { revision }),
         candidates: emitted,
+        ...indexed,
         ...skippedAlwaysOn,
         complete: partial.length === 0 && reasons.length === 0,
         ...(partial.length === 0 && reasons.length === 0

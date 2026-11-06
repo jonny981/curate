@@ -48,6 +48,15 @@ For a kind search, they are the commits that contain its phrase.
 The subject carries no extra weight.
 On a test repository of about 2,900 commits, weighting it as a title kept no more of the expected commits than plain BM25.
 
+By default the reader keeps one local file for this source, made on its
+first read. Every lane of a call takes each commit's subject, body and
+paths from the file. Git only lists the commit names, once per call and
+date range. Each call reads only the commits the file does not hold yet.
+If history was rewritten, the file is built again. A read pinned to a
+revision other than the one this call indexed runs git as before. `index: { directory }` chooses the
+folder, and `index: false` runs git on every read. See
+[Stored index](https://github.com/jonny981/curate/blob/main/packages/core/README.md#stored-index).
+
 `blame: true` adds a signal for commits that wrote lines still live in
 the task's named paths; `coChange: true` adds one for commits that
 touched files which historically change with them. Both are off unless

@@ -1,14 +1,15 @@
 import { execFile, execFileSync, type ChildProcess } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
-import { chmod, mkdir, mkdtemp, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readdir, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { pick, pickFromSources, SourceReadError, type CandidateSource, type PickAnswer, type PickBatch } from '@curatejs/core';
+import { pick, pickFromSources, SourceReadError, type CandidateReadRequest, type CandidateSource, type PickAnswer, type PickBatch } from '@curatejs/core';
+import { SHARED_FILE_CACHE_BYTES } from '@curatejs/core/internal';
 import { git as gitSource } from '@curatejs/git';
-import { knowledgeBase, rules } from '../src/index.js';
+import { knowledgeBase, markdown, rules } from '../src/index.js';
 
 const uncutPick = { everyRanked: true, everyScored: true, rare: false } as const;
 
@@ -22,6 +23,8 @@ let onGitChild: ((child: ChildProcess, args: readonly string[]) => void) | undef
 // Every file the reader opens for text, so a spec can see an excluded
 // file was never read.
 const fileReads: string[] = [];
+// Every folder the reader lists, so a spec can count its walks.
+const folderReads: string[] = [];
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
   return {
@@ -29,6 +32,10 @@ vi.mock('node:fs/promises', async (importOriginal) => {
     readFile: (file: unknown, options?: unknown) => {
       fileReads.push(String(file));
       return (actual.readFile as (f: unknown, o?: unknown) => Promise<unknown>)(file, options);
+    },
+    readdir: (folder: unknown, options?: unknown) => {
+      folderReads.push(String(folder));
+      return (actual.readdir as (f: unknown, o?: unknown) => Promise<unknown>)(folder, options);
     },
   };
 });
@@ -1382,4 +1389,201 @@ it('allows note and rule keyword weights to be overridden', async () => {
     if (result.status !== 'read') throw new Error('Expected Markdown candidates');
     expect(result.candidates[0]!.signals.bm25).toBeCloseTo(Math.log(1 + 0.5 / 1.5), 14);
   }
+});
+
+describe('markdown stored index', () => {
+  const embed = async (texts: readonly string[]) =>
+    texts.map((text) => (text.includes('backup') ? [1, 0] : [0, 1]));
+  const task = 'Where does the battery backup run?';
+  // Every lane a pick sends a reader, as in the chat reader's spec, each
+  // at a fixed task date.
+  const lanes = [
+    { task, wholeLanes: false },
+    { task: 'retention policy for snapshots', wholeLanes: false },
+    { task, wholeLanes: true },
+    { task, wholeLanes: false, limit: 2 },
+    { task: 'exact phrase', phraseLane: true },
+    { task: 'Alice', phraseLane: true },
+    { task: 'backup', phraseLane: true, topic: task, wholeLanes: false },
+    { task, wholeLanes: false, taskPeriod: { from: '2026-10-01T00:00:00Z', to: '2026-10-15T00:00:00Z' } },
+    { task, wholeLanes: false, meaningLane: { embed } },
+    { task, wholeLanes: true, exclude: ['notes/alice.md'] },
+    { task, wholeLanes: true, paths: ['src/backup.ts'] },
+    { task, wholeLanes: true, decayHalfLife: 30 },
+  ].map((lane): CandidateReadRequest => ({ ...lane, taskDate: '2026-10-28T12:00:00Z' }));
+  const notes = {
+    'notes/battery.md': '---\ntitle: Battery\nupdated: 2026-10-10\n---\n# Battery\n\n## Backup\n\nThe battery backup runs nightly from src/backup.ts. See [[retention]].\n\n## Checks\n\nBackups are running again.\n',
+    'notes/retention.md': '---\ntype: policy\nupdated: 2026-10-03\nstatus: superseded\n---\n## Policy\n\nRetention policy for snapshots keeps thirty days.\n',
+    'notes/alice.md': `## People\n\nAlice keeps the exact phrase here. ${'More words about storage and power. '.repeat(30)}\n`,
+    'notes/index.md': '- [[battery]]\n- [[retention]]\n',
+    'log.md': '## [2026-10-05] update | Battery\n\nThe battery backup failed twice.\n\n## [2026-09-20] ingest | Old\n\nAn old backup note.\n',
+  };
+  const ruleFiles = {
+    '.cursor/rules/backup.mdc': '---\ndescription: Backup rules\nglobs: src/**/*.ts\n---\n# Backup\n\n- Never skip the battery backup.\n- Keep backups for thirty days.\n',
+    'docs/style.md': '# Style\n\n- Write the exact phrase once.\n',
+  };
+  const withoutReport = (result: Awaited<ReturnType<CandidateSource['read']>>) => {
+    if (result.status !== 'read') throw new Error('Expected a read');
+    const { index: _index, ...rest } = result;
+    return rest;
+  };
+  async function inRepository(files: Readonly<Record<string, string>>): Promise<string> {
+    const directory = await tree(files);
+    const env = { ...process.env, GIT_AUTHOR_NAME: 'Test', GIT_AUTHOR_EMAIL: 'test@example.com', GIT_COMMITTER_NAME: 'Test',
+      GIT_COMMITTER_EMAIL: 'test@example.com', GIT_AUTHOR_DATE: '2026-10-08T12:00:00Z', GIT_COMMITTER_DATE: '2026-10-08T12:00:00Z' };
+    execFileSync('git', ['-C', directory, 'init', '-q', '-b', 'main'], { env });
+    execFileSync('git', ['-C', directory, 'add', '-A'], { env });
+    execFileSync('git', ['-C', directory, 'commit', '-q', '-m', 'notes'], { env });
+    // One uncommitted edit, dated by its modified time.
+    await writeFile(join(directory, 'notes/alice.md'), `${files['notes/alice.md']}\nAn uncommitted backup line.\n`);
+    return directory;
+  }
+
+  it('returns the same candidates and ranks from the stored index as from the files, for every lane, on the first call and the second', { timeout: 60_000 }, async () => {
+    const folder = await tree(notes);
+    const repository = await inRepository(notes);
+    const rulesFolder = await tree(ruleFiles);
+    const sources: [string, (index: { directory: string } | false) => CandidateSource][] = [
+      ['knowledge base', (index) => knowledgeBase(folder, { index })],
+      ['knowledge base with its own look-back and exclusion',
+        (index) => knowledgeBase(folder, { since: '2026-10-04', exclude: ['notes/retention.md'], maxQuestionText: 300, index })],
+      ['knowledge base in a repository', (index) => knowledgeBase(repository, { index })],
+      ['docs by path and pattern', (index) => markdown({ paths: [join(folder, 'notes'), join(folder, '*.md')], kind: 'docs', maxQuestionText: 300, index })],
+      ['two files in one folder', (index) => markdown({
+        paths: [join(folder, 'notes/battery.md'), join(folder, 'notes/retention.md')], kind: 'docs', index })],
+      ['two patterns in one folder', (index) => markdown({
+        paths: [join(folder, 'notes/b*.md'), join(folder, 'notes/r*.md')], kind: 'docs', index })],
+      ['rules', (index) => rules(rulesFolder, { index })],
+    ];
+    for (const [name, source] of sources) {
+      let matched = 0;
+      for (const lane of lanes) {
+        const cache = await tree({});
+        const direct = withoutReport(await read(source(false), lane));
+        matched += direct.candidates.length;
+        const first = await read(source({ directory: cache }), lane);
+        const second = await read(source({ directory: cache }), lane);
+        expect(withoutReport(first), JSON.stringify([name, lane])).toEqual(direct);
+        expect(withoutReport(second), JSON.stringify([name, lane])).toEqual(direct);
+        if (first.status !== 'read' || second.status !== 'read') throw new Error('Expected a read');
+        expect(first.index?.added, name).toBeGreaterThan(0);
+        expect(second.index, name).toMatchObject({ added: 0, removed: 0, rebuilt: false, parts: first.index!.parts });
+      }
+      expect(matched, name).toBeGreaterThan(0);
+    }
+  });
+
+  it('reads a changed note again and drops a deleted one', async () => {
+    const directory = await tree(notes);
+    const cache = await tree({});
+    const source = () => knowledgeBase(directory, { index: { directory: cache } });
+    const first = await read(source(), { task: 'orchard', wholeLanes: false });
+    if (first.status !== 'read') throw new Error('Expected a read');
+    const total = first.index!.parts;
+    expect(first.index).toMatchObject({ added: total, removed: 0 });
+
+    fileReads.length = 0;
+    await writeFile(join(directory, 'notes/retention.md'), '## Policy\n\nThe orchard keeps thirty days.\n');
+    const changed = await read(source(), { task: 'orchard', wholeLanes: false });
+    if (changed.status !== 'read') throw new Error('Expected a read');
+    expect(changed.candidates.map((candidate) => candidate.text)).toEqual(['## Policy\n\nThe orchard keeps thirty days.\n']);
+    expect(changed.index).toMatchObject({ parts: total, added: 1, removed: 1 });
+    // Only the changed note was read.
+    expect(fileReads.map((file) => file.slice(file.lastIndexOf('/') + 1))).toEqual(['retention.md']);
+
+    await rm(join(directory, 'notes/retention.md'));
+    const deleted = await read(source(), { task: 'orchard', wholeLanes: true });
+    if (deleted.status !== 'read') throw new Error('Expected a read');
+    expect(deleted.candidates.map((candidate) => candidate.id)).not.toContain('notes/retention.md#1');
+    expect(deleted.index).toMatchObject({ parts: total - 1, added: 0, removed: 1 });
+  });
+
+  it('reads one source at two part sizes in one read context, as separate contexts read it', async () => {
+    const directory = await tree(notes);
+    const cache = await tree({});
+    const source = knowledgeBase(directory, { index: { directory: cache } });
+    const shared = { files: new Map<string, Promise<string>>() };
+    const large = await source.read({ ...lanes[2]!, maxQuestionText: 700 }, shared);
+    const small = await source.read({ ...lanes[2]!, maxQuestionText: 300 }, shared);
+    const apart = await Promise.all([700, 300].map((maxQuestionText) =>
+      source.read({ ...lanes[2]!, maxQuestionText }, { files: new Map() })));
+    expect(withoutReport(large)).toEqual(withoutReport(apart[0]!));
+    expect(withoutReport(small)).toEqual(withoutReport(apart[1]!));
+    // The sizes cut the long note differently, so each read used its own parts.
+    expect(withoutReport(small).candidates.length).toBeGreaterThan(withoutReport(large).candidates.length);
+  });
+
+  it('walks the folders once and parses each stored note once per call for each part size, and a later call reads a changed note again', async () => {
+    const directory = await tree(notes);
+    const cache = await tree({});
+    const source = knowledgeBase(directory, { index: { directory: cache } });
+    const root = await realpath(directory);
+    // A stored note is the JSON text of its fields and parts.
+    const parse = vi.spyOn(JSON, 'parse');
+    const parses = () => parse.mock.calls.filter(([text]) => typeof text === 'string' && text.startsWith('{"fields":')).length;
+    try {
+      // The other readers of a call can fill the shared file cache. Stored
+      // notes are still parsed once when it is full.
+      const call = async (fileBytes = 0) => {
+        const context = { files: new Map<string, Promise<string>>(), fileBytes };
+        folderReads.length = 0;
+        parse.mockClear();
+        const results = [];
+        for (const maxQuestionText of [700, 300]) {
+          for (const lane of [lanes[0]!, lanes[2]!, lanes[4]!, lanes[8]!]) {
+            results.push(await source.read({ ...lane, maxQuestionText }, context));
+          }
+        }
+        return { results, walks: folderReads.filter((folder) => folder === root).length, parses: parses() };
+      };
+      const first = await call();
+      expect(first.walks).toBe(1);
+      // Four notes (a knowledge base skips index.md), once at each part size.
+      expect(first.parses).toBe(8);
+      const again = await call();
+      expect(again.walks).toBe(1);
+      expect(again.parses).toBe(8);
+      const full = await call(SHARED_FILE_CACHE_BYTES + 1);
+      expect(full.walks).toBe(1);
+      expect(full.parses).toBe(8);
+      await writeFile(join(directory, 'notes/retention.md'), '## Policy\n\nThe orchard keeps thirty days.\n');
+      const changed = await call();
+      expect(changed.results.some((result) => result.status === 'read'
+        && result.candidates.some((candidate) => candidate.text.includes('orchard')))).toBe(true);
+    } finally {
+      parse.mockRestore();
+    }
+  });
+
+  it('returns the same read with no context as with a context other reads of the call shared', async () => {
+    const directory = await tree(notes);
+    const cache = await tree({});
+    const source = knowledgeBase(directory, { index: { directory: cache } });
+    const context = { files: new Map<string, Promise<string>>() };
+    for (const lane of lanes) {
+      const shared = await source.read(lane, context);
+      const alone = await source.read(lane);
+      expect(withoutReport(alone), JSON.stringify(lane)).toEqual(withoutReport(shared));
+    }
+  });
+
+  it('never returns a note the request excludes and never writes one its own exclude names', async () => {
+    const directory = await tree(notes);
+    const cache = await tree({});
+    fileReads.length = 0;
+    const result = await read(knowledgeBase(directory, { exclude: ['notes/retention.md'], index: { directory: cache } }),
+      { task, wholeLanes: true, exclude: ['notes/alice.md'] });
+    if (result.status !== 'read') throw new Error('Expected a read');
+    expect(result.candidates.map((candidate) => candidate.id).filter((id) => /alice|retention/.test(id))).toEqual([]);
+    expect(fileReads.filter((file) => /(?:alice|retention)\.md$/.test(file))).toEqual([]);
+    const [name] = (await readdir(cache)).filter((entry) => entry.endsWith('.sqlite'));
+    const { DatabaseSync } = process.getBuiltinModule('node:sqlite');
+    const database = new DatabaseSync(join(cache, name!));
+    try {
+      expect((database.prepare('SELECT path FROM notes').all() as { path: string }[]).map((row) => row.path.slice(directory.length))
+        .filter((path) => /alice|retention/.test(path))).toEqual([]);
+    } finally {
+      database.close();
+    }
+  });
 });

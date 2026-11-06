@@ -13,6 +13,7 @@ import {
   ANSWER_TYPES, ROUTE_QUESTIONS, routeOptions, type AnswerType, type RouteKey, type RouteOption,
 } from './task.js';
 import type { LeverStates } from './levers.js';
+import type { StoredIndexReport } from './stored-index.js';
 import { WRITTEN_QUESTION_KEYS, checkCascade, checkPickOptions, checkWriteQuestions, findTaskNames } from './options.js';
 import { datedIn, taskMoment, taskPeriod, timeZoneOf, zonedIso, type TaskPeriod } from './time.js';
 
@@ -523,6 +524,11 @@ export interface PickRecord {
    *  `named`. `by` is 'caller' when `findNames` found them, 'code' when
    *  `taskNames` did. */
   readonly names?: { readonly found: readonly string[]; readonly by: 'code' | 'caller' };
+  /** Present when pickFromSources read a source from its stored index:
+   *  by source id, the parts in the file, the parts written and deleted
+   *  this call, whether the file was built again and the milliseconds
+   *  the update took. */
+  readonly index?: Readonly<Record<string, StoredIndexReport>>;
   /** Present on every pick: the history's size N in reference parts
    *  (every reference part the pick received, including pool members
    *  the keyword lanes never held), how many of the feed's reference

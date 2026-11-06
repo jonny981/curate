@@ -26,11 +26,11 @@ it('keeps a meaning-only match through the skill cache and embeds source search 
   const source = { ...knowledgeBase(folder), labelKinds: [], rare: false, names: false };
   const evaluate = async (meaning: boolean) => {
     const asked = new Set<string>();
-    const calls: { task: string; meaningLane: boolean; pickRead: boolean }[] = [];
+    const calls: { task: string; meaningLane: boolean }[] = [];
     const searched = searchSource(source, searches, [], folder);
     const counting = { ...searched, async read(request: { task: string; meaningLane?: unknown }, context?: unknown) {
-      calls.push({ task: request.task, meaningLane: request.meaningLane !== undefined, pickRead: context !== undefined });
-      return searched.read(request);
+      calls.push({ task: request.task, meaningLane: request.meaningLane !== undefined });
+      return searched.read(request, context);
     } };
     const result = await pickFullSources([counting], {
       task: 'archive message backlog', searchLines: ['curate-search:0', 'curate-search:1', 'curate-search:2'],
@@ -49,12 +49,9 @@ it('keeps a meaning-only match through the skill cache and embeds source search 
   expect([...meaning.asked].some((text) => text.includes('Retire the mail queue.'))).toBe(true);
   // The pick's four meaning reads all came from pickFullSources' cache:
   // the wrapped source saw each meaning lane read once, in the pre-reads,
-  // and no read of the same lane inside the pick. A read the pick issues
-  // carries its read context; a pre-read carries none, so a meaning read
-  // with a context is one the cache did not hold.
+  // and no read of the same lane inside the pick.
   expect(meaning.calls.filter((read) => read.meaningLane).map((read) => read.task))
     .toEqual(['archive message backlog', 'curate-search:0', 'curate-search:1', 'curate-search:2']);
-  expect(meaning.calls.some((read) => read.meaningLane && read.pickRead)).toBe(false);
   expect(inputs).toContain('discard old correspondence');
   expect(inputs.some((text) => text.startsWith('curate-search:'))).toBe(false);
   expect(meaning.result.record.candidates.filter((part: { status: string }) => part.status === 'selected')).toHaveLength(2);

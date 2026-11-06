@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -10,8 +10,12 @@ import { CHAT_KEYWORD_SETTINGS, rankChat } from '../src/chat-rank.js';
 import { porterStem } from '../src/porter.js';
 
 // Every transcript file the reader opens, so a spec can see an excluded
-// file was never read.
+// file was never read, and every byte it reads from an opened file, so a
+// spec can count what reading part of a file cost.
 const fileReads: string[] = [];
+const rangeReads: { file: string; bytes: number }[] = [];
+// Every folder the reader lists, so a spec can count its walks.
+const folderReads: string[] = [];
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
   return {
@@ -19,6 +23,20 @@ vi.mock('node:fs/promises', async (importOriginal) => {
     readFile: (file: unknown, options?: unknown) => {
       fileReads.push(String(file));
       return (actual.readFile as (f: unknown, o?: unknown) => Promise<unknown>)(file, options);
+    },
+    readdir: (folder: unknown, options?: unknown) => {
+      folderReads.push(String(folder));
+      return (actual.readdir as (f: unknown, o?: unknown) => Promise<unknown>)(folder, options);
+    },
+    open: async (...call: Parameters<typeof actual.open>) => {
+      const handle = await actual.open(...call);
+      const read = handle.read.bind(handle) as (...args: unknown[]) => Promise<{ bytesRead: number }>;
+      (handle as { read: unknown }).read = async (...args: unknown[]) => {
+        const result = await read(...args);
+        rangeReads.push({ file: String(call[0]), bytes: result.bytesRead });
+        return result;
+      };
+      return handle;
     },
   };
 });
@@ -751,5 +769,197 @@ describe('streaming read', () => {
     expect(laneRead.noSearchMatch).toBe(true);
     expect(laneRead.lanes).toEqual([{ task: 'qxzwv no such terms anywhere', lane: 'search', read: 75_000, kept: 0 }]);
     expect(result.selected).toEqual([]);
+  });
+});
+
+describe('stored index', () => {
+  const embed = async (texts: readonly string[]) =>
+    texts.map((text) => (text.includes('backup') ? [1, 0] : [0, 1]));
+  const task = 'Where did Alice run the S3 backup?';
+  // Every lane a pick sends a reader: the task and a search line, the
+  // uncut pool, a limit, a phrase and a name, a kind, the task period, a
+  // meaning query, and a time zone that changes every part's title.
+  const lanes: CandidateReadRequest[] = [
+    { task, wholeLanes: false },
+    { task: 'battery storage notes', wholeLanes: false },
+    { task, wholeLanes: true },
+    { task, wholeLanes: false, limit: 2 },
+    { task: 'exact phrase', phraseLane: true },
+    { task: 'Alice', phraseLane: true },
+    { task: 'backup', phraseLane: true, topic: task, wholeLanes: false },
+    { task, wholeLanes: false, taskPeriod: { from: '2026-10-01T00:00:00Z', to: '2026-10-03T00:00:00Z' } },
+    { task, wholeLanes: false, meaningLane: { embed } },
+    { task, wholeLanes: true, timeZone: 'Pacific/Auckland' },
+  ];
+  async function history(): Promise<string> {
+    const directory = await folder();
+    await transcript('codex', [
+      message('codex', 'user', 'The S3 backup runs nightly; running backups takes an hour.'),
+      message('codex', 'assistant', 'Alice restored the backup from S3 yesterday.', OLD),
+      message('codex', 'user', `Battery storage notes: the exact phrase here matters. ${'Long notes about storage. '.repeat(40)}`),
+      { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'no date' }] } },
+    ], directory, 'first');
+    await transcript('codex', [
+      message('codex', 'user', 'Unrelated breakfast pancakes.'),
+      message('codex', 'assistant', 'Battery storage notes again, and an S3 bucket.'),
+    ], directory, 'second');
+    await transcript('claude-code', [message('claude-code', 'user', 'Alice runs the backup by hand on Fridays.')], directory, 'third');
+    return directory;
+  }
+  const withoutReport = (result: Awaited<ReturnType<CandidateSource['read']>>) => {
+    if (result.status !== 'read') throw new Error('Expected a read');
+    const { index: _index, ...rest } = result;
+    return rest;
+  };
+
+  it('returns the same candidates and ranks from the stored index as from the transcripts, for every lane, on the first call and the second', { timeout: 60_000 }, async () => {
+    const directory = await history();
+    for (const lane of lanes) {
+      const cache = await folder();
+      const direct = withoutReport(await chat({ paths: [directory], index: false }).read(lane));
+      expect(direct.candidates.length, JSON.stringify(lane.task)).toBeGreaterThan(0);
+      const first = await chat({ paths: [directory], index: { directory: cache } }).read(lane);
+      const second = await chat({ paths: [directory], index: { directory: cache } }).read(lane);
+      expect(withoutReport(first), JSON.stringify(lane)).toEqual(direct);
+      expect(withoutReport(second), JSON.stringify(lane)).toEqual(direct);
+      if (first.status !== 'read' || second.status !== 'read') throw new Error('Expected a read');
+      expect(first.index).toMatchObject({ parts: 7, added: 7, removed: 0, rebuilt: false });
+      expect(second.index).toMatchObject({ parts: 7, added: 0, removed: 0, rebuilt: false });
+    }
+  });
+
+  it('reads only the new bytes of a transcript that grew, and reads an edited one again whole', async () => {
+    const directory = await folder();
+    const cache = await folder();
+    const file = join(directory, '2026/10/02/grown.jsonl');
+    const filler = (index: number) => `background message ${index} ${'about nothing in particular '.repeat(20)}`;
+    await transcript('codex', Array.from({ length: 20 }, (_, index) => message('codex', 'user', filler(index))), directory, 'grown');
+    const source = () => chat({ providers: ['codex'], paths: [directory], index: { directory: cache } });
+    const before = await source().read({ task: 'orchard harvest', wholeLanes: false });
+    if (before.status !== 'read') throw new Error('Expected a read');
+    expect(before.index).toMatchObject({ added: 20 });
+    const size = (await stat(file)).size;
+
+    fileReads.length = 0;
+    rangeReads.length = 0;
+    const line = `${JSON.stringify(message('codex', 'user', 'The orchard harvest starts on Monday.'))}\n`;
+    await appendFile(file, line);
+    const grown = await source().read({ task: 'orchard harvest', wholeLanes: false });
+    if (grown.status !== 'read') throw new Error('Expected a read');
+    expect(grown.candidates.map((candidate) => candidate.text)).toEqual(['The orchard harvest starts on Monday.']);
+    expect(grown.index).toMatchObject({ parts: 21, added: 1, removed: 0 });
+    // The transcript was never read whole: its first and last indexed
+    // kilobyte, checked unchanged, and the appended line are all it read.
+    const grownFile = (path: string) => path.endsWith('/2026/10/02/grown.jsonl');
+    expect(fileReads.filter(grownFile)).toEqual([]);
+    const read = rangeReads.filter((entry) => grownFile(entry.file)).reduce((sum, entry) => sum + entry.bytes, 0);
+    expect(read).toBe(1024 + 1024 + Buffer.byteLength(line));
+    expect(read).toBeLessThan(size);
+
+    const text = await readFile(file, 'utf8');
+    await writeFile(file, text.replace('background message 3 ', 'background message 3 orchard '));
+    fileReads.length = 0;
+    const edited = await source().read({ task: 'orchard harvest', wholeLanes: false });
+    if (edited.status !== 'read') throw new Error('Expected a read');
+    expect(fileReads.filter(grownFile)).toHaveLength(1);
+    expect(edited.index).toMatchObject({ parts: 21, added: 21, removed: 21 });
+    expect(edited.candidates.map((candidate) => candidate.text)).toContain('The orchard harvest starts on Monday.');
+  });
+
+  it('drops a removed transcript and reads a new one', async () => {
+    const directory = await folder();
+    const cache = await folder();
+    await transcript('codex', [message('codex', 'user', 'orchard one')], directory, 'one');
+    await transcript('codex', [message('codex', 'user', 'orchard two')], directory, 'two');
+    const source = () => chat({ providers: ['codex'], paths: [directory], index: { directory: cache } });
+    await source().read({ task: 'orchard' });
+    await rm(join(directory, '2026/10/02/one.jsonl'));
+    await transcript('codex', [message('codex', 'user', 'orchard three')], directory, 'three');
+    const after = await source().read({ task: 'orchard' });
+    if (after.status !== 'read') throw new Error('Expected a read');
+    expect(after.candidates.map((candidate) => candidate.text).sort()).toEqual(['orchard three', 'orchard two']);
+    expect(after.index).toMatchObject({ parts: 2, added: 1, removed: 1 });
+  });
+
+  it('never returns a path the request excludes and never writes one its own exclude names', async () => {
+    const directory = await folder();
+    const cache = await folder();
+    await transcript('codex', [message('codex', 'user', 'orchard kept')], directory, 'kept');
+    await transcript('codex', [message('codex', 'user', 'orchard hidden')], directory, 'hidden');
+    await transcript('codex', [message('codex', 'user', 'orchard asked away')], directory, 'asked');
+    fileReads.length = 0;
+    const result = await chat({
+      providers: ['codex'], paths: [directory], exclude: ['2026/10/02/hidden.jsonl'], index: { directory: cache },
+    }).read({ task: 'orchard', exclude: ['2026/10/02/asked.jsonl'] });
+    if (result.status !== 'read') throw new Error('Expected a read');
+    expect(result.candidates.map((candidate) => candidate.text)).toEqual(['orchard kept']);
+    // Neither excluded transcript was opened, and the file holds neither.
+    expect(fileReads.filter((file) => /(?:hidden|asked)\.jsonl$/.test(file))).toEqual([]);
+    const [name] = (await readdir(cache)).filter((entry) => entry.endsWith('.sqlite'));
+    const { DatabaseSync } = process.getBuiltinModule('node:sqlite');
+    const database = new DatabaseSync(join(cache, name!));
+    try {
+      expect((database.prepare('SELECT path FROM transcripts').all() as { path: string }[]).map((row) => row.path)).toEqual(['2026/10/02/kept.jsonl']);
+      expect(database.prepare("SELECT COUNT(*) AS n FROM parts WHERE text LIKE '%hidden%' OR text LIKE '%asked%'").get())
+        .toEqual({ n: 0 });
+    } finally {
+      database.close();
+    }
+  });
+
+  it('reports what each update did in the pick record, by source id', async () => {
+    const directory = await history();
+    const cache = await folder();
+    const decide: PickDecide = async (batch) => Object.fromEntries(
+      batch.questions.map((q) => [q.key, { status: 'answered' as const, probability: 0.9 }]));
+    const pick = () => pickFromSources([keywordChat({ id: 'chat:fixture', paths: [directory], index: { directory: cache } })],
+      { task, searchLines: ['battery storage notes'] }, { ...uncutPick, task, decide });
+    const first = await pick();
+    expect(first.record.index?.['chat:fixture']).toMatchObject({ parts: 7, added: 7, removed: 0, rebuilt: false });
+    const second = await pick();
+    expect(second.record.index?.['chat:fixture']).toMatchObject({ parts: 7, added: 0, removed: 0, rebuilt: false });
+    expect(second.selected.map((part) => part.id)).toEqual(first.selected.map((part) => part.id));
+  });
+
+  it('walks the transcript folders once for every read of one call that shares a read context, at every part size', async () => {
+    const directory = await history();
+    const cache = await folder();
+    const root = await realpath(directory);
+    const source = chat({ providers: ['codex'], paths: [directory], index: { directory: cache } });
+    const sized = [700, 300].flatMap((maxQuestionText) => lanes.map((lane) => ({ ...lane, maxQuestionText })));
+    const walks = async (context?: { files: Map<string, Promise<string>> }) => {
+      folderReads.length = 0;
+      const results = [];
+      // Each update of the index makes its own report.
+      const updates = new Set<unknown>();
+      for (const lane of sized) {
+        const result = await source.read(lane, context);
+        if (result.status === 'read') updates.add(result.index);
+        results.push(withoutReport(result));
+      }
+      return { results, walks: folderReads.filter((path) => path === root).length, updates: updates.size };
+    };
+    const shared = await walks({ files: new Map() });
+    expect(shared.walks).toBe(1);
+    // One update for each part size.
+    expect(shared.updates).toBe(2);
+    // Each part size keeps its own index file.
+    expect((await readdir(cache)).filter((name) => name.endsWith('.sqlite'))).toHaveLength(2);
+    // Without a context each read brings the index up to date alone.
+    const alone = await walks();
+    expect(alone.walks).toBe(sized.length);
+    expect(alone.updates).toBe(sized.length);
+    expect(shared.results).toEqual(alone.results);
+    // The sizes cut the long message differently.
+    expect(shared.results[lanes.length + 2]).not.toEqual(shared.results[2]);
+  });
+
+  it('writes no file with index false', async () => {
+    const directory = await history();
+    const cache = await folder();
+    const result = await chat({ paths: [directory], index: false }).read({ task });
+    if (result.status !== 'read') throw new Error('Expected a read');
+    expect(result.index).toBeUndefined();
+    expect(await readdir(cache)).toEqual([]);
   });
 });

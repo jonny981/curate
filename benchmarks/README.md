@@ -36,8 +36,8 @@ The answering model does the work, so you don't want to flood its context with n
 
 | System | What you run | Answering model | Score | Answering context (tokens) | Answering input cost | Full pipeline cost |
 | --- | --- | --- | --- | --- | --- | --- |
-| **Curate** | A TypeScript library: plain files, no database | GPT-5-mini | 91.6 (458/500) | 485 | $0.0001 | **$0.12** (est.) |
-| **Curate** | A TypeScript library: plain files, no database | GPT-5 | 93.4 (467/500) | **449** | **$0.0006** | $0.16 (est.) |
+| **Curate** | A TypeScript library: local SQLite indexes, no database server | GPT-5-mini | 91.6 (458/500) | 485 | $0.0001 | **$0.12** (est.) |
+| **Curate** | A TypeScript library: local SQLite indexes, no database server | GPT-5 | 93.4 (467/500) | **449** | **$0.0006** | $0.16 (est.) |
 | [Mem0 platform](https://github.com/mem0ai/memory-benchmarks/blob/4b61c5d31b9c668a12b4f5e78064248a02c82d2b/results/platform/longmemeval_results.json) | Mem0's hosted platform | GPT-5 | 93.4 | 6,787 mean | $0.0085 | not published |
 | [Mastra observational memory](https://mastra.ai/research/observational-memory) | A TypeScript framework you run, with a storage provider | GPT-5-mini | 93.6 | ~30,000 mean | $0.0075 | ~$0.045 (est.) |
 | [Zep](https://getzep.com/research) | Zep's hosted service is its recommended setup | GPT-5.4 | 90.2 | 4,408 median | not priced | not published |

@@ -1,6 +1,6 @@
 import { execFile, execFileSync, type ChildProcess } from 'node:child_process';
 import { closeSync, openSync, writeFileSync } from 'node:fs';
-import { appendFile, chmod, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { appendFile, chmod, mkdir, mkdtemp, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -344,7 +344,7 @@ describe('git', () => {
 
     const kept = (await git(directory, ['rev-parse', 'HEAD~1'])).trim();
     const result = await read(
-      gitSource(directory),
+      gitSource(directory, { index: false }),
       { task: 'work', exclude: ['secret.md'] },
     );
 
@@ -394,7 +394,7 @@ describe('git', () => {
     const renamed = (await git(directory, ['rev-parse', 'HEAD'])).trim();
 
     const result = await read(
-      gitSource(directory),
+      gitSource(directory, { index: false }),
       { task: 'work', exclude: ['docs/secret.md'] },
     );
 
@@ -420,7 +420,7 @@ describe('git', () => {
     // relative '.' all name the same thing: every repository path sits
     // beneath the entry, so no commit is admitted.
     for (const entry of [directory, dirname(directory), '.']) {
-      const result = await read(gitSource(directory), { task: 'work', exclude: [entry] });
+      const result = await read(gitSource(directory, { index: false }), { task: 'work', exclude: [entry] });
 
       expect(result.status).toBe('read');
       if (result.status !== 'read') return;
@@ -440,7 +440,7 @@ describe('git', () => {
     ]);
 
     const result = await read(
-      gitSource(directory, { since: '7 days' }),
+      gitSource(directory, { since: '7 days', index: false }),
       { task: 'work', taskDate: '2026-10-28T12:00:00Z' },
     );
 
@@ -475,9 +475,9 @@ describe('git', () => {
     ]);
     const hidden = (await git(directory, ['rev-parse', 'HEAD'])).trim();
 
-    const excluding = gitSource(directory, { id: 'git:a', exclude: ['secret.md'] });
+    const excluding = gitSource(directory, { id: 'git:a', exclude: ['secret.md'], index: false });
     const picked = await pickFromSources(
-      [excluding, gitSource(directory, { id: 'git:b' })],
+      [excluding, gitSource(directory, { id: 'git:b', index: false })],
       { task: 'work' },
       {
         task: 'work',
@@ -628,7 +628,7 @@ describe('git', () => {
   it('runs one log pass and the pin resolution when nothing is opted in', async () => {
     const directory = await repository([{ subject: 'one', files: { 'a.md': 'a' } }]);
 
-    await read(gitSource(directory), { task: 'work' });
+    await read(gitSource(directory, { index: false }), { task: 'work' });
 
     const commands = gitCalls.map((args) => args[6]);
     expect(commands).toEqual(['rev-parse', 'rev-parse', 'log']);
@@ -1076,5 +1076,252 @@ describe('the BM25 keyword score', () => {
     expect(result.candidates).toHaveLength(5);
     expect(of('zephyr.md').signals['bm25']!).toBeGreaterThan(of('battery.md').signals['bm25']!);
     expect(result.candidates[0]!.changedPaths).toEqual(['zephyr.md']);
+  });
+});
+
+describe('git stored index', () => {
+  const embed = async (texts: readonly string[]) =>
+    texts.map((text) => (text.includes('backup') ? [1, 0] : [0, 1]));
+  const task = 'Where does the battery backup run?';
+  // Every lane a pick sends a reader, as in the chat reader's spec.
+  const lanes = [
+    { task, wholeLanes: false },
+    { task: 'retention policy for snapshots', wholeLanes: false },
+    { task, wholeLanes: true },
+    { task, wholeLanes: false, limit: 2 },
+    { task: 'battery backup', phraseLane: true },
+    { task: 'Alice', phraseLane: true },
+    { task: 'backup', phraseLane: true, topic: task, wholeLanes: false },
+    { task, wholeLanes: false, taskPeriod: { from: '2026-10-01T00:00:00Z', to: '2026-10-31T00:00:00Z' } },
+    { task, wholeLanes: false, meaningLane: { embed } },
+    { task, wholeLanes: true, exclude: ['secret.md'] },
+    { task, wholeLanes: true, paths: ['src/backup.ts'] },
+  ];
+  async function history(): Promise<string> {
+    return repository([
+      { subject: 'add the battery backup job', body: 'The backup runs nightly from src.', date: '2026-09-02T10:00:00Z', files: { 'src/backup.ts': 'a' } },
+      { subject: 'tune retention', body: 'Retention policy for snapshots keeps thirty days.', date: '2026-10-03T10:00:00Z', files: { 'docs/retention.md': 'b' } },
+      { subject: 'note from Alice', body: 'Alice says the battery backup failed twice; backups are running again.', date: '2026-10-10T10:00:00Z', files: { 'docs/alice.md': 'c' } },
+      { subject: 'private keys', body: 'battery backup secrets', date: '2026-10-12T10:00:00Z', files: { 'secret.md': 'd' } },
+      { subject: 'unrelated tidy', body: 'Formatting only.', date: '2026-10-20T10:00:00Z', files: { 'src/format.ts': 'e' } },
+    ]);
+  }
+  const withoutReport = (result: Awaited<ReturnType<CandidateSource['read']>>) => {
+    if (result.status !== 'read') throw new Error('Expected a read');
+    const { index: _index, ...rest } = result;
+    return rest;
+  };
+
+  it('returns the same candidates and ranks from the stored index as from git, for every lane, on the first call and the second', { timeout: 60_000 }, async () => {
+    const directory = await history();
+    for (const settings of [{}, { since: '2026-10-01', paths: ['src', 'docs'], exclude: ['docs/retention.md'] }]) {
+      for (const lane of lanes) {
+        const cache = await mkdtemp(join(tmpdir(), 'curate-git-index-'));
+        temporaryDirectories.push(cache);
+        // A fixed task date: recency is measured from it, not from the clock.
+        const request = { ...lane, taskDate: '2026-10-28T12:00:00Z' };
+        const direct = withoutReport(await read(gitSource(directory, { ...settings, index: false }), request));
+        const first = await read(gitSource(directory, { ...settings, index: { directory: cache } }), request);
+        const second = await read(gitSource(directory, { ...settings, index: { directory: cache } }), request);
+        expect(withoutReport(first), JSON.stringify([settings, lane])).toEqual(direct);
+        expect(withoutReport(second), JSON.stringify([settings, lane])).toEqual(direct);
+        if (first.status !== 'read' || second.status !== 'read') throw new Error('Expected a read');
+        expect(second.index).toMatchObject({ added: 0, removed: 0, rebuilt: false });
+      }
+    }
+    // The fixture gives every lane something to rank.
+    for (const lane of lanes) {
+      const result = await read(gitSource(directory, { index: false }), lane);
+      if (result.status !== 'read') throw new Error('Expected a read');
+      expect(result.candidates.length, JSON.stringify(lane)).toBeGreaterThan(0);
+    }
+  });
+
+  it('finds a new commit, and rebuilds the file when history is rewritten', async () => {
+    const directory = await history();
+    const cache = await mkdtemp(join(tmpdir(), 'curate-git-index-'));
+    temporaryDirectories.push(cache);
+    const source = () => gitSource(directory, { index: { directory: cache } });
+    const first = await read(source(), { task: 'orchard', wholeLanes: false });
+    if (first.status !== 'read') throw new Error('Expected a read');
+    expect(first.index).toMatchObject({ parts: 5, added: 5, removed: 0, rebuilt: false });
+
+    await writeFiles(directory, { 'docs/orchard.md': 'f' });
+    await commit(directory, 'plan the orchard harvest', '2026-10-25T10:00:00Z');
+    const added = await read(source(), { task: 'orchard', wholeLanes: false });
+    if (added.status !== 'read') throw new Error('Expected a read');
+    expect(added.candidates.map((candidate) => candidate.title)).toEqual(['plan the orchard harvest']);
+    expect(added.index).toMatchObject({ parts: 6, added: 1, removed: 0, rebuilt: false });
+
+    await git(directory, ['commit', '--amend', '-m', 'plan the orchard picking'], IDENTITY);
+    const rewritten = await read(source(), { task: 'orchard', wholeLanes: false });
+    if (rewritten.status !== 'read') throw new Error('Expected a read');
+    expect(rewritten.candidates.map((candidate) => candidate.title)).toEqual(['plan the orchard picking']);
+    expect(rewritten.index).toMatchObject({ parts: 6, added: 6, removed: 6, rebuilt: true });
+  });
+
+  it('never returns a commit the request excludes and never writes one its own exclude names', async () => {
+    const directory = await history();
+    const cache = await mkdtemp(join(tmpdir(), 'curate-git-index-'));
+    temporaryDirectories.push(cache);
+    const result = await read(gitSource(directory, { exclude: ['secret.md'], index: { directory: cache } }),
+      { task, wholeLanes: true, exclude: ['docs/alice.md'] });
+    if (result.status !== 'read') throw new Error('Expected a read');
+    expect(result.candidates.map((candidate) => candidate.title).sort())
+      .toEqual(['add the battery backup job', 'tune retention', 'unrelated tidy']);
+    // Neither excluded commit's body was fetched, and the file holds neither.
+    const bodyReads = gitCalls.map((args, index) => ({ args, index }))
+      .filter(({ args }) => args.includes('--stdin') && args.some((arg) => arg.includes('%b')));
+    for (const { index } of bodyReads) {
+      for (const subject of ['private keys', 'note from Alice']) {
+        const sha = (await git(directory, ['log', '--format=%H', `--grep=${subject}`])).trim();
+        expect(gitInputs[index]).not.toContain(sha);
+      }
+    }
+    const [name] = (await readdir(cache)).filter((entry) => entry.endsWith('.sqlite'));
+    const { DatabaseSync } = process.getBuiltinModule('node:sqlite');
+    const database = new DatabaseSync(join(cache, name!));
+    try {
+      expect((database.prepare('SELECT subject FROM commits').all() as { subject: string }[]).map((row) => row.subject).sort())
+        .toEqual(['add the battery backup job', 'tune retention', 'unrelated tidy']);
+    } finally {
+      database.close();
+    }
+  });
+
+  it('lists the history for the stored index once for every read of one call that shares a read context', async () => {
+    const directory = await history();
+    const cache = await mkdtemp(join(tmpdir(), 'curate-git-index-'));
+    temporaryDirectories.push(cache);
+    const source = gitSource(directory, { index: { directory: cache } });
+    // The update lists every commit the head reaches, with no date range.
+    const listings = async (context?: { files: Map<string, Promise<string>> }) => {
+      gitCalls.length = 0;
+      for (const lane of lanes) await source.read(lane, context);
+      return gitCalls.filter((args) => args.includes('--format=%H%x1f%h')
+        && !args.some((arg) => arg.startsWith('--since') || arg.startsWith('--until'))).length;
+    };
+    // One update for the lanes that exclude nothing, one for the lane
+    // that excludes a file.
+    expect(await listings({ files: new Map() })).toBe(2);
+    // Without a context each read brings the index up to date alone.
+    expect(await listings()).toBe(lanes.length);
+  });
+
+  it('reuses the call\'s stored index for a later lane after the clock moves a relative since', async () => {
+    const directory = await history();
+    const cache = await mkdtemp(join(tmpdir(), 'curate-git-index-'));
+    temporaryDirectories.push(cache);
+    const source = gitSource(directory, { since: '30 days', index: { directory: cache } });
+    const clock = vi.spyOn(Date, 'now');
+    try {
+      // The first lane reads the head; its look-back starts on 6 October.
+      clock.mockReturnValue(Date.parse('2026-11-05T00:00:00Z'));
+      const context = { files: new Map<string, Promise<string>>() };
+      const first = await source.read({ task, wholeLanes: true }, context);
+      if (first.status !== 'read') throw new Error('Expected a read');
+      expect(first.candidates.map((candidate) => candidate.title).sort())
+        .toEqual(['note from Alice', 'private keys', 'unrelated tidy']);
+      // A later lane, pinned to the first lane's revision, runs once the
+      // look-back has moved to midday on 12 October.
+      clock.mockReturnValue(Date.parse('2026-11-11T12:00:00Z'));
+      gitCalls.length = 0;
+      const later = await source.read({ task, wholeLanes: true, revision: first.revision }, context);
+      if (later.status !== 'read') throw new Error('Expected a read');
+      expect(later.index).toBeDefined();
+      // No second update: the stored history is not listed again.
+      expect(gitCalls.filter((args) => args.includes('--format=%H%x1f%h')
+        && !args.some((arg) => arg.startsWith('--since') || arg.startsWith('--until')))).toEqual([]);
+      // The later lane keeps its own look-back.
+      const direct = await gitSource(directory, { since: '30 days', index: false })
+        .read({ task, wholeLanes: true, revision: first.revision });
+      if (direct.status !== 'read') throw new Error('Expected a read');
+      expect(later.candidates.map((candidate) => candidate.title)).toEqual(['unrelated tidy']);
+      expect(later.candidates).toEqual(direct.candidates);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it('never fetches or stores the body of a commit outside the source\'s paths, its since, or the task date', async () => {
+    const directory = await history();
+    const subjects = ['add the battery backup job', 'tune retention', 'note from Alice', 'private keys', 'unrelated tidy'];
+    const shas = new Map(await Promise.all(subjects.map(async (subject) =>
+      [subject, (await git(directory, ['log', '--format=%H', `--grep=${subject}`])).trim()] as const)));
+    for (const { settings, request, kept } of [
+      { settings: { paths: ['src'] }, request: {}, kept: ['add the battery backup job', 'unrelated tidy'] },
+      { settings: { since: '2026-10-11' }, request: {}, kept: ['private keys', 'unrelated tidy'] },
+      { settings: {}, request: { taskDate: '2026-10-05T00:00:00Z' }, kept: ['add the battery backup job', 'tune retention'] },
+    ]) {
+      const cache = await mkdtemp(join(tmpdir(), 'curate-git-index-'));
+      temporaryDirectories.push(cache);
+      gitCalls.length = 0;
+      gitInputs.length = 0;
+      const result = await read(gitSource(directory, { ...settings, index: { directory: cache } }),
+        { task, wholeLanes: true, ...request });
+      if (result.status !== 'read') throw new Error('Expected a read');
+      expect(result.candidates.map((candidate) => candidate.title).sort(), JSON.stringify(settings)).toEqual(kept);
+      // No git call that prints bodies named a commit outside the bounds.
+      const bodyCalls = gitCalls.map((args, index) => ({ args, index }))
+        .filter(({ args }) => args.some((arg) => arg.includes('%b')));
+      expect(bodyCalls.length, JSON.stringify(settings)).toBeGreaterThan(0);
+      for (const { args, index } of bodyCalls) {
+        // A body page with no list of commits would print every commit.
+        expect(args, JSON.stringify(settings)).toContain('--stdin');
+        for (const subject of subjects.filter((entry) => !kept.includes(entry))) {
+          expect(gitInputs[index], JSON.stringify([settings, subject])).not.toContain(shas.get(subject));
+        }
+      }
+      const [name] = (await readdir(cache)).filter((entry) => entry.endsWith('.sqlite'));
+      const { DatabaseSync } = process.getBuiltinModule('node:sqlite');
+      const database = new DatabaseSync(join(cache, name!));
+      try {
+        expect((database.prepare('SELECT subject FROM commits').all() as { subject: string }[])
+          .map((row) => row.subject).sort(), JSON.stringify(settings)).toEqual(kept);
+      } finally {
+        database.close();
+      }
+    }
+  });
+
+  it('never asks git for the subject of a commit the source\'s paths or its own exclude leave out', async () => {
+    const directory = await history();
+    const subjects = ['add the battery backup job', 'tune retention', 'note from Alice', 'private keys', 'unrelated tidy'];
+    const shas = new Map(await Promise.all(subjects.map(async (subject) =>
+      [subject, (await git(directory, ['log', '--format=%H', `--grep=${subject}`])).trim()] as const)));
+    for (const { settings, kept } of [
+      { settings: { paths: ['src'] }, kept: ['add the battery backup job', 'unrelated tidy'] },
+      { settings: { exclude: ['secret.md'] }, kept: ['add the battery backup job', 'note from Alice', 'tune retention', 'unrelated tidy'] },
+    ]) {
+      const cache = await mkdtemp(join(tmpdir(), 'curate-git-index-'));
+      temporaryDirectories.push(cache);
+      gitCalls.length = 0;
+      gitInputs.length = 0;
+      const result = await read(gitSource(directory, { ...settings, index: { directory: cache } }), { task, wholeLanes: true });
+      if (result.status !== 'read') throw new Error('Expected a read');
+      expect(result.candidates.map((candidate) => candidate.title).sort(), JSON.stringify(settings)).toEqual(kept);
+      for (const subject of subjects.filter((entry) => !kept.includes(entry))) {
+        const named = gitCalls.map((args, index) => ({ args, index }))
+          .filter(({ index }) => gitInputs[index]?.includes(shas.get(subject)!) === true);
+        // The path check named the left-out commit, so the test cannot pass
+        // without looking at it.
+        expect(named.length, JSON.stringify([settings, subject])).toBeGreaterThan(0);
+        for (const { args } of named) {
+          const format = args.find((arg) => arg.startsWith('--format='));
+          expect(format, JSON.stringify([settings, subject])).toBeDefined();
+          expect(format, JSON.stringify([settings, subject])).not.toMatch(/%s|%b|%B/);
+        }
+      }
+    }
+  });
+
+  it('reads git directly for a revision other than the head', async () => {
+    const directory = await history();
+    const cache = await mkdtemp(join(tmpdir(), 'curate-git-index-'));
+    temporaryDirectories.push(cache);
+    const result = await read(gitSource(directory, { index: { directory: cache } }), { task, revision: 'HEAD~1' });
+    if (result.status !== 'read') throw new Error('Expected a read');
+    expect(result.index).toBeUndefined();
+    expect(result.candidates.map((candidate) => candidate.title)).not.toContain('unrelated tidy');
   });
 });

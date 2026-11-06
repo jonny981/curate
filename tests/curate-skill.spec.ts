@@ -242,6 +242,29 @@ describe('Codex session folder restrictions', () => {
     expect(vi.mocked(readSync).mock.calls).toHaveLength('invalid\n'.length);
   });
 
+  it('reuses the stored index for unchanged sessions on the next run', async () => {
+    const directory = await folder();
+    const root = join(directory, 'projects');
+    const sessions = join(directory, 'sessions', '2026', '01');
+    await mkdir(root, { recursive: true });
+    await mkdir(sessions, { recursive: true });
+    await writeFile(join(sessions, 'one.jsonl'), `${JSON.stringify(metadata(root))}\n${JSON.stringify(message)}\n`);
+    await writeFile(join(sessions, 'two.jsonl'), `${JSON.stringify(metadata(root))}\n${JSON.stringify(message)}\n`);
+    const entry = { type: 'codex', path: join(directory, 'sessions'), allowedCwd: root };
+    const runs = [];
+    for (const run of ['first-run', 'second-run']) {
+      const { source }: { source: CandidateSource } = await snapshotCodex(entry, join(directory, run, 'codex-1'));
+      const result = await source.read({ task: 'orchard evidence' });
+      if (result.status !== 'read') throw new Error('Expected the sessions to be read.');
+      runs.push(result);
+    }
+    expect(runs[0]!.index).toMatchObject({ parts: 2, added: 2, removed: 0 });
+    // Each run copies the sessions into its own folder; the second finds
+    // both already stored and adds nothing.
+    expect(runs[1]!.index).toMatchObject({ parts: 2, added: 0, removed: 0 });
+    expect(runs[1]!.candidates).toEqual(runs[0]!.candidates);
+  });
+
   it('reads only admitted snapshot copies despite new sessions and changed originals', async () => {
     const directory = await folder();
     const root = join(directory, 'projects');
@@ -295,7 +318,8 @@ describe('Codex session folder restrictions', () => {
 
     await writeFile(allowed, `${JSON.stringify(metadata(child))}\n`);
     await rm(join(nested, 'late-allowed.jsonl'));
-    expect(await source.read({ task: 'orchard evidence' })).toEqual(result);
+    // Only the stored index's report of what this call's update did may differ.
+    expect({ ...await source.read({ task: 'orchard evidence' }), index: undefined }).toEqual({ ...result, index: undefined });
     // The read passes over the admitted copies more than once; the set of
     // opened paths is what proves nothing outside them was touched.
     expect(new Set(vi.mocked(readFile).mock.calls.map((call) => call[0]))).toEqual(

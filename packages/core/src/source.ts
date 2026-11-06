@@ -10,6 +10,7 @@ import {
 } from './options.js';
 import { LABEL_KINDS, type LabelKind } from './labels.js';
 import { datedIn, durationMs, taskMoment, taskPeriod, timeZoneOf, zonedIso, type TaskPeriod } from './time.js';
+import type { StoredIndexReport } from './stored-index.js';
 
 /** What a source is asked for, once per search. */
 export interface CandidateReadRequest {
@@ -213,6 +214,10 @@ export type CandidateReadResult =
        *  kept (`added`) or left out (`dropped`) only because of decay. A
        *  read of several lanes compares their kept parts together. */
       readonly decay?: { readonly actedOn: number; readonly added: readonly string[]; readonly dropped: readonly string[] };
+      /** Set by a reader that read from its stored index: what bringing
+       *  the file up to date did in this call. Every read of one call
+       *  reports the same update. */
+      readonly index?: StoredIndexReport;
     }
   | {
       /** Expected absence: no repository, no git binary, no record
@@ -525,6 +530,7 @@ async function readKeywordSearches(
   let complete = true;
   let readAny = false;
   let alwaysOnSkipped: Extract<CandidateReadResult, { status: 'read' }>['alwaysOnSkipped'];
+  let index: StoredIndexReport | undefined;
   // Decay's ranked count is the task's own lane's; `plainKept` holds the
   // parts the lanes keep without decay, so the source's added and
   // dropped parts compare what all its lanes keep together.
@@ -559,6 +565,7 @@ async function readKeywordSearches(
     }
     readAny = true;
     alwaysOnSkipped ??= read.alwaysOnSkipped;
+    index ??= read.index;
     if (lane === 0) decayRanked = read.decay?.actedOn;
     if (resolvedRevision === undefined && read.revision !== undefined) resolvedRevision = read.revision;
     if (resolvedRevision !== undefined && (request.revision !== undefined
@@ -631,6 +638,7 @@ async function readKeywordSearches(
       ({ ...unmarked(candidate), searchRanks: ranks, ...(past ? { pastLaneCut: true as const } : {}) })),
     lanes: reports,
     ...(alwaysOnSkipped === undefined ? {} : { alwaysOnSkipped }),
+    ...(index === undefined ? {} : { index }),
     ...(decay === undefined ? {} : { decay }),
     ...(noSearchMatch ? { noSearchMatch: true } : {}),
     ...(reasons.size === 0 ? {} : { partial: [...reasons].join('; ') }),
@@ -1146,6 +1154,12 @@ export async function pickFromSources(
   const levers = { ...result.record.levers, sources: sourceLevers,
     wholeLanes: keywordWhole === meaningWhole ? keywordWhole
       : { keyword: keywordWhole, meaning: meaningWhole } };
+  // What each source's stored index update did, by source id.
+  const index: Record<string, StoredIndexReport> = Object.create(null);
+  for (const [at, read] of reads.entries()) {
+    if (read.status === 'read' && read.index !== undefined) index[sources[at]!.id] = read.index;
+  }
   // The names found above, also when every source with name lanes on was absent.
-  return { ...result, reads, record: { ...result.record, ...(found === undefined ? {} : { names: found }), levers, effects } };
+  return { ...result, reads, record: { ...result.record, ...(found === undefined ? {} : { names: found }),
+    ...(Object.keys(index).length === 0 ? {} : { index }), levers, effects } };
 }

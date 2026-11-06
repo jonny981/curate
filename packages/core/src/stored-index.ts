@@ -1,0 +1,147 @@
+import { createHash } from 'node:crypto';
+import { chmod, mkdir, open } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+
+/** Where a reader keeps its stored index: one local file per source. */
+export interface StoredIndexOptions {
+  /** The folder the file lives in. Absent means
+   *  `$XDG_CACHE_HOME/curate/index`, or `~/.cache/curate/index` when
+   *  XDG_CACHE_HOME is unset. */
+  readonly directory?: string;
+}
+
+/** What bringing one source's stored index up to date did in this call. */
+export interface StoredIndexReport {
+  /** Parts in the file after the update. */
+  readonly parts: number;
+  /** Parts written this call: new parts, and parts read again from a
+   *  changed file. */
+  readonly added: number;
+  /** Parts deleted this call: the parts of a removed or changed file,
+   *  including the old copies of parts read again. */
+  readonly removed: number;
+  /** True when the file was emptied and every part read again. */
+  readonly rebuilt: boolean;
+  /** Milliseconds the update took. */
+  readonly ms: number;
+}
+
+/** The stored layout's version. A file of another version is never
+ *  opened: its name differs, so the source is indexed again. */
+export const STORED_INDEX_FORMAT = 1;
+
+/** Checks a reader's `index` option: a settings object or false. */
+export function checkIndexOption(option: unknown): void {
+  if (option === undefined || option === false) return;
+  if (typeof option !== 'object' || option === null || Array.isArray(option)) {
+    throw new TypeError('index must be { directory } or false.');
+  }
+  const { directory, ...rest } = option as Record<string, unknown>;
+  if (Object.keys(rest).length > 0) throw new TypeError('index takes only directory.');
+  if (directory !== undefined && (typeof directory !== 'string' || directory.trim() === '')) {
+    throw new TypeError('index.directory must be a non-empty string.');
+  }
+}
+
+/** The folder a reader's index lives in, or undefined when it is off.
+ *  Read when the file is opened, so the environment of that call decides. */
+export function indexDirectory(option: StoredIndexOptions | false | undefined): string | undefined {
+  if (option === false) return undefined;
+  return option?.directory
+    ?? join(process.env.XDG_CACHE_HOME || join(homedir(), '.cache'), 'curate', 'index');
+}
+
+/** The parts of `node:sqlite` the index uses. */
+export interface IndexDatabase {
+  exec(sql: string): void;
+  prepare(sql: string): IndexStatement;
+  close(): void;
+}
+export interface IndexStatement {
+  run(...values: unknown[]): { readonly changes: number | bigint; readonly lastInsertRowid: number | bigint };
+  all(...values: unknown[]): unknown[];
+  get(...values: unknown[]): unknown;
+}
+
+/** The file for one source: its name comes from the source id, the
+ *  settings that decide which parts exist (`key`) and the format
+ *  version. A change to any of them names a new file. */
+export function indexFilePath(directory: string, sourceId: string, key: unknown): string {
+  const hash = createHash('sha256').update(JSON.stringify([sourceId, key, STORED_INDEX_FORMAT])).digest('hex').slice(0, 24);
+  const readable = sourceId.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48);
+  return join(directory, `${readable === '' ? 'source' : readable}-${hash}.v${STORED_INDEX_FORMAT}.sqlite`);
+}
+
+/** Opens (creating when absent) one source's index file with mode 0600,
+ *  inside a folder made with mode 0700. `node:sqlite` loads here, on
+ *  the first open, so a process that never indexes never loads it. Node
+ *  22 prints an ExperimentalWarning when it loads. */
+export async function openIndexFile(path: string, directory: string): Promise<IndexDatabase> {
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  // The file holds the history's text: create it private before SQLite
+  // opens it. SQLite gives the files it makes beside it the same mode.
+  await (await open(path, 'a', 0o600)).close();
+  await chmod(path, 0o600);
+  const sqlite = process.getBuiltinModule('node:sqlite') as unknown as {
+    DatabaseSync: new (path: string) => IndexDatabase;
+  } | undefined;
+  if (sqlite === undefined) {
+    throw new Error('The stored index needs node:sqlite, which this Node does not provide. '
+      + 'Node 22 from 22.20 and Node 24 have it; or pass index: false to read the source directly.');
+  }
+  const database = new sqlite.DatabaseSync(path);
+  // A lane reads while another process writes, and the reverse, without
+  // waiting on each other.
+  database.exec('PRAGMA journal_mode = WAL');
+  // Two updates of one file from two processes take turns: the second
+  // waits for the first to commit rather than fail. The wait drops nothing.
+  database.exec('PRAGMA busy_timeout = 600000');
+  return database;
+}
+
+const updating = new Map<string, Promise<unknown>>();
+
+/** Runs `work` on one file after every earlier update of that file in
+ *  this process has finished, inside one write transaction: either every
+ *  change lands or none does. SQLite's own lock makes other processes
+ *  wait, but a wait inside one process would stop the update it waits on. */
+export function updateIndex<T>(path: string, database: IndexDatabase, work: () => Promise<T>): Promise<T> {
+  const before = updating.get(path) ?? Promise.resolve();
+  const run = before.catch(() => undefined).then(async () => {
+    database.exec('BEGIN IMMEDIATE');
+    try {
+      const result = await work();
+      database.exec('COMMIT');
+      return result;
+    } catch (error) {
+      database.exec('ROLLBACK');
+      throw error;
+    }
+  });
+  const settled = run.catch(() => undefined);
+  updating.set(path, settled);
+  void settled.then(() => { if (updating.get(path) === settled) updating.delete(path); });
+  return run;
+}
+
+/** A part's words and how often each occurs, as one string: ` word:count`
+ *  per distinct word, with a trailing space. It needs no word list shared
+ *  across parts, so the file and the memory a read uses never grow with
+ *  the history's vocabulary. Words must hold no space or colon. */
+export function wordBag(words: Iterable<string>): string {
+  const counts = new Map<string, number>();
+  for (const word of words) counts.set(word, (counts.get(word) ?? 0) + 1);
+  const entries: string[] = [''];
+  for (const [word, count] of counts) entries.push(`${word}:${count}`);
+  entries.push('');
+  return entries.join(' ');
+}
+
+/** How often `word` occurs in a `wordBag` string: 0 when it does not. */
+export function bagCount(bag: string, word: string): number {
+  const at = bag.indexOf(` ${word}:`);
+  if (at === -1) return 0;
+  const start = at + word.length + 2;
+  return Number(bag.slice(start, bag.indexOf(' ', start)));
+}

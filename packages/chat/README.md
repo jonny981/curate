@@ -88,6 +88,13 @@ const source = chat({ providers: ['claude-code', 'codex'], since: '14 days' });
   records `noSearchMatch` so the caller can ask more broadly. A read
   with `wholeLanes: true` returns every part. A phrase lane needs only
   the matching pass.
+- **Stored index:** By default the reader keeps one local file for this
+  source, made on its first read, and every lane reads it instead of the
+  transcripts. Each call reads only what changed: the new bytes of a
+  transcript that grew, a changed transcript whole, and any new one.
+  `index: { directory }` chooses the folder, and `index: false` reads the
+  transcripts directly on every read. See
+  [Stored index](https://github.com/jonny981/curate/blob/main/packages/core/README.md#stored-index).
 
 ## Who wrote each part
 

@@ -55,6 +55,7 @@ export const EXPECTED_FILES = {
     'package/dist/pick.d.ts',
     'package/dist/search.d.ts',
     'package/dist/source.d.ts',
+    'package/dist/stored-index.d.ts',
     'package/dist/tags.d.ts',
     'package/dist/task.d.ts',
     'package/dist/time.d.ts',

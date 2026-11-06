@@ -137,6 +137,67 @@ in one pick. Readers fill it through a byte cap (64 MB): inside the cap
 a file is read once; past it each pass re-reads, so a large corpus is
 never held whole.
 
+A read context lasts one call: pass a new one to each call. Within it
+the chat, git and Markdown readers keep what a later read of the same
+call would redo: the stored index update with its folder walk, the
+Markdown reader's `git status` and git date lookups, and each Markdown
+note parsed from the stored index. Parsed notes are held outside the byte
+cap until the call ends.
+
+### Stored index
+
+The chat, git and Markdown readers keep one local file per source, made on the source's first read.
+There is no database server: the file is SQLite, through `node:sqlite`, which is built into Node.
+Every lane of a call then reads the file instead of decoding the transcripts, fetching each commit from git and parsing the notes again.
+
+- **Where it lives:** `$XDG_CACHE_HOME/curate/index`, or `~/.cache/curate/index` when `XDG_CACHE_HOME` is unset.
+  Set `index: { directory }` on the reader to choose another folder.
+  The folder is created with mode `0700` and the file with mode `0600`, because the file holds the history's text.
+- **Its name:** the source id, the settings that decide which parts exist, and a format version.
+  A change to any of them names a new file, so a stale file is never read.
+  For chat those settings are `includeTools`, the part size, the source's own `exclude` and the keyword `stem` setting.
+  For git they are the source's own `exclude`, `paths` and `since`.
+  For Markdown they are the reader (`markdown()`, `knowledgeBase()` or `rules()`), the kind, the part size and the source's own `exclude`.
+- **What it holds:** every part the reader produces, with its id, title, text, date and metadata.
+  Beside each part it holds what the reader's keyword score needs, worked out once when the part is stored: each word's count and the word total.
+  Chat stores its words stemmed when its settings stem. Git stores the words of the subject and body joined.
+  Markdown also stores each note's frontmatter, its fields, its links and whether it says it was replaced.
+- **Ranks do not change:** each reader keeps its own scoring and reads the stored counts where it read the text.
+  A lane read from the file returns the same candidates, in the same order, with the same signals, as the same read with `index: false`.
+  Git's commit count, holding counts and average length depend on the call's look-back, filters and limit, so they are counted for each call over the commits the lane ranks.
+- **When it is brought up to date:** on the first read of each call, before that read's lane.
+  The later reads of the same `pickFromSources` call share the update.
+  A read with no read context brings the file up to date on its own.
+- **Chat:** a transcript with its stored size and modification time is kept.
+  A transcript that grew, whose indexed bytes ended a line and still start and end with the same kilobyte, has only its new bytes read.
+  Any other change reads it again whole. A new transcript is read, and a removed one's parts are deleted.
+- **Git:** commits the file does not hold are read. If a stored commit is no longer reachable from the head, the file is emptied and every commit is read again.
+  A lane takes each commit's subject, body and paths from the file. Git only lists the commit names, once per call and date range.
+  A read pinned to a revision reads the file only when this call brought the file to that commit. Any other pinned read runs git as before.
+- **Markdown:** notes that are new, or changed in size or modification time, are read again.
+  A note no longer in the folder loses its parts on a read whose request excludes nothing.
+  The folder walk and the git date lookups run once per call. A read pinned to a revision reads the files as before.
+- **Exclusions:** a path the source's own `exclude` names is never written to the file.
+  A path the request's `exclude` names is never opened, returned or scored. Its stored parts stay for calls that do read it.
+  Git records a commit the source's own `exclude` names, or one that changed none of the source's `paths`, by its name only, and never reads its subject or body.
+  Git leaves a commit dated before the source's `since` or after the task date unread and unwritten, so a later call whose dates hold it reads it then.
+- **Turning it off:** `index: false` on the reader reads the source directly on every read, as before.
+- **Node:** Node 22 prints `ExperimentalWarning: SQLite is an experimental feature and might change at any time` when the file is first opened.
+  Curate does not hide warnings.
+  A Node without `node:sqlite` stops the read with an error that says so.
+- **Records:** `record.index` in the pick record says, by source id, what each update did ([Record fields](#record-fields)).
+
+```ts
+import { chat } from '@curatejs/chat';
+
+const source = chat({
+  providers: ['claude-code'],
+  index: {
+    directory: '/tmp/curate-index',
+  },
+});
+```
+
 ## Search options
 
 `pickFromSources` accepts host-written `searchLines` in its read request.
@@ -360,8 +421,9 @@ try {
   embedding, including a commit with only a subject.
   Its original body and title remain in the returned evidence.
 - **Storage:** Set `cacheDirectory` on `createLocalEmbedder()` to persist vectors by model bytes and complete input text.
-  Repeated inputs reuse these files across calls. The files contain hashes and vectors, not source text.
+  Repeated inputs reuse these files across calls. The vector files contain hashes and vectors, not source text.
   With no directory supplied, vectors exist only while a batch is scored.
+  Vectors are kept apart from the [stored index](#stored-index), whose file per source does hold the history's text.
 - **GPU:** Set `gpu: 'metal'` to require the Mac GPU. An unavailable explicit backend stops the call instead of selecting CPU.
   The returned `gpu` field names the backend in use.
 - **Candidate reads:** A supplied keyword `request.limit` still controls
@@ -1792,6 +1854,7 @@ A curate record's `effects` covers `curate`'s own options; the pick's entries st
 - **`pastLaneCut`:** on a part and its `PickRecordEntry`, true when a read with `wholeLanes` on returned the part although the lane cut would have dropped it.
 - **`PickRecord.asOf`, `PickRecord.timeZone`, `PickRecord.taskPeriod`:** the moment and zone the pick read dates in, and the period the task named ([Time](#time)).
 - **`dateWindow`:** on a part and its `PickRecordEntry`, `'task-period'` when the task's period brought it in.
+- **`PickRecord.index`:** present when `pickFromSources` read a source from its [stored index](#stored-index). By source id: `parts`, the parts in the file after the update; `added`, the parts written this call, new or read again; `removed`, the parts deleted this call, including the old copies of parts read again; `rebuilt`, true when the file was emptied and every part read again; and `ms`, the milliseconds the update took. Sources read in parallel share the clock, so `ms` is elapsed time, not work.
 
 `pickFromSources` tells `pick` how each source was read through the `readsBySource` option: the option each `searchRanks` position came from, the extra-lane options the read request gave, and whether the read kept whole lanes.
 A direct `pick` without it gets no extra-lane or `wholeLanes` entries.
