@@ -1,27 +1,15 @@
 # Curate
 
-A semantic compression library
+A TypeScript library that finds what your agent needs from past chats, notes and commits.
 
-93.8% on LongMemEval under its official grader (markup setting), with about 121 times less context than the raw history.
+93.8% on LongMemEval under its official grader, with about 121 times less context than the raw history. That run used code outside the published packages.
 
 Curate gives an agent the context it needs for a task, drawn from chat transcripts, Markdown and git history.
 It chooses evidence and turns it into a dated, cited log that the agent reads before starting work.
 
 ## Results at a glance
 
-On LongMemEval's own grader (`evaluate_qa.py`, GPT-4o), all 500 questions, answered by gpt-6.1-sol:
-
-| Curate setting | Score | Memory tokens a question (mean) | Less than the raw history |
-| --- | --- | --- | --- |
-| **Markup** | **93.8** (469/500) | **844** | **121x** |
-| Cited-only markup | 93.0 (465/500) | 854 | 120x |
-| Log | 92.6 (463/500) | 449 | 229x |
-
-- **Against Mem0's published answers, marked by the same grader in the same session:** Curate's markup setting 467 (93.4), Mem0 455 (91.0). The same Curate answers scored 469 when marked the day before. Mem0's answers come from GPT-5, Curate's from gpt-6.1-sol.
-- **Against the context other systems report on LongMemEval:** about 6 to 35 times less than Zep (4,408 median, against Curate's 685 median), Mem0 (6,787 mean) and Mastra (about 30,000 mean).
-- **The packages write the log setting and the cited-only markup setting.** The log is `compression: 'high'`, the default, and cited-only markup is `compression: 'low'`. The markup setting's published results, including 93.8%, came from runs outside the packages. The answers, memory texts and grader output are in [`benchmarks/longmemeval/2026-11-04/`](benchmarks/longmemeval/2026-11-04/README.md).
-
-The packages' published results beside other systems' published results, with up to 62 times fewer tokens. Answering models and markers differ:
+Curate's packages score close to other memory systems' published LongMemEval results, with far less context. The answering models and the markers differ:
 
 | Benchmark | System | Task model | Score | Task model tokens |
 | --- | --- | --- | --- | --- |
@@ -31,11 +19,13 @@ The packages' published results beside other systems' published results, with up
 | LongMemEval S | [Mastra observational memory](https://mastra.ai/research/observational-memory) | GPT-5-mini | 93.6 | ~30,000 mean (62x more) |
 | LongMemEval S | [Zep](https://getzep.com/research) | GPT-5.4 | 90.2 | 4,408 median (10x more) |
 
-The task model does the work (here, answering the question), and you do not want to flood its context with noise.
+The task model does the work (here, answering the question), so it should read only what the task needs.
 
-*Each multiplier compares with Curate on the same task model, or on GPT-5 for Zep's GPT-5.4: 449 tokens with GPT-5, 485 with GPT-5-mini. See the [full comparison](benchmarks/README.md#against-published-systems) for scoring methods and costs.*
+*Each multiplier compares with Curate on the same task model. The GPT-5.4 row compares with Curate on GPT-5.*
 
-DolphinBench: **22 of 30 tests passed**, at $0.24 a test at list prices. [See the results](benchmarks/README.md#dolphinbench-mem0s-benchmark-a-30-test-slice).
+DolphinBench: **22 of 30 tests passed**, at $0.24 a test at list prices. [See the results](benchmarks/README.md#dolphinbench-a-30-test-slice).
+
+Every result, how each run was set up and its proof files are in [benchmarks](benchmarks/README.md).
 
 ## Built for memory that keeps growing
 
@@ -43,7 +33,7 @@ DolphinBench: **22 of 30 tests passed**, at $0.24 a test at list prices. [See th
 - **Go straight to the source.** [Mem0](https://docs.mem0.ai/core-concepts/memory-operations/add) extracts facts with a model, [Mastra](https://mastra.ai/docs/memory/observational-memory) keeps observations written by a model, and [Zep](https://help.getzep.com/v4/how-graph-creation-works) builds a knowledge graph. Curate selects from the original history for each task.
 - **Keep the task model focused.** It gets a dated, cited log chosen for its task, even when the history spans thousands of parts.
 
-[LongMemEval](benchmarks/longmemeval/2026-10-22/README.md): **449 to 485 task-model tokens** from histories of about **50 sessions** and **102,580 tokens** on average (o200k, every turn's role and text): about 230 times less with GPT-5. [DolphinBench slice](benchmarks/dolphinbench/2026-10-22/results.md): a median log of **about 4,500 tokens** from **5,400–5,900 history parts** (o200k tokens of the logs the agent read; the published copies, whose part IDs are shorter, count about 3,200).
+[LongMemEval](benchmarks/longmemeval/2026-10-22/README.md): **449 to 485 task-model tokens** from histories of about **50 sessions** and **102,580 tokens** on average (o200k, every turn's role and text): about 230 times less with GPT-5. [DolphinBench slice](benchmarks/dolphinbench/2026-10-22/results.md): Curate turns **5,400–5,900 history parts** into a log the agent reads, with a median of **about 4,500 tokens** (o200k). The published copies of those logs use shorter part IDs, so they count about 3,200.
 
 ## Install only what you need
 
@@ -163,7 +153,7 @@ const mem = memory({ sources: [chat(), git('.'), markdown({ paths: ['docs'], kin
 ```
 
 Each source carries its own settings, tuned for that kind of history.
-A setting on one source never changes what Curate picks from another, with one exception: a selected commit brings in a note it changed.
+Sources can still affect each other. A selected commit brings in a note it changed, and the whole-call limits below are shared by every source.
 
 | Source | Rare-word round | Labels | Label bar | Name lanes | Decision-score bar | Rule bar | Questions |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -173,8 +163,8 @@ A setting on one source never changes what Curate picks from another, with one e
 | `rules()` | On | Off | | Off | 0.0146 | 0.5, not yet tuned | `MARKDOWN_CASCADE` |
 
 - **Rare-word round:** after selection, find unselected parts of the same source that share a rare word with a selected part, and ask about them.
-- **Labels:** ask each part seven kinds of personal fact (what someone owns, prefers, did, decided and so on), so parts the keyword search missed can still reach the decision step. Each part is labelled once and the label stored for later questions.
-- **Label bar (`labelBar`):** a label kind the task needs at this bar or more brings in each of the source's parts labelled at this bar or more on that kind. 0.5 for every source that carries labels.
+- **Labels:** check each history part for seven kinds of personal fact, such as what someone owns, prefers or decided. This helps Curate find relevant parts that keyword search missed. Each part is labelled once and the label stored for later questions.
+- **Label bar (`labelBar`):** Curate checks which kinds of fact the task needs. If a kind scores at least `labelBar`, Curate brings in the source's parts whose label for that kind also scores at least `labelBar`. 0.5 for every source that carries labels.
 - **Name lanes (`names`):** search once more for each person or thing the task names, as an exact phrase, so every part that mentions it reaches the decision step. The reason is recall: a part the search loses can never be picked. Off for rules, which are chosen by where they apply, not by search.
 - **Decision-score bar:** keep a reference part the decision model scored at or above this.
 - **Rule bar:** keep a rule the decision model scored at or above this. Only sources whose parts are rules use it: `rules()`, and `markdown()` with kind `rules` or `instructions`.
@@ -507,11 +497,11 @@ Set `TYPESAFE_API_KEY` in the environment or the `KEY=VALUE` file named by `envF
 Without `--sources`, the script reads `~/.curate/sources.json`.
 Supply a local embedding GGUF through `embeddingModel`. The script requires Metal on macOS and downloads no model.
 Optional `compression` sets what the skill prints: `high`, the default, prints the log, and `low` prints the marked-up memory described in [Compression](#compression).
-Optional `thoroughness` sets how deep the fused order feeds the decision step: `quick` reads the top 672 parts, `normal` 3,674 and `deep` 12,896, the default.
+Optional `thoroughness` sets how many ranked history parts the decision model checks: `quick` checks the top 672, `normal` 3,674 and `deep` 12,896, the default.
 Measured on a replayed ~116,000-part history, each level cost about 1, 5 and 17 pence of questions on the largest of eight task sets; `quick` kept 24 of the 56 known answer parts, `normal` 49 and `deep` all 56.
 Each source can also set `since` (an ISO date or a duration such as `"14 days"`, counted back from the task date), `exclude` (paths that source alone refuses, resolved inside `path`), and, for `git` only, `include` (only commits that changed one of the paths).
 The skill combines keyword and meaning lanes, and disables label admission and the rare-word round.
-Vectors persist by model bytes and input text. Identical text shares matching decision answers within each pick.
+Saved embeddings are reused when the model file and input text match. Identical text shares matching decision answers within each pick.
 It prints the log and saves the log, source reads, model usage and timings under `~/.curate/runs/`.
 Subscription route failures never fall back to an API.
 
@@ -531,7 +521,7 @@ flowchart LR
 Each reader ranks evidence using settings suited to its source.
 Chat and Markdown use BM25, a score for matching words.
 Git uses BM25 over each commit's subject and body, plus age and changed paths.
-Each search lane cuts where its own score curve flattens, rather than at a fixed count.
+Each search stops keeping results when their match scores level off, rather than after a fixed number.
 Set `read.wholeLanes: true` to keep every part the readers return.
 
 - **Extra wording:** Supply `read.searchLines` for phrases or hypothetical answers that describe the evidence you need. Curate does not generate them.
@@ -541,11 +531,13 @@ Set `read.wholeLanes: true` to keep every part the readers return.
 ### Decide
 
 The decision function answers each reader's narrow questions.
-Out of the box Curate searches and ranks broadly, then decides the top of one fused order, the `deep` thoroughness depth of 12,896 reference parts, and keeps the references that reach their source's decision-score bar, 0.0146 for every reader, strongest first.
+By default, Curate combines search results from all sources into a ranked list.
+The decision model checks the top 12,896 reference parts (the `deep` thoroughness level).
+Curate keeps those that score at least their source's decision-score bar (0.0146 for every reader), highest scores first.
 Unanswered candidates and unfinished decisions stay visible in the record and stop `recall()`.
 Parts intentionally excluded by the label questions stay in the record without stopping recall.
 
-- **Feed depth:** `pick.thoroughness` sets how deep the fused order feeds the decision step: `quick` 672 parts, `normal` 3,674, `deep` 12,896 (the default). Parts deeper than the level stay unasked and record `thoroughness`. `pick.everyRanked: true` decides every ranked part instead, and `pick.everyRanked: { c }` keeps the top `round(c × N^0.8)` reference parts, where N is the number of reference parts. Rules pass through uncut in every mode. The skipped parts are unassessed, so use the separate selection API to inspect them. Measured on a replayed ~116,000-part history of chat transcripts, Git history and Markdown notes: each level cost about 1, 5 and 17 pence of questions on the largest of eight task sets (about 0.8, 2.3 and 6.6 decide-step minutes), and `quick` kept 24 of the 56 known answer parts, `normal` 49 of 56 and `deep` all 56.
+- **Feed depth:** `pick.thoroughness` sets how many ranked history parts the decision model checks: 672 for `quick`, 3,674 for `normal` and 12,896 for `deep`, the default. Parts deeper than the level stay unasked and record `thoroughness`. `pick.everyRanked: true` decides every ranked part instead, and `pick.everyRanked: { c }` keeps the top `round(c × N^0.8)` reference parts, where N is the number of reference parts. Rules pass through uncut in every mode. The skipped parts are unassessed, so use the separate selection API to inspect them. Measured on a replayed ~116,000-part history of chat transcripts, Git history and Markdown notes: each level cost about 1, 5 and 17 pence of questions on the largest of eight task sets (about 0.8, 2.3 and 6.6 decide-step minutes), and `quick` kept 24 of the 56 known answer parts, `normal` 49 of 56 and `deep` all 56.
 - **Writer inputs:** a source's `bar` sets its score cut. `pick.everyScored: { bar }` sets one cut for every source, and `pick.everyScored: true` keeps every scored reference.
 - **More evidence:** Git and Markdown run the rare-word round through their settings, each within its own parts. `pick.rare: true` runs it on every source; `pick.rare: false` turns it off. Under a thoroughness level the round asks its pulled parts only while the depth still has room.
 - **Tags:** `pick.tags` labels selected items with their intent, importance, emphasis and whether they correct something earlier.
@@ -571,11 +563,16 @@ Dates help the writer tell an old decision from its replacement, even when they 
 
 ## Results
 
-Every benchmark result, how each run was set up, and its proof files are in [benchmarks](benchmarks/README.md).
+Every result, how each run was set up and its proof files are in [benchmarks](benchmarks/README.md).
 
 ## Compression
 
-`curate.compression` sets how far the kept parts are compressed. `'high'`, the default, has the curator write the dated, cited log. `'low'` lists the events in the kept parts as rows, asks the decision model which rows count, has code add them up, and marks up only the parts the rows cite in the source's own words. Its memory is those figures and rows, then that markup. On all 500 LongMemEval questions, answered by gpt-6.1-sol and marked by LongMemEval's grader, the answering model read a mean of 854 tokens a question under `'low'` and scored 465 of 500, and 449 tokens under `'high'` and scored 463 ([results](benchmarks/longmemeval/2026-11-04/README.md)). `'low'` is a larger memory that costs more calls; one run is not a promise of better answers on every task. See [the core package](packages/core/README.md#compression).
+`curate.compression` sets how much Curate shortens the parts it keeps.
+
+- **`'high'`, the default:** the curator writes the dated, cited log.
+- **`'low'`:** Curate lists the events in the kept parts. The decision model says which events count. Code adds them up. The memory holds those totals and events. Then come the parts they cite, in the source's own words, with tags that mark events, amounts and tone. It is larger than the log and costs more model calls.
+
+See [the core package](packages/core/README.md#compression).
 
 ## Development
 
