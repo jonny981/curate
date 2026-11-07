@@ -28,7 +28,8 @@ async function post(url: string, apiKey: string | undefined, body: unknown, sign
 }
 
 /** Jev's reply to one request: its HTTP status and whole body, read so a
- *  rejected request's reason is never lost. */
+ *  rejected request's reason is never lost, and the Retry-After header a
+ *  rate-limit reply waits by. */
 async function jevPost(url: string, apiKey: string | undefined, text: string, signal: AbortSignal) {
   const response = await fetch(url, {
     method: 'POST',
@@ -36,7 +37,117 @@ async function jevPost(url: string, apiKey: string | undefined, text: string, si
     body: text,
     signal,
   });
-  return { ok: response.ok, status: response.status, text: await response.text() };
+  return { ok: response.ok, status: response.status,
+    retryAfter: response.headers.get('retry-after'), text: await response.text() };
+}
+
+/** The wait a reply's Retry-After header names, in milliseconds; an
+ *  unreadable or absent header waits one second. */
+function retryAfterMs(header: string | null): number {
+  if (header === null) return 1000;
+  const seconds = Number(header.trim());
+  if (Number.isFinite(seconds)) return Math.max(seconds * 1000, 0);
+  const date = Date.parse(header);
+  return Number.isFinite(date) ? Math.max(date - Date.now(), 0) : 1000;
+}
+
+/** A wait that stops when the signal fires. */
+function wait(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    signal.addEventListener('abort', () => { clearTimeout(timer); reject(signal.reason); }, { once: true });
+  });
+}
+
+/** TypeSafe's published starting allowance: 80 requests and 100,000
+ *  tokens a second, a token estimated at three characters like the
+ *  request-size bounds. The service publishes no simultaneous-request
+ *  limit; these two rates bound every request the adapter sends. */
+const JEV_TOKENS_PER_SECOND = 100_000;
+const JEV_REQUESTS_PER_SECOND = 80;
+
+/** A pick's failure state inside the allowance queue: `stop` marks it
+ *  once with the failure's own reason. */
+interface AllowanceDomain {
+  stopped: boolean;
+  reason?: unknown;
+}
+
+/** Each send reserves its estimated tokens and one request slot before
+ *  it dispatches, in send order, so sends at once cannot together pass
+ *  the rates. A request whose estimate passes a second's tokens pays a
+ *  full second's allowance once the bucket is full. A cancelled wait
+ *  reserves nothing.
+ *  A terminal failure stops its own pick, not the adapter: every send
+ *  of one pick waits under the same `domain`, and `stop` drops the
+ *  waits still queued under it — inside the failed batch's splits and
+ *  its sibling batches — with the failure's own reason, then refuses
+ *  every later wait of that pick, a batch not yet dispatched included.
+ *  Sends already dispatched settle on their own; a wait under another
+ *  pick's domain sends normally. A stop on a stopped domain changes
+ *  nothing. */
+function rateAllowance(tokensPerSecond: number, requestsPerSecond: number) {
+  let tokens = tokensPerSecond;
+  let requests = requestsPerSecond;
+  let at = Date.now();
+  const queue: { readonly cost: number; readonly domain: AllowanceDomain;
+    grant(): void; drop(reason: unknown): void }[] = [];
+  const refill = () => {
+    const now = Date.now();
+    const elapsed = (now - at) / 1000;
+    at = now;
+    tokens = Math.min(tokensPerSecond, tokens + elapsed * tokensPerSecond);
+    requests = Math.min(requestsPerSecond, requests + elapsed * requestsPerSecond);
+  };
+  const pump = () => {
+    refill();
+    while (queue.length > 0) {
+      const head = queue[0]!;
+      const need = Math.min(head.cost, tokensPerSecond);
+      if (tokens < need || requests < 1) break;
+      tokens -= need;
+      requests -= 1;
+      queue.shift();
+      head.grant();
+    }
+    if (queue.length > 0) {
+      const head = queue[0]!;
+      const waitMs = Math.max(
+        (Math.min(head.cost, tokensPerSecond) - tokens) / tokensPerSecond,
+        (1 - requests) / requestsPerSecond) * 1000;
+      setTimeout(pump, Math.max(Math.ceil(waitMs), 1));
+    }
+  };
+  const wait = (chars: number, domain: AllowanceDomain, signal?: AbortSignal): Promise<void> => new Promise((resolve, reject) => {
+    if (domain.stopped) { reject(domain.reason); return; }
+    if (signal?.aborted) { reject(signal.reason); return; }
+    const entry = { cost: Math.ceil(chars / 3), domain, grant: () => {
+      signal?.removeEventListener('abort', cancel);
+      resolve();
+    }, drop: (reason: unknown) => {
+      signal?.removeEventListener('abort', cancel);
+      reject(reason);
+    } };
+    const cancel = () => {
+      const index = queue.indexOf(entry);
+      if (index >= 0) queue.splice(index, 1);
+      reject(signal!.reason);
+    };
+    signal?.addEventListener('abort', cancel, { once: true });
+    queue.push(entry);
+    if (queue.length === 1) pump();
+  });
+  const stop = (domain: AllowanceDomain, why: unknown) => {
+    if (domain.stopped) return;
+    domain.stopped = true;
+    domain.reason = why;
+    for (const entry of [...queue]) {
+      if (entry.domain !== domain) continue;
+      queue.splice(queue.indexOf(entry), 1);
+      entry.drop(why);
+    }
+  };
+  return { wait, stop };
 }
 
 /** An item as a decision model reads it: its id and date, its title, then its text. */
@@ -158,43 +269,88 @@ export function jev({ apiKey, model = 'jev-latest', url = JEV_URL, onCall }: {
   // reply is thrown as sent.
   let accepted = 0;
   let rejected = false;
+  // The two published rates bound every request this adapter sends:
+  // planned subrequests, rejection splits and rate-limit resends each
+  // reserve their allowance before dispatching. A request held for its
+  // split children holds no allowance while it waits.
+  const allow = rateAllowance(JEV_TOKENS_PER_SECOND, JEV_REQUESTS_PER_SECOND);
+  // A pick is its signal: every decide call of one pick — its batches,
+  // splits and resends — arrives under the same signal object, so a
+  // send's failure domain is looked up from it. A batch of that pick
+  // dispatched after a terminal failure lands in the stopped domain and
+  // never reaches fetch; a different pick's signal keeps a live domain
+  // of its own.
+  const domains = new WeakMap<AbortSignal, AllowanceDomain>();
+  const domainFor = (signal: AbortSignal): AllowanceDomain => {
+    let domain = domains.get(signal);
+    if (domain === undefined) { domain = { stopped: false }; domains.set(signal, domain); }
+    return domain;
+  };
   const send = async (part: PickBatch, signal: AbortSignal): Promise<[string, PickAnswer][]> => {
     const text = JSON.stringify(jevRequest(part, model));
-    const then = Date.now();
-    let reply: Awaited<ReturnType<typeof jevPost>>;
-    try {
-      reply = await jevPost(url, apiKey, text, signal);
-    } catch (error) {
-      // A request that never got a reply — a network failure or a
-      // cancelled signal — is still a call: report it with its timing
-      // and the error it raised, then let that error fail the pick.
-      await onCall?.({
-        started: new Date(then).toISOString(), questions: part.questions.length,
-        size: text.length, status: 0, ms: Date.now() - then,
-        error: error instanceof Error ? error.message : String(error),
-        splits: 0,
-      });
-      throw error;
+    const domain = domainFor(signal);
+    for (;;) {
+      try {
+        await allow.wait(text.length, domain, signal);
+        const then = Date.now();
+        let reply: Awaited<ReturnType<typeof jevPost>>;
+        try {
+          reply = await jevPost(url, apiKey, text, signal);
+        } catch (error) {
+          // A request that never got a reply — a network failure or a
+          // cancelled signal — is still a call. The sends still queued
+          // stop before the record write below can let one through:
+          // report the call with its timing and the error it raised,
+          // then let that error fail the pick.
+          allow.stop(domain, error);
+          await onCall?.({
+            started: new Date(then).toISOString(), questions: part.questions.length,
+            size: text.length, status: 0, ms: Date.now() - then,
+            error: error instanceof Error ? error.message : String(error),
+            splits: 0,
+          });
+          throw error;
+        }
+        const raw = (() => { try { return record(JSON.parse(reply.text)); } catch { return {}; } })();
+        const call = {
+          started: new Date(then).toISOString(), questions: part.questions.length,
+          size: text.length, status: reply.status, ms: Date.now() - then,
+          ...(raw.usage === undefined ? {} : { usage: raw.usage }),
+          ...(raw.answers === undefined ? {} : { answers: raw.answers }),
+          splits: 0,
+        };
+        // A rate-limited request waits as the reply directs, then sends the
+        // same request unchanged: it is never split, dropped or counted as
+        // a size rejection, and every attempt stays in the record.
+        if (reply.status === 429) {
+          await onCall?.(call);
+          await wait(retryAfterMs(reply.retryAfter), signal);
+          continue;
+        }
+        if (!reply.ok) return await fail(part, signal, call, reply.text, domain);
+        accepted = Math.max(accepted, call.size);
+        await onCall?.(call);
+        const answers = record(raw.answers);
+        return part.questions.map((q, index): [string, PickAnswer] =>
+          [q.key, probabilityAnswer(record(answers[`q${index}`]).noul)]);
+      } catch (error) {
+        // A terminal failure ends the sends still waiting for allowance —
+        // inside this batch's splits and inside other batches — with the
+        // failure's own reason; it does not wait for the batch promises
+        // around it to settle first.
+        allow.stop(domain, error);
+        throw error;
+      }
     }
-    const raw = (() => { try { return record(JSON.parse(reply.text)); } catch { return {}; } })();
-    const call = {
-      started: new Date(then).toISOString(), questions: part.questions.length,
-      size: text.length, status: reply.status, ms: Date.now() - then,
-      ...(raw.usage === undefined ? {} : { usage: raw.usage }),
-      ...(raw.answers === undefined ? {} : { answers: raw.answers }),
-      splits: 0,
-    };
-    if (reply.ok) {
-      accepted = Math.max(accepted, call.size);
-      await onCall?.(call);
-      const answers = record(raw.answers);
-      return part.questions.map((q, index): [string, PickAnswer] =>
-        [q.key, probabilityAnswer(record(answers[`q${index}`]).noul)]);
-    }
+  };
+  const fail = async (part: PickBatch, signal: AbortSignal, call: {
+    started: string; questions: number; size: number; status: number; ms: number;
+    usage?: unknown; answers?: unknown; splits: number;
+  }, replyText: string, domain: AllowanceDomain): Promise<[string, PickAnswer][]> => {
     rejected = true;
     // Only a rejection size can explain is retried: a too-large status
     // on a body bigger than every body Jev has accepted so far.
-    if ((reply.status === 400 || reply.status === 413) && call.size > accepted) {
+    if ((call.status === 400 || call.status === 413) && call.size > accepted) {
       const items = new Map<string, PickQuestion[]>();
       for (const q of part.questions) {
         const key = `${q.sourceId}\n${q.id}`;
@@ -205,9 +361,16 @@ export function jev({ apiKey, model = 'jev-latest', url = JEV_URL, onCall }: {
         await onCall?.(call);
         const groups = [...items.values()];
         const middle = Math.ceil(groups.length / 2);
-        const halves = await Promise.all([groups.slice(0, middle), groups.slice(middle)]
-          .map((half) => send({ task: part.task, questions: half.flat() }, signal)));
-        return halves.flat();
+        const halves: [string, PickAnswer][] = [];
+        // Both halves start; a failed half returns only once the other
+        // half has settled and reported, so its request is never
+        // missing from the record.
+        for (const half of await Promise.allSettled([groups.slice(0, middle), groups.slice(middle)]
+          .map((half) => send({ task: part.task, questions: half.flat() }, signal)))) {
+          if (half.status === 'rejected') throw half.reason;
+          halves.push(...half.value);
+        }
+        return halves;
       }
       // A lone oversized item is resent with its evidence halved, never
       // its question; an empty text cannot be cut further.
@@ -222,14 +385,24 @@ export function jev({ apiKey, model = 'jev-latest', url = JEV_URL, onCall }: {
         return answers.map(([key, answer]): [string, PickAnswer] => [key, { ...answer, truncated: true }]);
       }
     }
+    // A terminal reply stops the sends still queued before the record
+    // write below can let one through; the failure thrown is its own.
+    const error = new Error(`Model request failed: HTTP ${call.status}. ${replyText}`);
+    allow.stop(domain, error);
     await onCall?.(call);
-    throw new Error(`Model request failed: HTTP ${reply.status}. ${reply.text}`);
+    throw error;
   };
   const decide: PickDecide = async (batch, signal) => {
-    const answered = await Promise.all(
-      jevBatches(batch, model, rejected && accepted > 0 ? accepted : JEV_REQUEST_CHARS)
-        .map((part) => send(part, signal)));
-    return Object.fromEntries(answered.flat());
+    const answered: [string, PickAnswer][] = [];
+    // Every request a failure already started settles — and reports —
+    // before the failure returns, in dispatch order.
+    for (const planned of await Promise.allSettled(
+        jevBatches(batch, model, rejected && accepted > 0 ? accepted : JEV_REQUEST_CHARS)
+          .map((part) => send(part, signal)))) {
+      if (planned.status === 'rejected') throw planned.reason;
+      answered.push(...planned.value);
+    }
+    return Object.fromEntries(answered);
   };
   return Object.assign(decide, { deciderId });
 }

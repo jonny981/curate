@@ -139,7 +139,8 @@ describe('memory', () => {
     const read = vi.fn(reader.read);
     const decideSpy = vi.fn(decide);
     const write = vi.fn(async () => LOG);
-    const { signal } = new AbortController();
+    const controller = new AbortController();
+    const { signal } = controller;
     const recalled = await memory({
       sources: [{ ...reader, read }], decide: decideSpy, write,
       read: { wholeLanes: true, paths: ['billing.ts'], exclude: ['private'], revision: 'HEAD' },
@@ -148,7 +149,11 @@ describe('memory', () => {
     expect(read.mock.calls[0]?.[0]).toMatchObject({
       task: TASK, wholeLanes: true, paths: ['billing.ts'], exclude: ['private'], revision: 'HEAD', signal,
     });
-    expect(decideSpy.mock.calls[0]?.[1]).toBe(signal);
+    // The decide call's own signal fires when the caller's does.
+    const decideSignal = decideSpy.mock.calls[0]?.[1];
+    expect(decideSignal).toBeInstanceOf(AbortSignal);
+    controller.abort();
+    expect(decideSignal?.aborted).toBe(true);
     expect(write).toHaveBeenCalledWith(expect.objectContaining({ body: expect.stringContaining('(asked 2026-01-13)') }), signal);
     expect(recalled.result.record.context).toBe(true);
     expect(recalled.result.record.levers.wholeLanes).toBe(true);

@@ -146,7 +146,8 @@ describe('pick', () => {
     });
 
     expect(calls).toHaveLength(1);
-    expect(signals[0]).toBe(controller.signal);
+    // The decide call's own signal fires when the caller's does.
+    expect(signals[0]).toBeInstanceOf(AbortSignal);
     expect(signals[0]!.aborted).toBe(true);
     expect(result.record.candidates.map((entry) => entry.status)).toEqual([
       'selected', 'selected', 'unassessed', 'unassessed', 'unassessed',
@@ -225,7 +226,11 @@ describe('pick', () => {
     let received: AbortSignal | undefined;
     const decide: PickDecide = (_batch, signal) => {
       received = signal;
-      return new Promise<Record<string, PickAnswer>>(() => {});
+      // Pending until the elapsed limit's own signal settles it, as a
+      // decider honouring its signal is.
+      return new Promise<Record<string, PickAnswer>>((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+      });
     };
 
     const result = await pick(candidates, { ...uncutPick,
@@ -235,13 +240,13 @@ describe('pick', () => {
     });
 
     expect(received?.aborted).toBe(true);
+    // The round's independent batches go out at once, so both were in
+    // flight when the clock ran out: all four are asked and unanswered.
     expect(result.record.candidates.map((entry) => entry.status)).toEqual([
-      'unanswered', 'unanswered', 'unassessed', 'unassessed',
+      'unanswered', 'unanswered', 'unanswered', 'unanswered',
     ]);
-    expect(result.record.candidates.slice(0, 2).every((entry) =>
+    expect(result.record.candidates.every((entry) =>
       entry.status === 'unanswered' && entry.answer === 'error')).toBe(true);
-    expect(result.record.candidates.slice(2).every((entry) =>
-      entry.status === 'unassessed' && entry.reason === 'time')).toBe(true);
   });
 
   it('fails the pick when the decide call throws, carrying a record that names the batch and the error', async () => {
@@ -265,12 +270,14 @@ describe('pick', () => {
     expect(failure.message).toBe('The decide call failed for candidates alpha, beta: engine down');
     expect(failure.record.decideError).toEqual({ candidates: ['alpha', 'beta'], message: 'engine down' });
     expect(failure.record.candidates.map((entry) => entry.status)).toEqual([
-      'unanswered', 'unanswered', 'unassessed',
+      'unanswered', 'unanswered', 'unanswered',
     ]);
     expect(failure.record.candidates[0]).toMatchObject({ answer: 'error', detail: 'engine down' });
-    expect(failure.record.candidates[2]).toMatchObject({ reason: 'error' });
-    // No retry and no later batch: the first failure ends the pick.
-    expect(calls).toHaveLength(1);
+    expect(failure.record.candidates[2]).toMatchObject({ answer: 'error', detail: 'engine down' });
+    // No retry. The round's independent batches went out at once, so the
+    // later batch was already in flight and its failure is recorded too;
+    // the record names the first failure in dispatch order.
+    expect(calls).toHaveLength(2);
   });
 
   it('records cancelled rather than failing when the aborted decide call throws', async () => {

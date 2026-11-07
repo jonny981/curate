@@ -85,6 +85,12 @@ export function parseSources(value) {
   if (value.embeddingModel !== undefined && (typeof value.embeddingModel !== 'string' || !value.embeddingModel.trim())) {
     throw new Error('embeddingModel must be a local model path.');
   }
+  if (value.readAudit !== undefined && typeof value.readAudit !== 'boolean') {
+    throw new Error('readAudit must be a boolean.');
+  }
+  if (value.maxInFlight !== undefined && (!Number.isSafeInteger(value.maxInFlight) || value.maxInFlight < 1)) {
+    throw new Error('maxInFlight must be a positive integer.');
+  }
   return { ...value, sources,
     ...(value.embeddingModel === undefined ? {} : { embeddingModel: homePath(value.embeddingModel) }) };
 }
@@ -170,8 +176,8 @@ export async function snapshotCodex(entry, folder) {
   } } };
 }
 
-export function parseSearches(value) {
-  for (const kind of kinds) {
+export function parseSearches(value, required = kinds) {
+  for (const kind of required) {
     const group = value?.[kind];
     if (!Array.isArray(group?.keywords) || !Array.isArray(group?.answers)
       || group.keywords.length < 2 || group.answers.length < 2
@@ -305,10 +311,17 @@ export function searchSource(source, searches, audit, folder, settings = {}) {
       request.wholeLanes === true
       || ['keyword', 'bm25', 'heading-words', 'file-words'].some((key) => candidate.signals[key] > 0)
       || words(`${candidate.title} ${candidate.text}`).some((word) => terms.has(word))), settings) };
-    const file = `read-${audit.length + 1}.json`;
-    audit.push({ source: source.id, task, ...(request.meaningLane === undefined ? {} : { lane: 'meaning' }), ms: Date.now() - started, status: result.status,
-      parts: result.candidates?.length ?? 0, complete: result.complete, partial: result.partial, file });
-    await writeFile(join(folder, file), JSON.stringify(result), { mode: 0o600 });
+    const entry = { source: source.id, task, ...(request.meaningLane === undefined ? {} : { lane: 'meaning' }), ms: Date.now() - started, status: result.status,
+      parts: result.candidates?.length ?? 0, complete: result.complete, partial: result.partial };
+    // The number comes from the entries pushed so far, before the write
+    // waits, so reads running at once never take the same name.
+    if (settings.readAudit === false) {
+      audit.push(entry);
+    } else {
+      const file = `read-${audit.length + 1}.json`;
+      audit.push({ ...entry, file });
+      await writeFile(join(folder, file), JSON.stringify(result), { mode: 0o600 });
+    }
     return result;
   } };
 }
@@ -437,19 +450,19 @@ function busyTime() {
 // The search reply gets one repair round, like the curator's log: a reply
 // that fails JSON parsing or the shape check goes back once with the
 // reason and the rejected text; a second failure stops the run.
-async function searchLines(prompt, folder, record, save, callSubscription) {
+async function searchLines(prompt, folder, record, save, callSubscription, required = kinds) {
   // The helper numbers each reply file by its attempt, which a capacity
   // retry moves past 1; the record holds the number used for each reply.
   const replyFile = () => `searches-${record.subscription.filter((call) => call.label === 'searches').at(-1).attempt}.txt`;
   const first = await callSubscription(prompt, folder, 'searches', record, save);
   try {
-    return parseSearches(JSON.parse(first));
+    return parseSearches(JSON.parse(first), required);
   } catch (firstError) {
     record.searchRepairs = 1;
     const firstFile = replyFile();
     const repaired = await callSubscription(`${prompt}\n\nREJECTED REPLY (${firstError.message}):\n${first}\n\nReturn the same search lines corrected and nothing else.`, folder, 'searches', record, save);
     try {
-      return parseSearches(JSON.parse(repaired));
+      return parseSearches(JSON.parse(repaired), required);
     } catch (secondError) {
       throw new Error(`Search lines failed to parse twice: ${firstError.message}; after one repair: ${secondError.message}. Both replies are in ${folder} (${firstFile}, ${replyFile()}).`);
     }
@@ -464,7 +477,17 @@ export async function run(args = process.argv.slice(2), callSubscription = subsc
   const started = Date.now();
   const record = { task: options.task, sourcesFile: options.sources, settings, status: 'started', subscription: [], sessions: [], reads: [], jev: [], timings: {} };
   let local;
-  const save = () => writeFile(join(folder, 'record.json'), JSON.stringify(record, null, 2), { mode: 0o600 });
+  // Overlapping callers each get a full snapshot, written one after
+  // another: two writes to the same file can never interleave, and the
+  // last write holds every entry pushed before it ran. A failed write
+  // rejects only its own caller; the chain still writes the next state.
+  let saving = Promise.resolve();
+  const save = () => {
+    const write = saving.then(() =>
+      writeFile(join(folder, 'record.json'), JSON.stringify(record, null, 2), { mode: 0o600 }));
+    saving = write.catch(() => {});
+    return write;
+  };
   console.error(`Run record: ${folder}`);
   try {
     // The environment wins over an optional KEY=VALUE file; never save credentials.
@@ -504,9 +527,14 @@ export async function run(args = process.argv.slice(2), callSubscription = subsc
     }
     record.timings.filterMs = Date.now() - started;
     await save();
-    const searchPrompt = `TASK: ${options.task}\nWrite search expansions, not a factual answer. For each source kind, give two keyword lines (one naming the subject, one without it) and four plausible hypothetical-answer lines (two naming the subject, two without it). Use varied wording for directions, constraints, tried ideas, rejected ideas and unfinished experiments where the task asks for them. Do not invent evidence.\nRegisters:\nchat: ${CHAT_SEARCH_LINE_REGISTER}\ngit-history: ${GIT_SEARCH_LINE_REGISTER}\nmarkdown: ${MARKDOWN_SEARCH_LINE_REGISTER}\nReturn only JSON with these three keys, each containing {"keywords":[...],"answers":[...]}.`;
+    // Only the kinds the constructed sources read are asked for.
+    const searchKinds = kinds.filter((kind) => sources.some((source) => source.kind === kind));
+    const registers = { chat: CHAT_SEARCH_LINE_REGISTER, 'git-history': GIT_SEARCH_LINE_REGISTER, markdown: MARKDOWN_SEARCH_LINE_REGISTER };
+    const searchPrompt = `TASK: ${options.task}\nWrite search expansions, not a factual answer. For each source kind, give two keyword lines (one naming the subject, one without it) and four plausible hypothetical-answer lines (two naming the subject, two without it). Use varied wording for directions, constraints, tried ideas, rejected ideas and unfinished experiments where the task asks for them. Do not invent evidence.\nRegisters:\n${searchKinds.map((kind) => `${kind}: ${registers[kind]}`).join('\n')}\n${searchKinds.length === kinds.length
+      ? 'Return only JSON with these three keys, each containing {"keywords":[...],"answers":[...]}.'
+      : `Return only JSON for ${searchKinds.map((kind) => `"${kind}"`).join(', ')}, each containing {"keywords":[...],"answers":[...]}.`}`;
     const searchStart = Date.now();
-    record.searches = await searchLines(searchPrompt, folder, record, save, callSubscription);
+    record.searches = await searchLines(searchPrompt, folder, record, save, callSubscription, searchKinds);
     record.timings.searchesMs = Date.now() - searchStart;
     const { createLocalEmbedder } = await import('@curatejs/core/local-embeddings');
     const modelPath = settings.embeddingModel ?? join(homedir(), '.cache/curate/models/embeddinggemma-300M-Q8_0.gguf');
@@ -543,12 +571,13 @@ export async function run(args = process.argv.slice(2), callSubscription = subsc
       ...[AGENT_CHAT_CASCADE, GIT_HISTORY_CASCADE, MARKDOWN_CASCADE]
         .flatMap((cascade) => cascade.questions)
         .map((question) => question.instructions.length + question.true.length + question.false.length));
-    const count = Math.max(...kinds.map((kind) => record.searches[kind].keywords.length + record.searches[kind].answers.length));
+    const count = Math.max(...searchKinds.map((kind) => record.searches[kind].keywords.length + record.searches[kind].answers.length));
     const pickStart = Date.now();
     const request = { task: options.task, searchLines: Array.from({ length: count }, (_, i) => `curate-search:${i}`),
       meaning: { embed: local.embed } };
     const pickOptions = { task: options.task, decide,
-      limits: { maxBatchChars },
+      limits: { maxBatchChars,
+        ...(settings.maxInFlight === undefined ? {} : { maxInFlight: settings.maxInFlight }) },
       ...(settings.thoroughness === undefined ? {} : { thoroughness: settings.thoroughness }),
       ...(settings.threshold === undefined ? {} : { everyScored: { bar: settings.threshold } }) };
     const picked = await pickFullSources(sources.map((source) => {

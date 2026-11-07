@@ -115,6 +115,22 @@ describe('curate command input', () => {
     expect(parseSources({ sources: [{ type: 'markdown', path: 'documents' }], [key]: false })[key]).toBe(false);
   });
 
+  it('takes readAudit as a boolean only', () => {
+    const sources = [{ type: 'markdown', path: 'documents' }];
+    expect(() => parseSources({ sources, readAudit: 'no' })).toThrow('readAudit must be a boolean.');
+    expect(parseSources({ sources, readAudit: false }).readAudit).toBe(false);
+    expect(parseSources({ sources }).readAudit).toBeUndefined();
+  });
+
+  it('takes maxInFlight as a positive integer only', () => {
+    const sources = [{ type: 'markdown', path: 'documents' }];
+    expect(() => parseSources({ sources, maxInFlight: 'two' })).toThrow('maxInFlight must be a positive integer.');
+    expect(() => parseSources({ sources, maxInFlight: 0 })).toThrow('maxInFlight must be a positive integer.');
+    expect(() => parseSources({ sources, maxInFlight: 1.5 })).toThrow('maxInFlight must be a positive integer.');
+    expect(parseSources({ sources, maxInFlight: 4 }).maxInFlight).toBe(4);
+    expect(parseSources({ sources }).maxInFlight).toBeUndefined();
+  });
+
   it.each(['quick', 'normal', 'deep'])('keeps thoroughness %s', (level) => {
     expect(parseSources({ sources: [{ type: 'markdown', path: 'documents' }], thoroughness: level }).thoroughness).toBe(level);
   });
@@ -390,6 +406,14 @@ describe('search output', () => {
     }
     expect(() => parseSearches(null)).toThrow();
   });
+
+  it.each([[['chat']], [['git-history']], [['markdown']], [['chat', 'git-history']], [['chat', 'markdown']]])(
+    'checks only the requested source kinds: %j', (required) => {
+      const value = Object.fromEntries(required.map((kind) => [kind, searches()[kind]]));
+      expect(parseSearches(value, required)).toBe(value);
+      expect(() => parseSearches(value, ['chat', 'git-history', 'markdown'])).toThrow();
+      expect(() => parseSearches({ ...value, [required[0]!]: { keywords: ['a'], answers: ['b'] } }, required)).toThrow();
+    });
 });
 
 it('keeps the original task and each source register while core interleaves all scores', async () => {
@@ -443,6 +467,29 @@ it('keeps the original task and each source register while core interleaves all 
     const saved = JSON.parse(await readFile(join(directory, entry.file), 'utf8'));
     expect(entry.parts).toBe(2);
     expect(saved.candidates.map((candidate: { signals: { keyword: number } }) => candidate.signals.keyword)).toEqual([1, 0]);
+  }
+});
+
+it.each([undefined, false])('writes no read files and keeps no file name when readAudit is %s', async (readAudit) => {
+  const directory = await folder();
+  const audit: { source: string; task: string; parts: number; file?: string }[] = [];
+  const source: CandidateSource = { id: 'chat', kind: 'chat', role: 'reference',
+    async read(request) {
+      return { status: 'read', complete: true, candidates: [{ id: 'p1', sourceId: 'chat', role: 'reference',
+        title: request.task, text: 'orchard evidence', signals: { keyword: 1 } }] };
+    } };
+  const searches = { chat: { keywords: ['orchard'], answers: ['trees'] } };
+  const readAuditSet = readAudit !== undefined;
+  const wrapped = searchSource(source, searches, audit, directory, readAuditSet ? { readAudit } : {});
+  const read = await wrapped.read({ task: 'first' });
+  await wrapped.read({ task: 'second' });
+  expect(read.status).toBe('read');
+  if (readAuditSet) {
+    expect(audit.every((entry) => entry.file === undefined)).toBe(true);
+    expect((await readdir(directory)).filter((name) => name.startsWith('read-'))).toHaveLength(0);
+  } else {
+    expect(audit.every((entry) => typeof entry.file === 'string')).toBe(true);
+    expect((await readdir(directory)).filter((name) => name.startsWith('read-'))).toHaveLength(2);
   }
 });
 
@@ -1167,7 +1214,8 @@ describe('search line repair', () => {
   const trailingComma = () => JSON.stringify(searches(), null, 2).replace(/(\n *)\]/, ',$1]');
   const missingKind = () => {
     const value: Record<string, unknown> = searches();
-    delete value['git-history'];
+    // The configured source is markdown only, so its own kind is missing.
+    delete value['markdown'];
     return JSON.stringify(value);
   };
 
@@ -1510,5 +1558,249 @@ describe('Codex global instructions', () => {
     expect(() => read(join(home, 'AGENTS.md'))).toThrow(/Operation not permitted/);
     expect(() => read(join(directory, 'shared.md'))).toThrow(/Operation not permitted/);
     expect(read(join(home, 'auth.json'))).toBe('login');
+  });
+});
+
+describe('search lines for the kinds the sources read', () => {
+  const searchesFor = (required: string[]) =>
+    Object.fromEntries(required.map((kind) => [kind, searches()[kind as keyof ReturnType<typeof searches>]]));
+  const answerAll = () => vi.fn(async (_url: unknown, init: RequestInit) => new Response(JSON.stringify({
+    usage: null,
+    answers: Object.fromEntries(Object.keys(JSON.parse(String(init.body)).questions).map((key) => [key, { noul: 0.8 }])),
+  })));
+
+  it.each([
+    [['claude-code'], ['chat']],
+    [['codex'], ['chat']],
+    [['git'], ['git-history']],
+    [['markdown'], ['markdown']],
+    [['claude-code', 'git'], ['chat', 'git-history']],
+    [['claude-code', 'codex'], ['chat']],
+    [['claude-code', 'git', 'markdown'], ['chat', 'git-history', 'markdown']],
+  ])('asks only the kinds its sources read: %j -> %j', async (types, expected) => {
+    const directory = await folder();
+    const home = join(directory, 'home');
+    await mkdir(home);
+    const sources = [];
+    for (const type of types as string[]) {
+      if (type === 'git') {
+        const repo = join(directory, 'repo');
+        await mkdir(repo);
+        await writeFile(join(repo, 'note.md'), 'orchard note\n');
+        const git = (args: string[]) => execFileSync('git', ['-C', repo, '-c', 'core.hooksPath=/dev/null',
+          '-c', 'commit.gpgsign=false', '-c', 'user.name=T', '-c', 'user.email=t@t', ...args], { stdio: 'pipe' });
+        git(['init', '-q', '-b', 'main']);
+        git(['add', '-A']);
+        git(['commit', '-qm', 'orchard']);
+        sources.push({ type: 'git', path: repo });
+      } else if (type === 'markdown') {
+        const notes = join(directory, 'notes');
+        await mkdir(notes);
+        await writeFile(join(notes, 'orchard.md'), '# Orchard\n\nThe orchard has trees. Fruit trees grow here.\n');
+        sources.push({ type: 'markdown', path: notes });
+      } else if (type === 'codex') {
+        const sessions = join(directory, 'codex-sessions');
+        await mkdir(sessions);
+        await writeFile(join(sessions, 's.jsonl'),
+          [JSON.stringify(metadata(directory)), JSON.stringify(message)].join('\n'));
+        sources.push({ type: 'codex', path: sessions, allowedCwd: directory });
+      } else {
+        const transcripts = join(directory, `claude-${sources.length}`);
+        await mkdir(transcripts);
+        await writeFile(join(transcripts, 'session.jsonl'), [
+          JSON.stringify({ type: 'user', sessionId: 's1', timestamp: '2026-01-01T12:00:00Z',
+            message: { content: 'What grows in the orchard?' } }),
+          JSON.stringify({ type: 'assistant', sessionId: 's1', timestamp: '2026-01-01T12:01:00Z',
+            message: { content: [{ type: 'text', text: 'Fruit trees grow in the orchard.' }] } }),
+        ].join('\n'));
+        sources.push({ type: 'claude-code', path: transcripts });
+      }
+    }
+    const sourcesFile = join(directory, 'sources.json');
+    await writeFile(sourcesFile, JSON.stringify({ sources }));
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
+    vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
+    vi.stubGlobal('fetch', answerAll());
+    // The reply holds only the kinds the sources read, and it is enough.
+    const { call, calls, folders } = subscriptionReply(searchesFor(expected));
+    const runFolder = await run(['--sources', sourcesFile, 'orchard'], call);
+    expect(runFolder).toBe(folders[0]);
+    const prompt = calls.find((entry) => entry.label === 'searches')!.prompt;
+    expect(prompt.match(/^(chat|git-history|markdown):/gm) ?? []).toEqual(expected.map((kind) => `${kind}:`));
+    if (expected.length === 3) expect(prompt).toContain('Return only JSON with these three keys');
+    else expect(prompt).toContain(`Return only JSON for ${expected.map((kind) => `"${kind}"`).join(', ')}`);
+    const record = JSON.parse(await readFile(join(runFolder, 'record.json'), 'utf8'));
+    expect(record.status).toBe('complete');
+    expect(Object.keys(record.searches).sort()).toEqual([...expected].sort());
+  });
+
+  it('repairs once with the same kind set when a required kind is missing', async () => {
+    const directory = await folder();
+    const home = join(directory, 'home');
+    const notes = join(directory, 'notes');
+    await mkdir(home);
+    await mkdir(notes);
+    await writeFile(join(notes, 'orchard.md'), '# Orchard\n\nThe orchard has trees. Fruit trees grow here.\n');
+    const sourcesFile = join(directory, 'sources.json');
+    await writeFile(sourcesFile, JSON.stringify({ sources: [{ type: 'markdown', path: notes }] }));
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
+    vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
+    vi.stubGlobal('fetch', answerAll());
+    // Valid JSON holding the two kinds nobody asked for: one repair, then done.
+    const wrong = searchesFor(['chat', 'git-history']);
+    const right = searchesFor(['markdown']);
+    const { call, calls } = subscriptionReply([JSON.stringify(wrong), JSON.stringify(right)]);
+    let index = 0;
+    const shifting = async (prompt: string, folder: string, label: string,
+      record: { subscription: { label: string; attempt: number; code: number }[] }, save: () => Promise<void>) => {
+      calls.push({ label, prompt });
+      const number = record.subscription.filter((entry) => entry.label === label).length + 1;
+      record.subscription.push({ label, attempt: number, code: 0 });
+      const reply = label === 'searches' ? [JSON.stringify(wrong), JSON.stringify(right)][index++]!
+        : [...prompt.matchAll(/^### (.+) \([^)]*\):/gm)]
+          .map((match) => `[2026-01-01] Evidence ${match[1]} (said 2026-01-01; ${match[1]})`).join('\n');
+      writeFileSync(join(folder, `${label}-${number}.txt`), reply);
+      await save();
+      return reply;
+    };
+    const runFolder = await run(['--sources', sourcesFile, 'orchard'], shifting);
+    const record = JSON.parse(await readFile(join(runFolder, 'record.json'), 'utf8'));
+    expect(record.status).toBe('complete');
+    expect(record.searchRepairs).toBe(1);
+    expect(calls.map((entry) => entry.label)).toEqual(['searches', 'searches', 'curator']);
+    // The repair prompt carries the same prompt, so the same kind set.
+    expect(calls[1]!.prompt).toContain('Return only JSON for "markdown"');
+  });
+});
+
+describe('readAudit through the skill', () => {
+  const searchesMarkdown = () => ({ markdown: searches().markdown });
+  const prepared = new Set<string>();
+  const stubRun = async (readAudit: boolean | undefined, shared?: { directory: string }) => {
+    const directory = shared?.directory ?? await folder();
+    const home = join(directory, 'home');
+    const notes = join(directory, 'notes');
+    if (!prepared.has(directory)) {
+      prepared.add(directory);
+      await mkdir(home);
+      await mkdir(notes);
+      for (let index = 0; index < 3; index++) {
+        await writeFile(join(notes, `orchard-${index}.md`), `# Orchard ${index}\n\nThe orchard has trees. Fruit trees grow here.\n`);
+      }
+    }
+    const sourcesFile = join(directory, 'sources.json');
+    await writeFile(sourcesFile, JSON.stringify({
+      sources: [{ type: 'markdown', path: notes }],
+      ...(readAudit === undefined ? {} : { readAudit }),
+    }));
+    vi.stubEnv('HOME', home);
+    // Each mode gets a cold cache so index flags in the records match.
+    vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache', String(readAudit)));
+    vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
+    const bodies: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => {
+      bodies.push(String(init.body));
+      return new Response(JSON.stringify({
+        usage: null,
+        answers: Object.fromEntries(Object.keys(JSON.parse(String(init.body)).questions).map((key) => [key, { noul: 0.8 }])),
+      }));
+    }));
+    const { call } = subscriptionReply(searchesMarkdown());
+    const runFolder = await run(['--sources', sourcesFile, 'orchard'], call);
+    const record = JSON.parse(await readFile(join(runFolder, 'record.json'), 'utf8'));
+    return { runFolder, record, bodies };
+  };
+  const strip = (value: unknown) => JSON.parse(JSON.stringify(value,
+    (key, v) => (key === 'ms' || key === 'started' || key === 'timings' || key === 'file' || key === 'asOf' ? undefined : v)));
+
+  it.each([undefined, true, false])('writes full read files only while readAudit is not false (%s)', async (readAudit) => {
+    const { runFolder, record } = await stubRun(readAudit);
+    const files = (await readdir(runFolder)).filter((name) => /^read-\d+\.json$/.test(name));
+    if (readAudit === false) {
+      expect(files).toHaveLength(0);
+      expect(record.reads.length).toBeGreaterThan(0);
+      expect(record.reads.every((entry: { file?: string }) => entry.file === undefined)).toBe(true);
+    } else {
+      expect(files).toHaveLength(record.reads.length);
+      for (const entry of record.reads) {
+        expect(typeof entry.file).toBe('string');
+        const full = JSON.parse(await readFile(join(runFolder, entry.file), 'utf8'));
+        expect(full.status).toBe(entry.status);
+        expect(Array.isArray(full.candidates)).toBe(true);
+      }
+    }
+    expect(record.status).toBe('complete');
+  });
+
+  it('keeps the same selection and decision evidence either way', async () => {
+    const shared = { directory: await folder() };
+    const runs = [] as { record: { reads: unknown[]; jev: unknown[]; pick: unknown; searches: unknown; settings: Record<string, unknown> } }[];
+    for (const readAudit of [undefined, true, false]) runs.push(await stubRun(readAudit, shared));
+    const [first, second, third] = runs.map(({ record }) => ({
+      pick: strip(record.pick),
+      jev: record.jev.map(strip),
+      searches: record.searches,
+      reads: record.reads.map(strip),
+    }));
+    expect(second).toEqual(first);
+    expect(third).toEqual(first);
+    expect(runs[2]!.record.settings.readAudit).toBe(false);
+    expect(runs[0]!.record.settings.readAudit).toBeUndefined();
+  });
+});
+
+describe('the saved record under overlapping replies', () => {
+  it('keeps every Jev call in record.json while replies finish together', async () => {
+    const directory = await folder();
+    const home = join(directory, 'home');
+    const notes = join(directory, 'notes');
+    await mkdir(home);
+    await mkdir(notes);
+    // Big notes: the decision feed splits into several adapter requests.
+    for (let index = 0; index < 6; index++) {
+      const ideas = Array.from({ length: 400 }, (_, idea) => `orchard idea ${index} ${idea} grows trees`).join('\n');
+      await writeFile(join(notes, `orchard-${index}.md`), `# Orchard ${index}\n\n${ideas}\n`);
+    }
+    const sourcesFile = join(directory, 'sources.json');
+    await writeFile(sourcesFile, JSON.stringify({ sources: [{ type: 'markdown', path: notes }] }));
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
+    vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
+    const bodies: string[] = [];
+    const pending: (() => void)[] = [];
+    vi.stubGlobal('fetch', vi.fn((_url: unknown, init: RequestInit) => {
+      bodies.push(String(init!.body));
+      return new Promise<Response>((resolve) => pending.push(() => resolve(Response.json({
+        usage: null,
+        answers: Object.fromEntries(Object.keys(JSON.parse(String(init!.body)).questions).map((key) => [key, { noul: 0.8 }])),
+      }))));
+    }));
+    const { call } = subscriptionReply({ markdown: searches().markdown });
+    let finished = false;
+    let simultaneous = 0;
+    const runPromise = run(['--sources', sourcesFile, 'orchard'], call).finally(() => { finished = true; });
+    // Replies are released together, so their onCall saves overlap.
+    while (!finished) {
+      if (pending.length >= 2) {
+        simultaneous = Math.max(simultaneous, pending.length);
+        pending.splice(0).forEach((release) => release());
+      } else if (pending.length === 1) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        if (pending.length === 1) pending.splice(0).forEach((release) => release());
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+    const runFolder = await runPromise;
+    expect(simultaneous).toBeGreaterThan(1);
+    const record = JSON.parse(await readFile(join(runFolder, 'record.json'), 'utf8'));
+    expect(record.jev).toHaveLength(bodies.length);
+    for (const entry of record.jev) {
+      for (const field of ['started', 'questions', 'size', 'status', 'ms', 'splits']) expect(entry).toHaveProperty(field);
+      expect(entry.status).toBe(200);
+    }
+    expect(record.status).toBe('complete');
+    expect(await readFile(join(runFolder, 'log.md'), 'utf8')).toContain('2026-01-01');
   });
 });

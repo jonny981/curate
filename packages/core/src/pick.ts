@@ -209,6 +209,11 @@ export interface PickLimits {
   readonly maxCandidates?: number;
   readonly maxElapsedMs?: number;
   readonly maxQuestionText?: number;
+  /** The most decision requests of one round in flight at once: the
+   *  independent batches of a round dispatch together up to this many
+   *  and the rest go out in dispatch order as earlier replies land.
+   *  Omitted means every batch of a round goes out at once. */
+  readonly maxInFlight?: number;
 }
 
 export interface PickThresholds {
@@ -915,6 +920,7 @@ interface ResolvedLimits {
   readonly maxCandidates: number;
   readonly maxElapsedMs: number;
   readonly maxQuestionText: number;
+  readonly maxInFlight: number;
 }
 
 function positiveLimit(value: number | undefined, name: string, fallback: number): number {
@@ -1569,6 +1575,7 @@ export async function pick(
     maxCandidates: positiveLimit(input.maxCandidates, 'maxCandidates', Number.POSITIVE_INFINITY),
     maxElapsedMs: positiveLimit(input.maxElapsedMs, 'maxElapsedMs', Number.POSITIVE_INFINITY),
     maxQuestionText: positiveLimit(input.maxQuestionText, 'maxQuestionText', Number.POSITIVE_INFINITY),
+    maxInFlight: positiveLimit(input.maxInFlight, 'maxInFlight', Number.POSITIVE_INFINITY),
   };
   const recordedLimits: PickLimits = {
     maxPerBatch: limits.maxPerBatch,
@@ -1577,6 +1584,7 @@ export async function pick(
     ...(input.maxBatches !== undefined ? { maxBatches: input.maxBatches } : {}),
     ...(input.maxCandidates !== undefined ? { maxCandidates: input.maxCandidates } : {}),
     ...(input.maxElapsedMs !== undefined ? { maxElapsedMs: input.maxElapsedMs } : {}),
+    ...(input.maxInFlight !== undefined ? { maxInFlight: input.maxInFlight } : {}),
   };
   const scored = everyScored === undefined || everyScored === true ? {} : everyScored;
   const barFor = (id: string) => everyScored === true ? 0 : scored.bar ?? options.barBySource?.[id] ?? DEFAULT_BAR;
@@ -1617,6 +1625,15 @@ export async function pick(
   const dial = topK !== undefined || rareOn;
   const signal = options.signal ?? new AbortController().signal;
   const started = Date.now();
+  // One signal for every decide call of the pick, with the pick's own
+  // deadline riding it: the decider can tell this pick's batches, splits
+  // and resends from another pick's, so one batch's terminal failure
+  // stops this pick's queued sends and leaves another pick's alone. The
+  // deadline fires once when the elapsed limit is spent.
+  const decideDeadline = Number.isFinite(limits.maxElapsedMs)
+    ? AbortSignal.timeout(Math.max(0, Math.ceil(limits.maxElapsedMs - (Date.now() - started))))
+    : undefined;
+  const decideSignal = AbortSignal.any(decideDeadline === undefined ? [signal] : [signal, decideDeadline]);
 
   const questionVersion = candidates.some((candidate) => candidate.kind !== undefined)
     ? 'memory-pick-questions-2' : PICK_QUESTION_VERSION;
@@ -1970,11 +1987,13 @@ export async function pick(
         }
       }
     }
-    for (let index = 0; index < fresh.length;) {
-      if (signal.aborted) { stop = 'cancelled'; break; }
-      if (batches >= limits.maxBatches) { stop = 'limits'; break; }
-      const remaining = limits.maxElapsedMs - (Date.now() - started);
-      if (remaining <= 0) { stop = 'time'; break; }
+    // Independent batches of one round go out at once: the round ends
+    // only when every sent batch settles, and a later cascade round
+    // still waits for this round's answers. Results apply in dispatch
+    // order whatever order the replies land in, so answer order never
+    // depends on completion order.
+    const slices: Pending[][] = [];
+    for (let index = 0; index < fresh.length && batches + slices.length < limits.maxBatches;) {
       // A batch packs whole items until the character bound; the first
       // item always goes, so a single oversized item is sent alone. An
       // item counts once per batch however many of its questions it holds.
@@ -1991,7 +2010,21 @@ export async function pick(
         counted.add(item.candidate);
         slice.push(item);
       }
+      slices.push(slice);
       index += slice.length;
+    }
+    interface BatchOutcome {
+      readonly slice: Pending[];
+      readonly sent: boolean;
+      readonly stop?: 'time' | 'cancelled';
+      readonly timedOut: boolean;
+      readonly answers?: Record<string, PickAnswer>;
+      readonly decideError?: unknown;
+    }
+    const dispatch = async (slice: Pending[]): Promise<BatchOutcome> => {
+      if (signal.aborted) return { slice, sent: false, stop: 'cancelled', timedOut: false };
+      const remaining = limits.maxElapsedMs - (Date.now() - started);
+      if (remaining <= 0) return { slice, sent: false, stop: 'time', timedOut: false };
       const questions = slice.map((item) => item.question);
       if (cacheable) cacheAsked += slice.length;
       // The decide port was asked these task questions about these
@@ -2001,36 +2034,67 @@ export async function pick(
         sentQuestions += slice.length;
         for (const item of slice) sentParts.add(item.candidate);
       }
-      const deadline = Number.isFinite(remaining) ? AbortSignal.timeout(Math.ceil(remaining)) : undefined;
-      let answers: Record<string, PickAnswer> | undefined;
-      let decideError: unknown;
-      let timedOut = false;
       try {
+        const sent: Promise<Record<string, PickAnswer>> = options.decide({ task, questions }, decideSignal);
         const returned: unknown = await Promise.race([
-          options.decide({ task, questions },
-            deadline === undefined ? signal : AbortSignal.any([signal, deadline])),
+          sent,
           new Promise<typeof TIMED_OUT>((resolve) => {
-            deadline?.addEventListener('abort', () => resolve(TIMED_OUT), { once: true });
+            decideDeadline?.addEventListener('abort', () => resolve(TIMED_OUT), { once: true });
           }),
         ]);
-        if (returned === TIMED_OUT) timedOut = true;
-        else answers = isRecord(returned) ? returned as Record<string, PickAnswer> : undefined;
-      } catch (error) {
-        timedOut = deadline?.aborted === true;
-        decideError = error;
+        if (returned === TIMED_OUT) {
+          // The deadline fired: the decider's own cancellation is still
+          // awaited to its end, so every request it sent settles and
+          // reports — its record writes included — before this outcome
+          // is read and the run returns.
+          await sent.then(() => {}, () => {});
+          return { slice, sent: true, timedOut: true };
+        }
+        return { slice, sent: true, timedOut: false,
+          ...(isRecord(returned) ? { answers: returned as Record<string, PickAnswer> } : {}) };
+      } catch (decideError) {
+        return { slice, sent: true, timedOut: decideDeadline?.aborted === true, decideError };
       }
+    };
+    // At most `maxInFlight` requests of the round are open at once;
+    // unbounded, every slice goes out together. A queued slice starts
+    // only when an earlier one settles, in dispatch order — and only
+    // while no settled outcome would have stopped a sequential round:
+    // a rejection, a deadline or a cancellation keeps later queued
+    // batches from starting, while batches already running still
+    // settle and apply.
+    const outcomes: (BatchOutcome | undefined)[] = new Array(slices.length);
+    let next = 0;
+    let halted = false;
+    await Promise.all(Array.from({ length: Math.min(slices.length, limits.maxInFlight) },
+      async () => {
+        while (!halted && next < slices.length) {
+          const at = next;
+          next += 1;
+          const outcome = await dispatch(slices[at]!);
+          outcomes[at] = outcome;
+          if (!outcome.sent || outcome.timedOut || outcome.decideError !== undefined) halted = true;
+        }
+      }));
+    for (const outcome of outcomes) {
+      // A batch the halt left queued stays unasked like the tail of a
+      // stopped sequential run.
+      if (outcome === undefined) continue;
+      const { slice, sent, stop: unsent, timedOut, answers, decideError } = outcome;
+      if (!sent) { stop ??= unsent; continue; }
+      batches += 1;
       // A rejected batch is reported, not swallowed: the record names
       // the batch's candidate ids and the error's message, and the pick
       // fails on it; no retry and no fallback. A call the elapsed limit
       // or the caller's signal already stopped ends the run, not the pick.
-      if (decideError !== undefined && !timedOut && !signal.aborted) {
-        decideFailure = {
+      const failed = decideError !== undefined && !timedOut && !signal.aborted;
+      if (failed) {
+        decideFailure ??= {
           ids: [...new Set(slice.map(({ question }) => question.id))],
           message: decideError instanceof Error ? decideError.message : String(decideError),
           error: decideError,
         };
         if (sink === answered) for (const item of slice) decideFailed.add(item.candidate);
-        stop = 'error';
       }
       for (const { candidate, spec, question, cacheKey } of slice) {
         const answer: CheckedAnswer = timedOut
@@ -2064,9 +2128,15 @@ export async function pick(
             && takeCharacters(candidate.text, limits.maxQuestionText).truncated);
         }
       }
-      batches += 1;
-      if (timedOut) { stop = 'time'; break; }
-      if (decideFailure !== undefined) break;
+      // The first batch in dispatch order that would have ended a
+      // sequential run sets the stop; later outcomes still apply.
+      stop ??= timedOut ? 'time' : failed ? 'error' : undefined;
+    }
+    // The packing stopped at the batch cap with asks unasked, or the
+    // signal or clock fired while the sent batches were in flight.
+    if (stop === undefined) {
+      if (signal.aborted) stop = 'cancelled';
+      else if (slices.reduce((sum, slice) => sum + slice.length, 0) < fresh.length) stop = 'limits';
     }
     // Copies keep their source identity and score with their own question set.
     // Only the answer to the identical text and question is shared.

@@ -29,7 +29,7 @@ const PICK_OPTION_KEYS: readonly (keyof PickOptions)[] = [
 const THRESHOLD_KEYS: readonly (keyof PickThresholds)[] = ['linkedPathBar'];
 const LIMIT_KEYS: readonly (keyof PickLimits)[] = [
   'maxPerBatch', 'maxBatchChars', 'maxBatches', 'maxCandidates',
-  'maxElapsedMs', 'maxQuestionText',
+  'maxElapsedMs', 'maxQuestionText', 'maxInFlight',
 ];
 const LABEL_KEYS: readonly (keyof PickLabels)[] = ['directory', 'deciderId', 'questionVersion'];
 const CACHE_KEYS: readonly (keyof PickCache)[] = ['store', 'deciderId', 'questionVersion'];

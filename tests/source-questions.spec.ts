@@ -303,8 +303,12 @@ describe('limits across source questions', () => {
   it('records a fitted question that never finishes before the time limit', async () => {
     const result = await pick([candidate('a')], { ...uncutPick,
       task: 'Choose evidence', questionsBySource: { notes: { bias: 0, first: 'one', band: [0.1, 0.9], firstOnly: { bias: 0, weight: 1 }, questions: [{ ...criterion('one'), weight: 1 }, { ...criterion('two'), weight: 1 }] } }, limits: { maxElapsedMs: 20 },
+      // The second question's call never answers on its own: the
+      // elapsed limit's signal settles it.
       decide: async (batch, signal) => batch.questions[0]?.questionKey === 'two'
-        ? new Promise(() => {}) : answers(0.5)(batch, signal),
+        ? new Promise((_resolve, reject) => {
+            signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+          }) : answers(0.5)(batch, signal),
     });
     expect(result.selected.map((entry) => entry.id)).toEqual(['a']);
     expect(result.record.candidates[0]).toMatchObject({
