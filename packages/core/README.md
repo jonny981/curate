@@ -1603,7 +1603,10 @@ rejects it otherwise.
    calls.
 
 The returned `log` is the figures and counted rows, then the marked-up
-sections of the cited parts. Code then puts each row's exact quote back
+sections of the cited parts. An extracted row that scored under the
+count bar stays out of the figures. When it still carries an amount or
+quantity it is listed under them, with its probability and the ids of
+the log sections it cites. Code then puts each row's exact quote back
 at the end of the section of every part it cites, when the section does
 not already hold the quote's words. The quote must appear in the part's
 own text exactly, but for whitespace. It is written as `speaker: quote`
@@ -1624,7 +1627,8 @@ and in `memory` before any source read:
 `batchTokens` or `weightBands`.
 
 `record` holds `compression: 'low'`, `levers`, `items`, the extracted
-`rows`, each row's decision `probabilities`, how many were `counted`, the
+`rows`, each row's decision `probabilities`, how many were `counted`,
+how many uncounted rows the head lists (`uncountedListed`), the
 `marked` parts with their markup ids, the `restored` quotes and
 `restoreSkipped` skips, the number of `chunks`, every model call in
 `calls` (its step, chunk, attempt, milliseconds and status), and each

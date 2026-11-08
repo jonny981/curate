@@ -166,6 +166,9 @@ export interface CurateMarkupRecord {
   readonly probabilities: readonly number[];
   /** How many rows scored ROW_COUNT_BAR or more. */
   readonly counted: number;
+  /** How many uncounted rows carrying an amount or quantity the head
+   *  lists under the figures. */
+  readonly uncountedListed: number;
   /** The parts some row cites, in markup order, each with its markup
    *  heading id. These ids number the whole selection sorted by said
    *  date, so they differ from the extraction's. */
@@ -346,17 +349,55 @@ export function figures(rows: readonly CurateRow[], taskDate: string | undefined
   return { figures: lines, list };
 }
 
-/** The memory text: the figures and counted rows, then the cited parts'
- *  marked-up sections. */
+/** The extracted rows under `ROW_COUNT_BAR` that still carry an amount
+ *  or quantity, as the lines the head lists under the figures, in
+ *  extraction order and keeping duplicates:
+ *  `<row index + 1>. [probability <p>] <row text>`. The row's citations
+ *  resolve to the markup ids of the marked-up parts and are labelled
+ *  `log sections`; a citation that resolves to no marked-up part is
+ *  left out, and a row left with none shows `log sections: -`. */
+export function uncountedLines(input: {
+  readonly rows: readonly CurateRow[];
+  readonly probabilities: readonly number[];
+  /** The reference items in selected order: a row's `E<n>` cites position n - 1. */
+  readonly parts: readonly { readonly id: string }[];
+  /** The parts the markup wrote a section for, with their markup ids. */
+  readonly marked: readonly { readonly e: string; readonly id: string }[];
+}): string[] {
+  const lines: string[] = [];
+  input.rows.forEach((row, index) => {
+    const probability = input.probabilities[index]!;
+    if (probability >= ROW_COUNT_BAR) return;
+    if (![row.amount, row.quantity].some((value) => String(value ?? '').trim())) return;
+    const sections = citedPositions(row)
+      .map((position) => input.marked.find((item) => item.id === input.parts[position]?.id)?.e)
+      .filter((e): e is string => e !== undefined);
+    const rendered = rowText({ ...row, source: sections.length ? sections : ['-'] });
+    lines.push(`${index + 1}. [probability ${probability}] ${rendered.replace(' | source: ', ' | log sections: ')}`);
+  });
+  return lines;
+}
+
+/** The memory text: the figures, any uncounted rows carrying an amount
+ *  or quantity, and the counted rows, then the cited parts' marked-up
+ *  sections. */
 export function assemble(input: {
   readonly figures: readonly string[];
   readonly list: readonly string[];
   readonly extracted: number;
+  /** The `uncountedLines` for the call, listed between the figures and
+   *  the counted rows when it holds a line. */
+  readonly uncounted: readonly string[];
   readonly sections: readonly string[];
 }): string {
   const head = ['### computed by code from extracted rows the decision model counted', '',
     `Figures over the ${input.list.length} rows counted (of ${input.extracted} rows extracted):`,
     ...input.figures.map((line) => `- ${line}`), '',
+    ...(input.uncounted.length
+      ? ['Uncounted rows with an amount or quantity:',
+        'The figures above omit every row listed here: they are not included in the row count, sums or date calculations.',
+        ...input.uncounted, '']
+      : []),
     'Counted rows, by date:', ...(input.list.length ? input.list : ['(none)'])].join('\n');
   const below = input.sections.length
     ? `### marked-up log, the parts the rows cite\n\n${input.sections.join('\n\n')}\n\n\n` : '';
@@ -646,10 +687,14 @@ export async function writeMarkup(input: {
     items: items.map((item) => ({ e: item.e, id: fullId.get(item.candidate)!, candidate: item.candidate })),
     sections });
 
-  const text = assemble({ figures: lines, list, extracted: extracted.length, sections: restoredSections });
+  // Rows under the count bar that still carry an amount or quantity go
+  // under the figures; their citations resolve to markup ids.
+  const marked = items.map((item) => ({ e: item.e, id: fullId.get(item.candidate)!, said: item.said }));
+  const uncounted = uncountedLines({ rows: extracted, probabilities, parts: input.items, marked });
+  const text = assemble({ figures: lines, list, extracted: extracted.length, uncounted, sections: restoredSections });
   return { text, record: {
-    rows: extracted, probabilities, counted: counted.length,
-    marked: items.map((item) => ({ e: item.e, id: fullId.get(item.candidate)!, said: item.said })),
+    rows: extracted, probabilities, counted: counted.length, uncountedListed: uncounted.length,
+    marked,
     restored, restoreSkipped,
     chunks: groups.length, calls,
     ms: { extract: extractMs, decide: decideMs, markup: markupMs, total: Date.now() - started },
