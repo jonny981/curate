@@ -1,3 +1,4 @@
+import { copyFile } from 'node:fs/promises';
 import { defineConfig } from 'tsup';
 
 export default defineConfig({
@@ -12,4 +13,7 @@ export default defineConfig({
   sourcemap: true,
   clean: true,
   treeshake: true,
+  // The judgment set reads its weights from a data file beside the
+  // bundle, so the file ships with the package, not inside it.
+  onSuccess: () => copyFile('src/judgment-chat-weights.json', 'dist/judgment-chat-weights.json'),
 });

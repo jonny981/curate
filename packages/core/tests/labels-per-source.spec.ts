@@ -83,7 +83,7 @@ describe('label kinds per source', () => {
     expect(calls.questions.filter((q) => q.sourceId === 'labels')).toHaveLength(1);
     expect(result.selected).toHaveLength(4);
     expect(calls.questions.filter((q) => q.questionKey === 'constraint').every((q) =>
-      !q.trueCriterion.includes('past conversations'))).toBe(true);
+      !q.trueCriterion?.includes('past conversations'))).toBe(true);
   });
 
   it('asks routes once across kind sets, without a custom key replacing a route answer', async () => {

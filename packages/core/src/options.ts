@@ -1,7 +1,7 @@
 import type { CurateLowOptions, CurateOptions } from './curate.js';
 import type {
   CandidateSourceKind, MemoryKind, PickCache, PickCascade, PickCriterion,
-  PickLabels, PickLimits, PickOptions, PickTagSet, PickThresholds,
+  PickLabels, PickLimits, PickOptions, PickScoreCriterion, PickTagSet, PickThresholds,
 } from './pick.js';
 import type { CandidateReadRequest } from './source.js';
 import type { MeaningSearchOptions } from './meaning.js';
@@ -51,15 +51,18 @@ const SOURCE_KIND_KEYS: readonly CandidateSourceKind[] = ['chat', 'git-history',
 /** The fixed keys of `ranking`, keyed by candidate kind. */
 const MEMORY_KIND_KEYS: readonly MemoryKind[] = ['knowledge', 'docs', 'rules', 'instructions'];
 const CASCADE_KEYS: readonly (keyof PickCascade)[] = [
-  'bias', 'questions', 'typed', 'first', 'band', 'firstOnly', 'written', 'named',
+  'bias', 'questions', 'typed', 'first', 'band', 'firstOnly', 'written', 'named', 'model', 'anonymousItems',
 ];
 const TAG_SET_KEYS: readonly (keyof PickTagSet)[] = ['key', 'questions'];
 const CRITERION_KEYS: readonly (keyof PickCriterion)[] = ['key', 'instructions', 'true', 'false'];
-const CASCADE_QUESTION_KEYS: readonly (keyof PickCascade['questions'][number])[] = [
-  ...CRITERION_KEYS, 'weight',
+const MODEL_KEYS: readonly (keyof NonNullable<PickCascade['model']>)[] = [
+  'keys', 'mu', 'sd', 'w', 'b', 'bar', 'provenance',
+];
+const CASCADE_QUESTION_KEYS: readonly string[] = [
+  ...CRITERION_KEYS, 'levels', 'weight',
 ];
 const TYPED_QUESTION_KEYS: readonly (keyof NonNullable<PickCascade['typed']>[number])[] = [
-  ...CASCADE_QUESTION_KEYS, 'answerType', 'keepAt',
+  ...CRITERION_KEYS, 'weight', 'answerType', 'keepAt',
 ];
 const FIRST_ONLY_KEYS: readonly (keyof NonNullable<PickCascade['firstOnly']>)[] = ['bias', 'weight'];
 const WRITTEN_KEYS: readonly (keyof NonNullable<PickCascade['written']>)[] = ['highest', 'second'];
@@ -89,6 +92,7 @@ function checkKeys(value: unknown, allowed: readonly string[], path: string): vo
  *  fields would otherwise go unread. */
 export function checkCascadeKeys(set: PickCascade | undefined, path: string): void {
   checkKeys(set, CASCADE_KEYS, path);
+  checkKeys(set?.model, MODEL_KEYS, `${path}.model`);
   checkKeys(set?.firstOnly, FIRST_ONLY_KEYS, `${path}.firstOnly`);
   checkKeys(set?.written, WRITTEN_KEYS, `${path}.written`);
   checkKeys(set?.named, NAMED_KEYS, `${path}.named`);
@@ -107,12 +111,51 @@ export function checkCascadeKeys(set: PickCascade | undefined, path: string): vo
  *  between 0 and 1, first, band and firstOnly together or not at all,
  *  finite written weights beside keys that leave `task1` to `task4`
  *  free, and a complete name question with finite weights whose key,
- *  followed by a number, is no other question's key. */
+ *  followed by a number, is no other question's key. A model-scored
+ *  set follows a different shape: a complete fitted model, questions
+ *  that each carry true and false or at least two ordered levels, no
+ *  per-question weights needed, and none of the first, band, firstOnly,
+ *  typed, written or named machinery. */
 export function checkCascade(set: PickCascade | undefined): void {
   if (set === undefined) return;
+  if (set.anonymousItems !== undefined && typeof set.anonymousItems !== 'boolean') {
+    throw new TypeError('a question set\'s anonymousItems must be a boolean.');
+  }
   const keys = set.questions.map((q) => q.key);
+  const levelled = (q: PickCascade['questions'][number]): q is PickScoreCriterion & { readonly weight?: number } =>
+    'levels' in q && q.levels !== undefined;
+  if (set.model !== undefined) {
+    const model = set.model;
+    const complete = typeof model === 'object' && model !== null
+      && Array.isArray(model.keys) && model.keys.length > 0
+      && model.keys.every((key) => typeof key === 'string' && key !== '')
+      && [model.mu, model.sd, model.w].every((list) => Array.isArray(list)
+        && list.length === model.keys.length && list.every((value) => typeof value === 'number' && Number.isFinite(value)))
+      && typeof model.b === 'number' && Number.isFinite(model.b)
+      && typeof model.bar === 'number' && Number.isFinite(model.bar) && model.bar >= 0 && model.bar <= 1;
+    if (!complete) {
+      throw new TypeError('a model question set needs fitted weights: keys with mu, sd and w arrays '
+        + 'of the same nonzero length, a finite b, and a bar from 0 to 1.');
+    }
+    if (set.first !== undefined || set.band !== undefined || set.firstOnly !== undefined
+      || set.typed !== undefined || set.written !== undefined || set.named !== undefined) {
+      throw new TypeError('a model question set selects through its weights alone: '
+        + 'it cannot carry first, band, firstOnly, typed, written or named.');
+    }
+    const nouled = (q: PickCascade['questions'][number]) =>
+      'true' in q && 'false' in q && q.true !== undefined && q.false !== undefined;
+    if (!keys.length || new Set(keys).size !== keys.length
+      || set.questions.some((q) => !q.key || !q.instructions || levelled(q) === nouled(q)
+        || (levelled(q) && (q.levels.length < 2
+          || q.levels.some((level) => typeof level !== 'string' || !level.trim()))))) {
+      throw new TypeError('a model question set needs unique questions, each with true and false '
+        + 'or at least two ordered levels.');
+    }
+    return;
+  }
   if (!Number.isFinite(set.bias) || !keys.length || new Set(keys).size !== keys.length
-    || set.questions.some((q) => !q.key || !q.instructions || !q.true || !q.false || !Number.isFinite(q.weight))) {
+    || set.questions.some((q) => !q.key || !q.instructions || levelled(q)
+      || !('true' in q) || !('false' in q) || !q.true || !q.false || !Number.isFinite(q.weight))) {
     throw new TypeError('a question set needs unique questions and finite fitted weights.');
   }
   if (set.typed !== undefined) {

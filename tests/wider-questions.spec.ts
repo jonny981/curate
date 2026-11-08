@@ -30,7 +30,7 @@ const pool = (n: number): MemoryCandidate[] => Array.from({ length: n }, (_, i) 
 
 describe('the count marker keeps a part below the bar', () => {
   // With relevant at 0.5, own and needed at this answer leave CHAT_CASCADE's score near 0.005.
-  const low = sigmoid((Math.log(0.005 / 0.995) - CHAT_CASCADE.bias) / (0.8588 + 0.5134));
+  const low = sigmoid((Math.log(0.005 / 0.995) - CHAT_CASCADE.bias!) / (0.8588 + 0.5134));
   const run = async (list: number, instance: number) => {
     const source = historySource({ reader: fixtureSource('chat', pool(1), { rare: false }), ...chatSettings,
       labels: false, questions: { ...CHAT_CASCADE, typed: [COUNT_MARKER] } });
@@ -96,7 +96,8 @@ describe('written questions are asked and weighed', () => {
 
     const set = PERSONAL_CHAT_WRITTEN_CASCADE;
     for (const entry of picked.record.candidates) {
-      const got = Object.fromEntries((entry.questions ?? []).map((q) => [q.key, q.status === 'answered' ? q.probability : NaN]));
+      const got = Object.fromEntries((entry.questions ?? []).map((q) =>
+        [q.key, q.status === 'answered' && 'probability' in q ? q.probability : NaN]));
       const probability = (entry as { probability: number }).probability;
       if (!inBand(entry.id)) {
         expect(Object.keys(got)).not.toContain('task1');
@@ -104,7 +105,7 @@ describe('written questions are asked and weighed', () => {
         continue;
       }
       const [highest, second] = [got.task1!, got.task2!].sort((x, y) => y - x);
-      const z = set.bias + set.questions.reduce((sum, q) => sum + q.weight * logit(got[q.key]!), 0)
+      const z = set.bias! + set.questions.reduce((sum, q) => sum + q.weight! * logit(got[q.key]!), 0)
         + set.written!.highest * clamped(highest!) + set.written!.second * clamped(second!);
       expect(probability).toBeCloseTo(sigmoid(z), 12);
     }

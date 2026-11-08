@@ -127,6 +127,28 @@ export interface CurateCall {
   readonly error?: string;
 }
 
+/** One line a section starts with when a turn's speaker names it. */
+export type RestoreSpeaker = 'user' | 'assistant' | 'system';
+
+/** A quote code put back under a cited part's section: the row it came
+ *  from (from 1), the section's markup id, the speaker when the part
+ *  shows one, and the span as the part's own text wrote it. */
+export interface RestoredQuote {
+  readonly row: number;
+  readonly e: string;
+  readonly speaker?: RestoreSpeaker;
+  readonly span: string;
+}
+
+/** A quote a row carried that was not put back, unless the section
+ *  already held its words: the row (from 1), the cited part's id when
+ *  the citation resolved to a part, and the reason. */
+export interface RestoreSkip {
+  readonly row: number;
+  readonly part?: string;
+  readonly reason: 'invalid citation' | 'quote not in part' | 'speaker unclear';
+}
+
 export interface CurateMarkupRecord {
   readonly compression: 'low';
   /** The lever set as applied, carried from the pick's record, as on a
@@ -144,10 +166,18 @@ export interface CurateMarkupRecord {
   readonly probabilities: readonly number[];
   /** How many rows scored ROW_COUNT_BAR or more. */
   readonly counted: number;
+  /** How many uncounted rows carrying an amount or quantity the head
+   *  lists under the figures. */
+  readonly uncountedListed: number;
   /** The parts some row cites, in markup order, each with its markup
    *  heading id. These ids number the whole selection sorted by said
    *  date, so they differ from the extraction's. */
   readonly marked: readonly { readonly e: string; readonly id: string; readonly said: string }[];
+  /** The quotes code restored under the cited sections, in memory-text
+   *  order. */
+  readonly restored: readonly RestoredQuote[];
+  /** The quotes code did not restore, in the order the rows cite them. */
+  readonly restoreSkipped: readonly RestoreSkip[];
   readonly chunks: number;
   /** Every model call, in the order each finished. */
   readonly calls: readonly CurateCall[];
@@ -319,17 +349,55 @@ export function figures(rows: readonly CurateRow[], taskDate: string | undefined
   return { figures: lines, list };
 }
 
-/** The memory text: the figures and counted rows, then the cited parts'
- *  marked-up sections. */
+/** The extracted rows under `ROW_COUNT_BAR` that still carry an amount
+ *  or quantity, as the lines the head lists under the figures, in
+ *  extraction order and keeping duplicates:
+ *  `<row index + 1>. [probability <p>] <row text>`. The row's citations
+ *  resolve to the markup ids of the marked-up parts and are labelled
+ *  `log sections`; a citation that resolves to no marked-up part is
+ *  left out, and a row left with none shows `log sections: -`. */
+export function uncountedLines(input: {
+  readonly rows: readonly CurateRow[];
+  readonly probabilities: readonly number[];
+  /** The reference items in selected order: a row's `E<n>` cites position n - 1. */
+  readonly parts: readonly { readonly id: string }[];
+  /** The parts the markup wrote a section for, with their markup ids. */
+  readonly marked: readonly { readonly e: string; readonly id: string }[];
+}): string[] {
+  const lines: string[] = [];
+  input.rows.forEach((row, index) => {
+    const probability = input.probabilities[index]!;
+    if (probability >= ROW_COUNT_BAR) return;
+    if (![row.amount, row.quantity].some((value) => String(value ?? '').trim())) return;
+    const sections = citedPositions(row)
+      .map((position) => input.marked.find((item) => item.id === input.parts[position]?.id)?.e)
+      .filter((e): e is string => e !== undefined);
+    const rendered = rowText({ ...row, source: sections.length ? sections : ['-'] });
+    lines.push(`${index + 1}. [probability ${probability}] ${rendered.replace(' | source: ', ' | log sections: ')}`);
+  });
+  return lines;
+}
+
+/** The memory text: the figures, any uncounted rows carrying an amount
+ *  or quantity, and the counted rows, then the cited parts' marked-up
+ *  sections. */
 export function assemble(input: {
   readonly figures: readonly string[];
   readonly list: readonly string[];
   readonly extracted: number;
+  /** The `uncountedLines` for the call, listed between the figures and
+   *  the counted rows when it holds a line. */
+  readonly uncounted: readonly string[];
   readonly sections: readonly string[];
 }): string {
   const head = ['### computed by code from extracted rows the decision model counted', '',
     `Figures over the ${input.list.length} rows counted (of ${input.extracted} rows extracted):`,
     ...input.figures.map((line) => `- ${line}`), '',
+    ...(input.uncounted.length
+      ? ['Uncounted rows with an amount or quantity:',
+        'The figures above omit every row listed here: they are not included in the row count, sums or date calculations.',
+        ...input.uncounted, '']
+      : []),
     'Counted rows, by date:', ...(input.list.length ? input.list : ['(none)'])].join('\n');
   const below = input.sections.length
     ? `### marked-up log, the parts the rows cite\n\n${input.sections.join('\n\n')}\n\n\n` : '';
@@ -344,6 +412,118 @@ export function markupSection(markup: string, e: string): string {
   const rest = markup.slice(at);
   const next = rest.slice(1).search(/^##\s*E\d+\s*\(said/m);
   return (next < 0 ? rest : rest.slice(0, next + 1)).trim();
+}
+
+// ---- restore
+
+/** Whitespace as Python reads it: the JavaScript set without U+FEFF,
+ *  plus \x1c-\x1f and \x85. */
+const SPACE = '[\\t\\n\\v\\f\\r \\x1c-\\x1f\\x85\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]';
+const SPACE_RUN = new RegExp(`${SPACE}+`);
+/** A line that opens a turn in a part's text: `user:`, `assistant:` or
+ *  `system:` at the text's start or right after a newline (a \u2028 or
+ *  \u2029 break does not start a line). */
+const TURN = new RegExp(`(?:^|(?<=\\n))(user|assistant|system):${SPACE}*`, 'g');
+const TURN_IN = new RegExp(`(?:^|(?<=\\n))(user|assistant|system):${SPACE}*`);
+/** The markup tags the words check strips, opening and closing, with any
+ *  attributes; a name ends only where a word character does not follow. */
+const TAGS = /<\/?(?:event|amount|count|pref|said)(?![\p{L}\p{N}_])[^>]*>/giu;
+/** Runs of Unicode word characters: letters, digits and underscore. */
+const WORD_RUN = /[\p{L}\p{N}_]+/gu;
+
+/** A text's words for the already-there check: lower-case, markup tags
+ *  dropped, word runs joined by single spaces. */
+function words(text: string): string {
+  return (text.replace(TAGS, '').toLowerCase().match(WORD_RUN) ?? []).join(' ');
+}
+
+const escapeRe = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const ALNUM_START = /^[\p{L}\p{N}]/u;
+const ALNUM_END = /[\p{L}\p{N}]$/u;
+
+/** Every exact match of the quote in the part's text. Only whitespace
+ *  may differ between the quote's pieces; a match that would extend a
+ *  word on either side is not one. */
+function exactMatches(quote: string, text: string): RegExpExecArray[] {
+  const pieces = quote.split(SPACE_RUN).filter(Boolean);
+  if (!pieces.length) return [];
+  let pattern = pieces.map(escapeRe).join(`${SPACE}+`);
+  if (ALNUM_START.test(pieces[0]!)) pattern = `(?<![\\p{L}\\p{N}_])${pattern}`;
+  if (ALNUM_END.test(pieces.at(-1)!)) pattern += `(?![\\p{L}\\p{N}_])`;
+  return [...text.matchAll(new RegExp(pattern, 'gu'))];
+}
+
+/** The first usable exact match of the quote in the part's own text:
+ *  the span as written, its offset and the speaker the part shows. A
+ *  match whose span holds a turn line is never used; what is left must
+ *  agree on one speaker (or none), else the quote is unclear. */
+function sourceSpan(quote: string, candidate: MemoryCandidate):
+    { offset: number; span: string; speaker?: RestoreSpeaker } | 'quote not in part' | 'speaker unclear' {
+  const matches = exactMatches(quote, candidate.text);
+  if (!matches.length) return 'quote not in part';
+  const usable: { offset: number; span: string; speaker?: RestoreSpeaker }[] = [];
+  for (const match of matches) {
+    const span = candidate.text.slice(match.index, match.index + match[0].length);
+    if (TURN_IN.test(span)) continue;
+    const priors = [...candidate.text.slice(0, match.index).matchAll(TURN)];
+    const speaker = priors.length ? priors.at(-1)![1] as RestoreSpeaker
+      : candidate.chat?.role === 'user' || candidate.chat?.role === 'assistant' ? candidate.chat.role : undefined;
+    usable.push({ offset: match.index, span, speaker });
+  }
+  return usable.length && new Set(usable.map((found) => found.speaker)).size === 1 ? usable[0]! : 'speaker unclear';
+}
+
+/** Put every extracted row's exact quote at the end of the section of
+ *  each part it cites when the section's words do not already hold it:
+ *  `parts` are the references in selected order (a row's `E<n>` cites
+ *  position `n - 1`), `items` the parts the markup wrote a section for
+ *  in memory-text order, and `sections` each item's cut section. A
+ *  restored line is `speaker: span`, or the span alone when the part
+ *  shows no speaker; lines go after the section's last non-blank
+ *  character, one per line, in their order in the part text. Every
+ *  existing byte of every section stays as it was. */
+export function restoreQuotes(input: {
+  readonly rows: readonly CurateRow[];
+  readonly parts: readonly { readonly id: string; readonly candidate: MemoryCandidate }[];
+  readonly items: readonly { readonly e: string; readonly id: string; readonly candidate: MemoryCandidate }[];
+  readonly sections: readonly string[];
+}): { sections: string[]; restored: RestoredQuote[]; restoreSkipped: RestoreSkip[] } {
+  const itemOf = new Map(input.items.map((item, index) => [item.candidate, { item, index }]));
+  const added: { row: number; offset: number; speaker?: RestoreSpeaker; span: string; line: string }[][] =
+    input.items.map(() => []);
+  const restoreSkipped: RestoreSkip[] = [];
+  input.rows.forEach((row, index) => {
+    const quote = String(row.quote ?? '').trim();
+    if (!quote) return;
+    for (const position of new Set(citedPositions(row))) {
+      const candidate = input.parts[position]?.candidate;
+      const entry = candidate === undefined ? undefined : itemOf.get(candidate);
+      if (entry === undefined) {
+        restoreSkipped.push({ row: index + 1, ...(candidate === undefined ? {} : { part: input.parts[position]!.id }),
+          reason: 'invalid citation' });
+        continue;
+      }
+      const { item, index: section } = entry;
+      const held = words(`${input.sections[section]!}\n${added[section]!.map((line) => line.line).join('\n')}`);
+      const key = words(quote);
+      if (key && held.includes(key)) continue;
+      const found = sourceSpan(quote, item.candidate);
+      if (typeof found === 'string') {
+        restoreSkipped.push({ row: index + 1, part: item.id, reason: found });
+        continue;
+      }
+      added[section]!.push({ row: index + 1, offset: found.offset, speaker: found.speaker, span: found.span,
+        line: found.speaker === undefined ? found.span : `${found.speaker}: ${found.span}` });
+    }
+  });
+  const restored: RestoredQuote[] = [];
+  const sections = input.sections.map((section, index) => {
+    const lines = added[index]!.sort((a, b) => a.offset - b.offset);
+    restored.push(...lines.map((line) => ({ row: line.row, e: input.items[index]!.e,
+      ...(line.speaker === undefined ? {} : { speaker: line.speaker }), span: line.span })));
+    return lines.length ? `${section}\n${lines.map((line) => line.line).join('\n')}` : section;
+  });
+  return { sections, restored, restoreSkipped };
 }
 
 // ---- the pipeline
@@ -448,7 +628,8 @@ export async function writeMarkup(input: {
     }
     probabilities = batch.questions.map((question) => {
       const answer = answers?.[question.key];
-      return answer?.status === 'answered' && Number.isFinite(answer.probability) ? answer.probability : NaN;
+      return answer?.status === 'answered' && 'probability' in answer
+        && Number.isFinite(answer.probability) ? answer.probability : NaN;
     });
     const unanswered = batch.questions.filter((_, index) => Number.isNaN(probabilities[index]));
     if (unanswered.length) {
@@ -499,10 +680,22 @@ export async function writeMarkup(input: {
   const sections = items.map((item) => markupSection(markup, item.e));
   const markupMs = Date.now() - markupStarted;
 
-  const text = assemble({ figures: lines, list, extracted: extracted.length, sections });
+  // Put each row's exact quote back under every part it cites when the
+  // markup left those words out, with the speaker the part shows.
+  const { sections: restoredSections, restored, restoreSkipped } = restoreQuotes({
+    rows: extracted, parts: input.items,
+    items: items.map((item) => ({ e: item.e, id: fullId.get(item.candidate)!, candidate: item.candidate })),
+    sections });
+
+  // Rows under the count bar that still carry an amount or quantity go
+  // under the figures; their citations resolve to markup ids.
+  const marked = items.map((item) => ({ e: item.e, id: fullId.get(item.candidate)!, said: item.said }));
+  const uncounted = uncountedLines({ rows: extracted, probabilities, parts: input.items, marked });
+  const text = assemble({ figures: lines, list, extracted: extracted.length, uncounted, sections: restoredSections });
   return { text, record: {
-    rows: extracted, probabilities, counted: counted.length,
-    marked: items.map((item) => ({ e: item.e, id: fullId.get(item.candidate)!, said: item.said })),
+    rows: extracted, probabilities, counted: counted.length, uncountedListed: uncounted.length,
+    marked,
+    restored, restoreSkipped,
     chunks: groups.length, calls,
     ms: { extract: extractMs, decide: decideMs, markup: markupMs, total: Date.now() - started },
   } };

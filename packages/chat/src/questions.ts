@@ -1,4 +1,5 @@
-import type { PickCascade } from '@curatejs/core';
+import { readFileSync } from 'node:fs';
+import type { PickCascade, PickCascadeModel } from '@curatejs/core';
 
 /** Questions and fitted weights for chat evidence. */
 export const CHAT_CASCADE: PickCascade = {
@@ -105,4 +106,50 @@ export const PERSONAL_CHAT_WRITTEN_CASCADE: PickCascade = {
     highest: 0.1655479793453193,
     hasNames: -0.1646894012324575,
   },
+};
+
+/** The judgment set's fitted weights, read from the data file beside
+ *  this module. The file ships empty: with no fitted constants the set
+ *  fails closed at source construction, and it never borrows another
+ *  set's weights or bar. A fitted run writes `keys`, `mu`, `sd`, `w`,
+ *  `b` and `bar` here, plus a `provenance` block naming the population
+ *  the fit measured. */
+const JUDGMENT_CHAT_WEIGHTS: Partial<PickCascadeModel> = (() => {
+  try {
+    const weights = JSON.parse(readFileSync(new URL('./judgment-chat-weights.json', import.meta.url), 'utf8')) as unknown;
+    return typeof weights === 'object' && weights !== null ? weights as Partial<PickCascadeModel> : {};
+  } catch {
+    return {};
+  }
+})();
+
+/** Two narrow judgments asked once of every part, in one request, and
+ *  combined with the facts the code computes per part through the
+ *  fitted weights in `judgment-chat-weights.json`. Items render as a
+ *  date and their text only: the model never sees a part's id, title
+ *  or session. Opt-in — `chat()` keeps `AGENT_CHAT_CASCADE` unless its
+ *  `questions` option names this set — and unfitted until the weights
+ *  file holds real constants, so selecting it before then throws. */
+export const JUDGMENT_CHAT_CASCADE: PickCascade = {
+  anonymousItems: true,
+  model: JUDGMENT_CHAT_WEIGHTS as PickCascadeModel,
+  questions: [
+    {
+      key: 'topic_match',
+      instructions: "Is this excerpt about the question's subject?",
+      true: 'Same subject',
+      false: 'Different subject',
+    },
+    {
+      key: 'answerhood',
+      instructions: 'Could this excerpt itself be the answer?',
+      levels: [
+        "can't be the answer",
+        'the kind asked, but not this one',
+        'possible but uncertain or partial',
+        'likely, with some doubt',
+        'definitely the answer',
+      ],
+    },
+  ],
 };

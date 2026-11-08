@@ -7,10 +7,11 @@ import {
   labelTaskQuestion, storedLabels, type LabelKind, type PartLabels,
 } from './labels.js';
 import {
-  decisionKey, storedDecision, type DecisionStore,
+  decisionKey, levelDistribution, storedDecision, type DecisionStore,
 } from './decisions.js';
+import { judgmentFacts, judgmentPopulation, modelScore, type JudgmentPopulation } from './judgments.js';
 import {
-  ANSWER_TYPES, ROUTE_QUESTIONS, routeOptions, type AnswerType, type RouteKey, type RouteOption,
+  ANSWER_TYPES, classifyTask, ROUTE_QUESTIONS, routeOptions, type AnswerType, type RouteKey, type RouteOption,
 } from './task.js';
 import type { LeverStates } from './levers.js';
 import type { StoredIndexReport } from './stored-index.js';
@@ -109,8 +110,14 @@ export interface PickQuestion {
   readonly role: MemoryCandidateRole;
   readonly kind?: MemoryKind;
   readonly question: string;
-  readonly trueCriterion: string;
-  readonly falseCriterion: string;
+  /** The yes side's criterion; a levelled question carries `levels` instead. */
+  readonly trueCriterion?: string;
+  readonly falseCriterion?: string;
+  /** A levelled question's ordered levels, lowest first. */
+  readonly levels?: readonly string[];
+  /** Render the item as a date and its text only, keeping its id,
+   *  title and other identifying fields out of the model request. */
+  readonly anonymous?: boolean;
   readonly sourceId: string;
   readonly id: string;
   readonly title: string;
@@ -125,6 +132,11 @@ export interface PickBatch {
 export type PickAnswer =
   | { readonly status: 'answered'; readonly probability: number;
       /** The sent item text had to be cut for the model to answer. */
+      readonly truncated?: boolean }
+  | { readonly status: 'answered';
+      /** A levelled question's answers: one probability per level, in
+       *  level order, adding to one. */
+      readonly probabilities: readonly number[];
       readonly truncated?: boolean }
   | { readonly status: 'refused' | 'missing' | 'error'; readonly detail?: string;
       readonly truncated?: boolean }
@@ -322,6 +334,32 @@ export interface PickCriterion {
   readonly false: string;
 }
 
+/** A narrow question answered on an ordered level scale instead of
+ *  yes/no. Only a model-scored set may carry one. */
+export interface PickScoreCriterion {
+  readonly key: string;
+  readonly instructions: string;
+  /** The ordered levels, lowest first. */
+  readonly levels: readonly string[];
+}
+
+/** The fitted constants a model-scored set combines through: the
+ *  feature or question keys in order, each value's fitted centre and
+ *  spread, the weights, the intercept, and the selection bar the fit
+ *  kept. Order is positional: `keys[index]` names the value slot
+ *  `index` reads. A missing or nonfinite value is imputed at its mu. */
+export interface PickCascadeModel {
+  readonly keys: readonly string[];
+  readonly mu: readonly number[];
+  readonly sd: readonly number[];
+  readonly w: readonly number[];
+  readonly b: number;
+  readonly bar?: number;
+  /** What the fit measured, as recorded beside its constants; the
+   *  score never reads it. */
+  readonly provenance?: unknown;
+}
+
 /** A named set of narrow yes/no questions whose answers label a kept
  *  reference: intent, importance, emphasis and the like. Unlike a
  *  cascade the questions do not combine into a selection probability;
@@ -338,8 +376,9 @@ export interface PickTagSet {
 
 /** Fitted narrow questions. Negative weights invert a question's contribution. */
 export interface PickCascade {
-  readonly bias: number;
-  readonly questions: readonly (PickCriterion & { readonly weight: number })[];
+  /** The linear combine's intercept; a model-scored set needs none. */
+  readonly bias?: number;
+  readonly questions: readonly ((PickCriterion | PickScoreCriterion) & { readonly weight?: number })[];
   /** Questions asked of a part only when the task needs their answer type. */
   readonly typed?: readonly (PickCriterion & {
     readonly answerType: AnswerType;
@@ -371,6 +410,15 @@ export interface PickCascade {
     /** Added when the task has at least one name. */
     readonly hasNames: number;
   };
+  /** A fitted combining model: the answers and the code facts Curate
+   *  computes per part score through its weights instead of the
+   *  per-question weights. A set carrying one selects no first, band,
+   *  firstOnly, typed, written or named machinery, and only its set
+   *  may hold levelled questions. */
+  readonly model?: PickCascadeModel;
+  /** Render each item as a date and its text only: the model never
+   *  sees the part's id, title or other identifying fields. */
+  readonly anonymousItems?: boolean;
 }
 
 /** What one setting did in one pick, for one source. */
@@ -911,6 +959,7 @@ const KIND_QUESTIONS: Record<MemoryKind, typeof PICK_QUESTIONS.reference> = {
 
 type CheckedAnswer =
   | { readonly status: 'answered'; readonly probability: number; readonly reused?: boolean; readonly truncated?: boolean }
+  | { readonly status: 'answered'; readonly probabilities: readonly number[]; readonly reused?: boolean; readonly truncated?: boolean }
   | { readonly status: 'refused' | 'missing' | 'error'; readonly detail?: string; readonly truncated?: boolean };
 
 interface ResolvedLimits {
@@ -945,16 +994,19 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 /** What one item adds to its batch's counted size once per batch,
  *  however many of its questions the batch holds: the item's id, title,
- *  date and text. */
+ *  date and text; an anonymous item's id and title never reach the
+ *  model, so they count nothing. */
 function itemChars(question: PickQuestion): number {
-  return question.id.length + question.title.length + question.text.length
+  return (question.anonymous === true ? 0 : question.id.length + question.title.length)
+    + question.text.length
     + (question.date === undefined ? 0 : question.date.value.length + question.date.meaning.length);
 }
 
 /** What one question adds to its batch's counted size: the question's
- *  wording and its true and false criteria. */
+ *  wording and its true and false criteria or its levels. */
 function questionChars(question: PickQuestion): number {
-  return question.question.length + question.trueCriterion.length + question.falseCriterion.length;
+  return question.question.length
+    + (question.levels ?? [question.trueCriterion ?? '', question.falseCriterion ?? '']).join('').length;
 }
 
 function takeCharacters(
@@ -1023,12 +1075,17 @@ function rankAndInterleave(
   return ordered;
 }
 
-function checkAnswer(raw: unknown): CheckedAnswer {
+function checkAnswer(raw: unknown, levels?: number): CheckedAnswer {
   if (raw === undefined) return { status: 'missing' };
   if (!isRecord(raw)) return { status: 'error', detail: 'The answer is not an object.' };
-  const { status, probability, detail } = raw;
+  const { status, probability, probabilities, detail } = raw;
   const truncated = raw.truncated === true ? { truncated: true as const } : {};
   if (status === 'answered') {
+    if (levels !== undefined) {
+      return levelDistribution(probabilities, levels)
+        ? { status: 'answered', probabilities: [...probabilities], ...truncated }
+        : { status: 'error', detail: 'The answer probabilities are not a distribution over the levels.' };
+    }
     return typeof probability === 'number' && Number.isFinite(probability)
       && probability >= 0 && probability <= 1
       ? { status: 'answered', probability, ...truncated }
@@ -1475,7 +1532,8 @@ export async function pick(
   checkPickOptions(options);
   // The moment the record names, and the period the task names counted from it.
   const timeZone = timeZoneOf(options.timeZone);
-  const asOf = zonedIso(taskMoment(options.taskDate, timeZone), timeZone);
+  const taskMs = taskMoment(options.taskDate, timeZone);
+  const asOf = zonedIso(taskMs, timeZone);
   const period = options.taskPeriod === false ? undefined : taskPeriod(options.task, { asOf, timeZone });
   const everyScored = options.everyScored;
   if (options.labels !== undefined
@@ -1587,7 +1645,11 @@ export async function pick(
     ...(input.maxInFlight !== undefined ? { maxInFlight: input.maxInFlight } : {}),
   };
   const scored = everyScored === undefined || everyScored === true ? {} : everyScored;
-  const barFor = (id: string) => everyScored === true ? 0 : scored.bar ?? options.barBySource?.[id] ?? DEFAULT_BAR;
+  // An explicit caller bar wins; without one a model-scored set's
+  // fitted bar is the source's own bar; without either the default
+  // stands.
+  const barFor = (id: string) => everyScored === true ? 0
+    : scored.bar ?? options.barBySource?.[id] ?? options.questionsBySource?.[id]?.model?.bar ?? DEFAULT_BAR;
   const ruleBarFor = (id: string) => options.ruleBarBySource?.[id] ?? 0;
   const thresholds: PickRecord['thresholds'] = {
     linkedPathBar: probabilityLimit(options.thresholds?.linkedPathBar, 'thresholds.linkedPathBar', DEFAULT_LINKED_PATH_BAR),
@@ -1882,10 +1944,20 @@ export async function pick(
       true: fill(named.question.true, name), false: fill(named.question.false, name),
     }));
   };
-  const specsFor = (candidate: MemoryCandidate) => {
+  interface QuestionSpec {
+    readonly key: string;
+    readonly question: string;
+    readonly levels?: readonly string[];
+    readonly trueCriterion?: string;
+    readonly falseCriterion?: string;
+  }
+  const specsFor = (candidate: MemoryCandidate): QuestionSpec[] => {
     const cascade = cascadeFor(candidate);
     return candidate.role === 'reference' && cascade
-      ? [...cascade.questions, ...typedFor(candidate), ...writtenFor(candidate), ...namedFor(candidate)].map((q) => ({ key: q.key, question: q.instructions, trueCriterion: q.true, falseCriterion: q.false }))
+      ? [...cascade.questions, ...typedFor(candidate), ...writtenFor(candidate), ...namedFor(candidate)].map((q) => ({ key: q.key, question: q.instructions,
+        ...('levels' in q
+          ? { levels: q.levels }
+          : { trueCriterion: q.true, falseCriterion: q.false }) }))
       : [{ key: candidate.role, ...(candidate.kind === undefined || (candidate.role === 'rule' && candidate.kind !== 'instructions')
         ? PICK_QUESTIONS[candidate.role] : KIND_QUESTIONS[candidate.kind]) }];
   };
@@ -1907,8 +1979,15 @@ export async function pick(
       ...(tagSet === undefined ? {} : { tagSet }),
       ...(candidate.date === undefined ? {} : { date: candidate.date }),
       ...(candidate.kind === undefined ? {} : { kind: candidate.kind }),
-      role: candidate.role, question: spec.question, trueCriterion: spec.trueCriterion,
-      falseCriterion: spec.falseCriterion, sourceId: candidate.sourceId, id: candidate.id,
+      role: candidate.role, question: spec.question,
+      ...(spec.levels === undefined
+        ? { trueCriterion: spec.trueCriterion, falseCriterion: spec.falseCriterion }
+        : { levels: spec.levels }),
+      // The set's anonymousItems renders every ask about its part
+      // without identifying fields, whichever sink the ask feeds.
+      ...(candidate.role === 'reference' && cascadeFor(candidate)?.anonymousItems === true
+        ? { anonymous: true as const } : {}),
+      sourceId: candidate.sourceId, id: candidate.id,
       title: candidate.title, text: shown.text,
     } };
   };
@@ -1932,7 +2011,8 @@ export async function pick(
         const key = JSON.stringify([item.candidate.text,
           item.candidate.text === '' ? item.candidate.title : null,
           question.role, question.kind, question.questionKey, question.question,
-          question.trueCriterion, question.falseCriterion]);
+          question.trueCriterion ?? null, question.falseCriterion ?? null,
+          question.levels ?? null, question.anonymous ?? null]);
         const first = decisionsByText.get(key);
         if (first !== undefined) { copies.push({ item, first }); return false; }
         decisionsByText.set(key, item);
@@ -2002,13 +2082,25 @@ export async function pick(
       const slice: Pending[] = [];
       const counted = new Set<MemoryCandidate>();
       let batchChars = task.length;
-      for (const item of fresh.slice(index, index + (whole ? fresh.length : limits.maxPerBatch))) {
-        const size = questionChars(item.question)
+      for (let at = index; at < fresh.length && (whole || slice.length < limits.maxPerBatch);) {
+        // A model-scored set's questions for one part stay in one
+        // request: its score needs every answer, and a batch closed
+        // between them would send the part's text twice.
+        const item = fresh[at]!;
+        let end = at + 1;
+        if (cascadeFor(item.candidate)?.model !== undefined) {
+          while (end < fresh.length && fresh[end]!.candidate === item.candidate) end += 1;
+        }
+        const group = fresh.slice(at, end);
+        const size = group.reduce((sum, entry) => sum + questionChars(entry.question), 0)
           + (counted.has(item.candidate) ? 0 : itemChars(item.question));
-        if (slice.length > 0 && !whole && batchChars + size > limits.maxBatchChars) break;
+        if (slice.length > 0 && !whole
+          && (batchChars + size > limits.maxBatchChars
+            || slice.length + group.length > limits.maxPerBatch)) break;
         batchChars += size;
         counted.add(item.candidate);
-        slice.push(item);
+        slice.push(...group);
+        at = end;
       }
       slices.push(slice);
       index += slice.length;
@@ -2102,7 +2194,7 @@ export async function pick(
           : answers === undefined
             ? { status: 'error', detail: decideError instanceof Error ? decideError.message
                 : decideError === undefined ? 'The decide call failed.' : String(decideError) }
-            : checkAnswer(answers[question.key]);
+            : checkAnswer(answers[question.key], question.levels?.length);
         let got = sink.get(candidate);
         if (!got) { got = new Map(); sink.set(candidate, got); }
         got.set(spec.key, answer);
@@ -2113,7 +2205,9 @@ export async function pick(
         if (cacheKey !== undefined && answer.status === 'answered') {
           try {
             await cache!.store.set(cacheKey,
-              { answer: { status: 'answered', probability: answer.probability,
+              { answer: { status: 'answered',
+                ...('probability' in answer ? { probability: answer.probability }
+                  : { probabilities: answer.probabilities }),
                 ...(answer.truncated === true ? { truncated: true } : {}) } });
           } catch (error) {
             cacheFailedWrites += 1;
@@ -2456,7 +2550,8 @@ export async function pick(
     routeRecord = {
       answers,
       on: routeOptions(Object.fromEntries(answers.flatMap((answer) =>
-        answer.status === 'answered' ? [[answer.key, answer.probability] as const] : []))),
+        answer.status === 'answered' && 'probability' in answer
+          ? [[answer.key, answer.probability] as const] : []))),
     };
   }
   let answerTypesRecord: PickRecord['answerTypes'];
@@ -2467,7 +2562,8 @@ export async function pick(
       ...(got?.get(type.key)
         ?? { status: 'unassessed' as const, ...(stop === undefined ? {} : { detail: stop }) }),
     }));
-    const needed = answers.filter((answer) => answer.status === 'answered' && answer.probability >= answerTypesBar)
+    const needed = answers.filter((answer) => answer.status === 'answered'
+      && 'probability' in answer && answer.probability >= answerTypesBar)
       .map((answer) => answer.key);
     neededTypes = new Set(needed);
     answerTypesRecord = { bar: answerTypesBar, answers, needed };
@@ -2504,6 +2600,17 @@ export async function pick(
   const unnamed = new Map<MemoryCandidate, number>();
   // The typed question whose answer reached its keepAt, by part.
   const keptBy = new Map<MemoryCandidate, string>();
+  // Each source's code-fact population, measured once over its whole
+  // candidate list when a model-scored set needs it.
+  const judgmentPools = new Map<string, JudgmentPopulation>();
+  const populationFor = (sourceId: string) => {
+    let pool = judgmentPools.get(sourceId);
+    if (pool === undefined) {
+      pool = judgmentPopulation(candidates.filter((candidate) => candidate.sourceId === sourceId));
+      judgmentPools.set(sourceId, pool);
+    }
+    return pool;
+  };
   // Candidates a stop left half-assessed inside a cascade.
   const curtailed = new Map<MemoryCandidate, 'limits' | 'time' | 'cancelled' | 'error'>();
   const evaluate = async (phase: readonly MemoryCandidate[]) => {
@@ -2515,7 +2622,7 @@ export async function pick(
         const cascade = cascadeFor(candidate);
         if (candidate.role === 'rule' || !cascade?.first) return [];
         const first = answered.get(candidate)?.get(cascade.first);
-        if (first?.status !== 'answered'
+        if (first?.status !== 'answered' || !('probability' in first)
           || first.probability < cascade.band![0] || first.probability > cascade.band![1]) return [];
         return specsFor(candidate).filter((spec) => spec.key !== cascade.first).map((spec) => pending(candidate, spec));
       }));
@@ -2527,7 +2634,7 @@ export async function pick(
       let answer: CheckedAnswer;
       if (candidate.role === 'reference' && cascade) {
         const first = cascade.first === undefined ? undefined : got.get(cascade.first);
-        if (first?.status === 'answered'
+        if (first?.status === 'answered' && 'probability' in first
           && (first.probability < cascade.band![0] || first.probability > cascade.band![1])) {
           answer = { status: 'answered', probability: 1 / (1 + Math.exp(-(cascade.firstOnly!.bias + cascade.firstOnly!.weight * logit(first.probability)))),
             ...(first.reused === true ? { reused: true } : {}) };
@@ -2545,14 +2652,38 @@ export async function pick(
           }
           const probabilities = asked.map((q) => got.get(q.key));
           if (probabilities.some((a) => a?.status === 'answered')) {
-            const term = (q: { readonly weight: number }, a: CheckedAnswer | undefined) =>
-              a?.status === 'answered' ? q.weight * logit(a.probability) : 0;
-            const z = cascade.bias + cascade.questions.reduce((sum, q, i) => sum + term(q, probabilities[i]), 0);
+            if (cascade.model !== undefined) {
+              // A noul answer joins as logit(p); a levelled answer as
+              // its expected level; a missing one is imputed at mu.
+              // The raw facts hold the part's index and rank; the score
+              // consumes them as shares of the pool, as the fit did.
+              const facts = judgmentFacts(candidate, populationFor(candidate.sourceId), options.task, taskMs);
+              const features: Record<string, number | undefined> = {
+                ...facts,
+                position: facts.position / (facts.poolSize || 1),
+                kwRank: facts.kwRank === undefined ? undefined : facts.kwRank / (facts.poolSize || 1),
+              };
+              for (const q of cascade.questions) {
+                const a = got.get(q.key);
+                features[q.key] = a?.status === 'answered'
+                  ? 'levels' in q && q.levels !== undefined
+                    ? ('probabilities' in a
+                      ? a.probabilities.reduce<number>((sum, p, index) => sum + index * p, 0) : undefined)
+                    : ('probability' in a ? logit(a.probability) : undefined)
+                  : undefined;
+              }
+              answer = { status: 'answered', probability: modelScore(cascade.model, features),
+                ...(probabilities.every((a) => a === undefined || (a.status === 'answered' && a.reused === true))
+                  ? { reused: true } : {}) };
+            } else {
+            const term = (q: { readonly weight?: number }, a: CheckedAnswer | undefined) =>
+              a?.status === 'answered' && 'probability' in a ? (q.weight ?? 0) * logit(a.probability) : 0;
+            const z = (cascade.bias ?? 0) + cascade.questions.reduce((sum, q, i) => sum + term(q, probabilities[i]), 0);
             const typedZ = typed.reduce((sum, q, i) => sum + term(q, probabilities[cascade.questions.length + i]), 0);
             // The best and second-best written answers; a missing one adds nothing.
             const [highest, second] = written.flatMap((q) => {
               const reply = got.get(q.key);
-              return reply?.status === 'answered' ? [reply.probability] : [];
+              return reply?.status === 'answered' && 'probability' in reply ? [reply.probability] : [];
             }).sort((left, right) => right - left);
             const writtenZ = cascade.written === undefined ? 0
               : (highest === undefined ? 0 : cascade.written.highest * writtenLogit(highest))
@@ -2560,7 +2691,7 @@ export async function pick(
             // The highest name answer; with none answered only hasNames is added.
             const best = named.flatMap((q) => {
               const reply = got.get(q.key);
-              return reply?.status === 'answered' ? [reply.probability] : [];
+              return reply?.status === 'answered' && 'probability' in reply ? [reply.probability] : [];
             }).reduce<number | undefined>((top, p) => top === undefined || p > top ? p : top, undefined);
             const namedZ = named.length === 0 ? 0
               : cascade.named!.hasNames + (best === undefined ? 0 : cascade.named!.highest * writtenLogit(best));
@@ -2569,7 +2700,8 @@ export async function pick(
             if (named.length > 0) unnamed.set(candidate, 1 / (1 + Math.exp(-(z + typedZ + writtenZ))));
             const keeper = typed.find((q) => {
               const reply = got.get(q.key);
-              return q.keepAt !== undefined && reply?.status === 'answered' && reply.probability >= q.keepAt;
+              return q.keepAt !== undefined && reply?.status === 'answered'
+                && 'probability' in reply && reply.probability >= q.keepAt;
             });
             if (keeper !== undefined) keptBy.set(candidate, keeper.key);
             answer = { status: 'answered', probability: 1 / (1 + Math.exp(-(z + typedZ + writtenZ + namedZ))),
@@ -2578,6 +2710,7 @@ export async function pick(
               // that came back unanswered — keeps it fresh.
               ...(probabilities.every((a) => a === undefined || (a.status === 'answered' && a.reused === true))
                 ? { reused: true } : {}) };
+            }
           } else answer = first ?? got.values().next().value ?? { status: 'missing' };
         }
       } else answer = got.values().next().value!;
@@ -2647,7 +2780,7 @@ export async function pick(
       statuses.set(candidate, { status: 'unassessed', reason: held ?? stop ?? 'limits' });
       continue;
     }
-    if (answer.status === 'answered') {
+    if (answer.status === 'answered' && 'probability' in answer) {
       const threshold = candidate.role === 'rule' ? ruleBarFor(candidate.sourceId) : referenceBar(candidate.sourceId);
       const reused = answer.reused === true ? { reused: true } : {};
       scoredParts.add(candidate);
@@ -2659,7 +2792,11 @@ export async function pick(
         statuses.set(candidate, { status: 'selected', asked: true, probability: answer.probability, ...reused,
           ...(kept === undefined ? {} : { keptBy: kept }) });
       } else statuses.set(candidate, { status: 'rejected', probability: answer.probability, ...reused });
-    } else statuses.set(candidate, { status: 'unanswered', answer: answer.status, detail: answer.detail });
+    } else statuses.set(candidate, { status: 'unanswered',
+      // A level distribution is a question answer, never a verdict; one
+      // here means the combine failed, so it records an error.
+      answer: answer.status === 'answered' ? 'error' : answer.status,
+      detail: answer.status === 'answered' ? 'The verdict is a level distribution, not a probability.' : answer.detail });
   }
   // A stop before this point left some of the feed undecided.
   const feedStop = stop;
@@ -2812,9 +2949,11 @@ export async function pick(
         if (held !== undefined) statuses.set(candidate, { status: 'unassessed', reason: held });
         continue;
       }
-      if (answer.status !== 'answered') {
+      if (answer.status !== 'answered' || !('probability' in answer)) {
         if (status.status === 'unassessed') {
-          statuses.set(candidate, { status: 'unanswered', answer: answer.status, detail: answer.detail });
+          statuses.set(candidate, { status: 'unanswered',
+            answer: answer.status === 'answered' ? 'error' : answer.status,
+            detail: answer.status === 'answered' ? 'The verdict is a level distribution, not a probability.' : answer.detail });
         }
         continue;
       }
@@ -2919,8 +3058,10 @@ export async function pick(
       // answer is below 0.5 or missing, the value stays unset rather
       // than naming the least-bad key.
       const value = set.questions.length === 1
-        ? (answers[0]!.status === 'answered' ? (answers[0]!.probability >= 0.5 ? 'yes' : 'no') : undefined)
-        : answers.find((answer) => answer.status === 'answered' && answer.probability >= 0.5)?.key;
+        ? (answers[0]!.status === 'answered' && 'probability' in answers[0]!
+          ? (answers[0]!.probability >= 0.5 ? 'yes' : 'no') : undefined)
+        : answers.find((answer) => answer.status === 'answered'
+          && 'probability' in answer && answer.probability >= 0.5)?.key;
       tags[set.key] = { ...(value === undefined ? {} : { value }), answers };
     }
     return tags;

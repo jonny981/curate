@@ -4,4 +4,5 @@ export { phraseCount, sharedFileText, sharedFileStore, SHARED_FILE_CACHE_BYTES }
 export { laneBend } from './lanes.js';
 export { embedQuery, embedSimilarities, isUnit, markUnit, normalize, normalized, similarity } from './vectors.js';
 export { datedIn, decayWeight, sinceCutoff, taskMoment, timeZoneOf, zonedIso } from './time.js';
+export { assemble, figures, uncountedLines } from './markup.js';
 export * from './stored-index.js';

@@ -191,6 +191,13 @@ See [core's measured reason](https://github.com/jonny981/curate/blob/main/packag
     pick: { writeQuestions: taskQuestionWriter(write) },
   });
   ```
+- **Judgment questions:** `JUDGMENT_CHAT_CASCADE` asks two narrow questions of every part: `topic_match`, a yes/no subject match, and `answerhood`, a five-level "could this excerpt itself be the answer" score. It combines the answers with facts the code computes per part (position, keyword rank, task kind and the rest) through the fitted constants in `judgment-chat-weights.json`, shipped beside the bundle. Items render anonymously: a date and their text, no id, title or session. Select it with `questions`, and override its fitted selection bar with `bar`:
+
+  ```ts
+  const source = chat({ paths: ['transcripts'], questions: JUDGMENT_CHAT_CASCADE, bar: 0.3 });
+  ```
+
+  The weights file ships empty, so the set throws until a fitted run writes `keys`, `mu`, `sd`, `w`, `b` and `bar` beside the bundle, plus a `provenance` block naming the population the fit measured. That population is the saved benchmark's: 700-character transcript chunks, session dates, full pools and adapter-assigned roles. A pass validates the set on that population only; it is not calibration for ordinary `/curate` sources. The set never borrows another set's weights or bar. The `curate` skill selects it per chat source with `questions: "judgments"` in `sources.json`.
 - **Label bar:** `labelBar` sets how sure a label must be, 0.5 when absent. A higher bar brings fewer parts in through the label lane: `historySource({ reader: chat(), ...chatSettings, labelBar: 0.7, questions: AGENT_CHAT_CASCADE })`.
 - **Labels:** `labels: true` asks core's seven `LABEL_KINDS` for transcript facts; a list of kinds asks your own set instead. See [core's label options](https://github.com/jonny981/curate/blob/main/packages/core/README.md#label-gate).
 - **Search wording:** `CHAT_SEARCH_LINE_REGISTER` describes the wording for host-written extra search lines. Copy or replace this text in your host; the package generates no lines.

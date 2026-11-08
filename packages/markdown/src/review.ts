@@ -144,7 +144,7 @@ export async function reviewNotes(options: MarkdownOptions & {
     }
     for (const { which, question } of slice) {
       const answer = reply?.[question.key];
-      if (answer?.status === 'answered' && typeof answer.probability === 'number'
+      if (answer?.status === 'answered' && 'probability' in answer && typeof answer.probability === 'number'
         && answer.probability >= 0 && answer.probability <= 1) {
         answers.set(question.key, answer.probability);
         continue;

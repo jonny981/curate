@@ -410,7 +410,7 @@ describe('levers', () => {
       };
       await expect(pick([part], { task: 'task', decide: counter.decide,
         questionsBySource: { notes: { ...fitted, questions: [{ ...fitted.questions[0]!, wieght: 2 }] } } } as never))
-        .rejects.toThrow('`questionsBySource.notes.questions[0].wieght` is not an option; allowed keys are `key`, `instructions`, `true`, `false`, `weight`');
+        .rejects.toThrow('`questionsBySource.notes.questions[0].wieght` is not an option; allowed keys are `key`, `instructions`, `true`, `false`, `levels`, `weight`');
       await expect(pick([part], { task: 'task', decide: counter.decide,
         questionsBySource: { notes: { ...fitted, first: 'q', band: [0.4, 0.6], firstOnly: { bias: 0, wieght: 1 } } } } as never))
         .rejects.toThrow('`questionsBySource.notes.firstOnly.wieght` is not an option; allowed keys are `bias`, `weight`');

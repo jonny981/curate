@@ -4,9 +4,9 @@ import { copyFile, mkdir, readFile, readdir, realpath, stat, utimes, writeFile }
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { curate, pickFromSources } from '@curatejs/core';
+import { curate, levelDistribution, pickFromSources } from '@curatejs/core';
 import { jev } from '@curatejs/core/models';
-import { chat, AGENT_CHAT_CASCADE, CHAT_SEARCH_LINE_REGISTER } from '@curatejs/chat';
+import { chat, AGENT_CHAT_CASCADE, CHAT_SEARCH_LINE_REGISTER, JUDGMENT_CHAT_CASCADE } from '@curatejs/chat';
 import { git, GIT_HISTORY_CASCADE, GIT_SEARCH_LINE_REGISTER } from '@curatejs/git';
 import { knowledgeBase, MARKDOWN_CASCADE, MARKDOWN_SEARCH_LINE_REGISTER } from '@curatejs/markdown';
 
@@ -29,9 +29,15 @@ export function parseArgs(args) {
   return options;
 }
 
+// The question sets a chat source can select by name. 'default' is the
+// same set an omitted questions key produces; 'judgments' is the only
+// measured model-scored set, and it fails closed inside chat() while
+// its weights file is unfitted.
+export const CHAT_QUESTION_SETS = { default: AGENT_CHAT_CASCADE, judgments: JUDGMENT_CHAT_CASCADE };
+
 const SOURCE_ENTRY_KEYS = {
-  'claude-code': ['type', 'path', 'since', 'exclude'],
-  codex: ['type', 'path', 'since', 'exclude', 'allowedCwd'],
+  'claude-code': ['type', 'path', 'since', 'exclude', 'questions', 'bar'],
+  codex: ['type', 'path', 'since', 'exclude', 'allowedCwd', 'questions', 'bar'],
   git: ['type', 'path', 'since', 'exclude', 'include'],
   markdown: ['type', 'path', 'since', 'exclude'],
 };
@@ -55,6 +61,13 @@ export function parseSources(value) {
         && (!Array.isArray(source[key]) || source[key].some((entry) => typeof entry !== 'string' || !entry.trim()))) {
         throw new Error(`${key} must be an array of paths.`);
       }
+    }
+    if (source.questions !== undefined && !Object.hasOwn(CHAT_QUESTION_SETS, source.questions)) {
+      throw new Error(`Unknown questions "${source.questions}"; allowed names are ${Object.keys(CHAT_QUESTION_SETS).join(', ')}.`);
+    }
+    if (source.bar !== undefined
+      && (typeof source.bar !== 'number' || !Number.isFinite(source.bar) || source.bar < 0 || source.bar > 1)) {
+      throw new Error('bar must be a number between 0 and 1.');
     }
     const allowed = source.allowedCwd;
     if (source.type === 'codex') {
@@ -175,7 +188,9 @@ export async function snapshotCodex(entry, folder) {
   }
   const source = chat({ id: `chat:codex:${entry.path}`, providers: ['codex'], paths: [folder],
     ...(entry.since === undefined ? {} : { since: entry.since }),
-    ...(exclude === undefined ? {} : { exclude }) });
+    ...(exclude === undefined ? {} : { exclude }),
+    ...(entry.questions === undefined ? {} : { questions: CHAT_QUESTION_SETS[entry.questions] }),
+    ...(entry.bar === undefined ? {} : { bar: entry.bar }) });
   return { filter, source: { ...source, async read(request, context) {
     const result = await source.read(request, context);
     return result.status !== 'read' ? result : { ...result,
@@ -200,9 +215,29 @@ export function parseSearches(value, required = kinds) {
   return value;
 }
 
+// Jev's state bound, less the longest question across the given sets —
+// 32,000 tokens at three characters each. A score question's levels
+// count the way a yes/no question's true and false criteria do.
+export function maxDecisionBatchChars(cascades) {
+  return 32_000 * 3 - Math.max(...cascades
+    .flatMap((cascade) => cascade.questions)
+    .map((question) => question.instructions.length + (question.levels !== undefined
+      ? question.levels.join('').length
+      : question.true.length + question.false.length)));
+}
+
 export function decisionAnswers(batch, raw) {
   return Object.fromEntries(batch.questions.map((question, index) => {
-    const probability = raw?.[`q${index}`]?.noul ?? raw?.[`q${index}`]?.probability;
+    const reply = raw?.[`q${index}`];
+    if (question.levels !== undefined) {
+      const flat = Array.isArray(reply?.probabilities) ? reply.probabilities
+        : typeof reply?.probabilities === 'object' && reply.probabilities !== null
+          ? question.levels.map((_, level) => reply.probabilities[String(level)])
+          : undefined;
+      return [question.key, flat !== undefined && levelDistribution(flat, question.levels.length)
+        ? { status: 'answered', probabilities: [...flat] } : { status: 'missing' }];
+    }
+    const probability = reply?.noul ?? reply?.probability;
     return [question.key, typeof probability === 'number' && Number.isFinite(probability) && probability >= 0 && probability <= 1
       ? { status: 'answered', probability } : { status: 'missing' }];
   }));
@@ -525,7 +560,9 @@ export async function run(args = process.argv.slice(2), callSubscription = subsc
         } else {
           sources.push(chat({ providers: [entry.type], paths: [entry.path],
             ...(entry.since === undefined ? {} : { since: entry.since }),
-            ...(entry.exclude === undefined ? {} : { exclude: inside(entry.exclude) }) }));
+            ...(entry.exclude === undefined ? {} : { exclude: inside(entry.exclude) }),
+            ...(entry.questions === undefined ? {} : { questions: CHAT_QUESTION_SETS[entry.questions] }),
+            ...(entry.bar === undefined ? {} : { bar: entry.bar }) }));
         }
       }
     }
@@ -570,11 +607,12 @@ export async function run(args = process.argv.slice(2), callSubscription = subsc
     // English text and JSON. Subtracting the longest question's characters
     // keeps the state plus that question inside the bound; the separate
     // 64,000-token whole-request limit covers the per-question JSON
-    // framing the batch count does not measure.
-    const maxBatchChars = 32_000 * 3 - Math.max(
-      ...[AGENT_CHAT_CASCADE, GIT_HISTORY_CASCADE, MARKDOWN_CASCADE]
-        .flatMap((cascade) => cascade.questions)
-        .map((question) => question.instructions.length + question.true.length + question.false.length));
+    // framing the batch count does not measure. A score question's levels
+    // count the way a yes/no question's criteria do.
+    const maxBatchChars = maxDecisionBatchChars([
+      AGENT_CHAT_CASCADE, GIT_HISTORY_CASCADE, MARKDOWN_CASCADE,
+      ...new Set(sources.map((source) => source.questions).filter(Boolean)),
+    ]);
     const count = Math.max(...searchKinds.map((kind) => record.searches[kind].keywords.length + record.searches[kind].answers.length));
     const pickStart = Date.now();
     const request = { task: options.task, searchLines: Array.from({ length: count }, (_, i) => `curate-search:${i}`),

@@ -138,6 +138,101 @@ describe("compression: 'low'", () => {
     ].join('\n'));
   });
 
+  it('lists an uncounted row that carries an amount or quantity under the figures, leaving it out of them', async () => {
+    // Extraction E1, E2, E3 are quince, koi, medlar; markup numbers them E3, E1, E2.
+    const { write } = model([
+      row({ what: 'bought seed', date: '2024-03-09', said: '2024-03-09', amount: '$38', source: ['E1'], quote: 'bought seed' }),
+      row({ what: 'bought twine', date: '2024-03-02', said: '2024-03-02', amount: '$12', source: ['E1', 'E2'], quote: 'bought twine' }),
+      row({ what: 'wished for shears', status: 'wished', said: '2024-03-05', quantity: '2 shears', source: ['E3'], quote: 'wished for shears' }),
+      row({ what: 'watered the rows', date: '2024-03-09', said: '2024-03-09', source: ['E1'], quote: 'watered' }),
+    ]);
+    const result = await curate(TASK, GARDEN, { compression: 'low',
+      decide: decider((index) => [0.9, 0.3, 0.2, 0.1][index]!).decide, write, taskDate: '2024-03-16' });
+    expect(result.log).toBe([
+      '### computed by code from extracted rows the decision model counted',
+      '',
+      'Figures over the 1 rows counted (of 4 rows extracted):',
+      '- Rows counted: 1',
+      '- Sum of amounts: $38 (38)',
+      '',
+      'Uncounted rows with an amount or quantity:',
+      'The figures above omit every row listed here: they are not included in the row count, sums or date calculations.',
+      '2. [probability 0.3] who: you | what: bought twine | status: done | date: 2024-03-02 (said 2024-03-02) | amount: $12 | quantity: - | log sections: E3, E1 "bought twine"',
+      '3. [probability 0.2] who: you | what: wished for shears | status: wished | date: not stated (said 2024-03-05) | amount: - | quantity: 2 shears | log sections: E2 "wished for shears"',
+      '',
+      'Counted rows, by date:',
+      '1. [2024-03-09, 7 days before the question date] who: you | what: bought seed | status: done | date: 2024-03-09 (said 2024-03-09) | amount: $38 | quantity: - | source: E1 "bought seed"',
+      '',
+      '### marked-up log, the parts the rows cite',
+      '',
+      '## E1 (said 2024-03-02)',
+      'user: <event who="you" status="done">Netted the koi pond.</event>',
+      '',
+      '## E2 (said 2024-03-05)',
+      'user: <event who="you" status="done">Pruned the medlar.</event>',
+      '',
+      '## E3 (said 2024-03-09)',
+      'user: <event who="you" status="done">Planted the quince row.</event>',
+      '',
+      '',
+      '',
+    ].join('\n'));
+    expect(result.record.uncountedListed).toBe(2);
+  });
+
+  it('keeps duplicate uncounted rows in extraction order', async () => {
+    const { write } = model([
+      row({ what: 'bought seed', amount: '$38', source: ['E1'] }),
+      row({ what: 'bought twine', amount: '$12', source: ['E2'], quote: 'twine' }),
+      row({ what: 'bought twine', amount: '$12', source: ['E2'], quote: 'twine' }),
+    ]);
+    const result = await curate(TASK, GARDEN, { compression: 'low',
+      decide: decider((index) => [0.9, 0.4, 0.4][index]!).decide, write });
+    const block = result.log.slice(result.log.indexOf('Uncounted rows'), result.log.indexOf('Counted rows'));
+    expect(block).toBe('Uncounted rows with an amount or quantity:\n'
+      + 'The figures above omit every row listed here: they are not included in the row count, sums or date calculations.\n'
+      + '2. [probability 0.4] who: you | what: bought twine | status: done | date: not stated (said ) | amount: $12 | quantity: - | log sections: E1 "twine"\n'
+      + '3. [probability 0.4] who: you | what: bought twine | status: done | date: not stated (said ) | amount: $12 | quantity: - | log sections: E1 "twine"\n\n');
+    expect(result.record.uncountedListed).toBe(2);
+  });
+
+  it('leaves a citation to no marked-up part out of the list, and shows - for a row left with none', async () => {
+    const { write } = model([
+      row({ what: 'bought seed', amount: '$38', source: ['E1'] }),
+      row({ what: 'bought twine', amount: '$12', source: ['E2', 'E9'], quote: 'twine' }),
+      row({ what: 'bought pots', amount: '$5', source: ['E9'], quote: 'pots' }),
+      row({ what: 'swept the path', quantity: '3 passes', source: [], quote: 'swept' }),
+    ]);
+    const result = await curate(TASK, GARDEN, { compression: 'low',
+      decide: decider((index) => [0.9, 0.3, 0.3, 0.3][index]!).decide, write });
+    expect(result.log).toContain('2. [probability 0.3] who: you | what: bought twine | status: done | date: not stated (said ) | amount: $12 | quantity: - | log sections: E1 "twine"');
+    expect(result.log).toContain('3. [probability 0.3] who: you | what: bought pots | status: done | date: not stated (said ) | amount: $5 | quantity: - | log sections: - "pots"');
+    expect(result.log).toContain('4. [probability 0.3] who: you | what: swept the path | status: done | date: not stated (said ) | amount: - | quantity: 3 passes | log sections: - "swept"');
+    expect(result.record.uncountedListed).toBe(3);
+  });
+
+  it('leaves the head byte-identical when no uncounted row carries an amount or quantity', async () => {
+    const { write } = model([
+      row({ what: 'bought seed', date: '2024-03-09', said: '2024-03-09', amount: '$38', source: ['E1'], quote: 'bought seed' }),
+      row({ what: 'watered the rows', date: '2024-03-09', said: '2024-03-09', source: ['E1'], quote: 'watered' }),
+      row({ what: 'wished for rain', status: 'wished', said: '2024-03-09', amount: '  ', source: ['E1'], quote: 'rain' }),
+    ]);
+    const result = await curate(TASK, GARDEN, { compression: 'low',
+      decide: decider((index) => [0.9, 0.1, 0.2][index]!).decide, write, taskDate: '2024-03-16' });
+    expect(result.log.split('\n### marked-up log')[0]).toBe([
+      '### computed by code from extracted rows the decision model counted',
+      '',
+      'Figures over the 1 rows counted (of 3 rows extracted):',
+      '- Rows counted: 1',
+      '- Sum of amounts: $38 (38)',
+      '',
+      'Counted rows, by date:',
+      '1. [2024-03-09, 7 days before the question date] who: you | what: bought seed | status: done | date: 2024-03-09 (said 2024-03-09) | amount: $38 | quantity: - | source: E1 "bought seed"',
+      '',
+    ].join('\n'));
+    expect(result.record.uncountedListed).toBe(0);
+  });
+
   it('puts the figures first, then the cited sections in markup order', async () => {
     const { write } = model([row({ source: ['E1'] }), row({ source: ['E2'] })]);
     const result = await curate(TASK, GARDEN, { compression: 'low', decide: decider().decide, write });

@@ -1605,7 +1605,16 @@ rejects it otherwise.
    calls.
 
 The returned `log` is the figures and counted rows, then the marked-up
-sections of the cited parts. A said date is the first `YYYY-MM-DD` or
+sections of the cited parts. An extracted row that scored under the
+count bar stays out of the figures. When it still carries an amount or
+quantity it is listed under them, with its probability and the ids of
+the log sections it cites. Code then puts each row's exact quote back
+at the end of the section of every part it cites, when the section does
+not already hold the quote's words. The quote must appear in the part's
+own text exactly, but for whitespace. It is written as `speaker: quote`
+when the part shows who said it, and as the quote alone otherwise.
+`record.restored` lists the lines put back and `record.restoreSkipped`
+the quotes left out and why. A said date is the first `YYYY-MM-DD` or
 `YYYY/MM/DD` in the part's date value, so date labels, ISO dates and
 timestamps all read the same. An undated part says `said unknown`.
 
@@ -1620,8 +1629,10 @@ and in `memory` before any source read:
 `batchTokens` or `weightBands`.
 
 `record` holds `compression: 'low'`, `levers`, `items`, the extracted
-`rows`, each row's decision `probabilities`, how many were `counted`, the
-`marked` parts with their markup ids, the number of `chunks`, every model call in
+`rows`, each row's decision `probabilities`, how many were `counted`,
+how many uncounted rows the head lists (`uncountedListed`), the
+`marked` parts with their markup ids, the `restored` quotes and
+`restoreSkipped` skips, the number of `chunks`, every model call in
 `calls` (its step, chunk, attempt, milliseconds and status), and each
 step's wall-clock time and the total in `ms`.
 `write` returns text only, so the record holds no token counts.
