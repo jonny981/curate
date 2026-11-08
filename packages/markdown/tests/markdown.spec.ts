@@ -947,6 +947,34 @@ describe('knowledgeBase git dates', () => {
       .toEqual({ value: (await stat(join(repo, 'docs', 'ops.md'))).mtime.toISOString(), meaning: 'modified' });
   });
 
+  it('checks only the listed files for uncommitted changes', async () => {
+    const repo = await committedRepo({
+      'docs/ops.md': 'the ops body',
+      'docs/keep.md': 'the keep body',
+      'src/code.ts': 'the code body',
+    });
+    await writeFile(join(repo, 'src/code.ts'), 'dirty outside the corpus');
+    await writeFile(join(repo, 'docs/ops.md'), 'dirty inside the corpus');
+    const statuses: string[][] = [];
+    onGitChild = (_child, args) => {
+      if (args.includes('status')) statuses.push([...args]);
+    };
+    try {
+      const result = await read(knowledgeBase(join(repo, 'docs')), { task: 'ops work' });
+      expect(result.status).toBe('read');
+    } finally {
+      onGitChild = undefined;
+    }
+    expect(statuses).toHaveLength(1);
+    const args = statuses[0]!;
+    const at = args.indexOf('status');
+    expect(args.slice(at, args.indexOf('--'))).toEqual(
+      ['status', '--porcelain', '-z', '--no-renames', '--untracked-files=all']);
+    // The pathspecs name the reader's Markdown names under its prefix,
+    // case-insensitive, so the status pass never scans other files.
+    expect(args.slice(args.indexOf('--') + 1).sort()).toEqual([':(icase)docs/*.md']);
+  });
+
   it('dates a note by the merge commit whose resolution changed it', async () => {
     const repo = await committedRepo({ 'docs/ops.md': 'the first body' });
     await git(repo, ['checkout', '-b', 'side']);

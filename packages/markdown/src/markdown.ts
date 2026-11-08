@@ -8,8 +8,8 @@ import {
   laneBend,
   sharedFileText,
   sharedFileStore,
-  embedQuery,
-  embedSimilarities,
+  normalized,
+  similarity,
   datedIn,
   decayWeight,
   sinceCutoff,
@@ -23,6 +23,7 @@ import {
   updateIndex,
   wordBag,
   bagCount,
+  bagEntries,
   type IndexDatabase,
   type IndexStatement,
   type StoredIndexOptions,
@@ -138,7 +139,12 @@ async function walkMarkdown(
     if (signal?.aborted) throw new SourceReadError('cancelled', 'The read was cancelled.');
     let entries;
     try {
-      entries = await readdir(directory, { withFileTypes: true });
+      entries = (await readdir(directory, { withFileTypes: true }))
+        // A file that is not markdown is dropped before the sort, the
+        // path work and the ignore check: directories still descend.
+        .filter((entry) => !entry.isFile() || (legacy === 'knowledge' ? entry.name.endsWith('.md')
+          : legacy === 'rules' ? /\.mdc?$/.test(entry.name) || entry.name === '.cursorrules'
+            : markdownFile(entry.name)));
     } catch (error) {
       throw new SourceReadError('failed', `Could not list ${directory}: ${message(error)}`);
     }
@@ -155,9 +161,7 @@ async function walkMarkdown(
         skipped += 1;
       } else if (entry.isDirectory()) {
         await walk(path);
-      } else if (entry.isFile() && (legacy === 'knowledge' ? entry.name.endsWith('.md')
-        : legacy === 'rules' ? /\.mdc?$/.test(entry.name) || entry.name === '.cursorrules'
-          : markdownFile(path)) && select(path)) {
+      } else if (entry.isFile() && select(path)) {
         files.push(path);
       }
     }
@@ -563,15 +567,18 @@ async function logDates(
 
 /** The files under `prefix` with uncommitted changes, staged or not, and
  *  the files with no commit yet, as repository paths, from one `git
- *  status` pass. */
+ *  status` pass over the pathspecs. `specs` names the reader's Markdown
+ *  names case-insensitively; the set is a superset of what the read can
+ *  ask about, and only listed files are ever looked up in it. */
 async function uncommitted(
   toplevel: string,
   prefix: string,
+  specs: readonly string[],
   signal: AbortSignal | undefined,
 ): Promise<ReadonlySet<string>> {
-  const args = ['status', '--porcelain', '-z', '--no-renames', '--untracked-files=all'];
-  if (prefix !== '') args.push('--', prefix);
-  const output = await runGit(toplevel, args, { signal });
+  if (specs.length === 0) return new Set();
+  const output = await runGit(toplevel, ['status', '--porcelain', '-z', '--no-renames', '--untracked-files=all',
+    '--', ...specs.map((spec) => `:(icase)${prefix === '' ? '' : `${prefix}/`}${spec}`)], { signal });
   // Each entry is two status letters, a space and the path.
   return new Set(output.split('\0').filter((entry) => entry.length > 3).map((entry) => entry.slice(3)));
 }
@@ -975,7 +982,21 @@ async function syncNotes(
       const started = performance.now();
       database.exec(`CREATE TABLE IF NOT EXISTS notes (path TEXT PRIMARY KEY, root TEXT NOT NULL,
         size INTEGER NOT NULL, mtime TEXT NOT NULL, modified TEXT NOT NULL, entry TEXT NOT NULL,
-        parts INTEGER NOT NULL) WITHOUT ROWID`);
+        parts INTEGER NOT NULL) WITHOUT ROWID;
+      CREATE TABLE IF NOT EXISTS postings (term TEXT NOT NULL, path TEXT NOT NULL,
+        ordinal INTEGER NOT NULL, count INTEGER NOT NULL, PRIMARY KEY (term, path, ordinal)) WITHOUT ROWID;
+      CREATE INDEX IF NOT EXISTS postingsPath ON postings (path)`);
+      const insertPosting = database.prepare('INSERT OR IGNORE INTO postings (term, path, ordinal, count) VALUES (?, ?, ?, ?)');
+      const wipePostings = database.prepare('DELETE FROM postings WHERE path = ?');
+      // A note's posting list is its parts' stored words with their
+      // counts; the same rows give a part's length and each term's
+      // document frequency at score time.
+      const postParts = (file: string, stored: StoredNote) => {
+        stored.parts.forEach((part, ordinal) => {
+          const words = part.tokens?.words ?? wordBag(tokenize(part.text));
+          for (const [term, count] of bagEntries(words)) insertPosting.run(term, file, ordinal, count);
+        });
+      };
       const rows = new Map((database.prepare('SELECT path, size, mtime, modified, parts FROM notes WHERE root = ?')
         .all(root) as { path: string; size: number; mtime: string; modified: string; parts: number }[])
         .map((row) => [row.path, row]));
@@ -1011,6 +1032,8 @@ async function syncNotes(
         }
         const stored = storeEntry(build(file, text));
         write.run(file, root, size, mtime, changed, JSON.stringify(stored), stored.parts.length);
+        wipePostings.run(file);
+        postParts(file, stored);
         modified.set(file, changed);
         added += stored.parts.length;
         removed += row?.parts ?? 0;
@@ -1021,6 +1044,7 @@ async function syncNotes(
         for (const [file, row] of rows) {
           if (walked.has(file)) continue;
           remove.run(file);
+          wipePostings.run(file);
           removed += row.parts;
         }
       }
@@ -1133,7 +1157,7 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
   // update, so once per call for each index file: a later read of the
   // call reuses it. The parsed notes go when the context does.
   const parsedNotes = new WeakMap<NotesUpdate, Map<string, NoteEntry>>();
-  return {
+  const reader: CandidateSource = {
     id, role, kind: 'markdown',
     ...(legacy === undefined ? { maxQuestionText: options.maxQuestionText ?? Number.POSITIVE_INFINITY } : {}),
     ...(options.since === undefined ? {} : { since: options.since }),
@@ -1296,6 +1320,10 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
       }
       for (const { state, files, notePaths, notesByName } of selected) {
         const group: CorpusGroup = { state, files, metas: [] };
+        // A group the index covers reads its BM25 inputs from the
+        // postings at score time, so its parts enumerate without
+        // tokenizing.
+        const indexStats = indexPath !== undefined && updates.has(group.state.root);
         const linksByMeta: string[][] = [];
         let anyUndeclared = false;
         for await (const { file, entry } of entries(state, files)) {
@@ -1363,6 +1391,22 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
                   ...(part.date === undefined ? {} : { date: part.date }) });
                 continue;
               }
+              if (indexStats) {
+                const len = part.tokens?.length ?? 0;
+                totalLength += len;
+                parts.push({
+                  file: meta.index,
+                  id: part.id,
+                  len,
+                  headingHits: hits(part.heading, terms),
+                  namedPath: (request.paths ?? []).some((hint) => part.text.includes(hint)),
+                  ...(part.date === undefined ? {} : { date: part.date }),
+                  ...(kindLane
+                    ? { phrased: phraseCount(part.text, request.task) + phraseCount(part.title, request.task) }
+                    : {}),
+                });
+                continue;
+              }
               const measured = measurePart(part);
               totalLength += measured.length;
               for (const term of termSet) {
@@ -1403,9 +1447,15 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
               : await once(context, JSON.stringify(['dates', repo.toplevel, repo.prefix]),
                 () => logDates(repo.toplevel, repo.prefix, undefined, request.signal));
             if (state.pinned === undefined) {
-              dirty = indexPath === undefined ? await uncommitted(repo.toplevel, repo.prefix, request.signal)
-                : await once(context, JSON.stringify(['dirty', repo.toplevel, repo.prefix]),
-                  () => uncommitted(repo.toplevel, repo.prefix, request.signal));
+              // Only the reader's Markdown names are checked for
+              // uncommitted work, so status never scans the rest of the
+              // repository; a superset of the listed files is fine.
+              const dirtySpecs = legacy === 'knowledge' ? ['*.md']
+                : legacy === 'rules' ? ['*.md', '*.mdc', '*.cursorrules']
+                  : ['*.md', '*.mdc', '*.markdown', '*.cursorrules'];
+              dirty = indexPath === undefined ? await uncommitted(repo.toplevel, repo.prefix, dirtySpecs, request.signal)
+                : await once(context, JSON.stringify(['dirty', repo.toplevel, dirtySpecs]),
+                  () => uncommitted(repo.toplevel, repo.prefix, dirtySpecs, request.signal));
             }
           } catch (error) {
             if (state.pinned !== undefined || isCancel(error)) throw asSourceReadError(error);
@@ -1451,6 +1501,22 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
                 if (meaningLane) {
                   parts.push({ file: meta.index, id: part.id, len: 0, headingHits: 0, namedPath: false,
                     ...(part.date === undefined ? {} : { date: part.date }) });
+                  continue;
+                }
+                if (indexStats) {
+                  const len = part.tokens?.length ?? 0;
+                  totalLength += len;
+                  parts.push({
+                    file: meta.index,
+                    id: part.id,
+                    len,
+                    headingHits: hits(part.heading, terms),
+                    namedPath: (request.paths ?? []).some((hint) => part.text.includes(hint)),
+                    ...(part.date === undefined ? {} : { date: part.date }),
+                    ...(kindLane
+                      ? { phrased: phraseCount(part.text, request.task) + phraseCount(part.title, request.task) }
+                      : {}),
+                  });
                   continue;
                 }
                 const measured = measurePart(part);
@@ -1535,38 +1601,70 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
 
       // A meaning lane embeds each part in bounded batches and keeps
       // the parts the similarity curve keeps; the corpus's text is
-      // never held, and the keyword scoring pass is skipped.
+      // never held, and the keyword scoring pass is skipped. The first
+      // meaning lane of a call scores every part against the call's
+      // whole query list at once, and the lanes after it read the held
+      // scores; a read outside a shared context scores its own query
+      // alone, as before.
       if (meaningLane) {
         const embed = request.meaningLane!.embed;
-        const query = await embedQuery(embed, request.task, request.signal);
-        const simOf = new Map<number, number>();
-        let pending: { index: number; text: string }[] = [];
-        const flush = async () => {
-          if (pending.length === 0) return;
-          const scores = await embedSimilarities(embed, query, pending.map((part) => part.text), request.signal);
-          pending.forEach((part, at) => simOf.set(part.index, scores[at]!));
-          pending = [];
-        };
-        for (const group of groups) {
-          let cursor = 0;
-          for await (const { entry } of entries(group.state, group.files)) {
-            const meta = group.metas[cursor++]!;
-            if (meta.partCount === 0) continue;
-            let local = 0;
-            for (const part of entry.parts()) {
-              // A file that grew between passes emits extra parts; they
-              // have no slot in the part list, so they are skipped.
-              if (local >= meta.partCount) break;
-              const index = meta.partStart + local;
-              local += 1;
-              // A part outside the look-back is never embedded.
-              if (!inside(index)) continue;
-              pending.push({ index, text: part.text });
-              if (pending.length === 32) await flush();
+        const queries = request.meaningQueries ?? [request.task];
+        interface Lite {
+          queries: readonly string[];
+          sims: Map<number, number[]>;
+        }
+        const box = context.shared;
+        let shared = box?.get(reader) as { meaning?: Lite } | undefined;
+        if (box !== undefined && shared === undefined) box.set(reader, shared = {});
+        const compute = async (list: readonly string[]): Promise<Lite> => {
+          const queryVectors = (await embed(list, request.signal)).map((vector) => normalized(vector));
+          const lite: Lite = { queries: list, sims: new Map() };
+          let pending: { key: number; text: string }[] = [];
+          const flush = async () => {
+            if (pending.length === 0) return;
+            const vectors = await embed(pending.map((part) => part.text), request.signal);
+            if (vectors.length !== pending.length) throw new TypeError('embed must return one vector per input text.');
+            pending.forEach((part, index) => {
+              const unit = normalized(vectors[index]!, queryVectors[0]!.length);
+              lite.sims.set(part.key, queryVectors.map((query) => similarity(unit, query)));
+            });
+            pending = [];
+          };
+          for (const group of groups) {
+            let cursor = 0;
+            for await (const { entry } of entries(group.state, group.files)) {
+              const meta = group.metas[cursor++]!;
+              if (meta.partCount === 0) continue;
+              let local = 0;
+              for (const part of entry.parts()) {
+                // A file that grew between passes emits extra parts; they
+                // have no slot in the part list, so they are skipped.
+                if (local >= meta.partCount) break;
+                const index = meta.partStart + local;
+                local += 1;
+                // A part outside the look-back is never embedded.
+                if (!inside(index)) continue;
+                pending.push({ key: index, text: part.text });
+                if (pending.length === 32) await flush();
+              }
             }
           }
+          await flush();
+          return lite;
+        };
+        let lite = shared?.meaning;
+        if (lite === undefined || lite.queries.length !== queries.length
+          || lite.queries.some((query, index) => query !== queries[index])) {
+          lite = await compute(queries);
+          if (shared !== undefined) shared.meaning = lite;
         }
-        await flush();
+        let at = lite.queries.indexOf(request.task);
+        if (at === -1) { lite = await compute([request.task]); at = 0; }
+        const simOf = new Map<number, number>();
+        for (const [index, part] of parts.entries()) {
+          const scores = lite.sims.get(index);
+          if (scores !== undefined) simOf.set(index, scores[at]!);
+        }
         const order = parts.map((_, index) => index)
           .filter(inside)
           .sort((left, right) => (simOf.get(right) ?? 0) - (simOf.get(left) ?? 0)
@@ -1584,6 +1682,10 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
         // `limit` carries the caller's `nearest` cap: it slices the kept
         // set after the curve, not the enumeration before it.
         const kept = limit === undefined ? keptAll : keptAll.slice(0, limit);
+        // The lane reports its whole scored list as ids and scores in
+        // `meaningScores`; `candidates` still holds every kept part —
+        // under `wholeLanes` that is the whole list, with the parts a
+        // cut would drop marked.
         const wanted = new Set<number>(kept);
         const byIndex = new Map<number, MemoryCandidate>();
         for (const group of groups) {
@@ -1623,6 +1725,10 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
           ...(revision === undefined ? {} : { revision }),
           candidates: emitted,
           meaningLane: true as const,
+          meaningScores: (mark ? order : kept).map((index) => ({
+            id: parts[index]!.id, similarity: simOf.get(index) ?? 0,
+            ...(mark && !passes(index) ? { pastLaneCut: true as const } : {}),
+          })),
           ...indexed,
           ...skippedAlwaysOn,
           complete: partial.length === 0 && reasons.length === 0,
@@ -1680,35 +1786,75 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
         };
       }
 
-      // The scoring pass re-reads each file and BM25-scores its parts
-      // against the corpus statistics the first pass collected.
+      // The scoring pass BM25-scores each part against the corpus
+      // statistics the first pass collected. With the index the
+      // postings alone carry a covered group: its stored counts give
+      // each term's per-part frequency, its per-part sums the lengths,
+      // and its distinct parts the document frequencies; a group
+      // without it is walked and measured as before.
       const scores = new Float64Array(parts.length);
       const count = parts.length;
-      const average = count === 0 ? 0 : totalLength / count;
-      if (average > 0) {
-        for (const group of groups) {
-          let cursor = 0;
-          for await (const { entry } of entries(group.state, group.files)) {
-            const meta = group.metas[cursor++]!;
-            if (meta.partCount === 0) continue;
-            let local = 0;
-            for (const part of entry.parts()) {
-              // A file that grew between passes emits extra parts; they
-              // never had statistics, so they are skipped.
-              if (local >= meta.partCount) break;
-              const measured = measurePart(part);
-              let score = 0;
-              for (const term of terms) {
-                const n = documentFrequency.get(term) ?? 0;
-                const f = measured.count(term);
-                if (n === 0 || f === 0) continue;
-                score += bm25Term(f, n, count, measured.length, average, keyword.k1, keyword.b);
+      const posted: CorpusGroup[] = [];
+      const walked: CorpusGroup[] = [];
+      for (const group of groups) {
+        if (indexPath !== undefined && updates.get(group.state.root) !== undefined) posted.push(group);
+        else walked.push(group);
+      }
+      let database: IndexDatabase | undefined;
+      const byFile = new Map<string, FileMeta>();
+      try {
+        if (posted.length > 0) {
+          database = await openIndexFile(indexPath!, indexFolder!);
+          for (const group of posted) for (const meta of group.metas) byFile.set(meta.file, meta);
+        }
+        const average = count === 0 ? 0 : totalLength / count;
+        if (average > 0) {
+          if (database !== undefined) {
+            const postingOf = database.prepare('SELECT path, ordinal, count FROM postings WHERE term = ?');
+            for (const term of terms) {
+              const held = new Set<number>();
+              const hitsOf: { index: number; f: number }[] = [];
+              for (const row of postingOf.all(term) as { path: string; ordinal: number; count: number }[]) {
+                const meta = byFile.get(row.path);
+                if (meta === undefined || row.ordinal >= meta.partCount) continue;
+                const index = meta.partStart + row.ordinal;
+                held.add(index);
+                hitsOf.push({ index, f: row.count });
               }
-              scores[meta.partStart + local] = score;
-              local += 1;
+              const n = (documentFrequency.get(term) ?? 0) + held.size;
+              documentFrequency.set(term, n);
+              if (n === 0) continue;
+              for (const { index, f } of hitsOf) {
+                scores[index] = scores[index]! + bm25Term(f, n, count, parts[index]!.len, average, keyword.k1, keyword.b);
+              }
+            }
+          }
+          for (const group of walked) {
+            let cursor = 0;
+            for await (const { entry } of entries(group.state, group.files)) {
+              const meta = group.metas[cursor++]!;
+              if (meta.partCount === 0) continue;
+              let local = 0;
+              for (const part of entry.parts()) {
+                // A file that grew between passes emits extra parts; they
+                // never had statistics, so they are skipped.
+                if (local >= meta.partCount) break;
+                const measured = measurePart(part);
+                let score = 0;
+                for (const term of terms) {
+                  const n = documentFrequency.get(term) ?? 0;
+                  const f = measured.count(term);
+                  if (n === 0 || f === 0) continue;
+                  score += bm25Term(f, n, count, measured.length, average, keyword.k1, keyword.b);
+                }
+                scores[meta.partStart + local] = score;
+                local += 1;
+              }
             }
           }
         }
+      } finally {
+        database?.close();
       }
 
       // Decay ranks each dated part lower by its age at the task date;
@@ -1849,6 +1995,7 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
       };
     },
   };
+  return reader;
 }
 
 /** Directory notes with the original section ids, date precedence, and part size. */

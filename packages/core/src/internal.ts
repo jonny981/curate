@@ -2,6 +2,6 @@ export * from './git.js';
 export * from './keywords.js';
 export { phraseCount, sharedFileText, sharedFileStore, SHARED_FILE_CACHE_BYTES } from './search.js';
 export { laneBend } from './lanes.js';
-export { embedQuery, embedSimilarities, normalize, similarity } from './vectors.js';
+export { embedQuery, embedSimilarities, isUnit, markUnit, normalize, normalized, similarity } from './vectors.js';
 export { datedIn, decayWeight, sinceCutoff, taskMoment, timeZoneOf, zonedIso } from './time.js';
 export * from './stored-index.js';

@@ -1,5 +1,28 @@
 import type { EmbeddingFunction } from './meaning.js';
 
+/** Vectors a store hands out already normalized, so a lane must not
+ *  normalize them again. Internal only: nothing serializes the mark. */
+const unitVectors = new WeakSet<object>();
+
+/** Mark a vector a store already normalized; returns it unchanged. */
+export function markUnit<T extends object>(vector: T): T {
+  unitVectors.add(vector);
+  return vector;
+}
+
+/** Whether `vector` came from a store already normalized. */
+export function isUnit(vector: ArrayLike<number>): boolean {
+  return typeof vector === 'object' && vector !== null && unitVectors.has(vector);
+}
+
+/** The unit form of `vector`: the stored vector itself when a store
+ *  already normalized it, else `normalize`. */
+export function normalized(vector: ArrayLike<number>, dimensions?: number): Float64Array {
+  return isUnit(vector) && (dimensions === undefined || vector.length === dimensions)
+    ? (vector instanceof Float64Array ? vector : Float64Array.from(vector))
+    : normalize(vector, dimensions);
+}
+
 /** Unit-normalize one embedding; throws on a missing, mismatched,
  *  non-finite or zero vector. */
 export function normalize(vector: ArrayLike<number>, dimensions?: number): Float64Array {
@@ -34,7 +57,8 @@ export async function embedQuery(
 ): Promise<Float64Array> {
   const vectors = await embed([text], signal);
   if (vectors.length !== 1) throw new TypeError('embed must return one vector per input text.');
-  return normalize(vectors[0]!);
+  const vector = vectors[0]!;
+  return normalized(vector);
 }
 
 /** Embed one batch of texts and return each text's similarity to the
@@ -50,7 +74,7 @@ export async function embedSimilarities(
   if (vectors.length !== texts.length) throw new TypeError('embed must return one vector per input text.');
   const scores = new Float64Array(texts.length);
   vectors.forEach((vector, index) => {
-    scores[index] = similarity(query, normalize(vector, query.length));
+    scores[index] = similarity(query, normalized(vector, query.length));
   });
   return scores;
 }

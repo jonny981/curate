@@ -44,6 +44,25 @@ export interface ChatRankSession {
   observeStored(title: string, words: StoredChatWords): void;
   /** `score` for a stored part, as `observeStored` is for `observe`. */
   scoreStored(title: string, words: StoredChatWords, fields: { heading: string; name: string; front: string }): void;
+  /** The terms a postings index resolves for this session: `stems`
+   *  look up a part's stored stemmed words, `shorts` its stored short
+   *  words. Only the parts a term's list names can score above zero,
+   *  so a postings read scores just those parts. */
+  postingTerms(): { stems: readonly string[]; shorts: readonly string[] };
+  /** The part at `index` in a postings read, counted once for the
+   *  corpus statistics: its title's tokens (folded into the counts and
+   *  document frequencies exactly as `storedBag` folds them) and its
+   *  stored word total. */
+  observeIndexed(index: number, title: string, long: number): void;
+  /** One posting row of the read's population: the part at `index`
+   *  holds `term` `count` times. A `short` row's word stems the way
+   *  `storedBag` stems it before it counts. */
+  posting(index: number, term: string, count: number, short: boolean): void;
+  /** `score` for every part a posting or a title term named, in the
+   *  parts' own indices; every part they never named counts as a
+   *  scored zero at `finish`, and the score arrays span the whole
+   *  `ids`. */
+  scoreIndexed(fields: { heading: string; name: string; front: string }): void;
   /** Merge the scored parts. `ids` ties equal scores to a stable order;
    *  returns the merged ordering score (`scores`) and the pre-merge
    *  lane score (`base`) in part order. */
@@ -150,46 +169,97 @@ export function startChatRank(task: string, settings: Partial<ChatKeywordSetting
     length += bag.length;
     for (const word of bag.tf.keys()) if (queryTerms.has(word)) df.set(word, (df.get(word) ?? 0) + 1);
   };
-  const scoreBag = (bag: Bag, fields: { heading: string; name: string; front: string }) => {
-    parts.push({
-      raw: bm25(bag, queries.main),
-      content: queries.content === null ? 0 : bm25(bag, queries.content),
-      names: queries.names === null ? 0 : bm25(bag, queries.names),
-      extra: Math.min(2, hits(fields.heading) * 2) + Math.min(1, hits(`${fields.name} ${fields.front}`)),
-    });
+  const scoreBag = (fields: { heading: string; name: string; front: string }, bag: Bag) => ({
+    raw: bm25(bag, queries.main),
+    content: queries.content === null ? 0 : bm25(bag, queries.content),
+    names: queries.names === null ? 0 : bm25(bag, queries.names),
+    extra: Math.min(2, hits(fields.heading) * 2) + Math.min(1, hits(`${fields.name} ${fields.front}`)),
+  });
+  // A postings read scores parts out of order; the scores still sit at
+  // the part's own index, and `finish` spans every id so an unscored
+  // part ranks zero exactly as a scored zero-ranking part does.
+  let sparse = false;
+  const EMPTY = { raw: 0, content: 0, names: 0, extra: 0 };
+  const scored = (index: number) => parts[index] ?? EMPTY;
+  // The postings path assembles the same bag `storedBag` would: a term
+  // frequency map per part the postings or a title named, the part's
+  // length before short words, its matched short-word count, and a set
+  // of the parts holding each term for the document frequencies.
+  const statLen = new Map<number, number>();
+  const shortLen = new Map<number, number>();
+  const termFreq = new Map<number, Map<string, number>>();
+  const holders = new Map<string, Set<number>>();
+  const addTerm = (index: number, term: string, count: number) => {
+    let tf = termFreq.get(index);
+    if (tf === undefined) termFreq.set(index, tf = new Map());
+    tf.set(term, (tf.get(term) ?? 0) + count);
+    let held = holders.get(term);
+    if (held === undefined) holders.set(term, held = new Set());
+    held.add(index);
   };
   return {
     observe(text) {
       observeBag(textBag(text));
     },
     score(text, fields) {
-      scoreBag(textBag(text), fields);
+      parts.push(scoreBag(fields, textBag(text)));
     },
     observeStored(title, words) {
       observeBag(storedBag(title, words));
     },
     scoreStored(title, words, fields) {
-      scoreBag(storedBag(title, words), fields);
+      parts.push(scoreBag(fields, storedBag(title, words)));
+    },
+    postingTerms() {
+      sparse = true;
+      return { stems: [...queryTerms], shorts: [...shortIds] };
+    },
+    observeIndexed(index, title, long) {
+      sparse = true;
+      const bag = textBag(title);
+      docs += 1;
+      statLen.set(index, bag.length + long);
+      length += bag.length + long;
+      for (const [word, count] of bag.tf) if (queryTerms.has(word)) addTerm(index, word, count);
+    },
+    posting(index, term, count, short) {
+      sparse = true;
+      if (!short) {
+        addTerm(index, term, count);
+        return;
+      }
+      shortLen.set(index, (shortLen.get(index) ?? 0) + count);
+      length += count;
+      const stem = stemOf(term);
+      if (queryTerms.has(stem)) addTerm(index, stem, count);
+    },
+    scoreIndexed(fields) {
+      for (const [term, held] of holders) df.set(term, held.size);
+      for (const [index, tf] of termFreq) {
+        parts[index] = scoreBag(fields, {
+          tf, length: (statLen.get(index) ?? 0) + (shortLen.get(index) ?? 0),
+        });
+      }
     },
     finish(ids) {
-      const count = parts.length;
+      const count = sparse ? ids.length : parts.length;
       if (!count) return { scores: [], base: [] };
       let top = 1e-9;
-      for (const part of parts) top = Math.max(top, part.raw);
-      const base = parts.map((part) => 3 * part.raw / top + part.extra);
+      for (let index = 0; index < count; index += 1) top = Math.max(top, scored(index).raw);
+      const base = Array.from({ length: count }, (_, index) => 3 * scored(index).raw / top + scored(index).extra);
       if (config.rrf === false) return { scores: base, base };
       const order = (values: readonly number[]) => values
         .map((value, index) => ({ value, index }))
         .sort((a, b) => b.value - a.value || ids[a.index]!.localeCompare(ids[b.index]!))
         .map((entry) => entry.index);
       const lists = [order(base)];
-      const contentScores = queries.content === null ? null : order(parts.map((part) => part.content));
-      const namesScores = queries.names === null ? null : order(parts.map((part) => part.names));
+      const contentScores = queries.content === null ? null : order(Array.from({ length: count }, (_, index) => scored(index).content));
+      const namesScores = queries.names === null ? null : order(Array.from({ length: count }, (_, index) => scored(index).names));
       if (contentScores !== null) lists.push(contentScores);
       if (namesScores !== null) lists.push(namesScores);
       const value = (list: number, index: number) => list === 0 ? base[index]!
-        : list === 1 && contentScores !== null ? parts[index]!.content
-        : parts[index]!.names;
+        : list === 1 && contentScores !== null ? scored(index).content
+        : scored(index).names;
       const fusion = new Array<number>(count).fill(0);
       const bonus = new Array<number>(count).fill(0);
       lists.forEach((list, j) => list.forEach((index, rank) => {

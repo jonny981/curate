@@ -2,8 +2,9 @@ import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import type { MemoryCandidate } from './pick.js';
 import { cutScoreCurve } from './lanes.js';
-import { normalize, similarity } from './vectors.js';
+import { markUnit, normalized, normalize, similarity } from './vectors.js';
 import { labelFileStore } from './labels.js';
+import { openIndexFile, type IndexDatabase, type IndexStatement } from './stored-index.js';
 
 /** One local vector per complete input text, in input order. */
 export type EmbeddingFunction = (
@@ -12,40 +13,78 @@ export type EmbeddingFunction = (
 ) => Promise<readonly ArrayLike<number>[]>;
 
 /** Reuse vectors across runs, keyed by the model identity and complete
- * input text. Only hashes and vectors are written to disk. */
+ * input text. Only hashes and vectors are written to disk. Each model's
+ * vectors live in one indexed file beside the per-model JSON folder:
+ * a text the file lacks is filled from the JSON folder (and written
+ * into the file), or embedded as before and written to the file only.
+ * The file's vectors are normalized once, when written; the lanes they
+ * feed never normalize them again. */
 export function cachedEmbeddings(
   embed: EmbeddingFunction,
   options: { readonly directory: string; readonly modelId: string },
 ): EmbeddingFunction {
   const hash = (text: string) => createHash('sha256').update(text).digest('hex');
   const store = labelFileStore(join(options.directory, hash(options.modelId)));
+  // One file per model id, beside the per-model JSON folder.
+  const file = join(options.directory, `${hash(options.modelId)}.vectors.sqlite`);
+  let statements: Promise<{ database: IndexDatabase; get: IndexStatement; put: IndexStatement }> | undefined;
+  const vectorFile = () => statements ??= openIndexFile(file, options.directory).then((database) => {
+    database.exec('CREATE TABLE IF NOT EXISTS vectors (key TEXT PRIMARY KEY, vector BLOB NOT NULL) WITHOUT ROWID');
+    return {
+      database,
+      get: database.prepare('SELECT vector FROM vectors WHERE key = ?'),
+      put: database.prepare('INSERT OR REPLACE INTO vectors (key, vector) VALUES (?, ?)'),
+    };
+  });
+  const bytesOf = (vector: Float64Array) => Buffer.from(vector.buffer, vector.byteOffset, vector.byteLength);
   // The local context evaluates one input at a time; serialize cache
   // misses too, so concurrent source reads never embed a text twice.
   let pending: Promise<unknown> = Promise.resolve();
   return (texts, signal) => {
     const result = pending.then(async () => {
       signal?.throwIfAborted();
+      const { get, put } = await vectorFile();
       const unique = new Map(texts.map((text) => [hash(text), text]));
-      const vectors = new Map<string, readonly number[]>();
+      const vectors = new Map<string, Float64Array>();
       const missing: [string, string][] = [];
       const entries = [...unique];
-      const storedVectors = await Promise.all(entries.map(([key]) => store.get(key)));
-      entries.forEach(([key, text], index) => {
-        const stored = storedVectors[index];
+      const fills = await Promise.all(entries.map(async ([key, text]) => {
+        const row = get.get(key) as { vector: Uint8Array } | undefined;
+        const bytes = row?.vector;
+        if (bytes !== undefined && bytes.byteLength > 0
+          && bytes.byteLength % Float64Array.BYTES_PER_ELEMENT === 0) {
+          const vector = new Float64Array(bytes.byteLength / Float64Array.BYTES_PER_ELEMENT);
+          new Uint8Array(vector.buffer).set(bytes);
+          // The file only ever holds normalized vectors.
+          return markUnit(vector);
+        }
+        const stored = await store.get(key);
         if (Array.isArray(stored) && stored.length > 0
           && stored.every((value) => typeof value === 'number' && Number.isFinite(value))
-          && stored.some((value) => value !== 0)) vectors.set(key, stored as number[]);
+          && stored.some((value) => value !== 0)) {
+          // Filled from the JSON store once, then the file serves it.
+          const vector = markUnit(normalize(stored));
+          put.run(key, bytesOf(vector));
+          return vector;
+        }
+        return undefined;
+      }));
+      entries.forEach(([key, text], index) => {
+        if (fills[index] !== undefined) vectors.set(key, fills[index]!);
         else missing.push([key, text]);
       });
       if (missing.length > 0) {
         const embedded = await embed(missing.map(([, text]) => text), signal);
         if (embedded.length !== missing.length) throw new TypeError('embed must return one vector per input text.');
         signal?.throwIfAborted();
-        await Promise.all(missing.map(async ([key], index) => {
-          const vector = Array.from(normalize(embedded[index]!));
-          await store.set(key, vector);
+        missing.forEach(([key], index) => {
+          // The lane that scored the text normalized the stored vector
+          // again, so the file holds normalize of what the JSON store
+          // would have held: bit for bit what the lanes saw before.
+          const vector = markUnit(normalize(normalize(embedded[index]!)));
+          put.run(key, bytesOf(vector));
           vectors.set(key, vector);
-        }));
+        });
       }
       signal?.throwIfAborted();
       return texts.map((text) => vectors.get(hash(text))!);
@@ -94,7 +133,7 @@ export async function addMeaningRanks(
   if (!queries.length) throw new TypeError('Meaning search needs a nonblank task or search line.');
   const vectors = await options.embed(queries, options.signal);
   if (vectors.length !== queries.length) throw new TypeError('embed must return one vector per input text.');
-  const queryVectors = vectors.map((vector) => normalize(vector, vectors[0]!.length));
+  const queryVectors = vectors.map((vector) => normalized(vector, vectors[0]!.length));
   const scores = queries.map(() => new Float64Array(unique.length));
   // Batching bounds temporary vector memory, without dropping any text.
   for (let start = 0; start < unique.length; start += 32) {
@@ -104,9 +143,9 @@ export async function addMeaningRanks(
       /[^\s\p{Cf}]/u.test(candidate.text) ? candidate.text : candidate.title), options.signal);
     if (embedded.length !== batch.length) throw new TypeError('embed must return one vector per input text.');
     embedded.forEach((vector, offset) => {
-      const normalized = normalize(vector, queryVectors[0]!.length);
+      const part = normalized(vector, queryVectors[0]!.length);
       queryVectors.forEach((query, lane) => {
-        scores[lane]![start + offset] = similarity(query, normalized);
+        scores[lane]![start + offset] = similarity(query, part);
       });
     });
   }

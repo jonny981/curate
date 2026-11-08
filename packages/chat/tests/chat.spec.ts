@@ -566,6 +566,24 @@ describe('streaming read', () => {
     expect(cut.candidates.every((candidate) => candidate.laneScore !== undefined)).toBe(true);
   });
 
+  it('scores the same parts from the index postings as a full rescan', async () => {
+    const directory = await transcript('codex', [
+      message('codex', 'user', 'battery backup schedule decided'),
+      message('codex', 'assistant', 'unrelated breakfast'),
+      message('codex', 'user', 'battery cells degrade over winter'),
+      message('codex', 'assistant', 'a fourth note about nothing'),
+    ]);
+    // 'session-one' hits every part's title, 'battery' only some texts:
+    // the postings path must score exactly the parts the rescan scores.
+    const request = { task: 'battery session-one' };
+    const dense = await chat({ providers: ['codex'], paths: [directory], index: false }).read(request);
+    const sparse = await chat({ providers: ['codex'], paths: [directory] }).read(request);
+    if (dense.status !== 'read' || sparse.status !== 'read') throw new Error('Expected reads');
+    const shape = (result: typeof dense) => result.candidates.map((candidate) =>
+      [candidate.id, candidate.laneScore, candidate.signals] as const);
+    expect(shape(sparse)).toEqual(shape(dense));
+  });
+
   it('marks the parts the cut would drop when a read keeps whole lanes', async () => {
     const directory = await transcript('codex', [
       message('codex', 'user', 'we said battery backup schedule decided'),

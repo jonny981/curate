@@ -29,7 +29,7 @@ export interface StoredIndexReport {
 
 /** The stored layout's version. A file of another version is never
  *  opened: its name differs, so the source is indexed again. */
-export const STORED_INDEX_FORMAT = 1;
+export const STORED_INDEX_FORMAT = 2;
 
 /** Checks a reader's `index` option: a settings object or false. */
 export function checkIndexOption(option: unknown): void {
@@ -91,12 +91,25 @@ export async function openIndexFile(path: string, directory: string): Promise<In
       + 'Node 22 from 22.20 and Node 24 have it; or pass index: false to read the source directly.');
   }
   const database = new sqlite.DatabaseSync(path);
-  // A lane reads while another process writes, and the reverse, without
-  // waiting on each other.
-  database.exec('PRAGMA journal_mode = WAL');
   // Two updates of one file from two processes take turns: the second
-  // waits for the first to commit rather than fail. The wait drops nothing.
+  // waits for the first to commit rather than fail. The wait drops
+  // nothing.
   database.exec('PRAGMA busy_timeout = 600000');
+  // A lane reads while another process writes, and the reverse, without
+  // waiting on each other. The exclusive lock this pragma needs skips
+  // the busy handler, so two opens of one file can race it and the loser
+  // fails at once rather than waiting; retry inside the same window the
+  // timeout grants a write.
+  const deadline = Date.now() + 600_000;
+  for (;;) {
+    try {
+      database.exec('PRAGMA journal_mode = WAL');
+      break;
+    } catch (error) {
+      if ((error as { errcode?: number }).errcode !== 5 || Date.now() >= deadline) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
   return database;
 }
 
@@ -144,4 +157,18 @@ export function bagCount(bag: string, word: string): number {
   if (at === -1) return 0;
   const start = at + word.length + 2;
   return Number(bag.slice(start, bag.indexOf(' ', start)));
+}
+
+/** The distinct words a `wordBag` string holds, in its own order. */
+export function bagWords(bag: string): readonly string[] {
+  return bag.trim() === '' ? [] : bag.trim().split(' ').map((entry) => entry.slice(0, entry.lastIndexOf(':')));
+}
+
+/** The `word:count` pairs a `wordBag` string holds, in its own order. */
+export function* bagEntries(bag: string): Generator<readonly [string, number]> {
+  for (const entry of bag.trim().split(' ')) {
+    if (entry === '') continue;
+    const at = entry.lastIndexOf(':');
+    yield [entry.slice(0, at), Number(entry.slice(at + 1))];
+  }
 }

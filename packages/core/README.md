@@ -159,7 +159,8 @@ Every lane of a call then reads the file instead of decoding the transcripts, fe
   For git they are the source's own `exclude`, `paths` and `since`.
   For Markdown they are the reader (`markdown()`, `knowledgeBase()` or `rules()`), the kind, the part size and the source's own `exclude`.
 - **What it holds:** every part the reader produces, with its id, title, text, date and metadata.
-  Beside each part it holds what the reader's keyword score needs, worked out once when the part is stored: each word's count and the word total.
+  A postings table holds one row per word per part with its count, written in the same transaction and deleted when the part's rows go.
+  From it a keyword lane reads each term's per-part counts, each part's word total and each term's document frequency.
   Chat stores its words stemmed when its settings stem. Git stores the words of the subject and body joined.
   Markdown also stores each note's frontmatter, its fields, its links and whether it says it was replaced.
 - **Ranks do not change:** each reader keeps its own scoring and reads the stored counts where it read the text.
@@ -421,6 +422,7 @@ try {
   embedding, including a commit with only a subject.
   Its original body and title remain in the returned evidence.
 - **Storage:** Set `cacheDirectory` on `createLocalEmbedder()` to persist vectors by model bytes and complete input text.
+  Each model holds one SQLite file of normalized vectors; a text the file misses is read once from the earlier per-text JSON files, which are never written.
   Repeated inputs reuse these files across calls. The vector files contain hashes and vectors, not source text.
   With no directory supplied, vectors exist only while a batch is scored.
   Vectors are kept apart from the [stored index](#stored-index), whose file per source does hold the history's text.

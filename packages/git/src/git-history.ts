@@ -15,9 +15,9 @@ import {
   sinceCutoff,
   taskMoment,
 } from '@curatejs/core/internal';
-import { bm25Term, tokenize, taskTerms, phraseCount, laneBend, embedQuery, embedSimilarities } from '@curatejs/core/internal';
+import { bm25Term, tokenize, taskTerms, phraseCount, laneBend, normalized, similarity } from '@curatejs/core/internal';
 import {
-  checkIndexOption, indexDirectory, indexFilePath, openIndexFile, updateIndex, wordBag, bagCount,
+  checkIndexOption, indexDirectory, indexFilePath, openIndexFile, updateIndex, wordBag, bagEntries,
   type IndexDatabase, type StoredIndexOptions, type StoredIndexReport,
 } from '@curatejs/core/internal';
 import type { MemoryCandidate } from '@curatejs/core';
@@ -241,15 +241,12 @@ function touches(changedPaths: readonly string[], named: readonly string[]): boo
     || changedPaths.some((changed) => changed === path || changed.startsWith(`${path}/`)));
 }
 
-/** A commit as the stored index holds it: what a read emits, and the
- *  words of its subject and body joined with their total. */
+/** A commit as the stored index holds it: what a read emits. */
 interface StoredCommit {
   readonly date: string;
   readonly subject: string;
   readonly body: string;
   readonly changedPaths: readonly string[];
-  /** A `wordBag` of the same tokens `measure` counts. */
-  readonly words: string;
   readonly length: number;
 }
 
@@ -302,9 +299,11 @@ async function syncGitIndex(
     return await updateIndex(path, database, async () => {
       const started = performance.now();
       database.exec(`CREATE TABLE IF NOT EXISTS commits (sha TEXT PRIMARY KEY, date TEXT NOT NULL,
-          subject TEXT NOT NULL, body TEXT NOT NULL, paths TEXT NOT NULL, words TEXT NOT NULL,
+          subject TEXT NOT NULL, body TEXT NOT NULL, paths TEXT NOT NULL,
           length INTEGER NOT NULL) WITHOUT ROWID;
-        CREATE TABLE IF NOT EXISTS skipped (sha TEXT PRIMARY KEY) WITHOUT ROWID;`);
+        CREATE TABLE IF NOT EXISTS skipped (sha TEXT PRIMARY KEY) WITHOUT ROWID;
+        CREATE TABLE IF NOT EXISTS postings (term TEXT NOT NULL, sha TEXT NOT NULL,
+          count INTEGER NOT NULL, PRIMARY KEY (term, sha)) WITHOUT ROWID;`);
       const order = await listCommits(toplevel, head, [], signal);
       const reached = new Set(order.map((commit) => commit.sha));
       const held = new Set((database.prepare('SELECT sha FROM commits').all() as { sha: string }[]).map((row) => row.sha));
@@ -313,12 +312,13 @@ async function syncGitIndex(
       let removed = 0;
       if (rebuilt) {
         removed = held.size;
-        database.exec('DELETE FROM commits; DELETE FROM skipped;');
+        database.exec('DELETE FROM commits; DELETE FROM skipped; DELETE FROM postings;');
         held.clear();
         skipped.clear();
       }
-      const insert = database.prepare(`INSERT INTO commits (sha, date, subject, body, paths, words, length)
-        VALUES (?, ?, ?, ?, ?, ?, ?)`);
+      const insert = database.prepare(`INSERT INTO commits (sha, date, subject, body, paths, length)
+        VALUES (?, ?, ?, ?, ?, ?)`);
+      const insertPosting = database.prepare('INSERT OR IGNORE INTO postings (term, sha, count) VALUES (?, ?, ?)');
       const skip = database.prepare('INSERT INTO skipped (sha) VALUES (?)');
       const dated = range.length === 0 ? undefined
         : new Set((await listCommits(toplevel, head, range, signal)).map((commit) => commit.sha));
@@ -353,7 +353,10 @@ async function syncGitIndex(
         ], { input: `${batch.join('\n')}\n`, signal }), true)) {
           const tokens = tokenize(`${commit.subject}\n${commit.body}`);
           insert.run(commit.sha, commit.date, commit.subject, commit.body, JSON.stringify(commit.changedPaths),
-            wordBag(tokens), tokens.length);
+            tokens.length);
+          for (const [term, count] of bagEntries(wordBag(tokens))) {
+            insertPosting.run(term, commit.sha, count);
+          }
           held.add(names.get(commit.sha) ?? commit.sha);
           added += 1;
         }
@@ -555,21 +558,31 @@ export function git(
         // the lane serves, and that is what the matches are scored on.
         const terms = taskTerms(request.topic ?? request.task, request.paths ?? [], keyword.stopWords);
         const termIndex = new Map(terms.map((term, at) => [term, at]));
+        const embedBox = context?.shared;
+        let embedShared = embedBox?.get(reader) as { meaning?: Lite } | undefined;
+        if (embedBox !== undefined && embedShared === undefined) embedBox.set(reader, embedShared = {});
         // A stored commit's row, read once per read when a lane needs it.
-        const rowOf = database?.prepare('SELECT date, subject, body, paths, words, length FROM commits WHERE sha = ?');
+        const rowOf = database?.prepare('SELECT date, subject, body, paths, length FROM commits WHERE sha = ?');
         const storedCommit = (commitSha: string): StoredCommit => {
           const row = rowOf!.get(commitSha) as Record<string, unknown>;
           return {
             date: row.date as string, subject: row.subject as string, body: row.body as string,
-            changedPaths: JSON.parse(row.paths as string) as string[], words: row.words as string, length: row.length as number,
+            changedPaths: JSON.parse(row.paths as string) as string[], length: row.length as number,
           };
         };
-        // A stored commit's task-word mentions come from its stored word
-        // counts: the same tokens `measure` counts in its text.
+        // A stored commit's task-word mentions come from its postings:
+        // the same token counts `measure` counts in its text. Each task
+        // term's count is a point lookup on the postings primary key, so
+        // the rows never outlive the lane's page.
+        const postingOf = database?.prepare('SELECT count FROM postings WHERE term = ? AND sha = ?');
+        const lengthOf = database?.prepare('SELECT length FROM commits WHERE sha = ?');
         const mentionsOf = (commit: { readonly sha: string; readonly subject: string }, body: string): Mentions => {
           if (stored === undefined) return measure(commit.subject, body, termIndex);
-          const held = storedCommit(commit.sha);
-          return { counts: terms.map((term) => bagCount(held.words, term)), length: held.length };
+          return {
+            counts: terms.map((term) =>
+              (postingOf!.get(term, commit.sha) as { count: number } | undefined)?.count ?? 0),
+            length: (lengthOf!.get(commit.sha) as { length: number }).length,
+          };
         };
         const bodiesOf = async (shas: readonly string[]): Promise<readonly string[]> => stored === undefined
           ? readBodies(toplevel, shas, signal) : shas.map((commitSha) => storedCommit(commitSha).body);
@@ -619,16 +632,44 @@ export function git(
           : undefined;
         const enumerated: ScoredCommit[] = [];
         const phrases: { commit: ScoredCommit; count: number }[] = [];
-        const embedding = request.meaningLane === undefined ? undefined
-          : await embedQuery(request.meaningLane.embed, request.task, signal);
-        let pendingEmbed: string[] = [];
-        const similarities: number[] = [];
+        // The first meaning lane of a call scores every commit against
+        // the call's whole query list at once, and the lanes after it
+        // read the held scores; a read outside a shared context scores
+        // its own query alone, as before.
+        const meaningQueries = request.meaningLane === undefined ? undefined
+          : (request.meaningQueries ?? [request.task]);
+        interface Lite {
+          queries: readonly string[];
+          sims: Map<string, number[]>;
+        }
+        let lite = meaningQueries === undefined ? undefined : embedShared?.meaning;
+        let queryVectors: readonly Float64Array[] | undefined;
+        if (meaningQueries !== undefined && (lite === undefined || lite.queries.length !== meaningQueries.length
+          || lite.queries.some((query, index) => query !== meaningQueries[index]))) {
+          lite = { queries: meaningQueries, sims: new Map() };
+          queryVectors = (await request.meaningLane!.embed(meaningQueries, signal)).map((vector) => normalized(vector));
+          if (embedShared !== undefined) embedShared.meaning = lite;
+        }
+        let pendingEmbed: { sha: string; text: string }[] = [];
         const flushEmbed = async () => {
-          if (pendingEmbed.length === 0 || embedding === undefined) return;
-          similarities.push(
-            ...await embedSimilarities(request.meaningLane!.embed, embedding, pendingEmbed, signal));
+          const held = lite;
+          const queries = queryVectors;
+          if (pendingEmbed.length === 0 || queries === undefined || held === undefined) return;
+          const vectors = await request.meaningLane!.embed(pendingEmbed.map((part) => part.text), signal);
+          if (vectors.length !== pendingEmbed.length) throw new TypeError('embed must return one vector per input text.');
+          pendingEmbed.forEach((part, index) => {
+            const unit = normalized(vectors[index]!, queries[0]!.length);
+            held.sims.set(part.sha, queries.map((query) => similarity(unit, query)));
+          });
           pendingEmbed = [];
         };
+        // The lane's own query is not on the shared list: score it alone.
+        let at = lite?.queries.indexOf(request.task) ?? -1;
+        if (lite !== undefined && at === -1) {
+          lite = { queries: [request.task], sims: new Map() };
+          queryVectors = (await request.meaningLane!.embed([request.task], signal)).map((vector) => normalized(vector));
+          at = 0;
+        }
         // With the index, the commits in the date range come from the
         // file, in `git log` order; a commit the source's own exclusions
         // left unstored is one the direct read would drop too.
@@ -659,12 +700,14 @@ export function git(
           for (const commit of batch) {
             if (filtered) {
               enumerated.push(scored(commit));
-            } else if (embedding !== undefined) {
+            } else if (lite !== undefined) {
               // The page's body is embedded and released with it; only
               // the similarity survives.
               enumerated.push(scored(commit));
-              pendingEmbed.push(`${commit.subject}\n${commit.body}`);
-              if (pendingEmbed.length === 32) await flushEmbed();
+              if (!lite.sims.has(commit.sha)) {
+                pendingEmbed.push({ sha: commit.sha, text: `${commit.subject}\n${commit.body}` });
+                if (pendingEmbed.length === 32) await flushEmbed();
+              }
             } else if (request.phraseLane === true && request.topic !== undefined) {
               // A kind lane's match keeps the commit's topic score, not
               // its body: only commits the curve keeps get one back.
@@ -702,18 +745,20 @@ export function git(
         // fetches bodies only for the kept commits. With exclusions the
         // bodies it needs arrive in the same bounded batches, after the
         // path filter has dropped their commits.
-        if (embedding !== undefined) {
+        if (lite !== undefined) {
           if (filtered) {
             for (let start = 0; start < admitted.length; start += BODY_PAGE) {
               const slice = admitted.slice(start, start + BODY_PAGE);
               const bodies = await bodiesOf(slice.map((commit) => commit.sha));
               for (const [index, body] of bodies.entries()) {
-                pendingEmbed.push(`${slice[index]!.subject}\n${body}`);
+                if (lite.sims.has(slice[index]!.sha)) continue;
+                pendingEmbed.push({ sha: slice[index]!.sha, text: `${slice[index]!.subject}\n${body}` });
                 if (pendingEmbed.length === 32) await flushEmbed();
               }
             }
             await flushEmbed();
           }
+          const similarities = admitted.map((commit) => lite.sims.get(commit.sha)![at]!);
           const order = admitted.map((_, index) => index)
             .sort((a, b) => (similarities[b] ?? 0) - (similarities[a] ?? 0)
               || `commit ${admitted[a]!.short}`.localeCompare(`commit ${admitted[b]!.short}`));
@@ -726,6 +771,10 @@ export function git(
           // `limit` carries the caller's `nearest` cap: it slices the
           // kept set after the curve, not the enumeration before it.
           const limited = request.limit === undefined ? kept : kept.slice(0, request.limit);
+          // The lane reports its whole scored list as ids and scores in
+          // `meaningScores`; `candidates` still holds every kept commit —
+          // under `wholeLanes` that is the whole list, with the commits a
+          // cut would drop marked.
           for (let start = 0; start < limited.length; start += BODY_PAGE) {
             const slice = limited.slice(start, start + BODY_PAGE);
             const bodies = await bodiesOf(slice.map((index) => admitted[index]!.sha));
@@ -737,6 +786,10 @@ export function git(
             revision: sha,
             ...indexed,
             meaningLane: true as const,
+            meaningScores: (mark ? order : limited).map((index) => ({
+              id: `commit ${admitted[index]!.short}`, similarity: similarities[index]!,
+              ...(mark && !passes(index) ? { pastLaneCut: true as const } : {}),
+            })),
             candidates: limited.map((index): MemoryCandidate => ({
               sourceId: id,
               sourceRevision: sha,

@@ -88,6 +88,13 @@ export interface CandidateReadRequest {
    *  that ignores it answers a plain keyword read, and the pick then
    *  scores the pool itself. */
   readonly meaningLane?: MeaningSearchOptions;
+  /** Internal to pickFromSources and the skill's pickFullSources: the
+   *  call's whole meaning-query list, already mapped the way `task`
+   *  was. The first meaning read of a call may score each part against
+   *  every query on it and hold the scores for the later lanes, so the
+   *  parts are enumerated and embedded once rather than per lane. A
+   *  read without it scores `task` alone. */
+  readonly meaningQueries?: readonly string[];
   /** Internal to pickFromSources: set while a thoroughness level is in
    *  force: the pick's fused order reads each part's meaning position,
    *  its best similarity over every query measured before any lane
@@ -202,6 +209,18 @@ export type CandidateReadResult =
        *  kept set in lane order. A reader that ignores the flag returns
        *  an ordinary read and the pick scores its candidates itself. */
       readonly meaningLane?: boolean;
+      /** Internal to pickFromSources: the meaning lane's whole scored
+       *  list in lane order — every part the lane scored, as an id, its
+       *  similarity and the bend's mark where one applies — so the lane
+       *  result needs whole candidates only for the parts the merge
+       *  holds: inside the bend (or every part under `wholeLanes`),
+       *  inside `nearest`. The lane order, bend, marks and matched
+       *  count are the ones the candidates alone would have carried. */
+      readonly meaningScores?: readonly {
+        readonly id: string;
+        readonly similarity: number;
+        readonly pastLaneCut?: boolean;
+      }[];
       /** No lane of this reference read kept anything: nothing in it
        *  matched the searches. The caller can see the miss and ask
        *  more broadly rather than be handed the whole history. */
@@ -234,6 +253,11 @@ export interface CandidateReadContext {
    *  once the shared cap is passed, so a large corpus is never held
    *  whole; the same file within the cap is still read once. */
   fileBytes?: number;
+  /** Scratch space the lanes of one source share within one call: the
+   *  reader keeps its own entry under its own object, so the meaning
+   *  lanes of one read can reuse the first lane's enumeration and
+   *  similarities. A context without it shares nothing across lanes. */
+  readonly shared?: Map<object, unknown>;
 }
 
 export interface CandidateSource {
@@ -761,6 +785,7 @@ async function readSearches(
       limit: request.meaningPositions === true ? undefined : request.meaning.nearest,
       wholeLanes: request.meaningPositions === true ? true : request.meaning.wholeLanes ?? !laneCut,
       meaningLane: request.meaning,
+      meaningQueries: queries,
       ...(read.revision === undefined ? {} : { revision: read.revision }) }, context);
     if (laneRead.status === 'absent') {
       reasons.push(`meaning lane absent: ${laneRead.reason}`);
@@ -790,43 +815,56 @@ async function readSearches(
     const meaningKept = new Set<string>();
     for (const { offset, query, read: laneRead } of meaningReads) {
       const lane = tasks.length + offset;
-      const groups = new Map<string, MemoryCandidate[]>();
+      // Whole candidates arrive in the lane's order, the same order the
+      // score list runs in; a part id can repeat (codex parts share
+      // file:line:chunk:part coordinates across sessions), so each scored
+      // entry takes the next still-unpaired candidate of its id — the
+      // body holding this rank, as the scored-candidate path held it.
+      const byId = new Map<string, MemoryCandidate[]>();
       for (const candidate of laneRead.candidates) {
-        const group = groups.get(candidate.sourceId);
-        if (group === undefined) groups.set(candidate.sourceId, [candidate]);
-        else group.push(candidate);
+        const held = byId.get(candidate.id);
+        if (held === undefined) byId.set(candidate.id, [candidate]);
+        else held.push(candidate);
       }
+      // The lane's parts in lane order: every scored part's id,
+      // similarity and bend mark when the reader kept whole candidates
+      // only for held parts, else each returned candidate as before.
+      const scored = laneRead.meaningScores === undefined
+        ? laneRead.candidates.map((candidate) => ({
+          key: JSON.stringify([candidate.sourceId, candidate.id]),
+          id: candidate.id, similarity: candidate.signals.similarity,
+          past: candidate.pastLaneCut === true }))
+        : laneRead.meaningScores.map((entry) => ({
+          key: JSON.stringify([source.id, entry.id]),
+          id: entry.id, similarity: entry.similarity as number | undefined,
+          past: entry.pastLaneCut === true }));
       let kept = 0;
-      for (const group of groups.values()) {
-        group.forEach((candidate, rank) => {
-          const key = JSON.stringify([candidate.sourceId, candidate.id]);
-          if (candidate.signals.similarity !== undefined) {
-            bestSims.set(key, Math.max(bestSims.get(key) ?? Number.NEGATIVE_INFINITY,
-              candidate.signals.similarity));
-          }
-          // The lane holds the part when its bend kept it (every part
-          // under `meaning.wholeLanes`), inside the caller's `nearest`.
-          const held = (meaningWhole || candidate.pastLaneCut !== true)
-            && rank < (nearest ?? Number.POSITIVE_INFINITY);
-          if (!held) return;
-          const existing = union.get(key);
-          const ranks = Array<number | null>(laneCount).fill(null);
-          existing?.searchRanks?.forEach((value, at) => { ranks[at] = value; });
-          ranks[lane] = rank;
-          const value = laneRead.revision === undefined || candidate.sourceRevision !== undefined
-            ? candidate : { ...candidate, sourceRevision: laneRead.revision };
-          // Past the cut only while every lane holding it holds it past the cut; a pool member holds no lane.
-          const past = marking && candidate.pastLaneCut === true
-            && (existing === undefined || existing.poolOnly === true || existing.pastLaneCut === true);
-          const chosen = existing !== undefined && bestRank(existing.searchRanks) <= rank ? existing : value;
-          // A lane rank ends pool-only membership, as `addMeaningRanks` does.
-          const { poolOnly: _poolOnly, ...rest } = unmarked(chosen);
-          union.set(key, { ...rest, searchRanks: ranks,
-            ...(past ? { pastLaneCut: true as const } : {}) });
-          kept += 1;
-          meaningKept.add(candidate.id);
-        });
-      }
+      scored.forEach(({ key, id, similarity: sim, past: marked }, rank) => {
+        if (sim !== undefined) {
+          bestSims.set(key, Math.max(bestSims.get(key) ?? Number.NEGATIVE_INFINITY, sim));
+        }
+        const candidate = byId.get(id)?.shift();
+        // The lane holds the part when its bend kept it (every part
+        // under `meaning.wholeLanes`), inside the caller's `nearest`.
+        const held = (meaningWhole || !marked) && rank < (nearest ?? Number.POSITIVE_INFINITY);
+        if (!held || candidate === undefined) return;
+        const existing = union.get(key);
+        const ranks = Array<number | null>(laneCount).fill(null);
+        existing?.searchRanks?.forEach((value, at) => { ranks[at] = value; });
+        ranks[lane] = rank;
+        const value = laneRead.revision === undefined || candidate.sourceRevision !== undefined
+          ? candidate : { ...candidate, sourceRevision: laneRead.revision };
+        // Past the cut only while every lane holding it holds it past the cut; a pool member holds no lane.
+        const past = marking && marked
+          && (existing === undefined || existing.poolOnly === true || existing.pastLaneCut === true);
+        const chosen = existing !== undefined && bestRank(existing.searchRanks) <= rank ? existing : value;
+        // A lane rank ends pool-only membership, as `addMeaningRanks` does.
+        const { poolOnly: _poolOnly, ...rest } = unmarked(chosen);
+        union.set(key, { ...rest, searchRanks: ranks,
+          ...(past ? { pastLaneCut: true as const } : {}) });
+        kept += 1;
+        meaningKept.add(id);
+      });
       meaningReports[offset] = { task: query, lane: 'meaning', read: laneRead.matched ?? laneRead.candidates.length, kept };
     }
     lanes.push(...meaningReports.filter((report) => report !== undefined));
@@ -981,7 +1019,7 @@ export async function pickFromSources(
   const taskDate = request.taskDate ?? options.taskDate;
   const asOf = zonedIso(taskMoment(taskDate, timeZone), timeZone);
   const period = options.taskPeriod === false ? undefined : taskPeriod(options.task, { asOf, timeZone });
-  const context: CandidateReadContext = { files: new Map() };
+  const context: CandidateReadContext = { files: new Map(), shared: new Map() };
   const labelKindsBySource: Record<string, readonly LabelKind[]> = Object.fromEntries(
     sources.map((source) => [source.id, source.labelKinds ?? []]),
   );

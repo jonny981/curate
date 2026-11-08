@@ -1,8 +1,10 @@
-import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdtemp, mkdir, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
 import { cachedEmbeddings } from '../src/meaning.js';
+import { openIndexFile } from '../src/stored-index.js';
 
 const directories: string[] = [];
 afterEach(async () => { await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true }))); });
@@ -28,9 +30,42 @@ it('persists each complete unique input across runs and separates model identiti
   const other = cachedEmbeddings(embed, { directory, modelId: 'model-b' });
   await other(['reply']);
   expect(calls).toEqual([['reply', 'previous\nreply'], ['edited reply'], ['reply']]);
-  const models = await readdir(directory);
+  const models = (await readdir(directory)).filter((name) => name.endsWith('.vectors.sqlite'));
   expect(models).toHaveLength(2);
-  expect((await Promise.all(models.map((model) => readdir(join(directory, model))))).flat()).toHaveLength(4);
+  const counts = [];
+  for (const model of models) {
+    const database = await openIndexFile(join(directory, model), directory);
+    try {
+      counts.push((database.prepare('SELECT COUNT(*) AS n FROM vectors').get() as { n: number }).n);
+    } finally {
+      database.close();
+    }
+  }
+  expect(counts.sort()).toEqual([1, 3]);
+});
+
+it('migrates a vector left in the per-text JSON folder into the model vector file', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'curate-embeddings-'));
+  directories.push(directory);
+  const modelHash = createHash('sha256').update('model-a').digest('hex');
+  const legacy = join(directory, modelHash);
+  await mkdir(legacy, { recursive: true });
+  const key = createHash('sha256').update('kept text').digest('hex');
+  await writeFile(join(legacy, `${key}.json`), JSON.stringify([3, 4]));
+  const calls: string[][] = [];
+  const cached = cachedEmbeddings(async (texts) => {
+    calls.push([...texts]);
+    return texts.map(() => [9, 9]);
+  }, { directory, modelId: 'model-a' });
+  const [vector] = await cached(['kept text']);
+  expect(calls).toEqual([]);
+  expect(Array.from(vector!)).toEqual([0.6, 0.8]);
+  const database = await openIndexFile(join(directory, `${modelHash}.vectors.sqlite`), directory);
+  try {
+    expect(database.prepare('SELECT COUNT(*) AS n FROM vectors').get()).toEqual({ n: 1 });
+  } finally {
+    database.close();
+  }
 });
 
 it('embeds a shared text once when source reads overlap', async () => {

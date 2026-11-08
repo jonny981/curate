@@ -267,6 +267,77 @@ describe('local meaning search', () => {
     expect(streamedRead.noSearchMatch).toBeUndefined();
   });
 
+  it('merges a lane\'s id and score list, needing bodies only for the parts it holds', async () => {
+    // Each lane scored three parts but kept only its top one, so the
+    // body for 'dog' in the second lane is the only one it carries —
+    // its first-lane score still counts toward the merged position.
+    const lane = (scores: { id: string; similarity: number }[]) => ({
+      status: 'read' as const, complete: true, meaningLane: true as const,
+      matched: scores.length,
+      meaningScores: scores,
+      candidates: scores.slice(0, 1).map(({ id, similarity }) => ({
+        ...item(id, `${id} text`), signals: { similarity }, laneScore: similarity,
+      })),
+    });
+    const result = await pickFromSources([{
+      id: 'notes', role: 'reference',
+      read: async (request) => {
+        if (request.meaningLane === undefined) {
+          return {
+            status: 'read' as const, complete: true,
+            candidates: [item('bill', 'invoice', 9), item('dog', 'puppy'), item('cat', 'kitten')],
+          };
+        }
+        return request.task === 'pets'
+          ? lane([{ id: 'cat', similarity: 0.95 }, { id: 'dog', similarity: 0.9 }, { id: 'bill', similarity: 0.1 }])
+          : lane([{ id: 'dog', similarity: 0.85 }, { id: 'cat', similarity: 0.5 }, { id: 'bill', similarity: 0.1 }]);
+      },
+    }], { task: 'pets', searchLines: ['felines'],
+      meaning: { embed, wholeLanes: true, nearest: 1 } },
+    { ...uncutPick, task: 'pets', decide });
+    const read = result.reads[0]!;
+    if (read.status !== 'read') throw new Error('read failed');
+    // Each lane read its three scores and kept the one inside `nearest`.
+    expect(read.lanes?.filter((entry) => entry.lane === 'meaning')).toEqual([
+      { task: 'pets', lane: 'meaning', read: 3, kept: 1 },
+      { task: 'felines', lane: 'meaning', read: 3, kept: 1 },
+    ]);
+    const byId = new Map(read.candidates.map((candidate) => [candidate.id, candidate]));
+    // 'dog' held rank 0 only in the 'felines' lane, but its meaning
+    // score is the best over both lanes — the first lane's 0.9, which
+    // no returned body carried.
+    expect(byId.get('dog')?.meaningScore).toBe(0.9);
+    expect(byId.get('dog')?.searchRanks?.slice(-2)).toEqual([null, 0]);
+    expect(byId.get('cat')?.meaningScore).toBe(0.95);
+    expect(byId.get('cat')?.searchRanks?.slice(-2)).toEqual([0, null]);
+    // A keyword-only part no lane held keeps no meaning score.
+    expect(byId.get('bill')?.meaningScore).toBeUndefined();
+  });
+
+  it('pairs each scored entry with the next whole candidate of a repeated id', async () => {
+    // Codex part ids are file:line:chunk:part coordinates, which repeat
+    // across sessions: two bodies can share an id. The score list and
+    // the whole candidates run in the same order, so the entry holding
+    // the better rank must keep its own body, not the last one listed.
+    const result = await pickFromSources([{
+      id: 'notes', role: 'reference',
+      read: async (request) => request.meaningLane === undefined
+        ? { status: 'read' as const, complete: true, candidates: [item('bill', 'invoice', 9)] }
+        : {
+            status: 'read' as const, complete: true, meaningLane: true as const, matched: 2,
+            meaningScores: [{ id: 'dup', similarity: 0.9 }, { id: 'dup', similarity: 0.8 }],
+            candidates: [
+              { ...item('dup', 'first body'), signals: { similarity: 0.9 }, laneScore: 0.9 },
+              { ...item('dup', 'second body'), signals: { similarity: 0.8 }, laneScore: 0.8 },
+            ],
+          },
+    }], { task: 'pets', meaning: { embed, wholeLanes: true } },
+    { ...uncutPick, task: 'pets', decide });
+    const read = result.reads[0]!;
+    if (read.status !== 'read') throw new Error('read failed');
+    expect(read.candidates.find((candidate) => candidate.id === 'dup')?.text).toBe('first body');
+  });
+
   it('keeps meaning reports in query order when a lane is absent', async () => {
     const result = await pickFromSources([{
       id: 'notes', role: 'reference',

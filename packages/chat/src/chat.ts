@@ -4,8 +4,8 @@ import { homedir } from 'node:os';
 import { basename, join, relative, resolve, sep } from 'node:path';
 
 import {
-  canonicalPath, phraseCount, laneBend, embedQuery, embedSimilarities, sinceCutoff, taskMoment, timeZoneOf,
-  zonedIso, checkIndexOption, indexDirectory, indexFilePath, openIndexFile, updateIndex,
+  canonicalPath, phraseCount, laneBend, normalized, similarity, sinceCutoff, taskMoment, timeZoneOf,
+  zonedIso, bagEntries, checkIndexOption, indexDirectory, indexFilePath, openIndexFile, updateIndex,
   type IndexDatabase, type StoredIndexOptions, type StoredIndexReport,
 } from '@curatejs/core/internal';
 import {
@@ -236,8 +236,9 @@ function split(text: string, size: number): string[] {
   return parts;
 }
 
-const partId = (part: RawPart) =>
-  scrubChat(`${part.provider}:${part.root}:${relative(part.root, part.file)}:${part.line}:${part.block}:${part.piece}`);
+const partIdOf = (part: RawPart) =>
+  `${part.provider}:${part.root}:${relative(part.root, part.file)}:${part.line}:${part.block}:${part.piece}`;
+const partId = (part: RawPart) => scrubChat(partIdOf(part));
 const partTitle = (part: RawPart, zone: string) =>
   `${part.provider} ${part.sessionId} ${part.role} ${zonedIso(part.date, zone)}`;
 const AUTHOR_TITLES: Record<Author, string> = { person: ' (the person)', agent: ' (agent)', tool: ' (tool)', system: ' (system)', unmarked: '' };
@@ -342,7 +343,40 @@ async function* eachPart(
 
 /** A part read from the stored index: a transcript part and its text's
  *  stored words. Its text is empty on a pass that never reads text. */
-type StoredPart = RawPart & { readonly words: StoredChatWords };
+type StoredPart = RawPart & { readonly words: StoredChatWords; readonly at: string };
+
+/** What one call's meaning lanes share through the read context: each
+ *  part's similarity over the call's query list, and the enumeration
+ *  the scores align to. */
+interface Lite {
+  queries: readonly string[];
+  similarities: number[][];
+  ids: string[];
+  partFile: number[];
+  fileRanges: { provider: ChatProvider; root: string; file: string; start: number }[];
+}
+
+/** The keyword lanes' once-per-call enumeration: every in-window part's
+ *  scrubbed id, index row, title and word total, in enumeration order,
+ *  and the skips the first pass counted. */
+interface ChatKeywordEnum {
+  ids: string[];
+  refs: string[];
+  partFile: number[];
+  fileRanges: { provider: ChatProvider; root: string; file: string; start: number }[];
+  titles: string[];
+  longs: number[];
+  skips: number;
+}
+
+/** A source's entry in a read context's shared space: the meaning
+ *  lanes' held scores, the part ids scrubbed once for every lane that
+ *  asks for them, and the keyword lanes' once-per-call enumeration. */
+interface Shared {
+  meaning?: Lite;
+  ids?: Map<string, string>;
+  keyword?: ChatKeywordEnum;
+}
 
 /** One transcript the stored index holds. */
 interface StoredTranscript {
@@ -447,7 +481,10 @@ const CHAT_TABLES = `CREATE TABLE IF NOT EXISTS transcripts (id INTEGER PRIMARY 
   CREATE TABLE IF NOT EXISTS parts (transcript INTEGER NOT NULL, ordinal INTEGER NOT NULL, line INTEGER NOT NULL,
     block INTEGER NOT NULL, piece INTEGER NOT NULL, session TEXT NOT NULL, role TEXT NOT NULL, author TEXT NOT NULL,
     author_name TEXT, date INTEGER NOT NULL, text TEXT NOT NULL, long INTEGER NOT NULL, stems TEXT NOT NULL,
-    short TEXT NOT NULL, PRIMARY KEY (transcript, ordinal)) WITHOUT ROWID;`;
+    short TEXT NOT NULL, PRIMARY KEY (transcript, ordinal)) WITHOUT ROWID;
+  CREATE TABLE IF NOT EXISTS postings (term TEXT NOT NULL, transcript INTEGER NOT NULL,
+    ordinal INTEGER NOT NULL, count INTEGER NOT NULL, PRIMARY KEY (term, transcript, ordinal)) WITHOUT ROWID;
+  CREATE INDEX IF NOT EXISTS postingsTranscript ON postings (transcript);`;
 
 /** Bring a source's stored index up to date, in one write transaction.
  *  A transcript with its stored size and modification time is kept. One
@@ -473,8 +510,17 @@ async function syncChatIndex(
       const rows = new Map<string, TranscriptRow>((database.prepare('SELECT * FROM transcripts').all() as unknown as TranscriptRow[])
         .map((row) => [`${row.provider}\0${row.root}\0${row.path}`, row]));
       const deleteParts = database.prepare('DELETE FROM parts WHERE transcript = ?');
+      const deletePostings = database.prepare('DELETE FROM postings WHERE transcript = ?');
       const insertPart = database.prepare(`INSERT INTO parts (transcript, ordinal, line, block, piece, session, role,
         author, author_name, date, text, long, stems, short) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+      const insertPosting = database.prepare('INSERT OR IGNORE INTO postings (term, transcript, ordinal, count) VALUES (?, ?, ?, ?)');
+      // A part's posting list is its stored words with their counts:
+      // each stem under its own term, each short word under a term no
+      // stem can take.
+      const insertPostings = (transcript: number, ordinal: number, stems: string, short: string) => {
+        for (const [term, count] of bagEntries(stems)) insertPosting.run(term, transcript, ordinal, count);
+        for (const [word, count] of bagEntries(short)) insertPosting.run(`!${word}`, transcript, ordinal, count);
+      };
       const insertRow = database.prepare(`INSERT INTO transcripts (provider, root, path, size, mtime, lines, head, tail,
         newline, state, undated, parts) VALUES (?, ?, ?, ?, ?, ?, '', '', 0, '', 0, 0)`);
       const updateRow = database.prepare(`UPDATE transcripts SET size = ?, mtime = ?, lines = ?, head = ?, tail = ?,
@@ -525,6 +571,7 @@ async function syncChatIndex(
             bytes = window = await readFile(file, { signal });
             if (row !== undefined) {
               deleteParts.run(row.id);
+              deletePostings.run(row.id);
               removed += row.parts;
             }
           }
@@ -534,8 +581,10 @@ async function syncChatIndex(
           let ordinal = start;
           for (const part of decodeLines(provider, lines, firstLine, state, includeTools, size, signal, () => { undated += 1; })) {
             const words = storedChatWords(part.text, keyword);
-            insertPart.run(id, ordinal++, part.line, part.block, part.piece, part.sessionId, part.role, part.author,
+            insertPart.run(id, ordinal, part.line, part.block, part.piece, part.sessionId, part.role, part.author,
               part.authorName ?? null, part.date, part.text, words.long, words.stems, words.short);
+            insertPostings(id, ordinal, words.stems, words.short);
+            ordinal += 1;
           }
           added += ordinal - start;
           // The stored size counts only the bytes read: a file that grew
@@ -556,6 +605,7 @@ async function syncChatIndex(
         const root = walked.get(`${row.provider}\0${row.root}`);
         if (root === undefined || excluded(join(root, row.path), root, requested)) continue;
         deleteParts.run(row.id);
+        deletePostings.run(row.id);
         database.prepare('DELETE FROM transcripts WHERE id = ?').run(row.id);
         removed += row.parts;
       }
@@ -574,13 +624,17 @@ async function syncChatIndex(
  *  transcript are read at once, as the direct read holds one file. */
 function* storedParts(
   database: IndexDatabase, provider: ChatProvider, root: string, transcript: StoredTranscript, withText: boolean,
+  light = false,
 ): Generator<StoredPart> {
-  const rows = database.prepare(`SELECT line, block, piece, session, role, author, author_name, date,
-    ${withText ? 'text' : "'' AS text"}, long, stems, short FROM parts WHERE transcript = ? ORDER BY ordinal`)
+  const rows = database.prepare(`SELECT ordinal, line, block, piece, session, role,
+    ${light ? "'unmarked' AS author, NULL AS author_name" : 'author, author_name'}, date,
+    ${withText ? 'text' : "'' AS text"}, long,
+    ${light ? "'' AS stems, '' AS short" : 'stems, short'} FROM parts WHERE transcript = ? ORDER BY ordinal`)
     .all(transcript.id) as Record<string, unknown>[];
   for (const row of rows) {
     yield {
       provider, root, file: transcript.file,
+      at: `${transcript.id}:${row.ordinal as number}`,
       line: row.line as number, block: row.block as number, piece: row.piece as number,
       sessionId: row.session as string, role: row.role as MessageRole, author: row.author as Author,
       ...(row.author_name === null ? {} : { authorName: row.author_name as string }),
@@ -740,7 +794,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           transcripts.map((transcript) => [`${provider}\0${transcript.file}`, transcript] as const)));
         /** Every part, counting skips on the read's first pass. A stored
          *  part's text is read only when `withText` asks for it. */
-        const each = (counting: boolean, withText: boolean): AsyncIterable<RawPart> | Iterable<RawPart> =>
+        const each = (counting: boolean, withText: boolean, light = false): AsyncIterable<RawPart> | Iterable<RawPart> =>
           storedRoots === undefined
             ? eachPart(walkable, exclusions, counting ? { ...ctx, countSkips: skips } : ctx)
             : (function* () {
@@ -749,7 +803,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
                   for (const transcript of transcripts) {
                     cancelled(request.signal);
                     if (counting) skips.n += transcript.undated;
-                    for (const part of storedParts(database!, provider, root, transcript, withText)) {
+                    for (const part of storedParts(database!, provider, root, transcript, withText, light)) {
                       if (inDates(part)) yield part;
                     }
                   }
@@ -774,38 +828,70 @@ export function chat(options: ChatOptions = {}): CandidateSource {
         const score = (rank: ChatRankSession, part: RawPart) => 'words' in part
           ? rank.scoreStored(partTitle(part, zone), (part as StoredPart).words, { heading: '', name: '', front: '' })
           : rank.score(`${partTitle(part, zone)} ${part.text}`, { heading: '', name: '', front: '' });
+        // The lanes of one call share the first meaning lane's scores
+        // and the part ids each lane would otherwise scrub afresh.
+        const box = context?.shared;
+        let shared = box?.get(reader) as Shared | undefined;
+        if (box !== undefined && shared === undefined) box.set(reader, shared = {});
+        const idCache = shared === undefined ? undefined : (shared.ids ??= new Map());
+        const idOf = (part: RawPart) => {
+          if (idCache === undefined) return partId(part);
+          const key = partIdOf(part);
+          let value = idCache.get(key);
+          if (value === undefined) idCache.set(key, value = partId(part));
+          return value;
+        };
 
         // A meaning lane embeds each part in bounded batches and keeps
         // the parts the similarity curve keeps: the corpus's text is
-        // never held, and no keyword statistics pass is needed.
+        // never held, and no keyword statistics pass is needed. The
+        // first meaning lane of a call scores every part against the
+        // call's whole query list at once, and the lanes after it read
+        // the held scores; a read outside a shared context scores its
+        // own query alone, as before.
         if (request.meaningLane !== undefined) {
           const embed = request.meaningLane.embed;
-          const query = await embedQuery(embed, request.task, request.signal);
-          const similarities: number[] = [];
-          const ids: string[] = [];
-          const partFile: number[] = [];
-          const fileRanges: { provider: ChatProvider; root: string; file: string; start: number }[] = [];
-          let pending: string[] = [];
-          let previous: { file: string; text: string } | undefined;
-          const flush = async () => {
-            if (pending.length === 0) return;
-            const scores = await embedSimilarities(embed, query, pending, request.signal);
-            similarities.push(...scores);
-            pending = [];
-          };
-          for await (const part of each(true, true)) {
-            const last = fileRanges.at(-1);
-            if (last === undefined || last.file !== part.file) {
-              fileRanges.push({ provider: part.provider, root: part.root, file: part.file, start: ids.length });
+          const queries = request.meaningQueries ?? [request.task];
+          const compute = async (list: readonly string[]): Promise<Lite> => {
+            const queryVectors = (await embed(list, request.signal)).map((vector) => normalized(vector));
+            const lite: Lite = { queries: list, similarities: [], ids: [], partFile: [], fileRanges: [] };
+            let pending: string[] = [];
+            let previous: { file: string; text: string } | undefined;
+            const flush = async () => {
+              if (pending.length === 0) return;
+              const vectors = await embed(pending, request.signal);
+              if (vectors.length !== pending.length) throw new TypeError('embed must return one vector per input text.');
+              for (const vector of vectors) {
+                const unit = normalized(vector, queryVectors[0]!.length);
+                lite.similarities.push(queryVectors.map((query) => similarity(unit, query)));
+              }
+              pending = [];
+            };
+            for await (const part of each(true, true)) {
+              const last = lite.fileRanges.at(-1);
+              if (last === undefined || last.file !== part.file) {
+                lite.fileRanges.push({ provider: part.provider, root: part.root, file: part.file, start: lite.ids.length });
+              }
+              lite.partFile.push(lite.fileRanges.length - 1);
+              lite.ids.push(idOf(part));
+              const text = /[^\s\p{Cf}]/u.test(part.text) ? part.text : partTitle(part, zone);
+              pending.push(previous?.file === part.file ? `${previous.text}\n${text}` : text);
+              previous = { file: part.file, text };
+              if (pending.length === 32) await flush();
             }
-            partFile.push(fileRanges.length - 1);
-            ids.push(partId(part));
-            const text = /[^\s\p{Cf}]/u.test(part.text) ? part.text : partTitle(part, zone);
-            pending.push(previous?.file === part.file ? `${previous.text}\n${text}` : text);
-            previous = { file: part.file, text };
-            if (pending.length === 32) await flush();
+            await flush();
+            return lite;
+          };
+          let lite = shared?.meaning;
+          if (lite === undefined || lite.queries.length !== queries.length
+            || lite.queries.some((query, index) => query !== queries[index])) {
+            lite = await compute(queries);
+            if (shared !== undefined) shared.meaning = lite;
           }
-          await flush();
+          let at = lite.queries.indexOf(request.task);
+          if (at === -1) { lite = await compute([request.task]); at = 0; }
+          const similarities = lite.similarities.map((row) => row[at]!);
+          const { ids, partFile, fileRanges } = lite;
           const order = ids.map((_, index) => index)
             .sort((a, b) => (similarities[b] ?? 0) - (similarities[a] ?? 0) || ids[a]!.localeCompare(ids[b]!));
           const cut = request.wholeLanes === false;
@@ -821,6 +907,10 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           // `limit` carries the caller's `nearest` cap: it slices the
           // kept set after the curve, not the enumeration before it.
           const limited = request.limit === undefined ? kept : kept.slice(0, request.limit);
+          // The lane reports its whole scored list as ids and scores in
+          // `meaningScores`; `candidates` still holds every kept part —
+          // under `wholeLanes` that is the whole list, with the parts a
+          // cut would drop marked.
           const wanted = new Map<number, Set<number>>();
           for (const index of limited) {
             const file = partFile[index]!;
@@ -854,6 +944,10 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           }
           return {
             status: 'read' as const, candidates, meaningLane: true, ...indexed,
+            meaningScores: (mark ? order : limited).map((index) => ({
+              id: ids[index]!, similarity: similarities[index]!,
+              ...(mark && !passes(index) ? { pastLaneCut: true as const } : {}),
+            })),
             complete: reasons.length === 0,
             ...(reasons.length ? { partial: reasons.join('; ') } : {}),
             matched: ids.length,
@@ -878,7 +972,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
               fileRanges.push({ provider: part.provider, root: part.root, file: part.file, start: ids.length });
             }
             partFile.push(fileRanges.length - 1);
-            ids.push(partId(part));
+            ids.push(idOf(part));
             observe(rank, part);
             const count = phraseCount(part.text, request.task) + phraseCount(partTitle(part, zone), request.task);
             if (count > 0 && (request.speakerOnly !== true || part.role === 'user')) {
@@ -970,7 +1064,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
             if (count > 0) {
               matched.push({
                 sourceId: id, role: 'reference',
-                id: partId(part), title: shownTitle(part, zone), text: part.text,
+                id: idOf(part), title: shownTitle(part, zone), text: part.text,
                 contentRef: `${part.provider}:${part.sessionId}:${part.line}:${part.block}:${part.piece}`,
                 chat: chatOf(part),
                 date: dated(part),
@@ -989,33 +1083,77 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           };
         }
 
-        // Pass one: corpus statistics. Pass two: per-part scores. Pass
-        // three reads back only the files that kept a part.
+        // Pass one enumerates the corpus, pass two scores it, and a
+        // third pass reads back only the files that kept a part.
         const rank = startChatRank([request.task, ...(request.paths ?? [])].join(' '), options.keyword);
-        const ids: string[] = [];
-        const partFile: number[] = [];
-        const fileRanges: { provider: ChatProvider; root: string; file: string; start: number }[] = [];
-        for await (const part of each(true, false)) {
-          const last = fileRanges.at(-1);
-          if (last === undefined || last.file !== part.file) {
-            fileRanges.push({ provider: part.provider, root: part.root, file: part.file, start: ids.length });
+        let ids: string[];
+        let partFile: number[];
+        let fileRanges: { provider: ChatProvider; root: string; file: string; start: number }[];
+        if (storedRoots === undefined) {
+          ids = [];
+          partFile = [];
+          fileRanges = [];
+          for await (const part of each(true, false)) {
+            const last = fileRanges.at(-1);
+            if (last === undefined || last.file !== part.file) {
+              fileRanges.push({ provider: part.provider, root: part.root, file: part.file, start: ids.length });
+            }
+            partFile.push(fileRanges.length - 1);
+            ids.push(idOf(part));
+            observe(rank, part);
           }
-          partFile.push(fileRanges.length - 1);
-          ids.push(partId(part));
-          observe(rank, part);
-        }
-        // Pass two scores each part against the first pass's statistics.
-        // Files are walked per transcript so a file grown mid-read can
-        // only append: parts past the first pass's count are skipped
-        // and a shrunk file simply scores fewer.
-        for (const [rangeIndex, range] of fileRanges.entries()) {
-          const end = fileRanges[rangeIndex + 1]?.start ?? ids.length;
-          let index = range.start;
-          for await (const part of partsOf(range, false)) {
-            if (index >= end) break;
-            score(rank, part);
-            index += 1;
+          // Without the index files are walked per transcript so a file
+          // grown mid-read can only append: parts past the first pass's
+          // count are skipped and a shrunk file simply scores fewer.
+          for (const [rangeIndex, range] of fileRanges.entries()) {
+            const end = fileRanges[rangeIndex + 1]?.start ?? ids.length;
+            let index = range.start;
+            for await (const part of partsOf(range, false)) {
+              if (index >= end) break;
+              score(rank, part);
+              index += 1;
+            }
           }
+        } else {
+          // With the index the postings alone carry the corpus: the
+          // first keyword lane enumerates every in-window part once and
+          // the lanes of the call share that list; each lane folds the
+          // term postings, title terms and short-word counts into the
+          // same numbers a stored word bag rescan would read.
+          let held = shared?.keyword;
+          if (held === undefined) {
+            held = { ids: [], refs: [], partFile: [], fileRanges: [], titles: [], longs: [], skips: 0 };
+            const before = skips.n;
+            for await (const part of each(true, false, true)) {
+              const last = held.fileRanges.at(-1);
+              if (last === undefined || last.file !== part.file) {
+                held.fileRanges.push({ provider: part.provider, root: part.root, file: part.file, start: held.ids.length });
+              }
+              held.partFile.push(held.fileRanges.length - 1);
+              held.refs.push((part as StoredPart).at);
+              held.titles.push(partTitle(part, zone));
+              held.longs.push((part as StoredPart).words.long);
+              held.ids.push(idOf(part));
+            }
+            held.skips = skips.n - before;
+            if (shared !== undefined) shared.keyword = held;
+          } else {
+            skips.n += held.skips;
+          }
+          ({ ids, partFile, fileRanges } = held);
+          const { stems, shorts } = rank.postingTerms();
+          const indexOf = new Map(held.refs.map((ref, index) => [ref, index] as const));
+          const postingOf = database!.prepare('SELECT transcript, ordinal, count FROM postings WHERE term = ?');
+          const fold = (term: string, word: string, short: boolean) => {
+            for (const row of postingOf.all(term) as { transcript: number; ordinal: number; count: number }[]) {
+              const index = indexOf.get(`${row.transcript}:${row.ordinal}`);
+              if (index !== undefined) rank.posting(index, word, row.count, short);
+            }
+          };
+          for (const term of stems) fold(term, term, false);
+          for (const word of shorts) fold(`!${word}`, word, true);
+          held.titles.forEach((title, index) => rank.observeIndexed(index, title, held.longs[index]!));
+          rank.scoreIndexed({ heading: '', name: '', front: '' });
         }
         const { scores, base } = rank.finish(ids);
         const order = ids.map((_, index) => index)

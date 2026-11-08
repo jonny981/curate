@@ -237,7 +237,7 @@ describe('Codex session folder restrictions', () => {
     expect(await allowedSession(header, await folder())).toBe(false);
   });
 
-  it('reads exactly the header bytes and newline despite an invalid body', async () => {
+  it('reads the header in chunks and stops at the first newline despite an invalid body', async () => {
     const directory = await folder();
     const file = join(directory, 'session.jsonl');
     const header = metadata(join(directory, 'project'));
@@ -246,8 +246,8 @@ describe('Codex session folder restrictions', () => {
 
     expect(sessionHeader(file)).toEqual(header);
     const reads = vi.mocked(readSync).mock.calls;
-    expect(reads).toHaveLength(Buffer.byteLength(line) + 1);
-    expect(reads.every((call) => (call as unknown[])[3] === 1)).toBe(true);
+    expect(reads).toHaveLength(1);
+    expect((reads[0]! as unknown[])[3]).toBeGreaterThan(1);
   });
 
   it('does not look for valid metadata after an invalid first line', async () => {
@@ -255,7 +255,7 @@ describe('Codex session folder restrictions', () => {
     const file = join(directory, 'session.jsonl');
     await writeFile(file, `invalid\n${JSON.stringify(metadata(directory))}\n`);
     expect(sessionHeader(file)).toBeNull();
-    expect(vi.mocked(readSync).mock.calls).toHaveLength('invalid\n'.length);
+    expect(vi.mocked(readSync).mock.calls).toHaveLength(1);
   });
 
   it('reuses the stored index for unchanged sessions on the next run', async () => {

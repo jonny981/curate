@@ -8,7 +8,7 @@ import { afterEach, beforeEach, expect, it } from 'vitest';
 import { cachedEmbeddings, type CandidateReadRequest, type MemoryCandidate } from '@curatejs/core';
 import { knowledgeBase } from '@curatejs/markdown';
 // @ts-expect-error The standalone command has no type declarations.
-import { holdVectors, pickFullSources, searchSource } from '../skills/curate/run.mjs';
+import { pickFullSources, searchSource } from '../skills/curate/run.mjs';
 
 const folders: string[] = [];
 afterEach(async () => { await Promise.all(folders.splice(0).map((path) => rm(path, { recursive: true, force: true }))); });
@@ -49,14 +49,18 @@ afterEach(() => {
   vectorReads.length = 0;
 });
 
-/** A vector store on disk. It keeps one file per text, named by the
+/** A vector store on disk. It keeps one file per model; a text the file
+ *  lacks is probed in the legacy per-text JSON folder, named by the
  *  text's hash. */
 async function vectorStore() {
   const directory = await folder();
   vectorFolders.push(directory);
-  const embed = cachedEmbeddings(async (texts) => texts.map((text) => [text.length % 7 + 1, 1]),
-    { directory, modelId: 'fixture-model' });
-  return { embed };
+  const calls: string[][] = [];
+  const embed = cachedEmbeddings(async (texts) => {
+    calls.push([...texts]);
+    return texts.map((text) => [text.length % 7 + 1, 1]);
+  }, { directory, modelId: 'fixture-model' });
+  return { embed, calls };
 }
 const vectorFile = (text: string) => `${createHash('sha256').update(text).digest('hex')}.json`;
 const fileName = (path: string) => path.slice(path.lastIndexOf(sep) + 1);
@@ -85,9 +89,9 @@ it('shares one read context across every read of one call, and makes a new one f
   expect(reads[0]!.context).not.toBe(first[0]!.context);
 });
 
-it('reads each vector file once per call, so a later meaning lane over embedded texts reads none', async () => {
+it('probes each missing vector once per call and keeps it in the model\'s file, so a later lane or call reads none', async () => {
   const directory = await notes();
-  const { embed } = await vectorStore();
+  const { embed, calls } = await vectorStore();
   // Two search lines with the same words: the second meaning lane asks
   // for the same query and parts as the first.
   const same = { markdown: { keywords: ['orchard trees', 'orchard trees'], answers: ['pears ripen late'] } };
@@ -114,36 +118,24 @@ it('reads each vector file once per call, so a later meaning lane over embedded 
   const first = { reads: vectorReads.splice(0).map(fileName), lanes: lanes.splice(0) };
   expect(first.lanes.map((lane) => lane.task)).toEqual(['orchard', 'curate-search:0', 'curate-search:1', 'curate-search:2']);
   const asked = first.lanes.flatMap((lane) => lane.asked);
-  // Each distinct text's vector file is read once, and no other file is read.
+  // Each distinct text's legacy slot is probed once, and no other file is read.
   expect(asked).toContain('# Barn\n\nThe barn roof leaks after rain.\n');
   expect([...first.reads].sort()).toEqual([...new Set(asked)].map(vectorFile).sort());
-  // The repeated lane asks only for texts an earlier lane embedded, and reads no vector file.
-  const earlier = new Set(first.lanes.slice(0, 2).flatMap((lane) => lane.asked));
-  const repeated = first.lanes[2]!;
-  expect(repeated.asked).toContain('# Barn\n\nThe barn roof leaks after rain.\n');
-  expect(repeated.asked.every((text) => earlier.has(text))).toBe(true);
-  expect(first.lanes[1]!.reads.length).toBeGreaterThan(0);
-  expect(repeated.reads).toEqual([]);
-  // The next call holds nothing from this one, so it reads every file again.
+  // The first lane scored every part against the call's whole query
+  // list at once: the lanes after it hold the shared scores and ask or
+  // read nothing.
+  expect(first.lanes[0]!.reads.length).toBeGreaterThan(0);
+  for (const lane of first.lanes.slice(1)) {
+    expect(lane.asked).toEqual([]);
+    expect(lane.reads).toEqual([]);
+  }
+  // The vectors the first call wrote to the model's file now serve the
+  // second call: no text is probed or embedded again.
+  const embedded = calls.length;
   await call();
-  expect(vectorReads.map(fileName).sort()).toEqual([...first.reads].sort());
+  expect(vectorReads).toEqual([]);
+  expect(calls).toHaveLength(embedded);
 }, 60_000);
-
-it('returns the vectors the store gave, unchanged', async () => {
-  const given: number[][] = [];
-  const held = holdVectors(async (texts: readonly string[]) => texts.map((text) => {
-    const vector = [Math.PI / text.length, 1 / 3];
-    given.push(vector);
-    return vector;
-  }));
-  const first = await held(['apple', 'pear']);
-  const second = await held(['pear', 'apple', 'plum']);
-  expect(first).toEqual([given[0], given[1]]);
-  expect(second[0]).toBe(given[1]);
-  expect(second[1]).toBe(given[0]);
-  expect(second[2]).toBe(given[2]);
-  expect(given).toHaveLength(3);
-});
 
 it('stops a call cancelled during a read and keeps nothing for the next call', async () => {
   const directory = await notes();
@@ -151,9 +143,12 @@ it('stops a call cancelled during a read and keeps nothing for the next call', a
   const contexts: unknown[] = [];
   let controller = new AbortController();
   let stop = true;
+  // The first batch is the lane's query list; abort on the second, so
+  // the read has probed part texts before it is cancelled.
+  let armed = 0;
   const stopping = async (texts: readonly string[], signal?: AbortSignal) => {
     const vectors = await embed(texts, signal);
-    if (stop && texts.length > 1) controller.abort();
+    if (stop && texts.length > 1 && ++armed > 1) controller.abort();
     return vectors;
   };
   const searched = searchSource({ ...knowledgeBase(directory), labelKinds: [], rare: false }, searches, [], directory);
@@ -169,7 +164,8 @@ it('stops a call cancelled during a read and keeps nothing for the next call', a
   controller = new AbortController();
   stop = false;
   await call();
-  // Every vector file the cancelled call read is read again.
-  expect(vectorReads).toEqual(expect.arrayContaining(cancelled.reads));
+  // A vector the cancelled call committed is served from the model's
+  // file; only a text it never reached is probed and embedded again.
+  expect(vectorReads.every((path) => cancelled.reads.includes(path))).toBe(true);
   expect(contexts.some((context) => cancelled.contexts.includes(context))).toBe(false);
 }, 60_000);

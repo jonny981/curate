@@ -95,18 +95,25 @@ export function parseSources(value) {
     ...(value.embeddingModel === undefined ? {} : { embeddingModel: homePath(value.embeddingModel) }) };
 }
 
-// Read exactly the first line. Buffered streams can read rejected session bodies ahead of the header.
+// Read exactly the first line in fixed-size chunks through one buffer.
+// Held slices are copied out before the next read overwrites them, and
+// the buffer is wiped when it is released: a read that ran ahead of the
+// header would otherwise keep a rejected session's bytes in memory.
 export function sessionHeader(path) {
   const fd = openSync(path, 'r');
-  const bytes = [];
-  const byte = Buffer.alloc(1);
+  const chunk = Buffer.alloc(65536);
+  const chunks = [];
   try {
-    while (readSync(fd, byte, 0, 1, null)) {
-      if (byte[0] === 10) break;
-      bytes.push(byte[0]);
+    for (;;) {
+      const read = readSync(fd, chunk, 0, chunk.length, null);
+      if (read === 0) break;
+      const end = chunk.indexOf(10);
+      if (end >= 0 && end < read) { chunks.push(Buffer.from(chunk.subarray(0, end))); break; }
+      chunks.push(Buffer.from(chunk.subarray(0, read)));
+      if (read < chunk.length) break;
     }
-  } finally { closeSync(fd); }
-  try { return JSON.parse(Buffer.from(bytes).toString('utf8')); } catch { return null; }
+  } finally { closeSync(fd); chunk.fill(0); }
+  try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { return null; }
 }
 
 export async function allowedSession(header, allowedCwd) {
@@ -171,8 +178,13 @@ export async function snapshotCodex(entry, folder) {
     ...(exclude === undefined ? {} : { exclude }) });
   return { filter, source: { ...source, async read(request, context) {
     const result = await source.read(request, context);
-    return result.status !== 'read' ? result : { ...result, candidates: result.candidates.map((candidate) =>
-      ({ ...candidate, id: candidate.id.replace(folder, entry.path) })) };
+    return result.status !== 'read' ? result : { ...result,
+      candidates: result.candidates.map((candidate) =>
+        ({ ...candidate, id: candidate.id.replace(folder, entry.path) })),
+      // A meaning lane's id and score list names the same parts, so the
+      // same remap applies; without it those ids keep the snapshot path.
+      ...(result.meaningScores === undefined ? {} : { meaningScores: result.meaningScores.map((score) =>
+        ({ ...score, id: score.id.replace(folder, entry.path) })) }) };
   } } };
 }
 
@@ -302,17 +314,30 @@ export function searchSource(source, searches, audit, folder, settings = {}) {
     if (task === undefined) return { status: 'read', candidates: [], complete: true,
       ...(request.meaningLane === undefined ? {} : { meaningLane: true, matched: 0 }) };
     const started = Date.now();
+    // The query list maps the way the lane's own task does, so a
+    // reader scoring every query at once sees the real lines. A search
+    // line the list lacks drops out the way the task's read returns
+    // empty, and lines that map alike embed once.
+    const meaningQueries = request.meaningQueries === undefined ? undefined
+      : [...new Set(request.meaningQueries.flatMap((query) => {
+          const at = /^curate-search:(\d+)$/.exec(query);
+          if (at === null) return [query];
+          const line = lines[Number(at[1])];
+          return line === undefined ? [] : [line];
+        }))];
     // The cut narrows each search lane inside the read, so the wrapped
     // source's result holds only the kept set; an explicit wholeLanes
     // on (a meaning full read, an opted-out caller) still wins.
-    const read = await source.read({ wholeLanes: false, ...request, task }, context);
+    const read = await source.read({ wholeLanes: false, ...request, task,
+      ...(meaningQueries === undefined ? {} : { meaningQueries }) }, context);
     const terms = new Set(words(task));
     const result = read.status !== 'read' || request.meaningLane !== undefined ? read : { ...read, candidates: rankMatches(read.candidates.filter((candidate) =>
       request.wholeLanes === true
       || ['keyword', 'bm25', 'heading-words', 'file-words'].some((key) => candidate.signals[key] > 0)
       || words(`${candidate.title} ${candidate.text}`).some((word) => terms.has(word))), settings) };
     const entry = { source: source.id, task, ...(request.meaningLane === undefined ? {} : { lane: 'meaning' }), ms: Date.now() - started, status: result.status,
-      parts: result.candidates?.length ?? 0, complete: result.complete, partial: result.partial };
+      parts: result.meaningScores?.length ?? result.candidates?.length ?? 0,
+      complete: result.complete, partial: result.partial };
     // The number comes from the entries pushed so far, before the write
     // waits, so reads running at once never take the same name.
     if (settings.readAudit === false) {
@@ -326,39 +351,17 @@ export function searchSource(source, searches, audit, folder, settings = {}) {
   } };
 }
 
-// Hold each text's vector for the rest of one call, so a later lane over
-// the same text does not look its vector up again. A failed or cancelled
-// lookup holds nothing.
-export function holdVectors(embed) {
-  const held = new Map();
-  return (texts, signal) => {
-    const missing = [...new Set(texts)].filter((text) => !held.has(text));
-    if (missing.length > 0) {
-      const batch = Promise.resolve(embed(missing, signal)).then((vectors) => {
-        if (vectors.length !== missing.length) throw new TypeError('embed must return one vector per input text.');
-        return vectors;
-      });
-      const vectors = missing.map((text, index) => {
-        const vector = batch.then((all) => all[index]);
-        held.set(text, vector);
-        return vector;
-      });
-      batch.catch(() => missing.forEach((text, index) => {
-        if (held.get(text) === vectors[index]) held.delete(text);
-      }));
-    }
-    return Promise.all(texts.map((text) => held.get(text)));
-  };
-}
-
 // Cache keyword and meaning reads separately. Leave text limits to the caller.
 // One call shares one read context across every read of every source, so
-// a reader keeps work it already did in this call. The context and the
-// held vectors last for this call only.
+// a reader keeps work it already did in this call. The context lasts for
+// this call only.
 export async function pickFullSources(sources, call, options) {
-  const context = { files: new Map() };
-  const request = call.meaning === undefined ? call
-    : { ...call, meaning: { ...call.meaning, embed: holdVectors(call.meaning.embed) } };
+  const context = { files: new Map(), shared: new Map() };
+  const request = call;
+  // The call's meaning queries, in the raw form `task` carries: each
+  // lane's wrapper maps it to the real line the way the task maps.
+  const meaningQueries = [...new Set([request.task, ...(request.searchLines ?? [])]
+    .map((line) => line.trim()).filter(Boolean))];
   const cached = await Promise.all(sources.map(async (source) => {
     const reads = new Map();
     const key = (read) => JSON.stringify([read.task, read.meaningLane !== undefined, read.wholeLanes === true]);
@@ -371,6 +374,7 @@ export async function pickFullSources(sources, call, options) {
         // every part's similarity, so the cached read must match them.
         const readRequest = { wholeLanes: false, ...request, task,
           ...(meaningLane === undefined ? {} : { meaning: undefined, searchLines: undefined, meaningLane,
+            meaningQueries,
             wholeLanes: options.everyRanked === undefined ? true
               : meaningLane.wholeLanes ?? request.wholeLanes ?? false,
             limit: options.everyRanked === undefined ? undefined : meaningLane.nearest }),
