@@ -1454,7 +1454,7 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
                 : legacy === 'rules' ? ['*.md', '*.mdc', '*.cursorrules']
                   : ['*.md', '*.mdc', '*.markdown', '*.cursorrules'];
               dirty = indexPath === undefined ? await uncommitted(repo.toplevel, repo.prefix, dirtySpecs, request.signal)
-                : await once(context, JSON.stringify(['dirty', repo.toplevel, dirtySpecs]),
+                : await once(context, JSON.stringify(['dirty', repo.toplevel, repo.prefix, dirtySpecs]),
                   () => uncommitted(repo.toplevel, repo.prefix, dirtySpecs, request.signal));
             }
           } catch (error) {
