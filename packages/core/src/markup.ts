@@ -448,7 +448,8 @@ export async function writeMarkup(input: {
     }
     probabilities = batch.questions.map((question) => {
       const answer = answers?.[question.key];
-      return answer?.status === 'answered' && Number.isFinite(answer.probability) ? answer.probability : NaN;
+      return answer?.status === 'answered' && 'probability' in answer
+        && Number.isFinite(answer.probability) ? answer.probability : NaN;
     });
     const unanswered = batch.questions.filter((_, index) => Number.isNaN(probabilities[index]));
     if (unanswered.length) {

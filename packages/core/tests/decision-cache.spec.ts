@@ -439,7 +439,8 @@ describe('pick decision cache', () => {
     counter.calls.length = 0;
     const recriteria: PickCascade = {
       ...fitted,
-      questions: fitted.questions.map((question) => ({ ...question, true: `${question.true} Still.` })),
+      questions: fitted.questions.map((question) => 'levels' in question ? question
+        : { ...question, true: `${question.true} Still.` }),
     };
     const second = await pick(threeParts(), { ...options, questionsBySource: { notes: recriteria } });
     expect(counter.calls.flatMap((batch) => batch.questions)).toHaveLength(asked);
@@ -458,7 +459,8 @@ describe('pick decision cache', () => {
     counter.calls.length = 0;
     const recriteria: PickCascade = {
       ...fitted,
-      questions: fitted.questions.map((question) => ({ ...question, false: `${question.false} Still.` })),
+      questions: fitted.questions.map((question) => 'levels' in question ? question
+        : { ...question, false: `${question.false} Still.` }),
     };
     const second = await pick(threeParts(), { ...options, questionsBySource: { notes: recriteria } });
     expect(counter.calls.flatMap((batch) => batch.questions)).toHaveLength(asked);
@@ -927,5 +929,42 @@ describe('pick decision cache', () => {
     expect(stopped.record.candidates.every((entry) =>
       entry.status === 'unassessed' && entry.reason === 'time')).toBe(true);
     expect(stopped.record.cache).toMatchObject({ asked: 0, reused: 0 });
+  });
+
+  it('round-trips a score answer through decisionFileStore', async () => {
+    const directory = storeDirectory();
+    const counter = { calls: [] as PickBatch[] };
+    const decide: PickDecide = async (batch) => {
+      counter.calls.push(batch);
+      return Object.fromEntries(batch.questions.map((question) => [question.key,
+        question.levels === undefined
+          ? { status: 'answered' as const, probability: 0.8 }
+          : { status: 'answered' as const, probabilities: [0, 0, 0, 0.4, 0.6] }]));
+    };
+    const judgments: PickCascade = {
+      anonymousItems: true,
+      model: { keys: ['topic_match', 'answerhood'], mu: [0, 2], sd: [1, 1], w: [1, 1], b: -1, bar: 0.4 },
+      questions: [
+        { key: 'topic_match', instructions: 'On subject?', true: 'same', false: 'different' },
+        { key: 'answerhood', instructions: 'The answer?', levels: ['a', 'b', 'c', 'd', 'e'] },
+      ],
+    };
+    const options = { ...uncutPick,
+      task: 'Recall the plan', decide, questionsBySource: { notes: judgments },
+      cache: { store: decisionFileStore(directory), deciderId: 'test-decider' },
+    };
+    const first = await pick(threeParts().slice(0, 1), options);
+    expect(first.record.cache).toMatchObject({ asked: 2, reused: 0 });
+    expect(readdirSync(directory)).toHaveLength(2);
+
+    counter.calls.length = 0;
+    const second = await pick(threeParts().slice(0, 1), options);
+    expect(counter.calls).toHaveLength(0);
+    expect(second.record.cache).toMatchObject({ asked: 0, reused: 2 });
+    expect(second.record.candidates[0]!.questions).toEqual([
+      { key: 'topic_match', status: 'answered', probability: 0.8, reused: true },
+      { key: 'answerhood', status: 'answered', probabilities: [0, 0, 0, 0.4, 0.6], reused: true },
+    ]);
+    expect(second.record.candidates[0]).toMatchObject({ status: 'selected', reused: true });
   });
 });

@@ -1,4 +1,5 @@
 import type { CurateWrite } from './curate.js';
+import { levelDistribution } from './decisions.js';
 import type { PickAnswer, PickBatch, PickDecide, PickQuestion } from './pick.js';
 
 function record(value: unknown): Record<string, unknown> {
@@ -150,8 +151,16 @@ function rateAllowance(tokensPerSecond: number, requestsPerSecond: number) {
   return { wait, stop };
 }
 
-/** An item as a decision model reads it: its id and date, its title, then its text. */
+/** An item as a decision model reads it: its id and date, its title,
+ *  then its text. An anonymous item keeps only its date and its text,
+ *  with the `# session` header lines bench chunks carry stripped —
+ *  its identifying fields never reach the request body. */
 function itemState(question: PickQuestion): string {
+  if (question.anonymous === true) {
+    const text = question.text.split('\n').filter((line) => !line.startsWith('# session')).join('\n');
+    return question.date === undefined ? text
+      : `(${question.date.meaning} ${question.date.value})\n\n${text}`;
+  }
   return `${question.id}${question.date === undefined ? ''
     : ` (${question.date.meaning} ${question.date.value})`}\n${question.title}\n\n${question.text}`;
 }
@@ -172,11 +181,18 @@ export function jevRequest(batch: PickBatch, model = 'jev-latest') {
   return {
     model,
     state,
-    questions: Object.fromEntries(batch.questions.map((question, index) => [`q${index}`, {
-      type: 'noul',
-      instructions: `${question.question}\n\nItem ${number(question)}`,
-      criteria: { true: question.trueCriterion, false: question.falseCriterion },
-    }])),
+    questions: Object.fromEntries(batch.questions.map((question, index) => [`q${index}`,
+      question.levels === undefined
+        ? {
+          type: 'noul',
+          instructions: `${question.question}\n\nItem ${number(question)}`,
+          criteria: { true: question.trueCriterion, false: question.falseCriterion },
+        }
+        : {
+          type: 'score',
+          instructions: `${question.question}\n\nItem ${number(question)}`,
+          criteria: [...question.levels],
+        }])),
   };
 }
 
@@ -188,7 +204,9 @@ const JEV_REQUEST_CHARS = 64_000 * 3;
 
 function fitsJev(body: ReturnType<typeof jevRequest>, maxChars = JEV_REQUEST_CHARS): boolean {
   const longest = Math.max(0, ...Object.values(body.questions).map((question) =>
-    question.instructions.length + question.criteria.true.length + question.criteria.false.length));
+    question.instructions.length + (Array.isArray(question.criteria)
+      ? question.criteria.join('').length
+      : (question.criteria.true ?? '').length + (question.criteria.false ?? '').length)));
   return body.state.length + longest <= JEV_STATE_CHARS && JSON.stringify(body).length <= maxChars;
 }
 
@@ -331,8 +349,22 @@ export function jev({ apiKey, model = 'jev-latest', url = JEV_URL, onCall }: {
         accepted = Math.max(accepted, call.size);
         await onCall?.(call);
         const answers = record(raw.answers);
-        return part.questions.map((q, index): [string, PickAnswer] =>
-          [q.key, probabilityAnswer(record(answers[`q${index}`]).noul)]);
+        return part.questions.map((q, index): [string, PickAnswer] => {
+          const answer = record(answers[`q${index}`]);
+          if (q.levels !== undefined) {
+            // A score answer's level probabilities arrive keyed "0"
+            // onward; the score field itself is never a substitute.
+            const raw = answer.probabilities;
+            const probabilities = Array.isArray(raw) ? raw
+              : typeof raw === 'object' && raw !== null
+                ? q.levels.map((_, level) => (raw as Record<string, unknown>)[String(level)])
+                : undefined;
+            return [q.key, probabilities !== undefined && levelDistribution(probabilities, q.levels.length)
+              ? { status: 'answered', probabilities: [...probabilities] }
+              : { status: 'missing' }];
+          }
+          return [q.key, probabilityAnswer(answer.noul)];
+        });
       } catch (error) {
         // A terminal failure ends the sends still waiting for allowance —
         // inside this batch's splits and inside other batches — with the
