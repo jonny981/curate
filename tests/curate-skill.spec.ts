@@ -1079,8 +1079,9 @@ describe('a run through core decision calls', () => {
       if (label === 'searches') return JSON.stringify(searches());
       if (label === 'extract') return JSON.stringify({ rows: [{ who: 'you', what: 'grew fruit trees', status: 'done', date: '',
         said: '2026-01-01', amount: '', quantity: '', source: ['E1'], quote: 'Fruit trees grow here.' }] });
-      return [...prompt.matchAll(/^### (E\d+) \(said ([^)]*)\)/gm)]
-        .map(([, e, said]) => `## ${e} (said ${said})\nuser: <event who="you" status="done">Fruit trees grow here.</event> (kept).`).join('\n\n');
+      const sentence = /^\[(\d+)\] Fruit trees grow here\.$/m.exec(prompt)![1];
+      return [...prompt.matchAll(/^### (E\d+) \(said /gm)]
+        .map(([, e]) => `${e}\nS${sentence} event(who=you,status=done)="Fruit trees grow here."`).join('\n');
     };
     const runFolder = await run(['--sources', sourcesFile, 'orchard'], call);
 
@@ -1095,7 +1096,7 @@ describe('a run through core decision calls', () => {
     expect(rowDecisions[0]).toMatchObject({ questions: 1, usage: 'unavailable' });
     const memoryText = await readFile(join(runFolder, 'log.md'), 'utf8');
     expect(memoryText).toContain('- Rows counted: 1');
-    expect(memoryText).toContain('Fruit trees grow here.</event> (kept).');
+    expect(memoryText).toContain('<event who="you" status="done">Fruit trees grow here.</event>');
   });
 
   it("records a failed compression 'low' step and writes no memory", async () => {

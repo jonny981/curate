@@ -185,7 +185,7 @@ describe('restoreQuotes', () => {
       ? JSON.stringify({ rows: [
           row({ source: ['E1'], quote: 'I netted the koi pond.' }),
           row({ source: ['E1'], quote: 'A calm hour.' })] })
-      : '## E1 (said 2024-03-02)\nuser: <event>netted koi</event>';
+      : 'E1\nS1 span="netted".."koi" event="netted the koi"';
     const decide: PickDecide = async (batch) => Object.fromEntries(batch.questions.map((question, index) =>
       [question.key, { status: 'answered' as const, probability: [0.9, 0.1][index]! }]));
     const result = await curate('What did I do in the garden?', picked([koi]), { compression: 'low', decide, write });
@@ -200,7 +200,7 @@ describe('restoreQuotes', () => {
       '',
       '',
     ].join('\n'));
-    expect(result.log).toContain('## E1 (said 2024-03-02)\nuser: <event>netted koi</event>\nuser: I netted the koi pond.\nassistant: A calm hour.');
+    expect(result.log).toContain('## E1 (said 2024-03-02)\nuser: <event>netted the koi</event>\nuser: I netted the koi pond.\nassistant: A calm hour.');
     expect(result.record.restored).toEqual([
       { row: 1, e: 'E1', speaker: 'user', span: 'I netted the koi pond.' },
       { row: 2, e: 'E1', speaker: 'assistant', span: 'A calm hour.' }]);

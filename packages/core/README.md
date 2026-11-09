@@ -1593,16 +1593,26 @@ rejects it otherwise.
    quantities, gives the days from the earliest to the latest, and lists
    them by date. With `taskDate`, each dated row also says how many days
    before the task date it falls.
-4. **Mark up:** `write` rewrites only the parts some extracted row cites,
-   in the source's own words, with tags for events, amounts, counts,
-   likes and dislikes, and tone. It never sees the task. The parts are numbered again
+4. **Mark up:** code numbers the sentences of the parts some extracted
+   row cites. `write` names the sentences to keep and adds tags for
+   events, amounts, counts, likes and dislikes, and tone. Code copies
+   each kept sentence's words from the part and inserts the tags, so
+   the curator never writes the source's words. The markup call never
+   sees the task. The parts are numbered again
    for markup, by said date and then id, so a markup `E3` is not the
    extraction's `E3`. Whole parts go in chunks of up to 40,000 characters
    of part text (`MARKUP_CHUNK_CHARS`); a longer part goes alone. Up to
    four chunks are marked up at once (`MARKUP_CALLS_AT_ONCE`), and the
    memory keeps them in chunk order. A reply that is empty, or leaves out
-   the heading of a part it was sent, is asked for again, up to three
+   the `E<n>` line of a part it was sent, is asked for again, up to three
    calls.
+
+A kept line is `speaker: words`. The speaker is the nearest `user:`,
+`assistant:` or `system:` turn prefix at or before the sentence, then
+the part's chat role when that is `user` or `assistant`. With neither,
+the line is the words alone. When a span cannot be used, the whole
+sentence is kept. A tag is left out when its words are not found exactly
+once in the kept text or when it crosses another tag.
 
 The returned `log` is the figures and counted rows, then the marked-up
 sections of the cited parts. An extracted row that scored under the
@@ -1632,7 +1642,8 @@ and in `memory` before any source read:
 `rows`, each row's decision `probabilities`, how many were `counted`,
 how many uncounted rows the head lists (`uncountedListed`), the
 `marked` parts with their markup ids, the `restored` quotes and
-`restoreSkipped` skips, the number of `chunks`, every model call in
+`restoreSkipped` skips, the unusable spans and left-out tags
+(`rejectedSpans`, `rejectedTags`), the number of `chunks`, every model call in
 `calls` (its step, chunk, attempt, milliseconds and status), and each
 step's wall-clock time and the total in `ms`.
 `write` returns text only, so the record holds no token counts.
@@ -1640,7 +1651,7 @@ step's wall-clock time and the total in `ms`.
 Failed work never comes back as an empty memory. Extraction with no JSON
 rows array of objects after three calls, a row the decision model leaves
 unanswered or refuses, a markup chunk that is still empty or still leaves
-out a cited part's heading after three calls, a failed call and a call
+out a cited part's `E<n>` line after three calls, a failed call and a call
 cancelled while it runs each throw a `CurateError`. It names the failed `step` and holds the `calls` made up
 to then. A failed markup call cancels the chunks still running.
 

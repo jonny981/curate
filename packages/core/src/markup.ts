@@ -37,30 +37,31 @@ export const EXTRACT = `You read evidence items from a person's past conversatio
 }`;
 
 /** The markup prompt. It never sees the task. */
-export const MARKUP = `You mark up a person's past conversations so that a program can read them. You get evidence items, each with an id (E1, E2, ...) and the date it was said. You do not get a question: mark up the items the same way for any later question.
+export const MARKUP = `You mark up a person's past conversations so that a program can read them. You get evidence items, each with an id (E1, E2, ...) and the date it was said; each item's sentences are numbered [1], [2], ... You do not get a question: mark up the items the same way for any later question.
 
-For each item, in the order given, write its heading line exactly as shown, then the kept words:
-## E<n> (said YYYY-MM-DD)
+For each item, in the order given, write one line that is exactly its id, then one line per kept sentence:
+E<n>
+S<k>
 
-What to keep, copied word for word from the item. You may cut a long sentence with "…", but never change, reorder or add a word inside the kept text:
-- Every sentence or clause in which the user tells something about themselves or people they know: what happened, what they did, bought, made, own, plan or wish to do, what they like or dislike, how they feel, with every name, number, amount, place and date.
+What to keep: every sentence or clause in which the user tells something about themselves or people they know: what happened, what they did, bought, made, own, plan or wish to do, what they like or dislike, how they feel, with every name, number, amount, place and date.
 - From the assistant, only the specific names, places, numbers or dates it gave as an answer or a recommendation, for example a restaurant or a book it recommended. Leave out its general advice.
 - Leave out greetings, thanks, questions that state no fact, and text repeated from an earlier item.
-- Start each kept line with "user:" or "assistant:".
-- If an item holds nothing to keep, write its heading and nothing under it.
+- If an item holds nothing to keep, write its E<n> line and nothing under it.
+- Name each kept sentence by number only. A program copies its words from the source: never write the sentence's text yourself.
+- To keep only part of a sentence, add exact-word anchors: S<k> span="first words".."last words" — the kept text runs from the start of the first words to the end of the last words, and each must appear exactly once in that sentence.
 
-Tags. Wrap the source's own words in these tags. A tag never holds words that are not in the source; put the meaning in the attributes.
-- <event who="..." status="..." date="YYYY-MM-DD">...</event> around the words that tell one thing that happened or will happen.
-  - who: "you" when it is the user; otherwise the person's name or role as the item gives it, for example "brother", "Odalys", "assistant".
-  - status: "done" (it happened), "planned" (intended or scheduled), "wished" (wanted, considered or hoped for), or "other".
-  - date: the day the event happened, worked out from the said date: "last Friday" said on 2024-02-16 is 2024-02-09. Leave the attribute out when the item gives no time for the event.
-- <amount>...</amount> around money or a measured quantity with its unit, for example "$38", "35 minutes", "7 km", "140 slides".
-- <count>...</count> around a number of things, for example "three", "14", "a dozen".
-- <pref feeling="..." strength="...">...</pref> around words that state a liking or a dislike. feeling: one word such as loves, likes, dislikes, hates, prefers, avoids, wants. strength: "strong" or "mild".
-- <said tone="...">...</said> around words whose tone changes their meaning, for example joking, wishful, unsure.
-- Put <amount>, <count> and <pref> inside the <event> they belong to when there is one. Tags may nest. Close every tag you open.
+Tags. A tag wraps the source's own words; put the meaning in the attributes. Tag kinds:
+- event(who,status,date): one thing that happened or will happen. who: "you" when it is the user; otherwise the person's name or role as the item gives it. status: "done" (it happened), "planned" (intended or scheduled), "wished" (wanted, considered or hoped for), or "other". date: YYYY-MM-DD, the day the event happened, worked out from the said date ("last Friday" said on 2024-02-16 is 2024-02-09); leave it out when the item gives no time.
+- amount: money or a measured quantity with its unit. count: a number of things.
+- pref(feeling,strength): a liking or a dislike. feeling: one word such as loves, likes, dislikes, hates, prefers, avoids, wants. strength: "strong" or "mild".
+- said(tone): words whose tone changes their meaning, for example joking, wishful, unsure.
+- Put amount, count and pref inside the event they belong to when there is one. Tags may nest.
+- Attach each tag to its sentence line as the tag name, optional attributes in parentheses, then the exact source words it wraps in double quotes. Examples:
+  S4 amount="$500"
+  S7 event(who=you,status=done,date=2024-02-09)="painted the fence" pref(feeling=loves,strength=strong)="loves it"
+- The quoted words must appear exactly once in that sentence. A tag never holds words that are not in the source; put the meaning in the attributes.
 
-Write only the marked-up log: no notes, no summary and no answer.`;
+Write only the ids, sentence numbers, spans and tag words: no sentence text, no headings, no speaker names, no notes, no summary.`;
 
 /** The yes or no question the decision model answers for each row. */
 export const ROW_QUESTION = 'Does this row count toward the answer to the task?';
@@ -178,6 +179,12 @@ export interface CurateMarkupRecord {
   readonly restored: readonly RestoredQuote[];
   /** The quotes code did not restore, in the order the rows cite them. */
   readonly restoreSkipped: readonly RestoreSkip[];
+  /** How many kept lines named a span code could not use, so the whole
+   *  sentence was kept. */
+  readonly rejectedSpans: number;
+  /** How many tags code left out, because the tag's words were not found
+   *  exactly once in the kept text or the tag crossed another. */
+  readonly rejectedTags: number;
   readonly chunks: number;
   /** Every model call, in the order each finished. */
   readonly calls: readonly CurateCall[];
@@ -526,6 +533,139 @@ export function restoreQuotes(input: {
   return { sections, restored, restoreSkipped };
 }
 
+// ---- sentences
+
+/** A part's text as sentences: each line broken after `.`, `!` or `?`
+ *  followed by white space. Throws when the sentences lose a non-space
+ *  character. */
+function splitSentences(text: string): string[] {
+  const sentences = text.split('\n')
+    .flatMap((line) => line.trim().split(/(?<=[.!?])\s+/))
+    .map((sentence) => sentence.trim()).filter(Boolean);
+  const bare = (value: string) => value.replace(/\s+/g, '');
+  if (bare(sentences.join('')) !== bare(text)) throw new Error('splitting a part into sentences lost text');
+  return sentences;
+}
+
+/** One numbered sentence of a part. */
+interface Sentence {
+  /** The sentence as the part writes it, any turn prefix included. */
+  readonly source: string;
+  /** The sentence's words without the turn prefix it opens with. */
+  readonly words: string;
+  readonly speaker?: RestoreSpeaker;
+}
+
+/** A part's sentences. Each speaker is the nearest turn prefix at or
+ *  before the sentence; with none, the part's chat role; with neither,
+ *  no speaker. */
+function partSentences(candidate: MemoryCandidate): Sentence[] {
+  const turns = [...candidate.text.matchAll(TURN)];
+  const role = candidate.chat?.role === 'user' || candidate.chat?.role === 'assistant' ? candidate.chat.role : undefined;
+  let cursor = 0;
+  return splitSentences(candidate.text).map((source) => {
+    const at = candidate.text.indexOf(source, cursor);
+    cursor = at + source.length;
+    const turn = turns.findLast((found) => found.index <= at);
+    const speaker = turn ? turn[1] as RestoreSpeaker : role;
+    return { source, words: turn?.index === at ? source.slice(turn[0].length) : source,
+      ...(speaker === undefined ? {} : { speaker }) };
+  });
+}
+
+/** An item's block with each sentence of its text numbered from 1. */
+function numberedBlock(item: MarkupItem, sentences: readonly Sentence[]): string {
+  return item.block.slice(0, item.block.length - item.candidate.text.length)
+    + sentences.map((sentence, index) => `[${index + 1}] ${sentence.source}`).join('\n');
+}
+
+/** The keep lines of a markup reply under each `E<n>` line that opens
+ *  an item, which may be none. */
+function keepLines(reply: string): Map<string, string[]> {
+  const items = new Map<string, string[]>();
+  let current: string[] | undefined;
+  for (const line of reply.split('\n').map((text) => text.trim())) {
+    if (/^E\d+$/.test(line)) {
+      current = items.get(line) ?? [];
+      items.set(line, current);
+    } else if (/^S\d+(?:\s|$)/.test(line)) {
+      current?.push(line);
+    }
+  }
+  return items;
+}
+
+const SPAN = /\s*span="([^"]*)"\.\."([^"]*)"/g;
+const TAG_WORDS = /(?:^|\s)(event|amount|count|pref|said)(?:\(([^)]*)\))?="([^"]*)"/g;
+
+/** Where `words` starts in `text` when it is there exactly once, else -1. */
+function onlyAt(text: string, words: string): number {
+  if (!words) return -1;
+  const at = text.indexOf(words);
+  return at >= 0 && text.indexOf(words, at + 1) < 0 ? at : -1;
+}
+
+interface PlacedTag { readonly start: number; readonly end: number; readonly name: string; readonly open: string }
+
+/** `text` with every tag inserted at once. The tags must nest or stay
+ *  apart; a tag starting where another ends comes after it, and of two
+ *  on the same words the first named is the outer. */
+function withTags(text: string, tags: readonly PlacedTag[]): string {
+  let out = '';
+  let at = 0;
+  const open: PlacedTag[] = [];
+  const closeThrough = (limit: number) => {
+    while (open.length && open.at(-1)!.end <= limit) {
+      const tag = open.pop()!;
+      out += `${text.slice(at, tag.end)}</${tag.name}>`;
+      at = tag.end;
+    }
+  };
+  for (const tag of [...tags].sort((a, b) => a.start - b.start || b.end - a.end)) {
+    closeThrough(tag.start);
+    out += text.slice(at, tag.start) + tag.open;
+    at = tag.start;
+    open.push(tag);
+  }
+  closeThrough(text.length);
+  return out + text.slice(at);
+}
+
+/** One keep line as the memory shows it: `speaker: words` with its tags,
+ *  or the words alone when the sentence has no speaker. null when the
+ *  line names a sentence the part does not have. */
+function renderLine(line: string, sentences: readonly Sentence[], rejected: { spans: number; tags: number }): string | null {
+  const [, number, rest] = /^S(\d+)\s*(.*)$/.exec(line)!;
+  const sentence = sentences[Number(number) - 1];
+  if (!sentence?.words) return null;
+  let kept = sentence.words;
+  const spans = [...rest!.matchAll(SPAN)];
+  if (spans.length) {
+    const [, first, last] = spans[0]!;
+    const from = onlyAt(kept, first!);
+    const to = onlyAt(kept, last!);
+    if (spans.length === 1 && from >= 0 && to >= from) kept = kept.slice(from, to + last!.length);
+    else rejected.spans++;
+  }
+  const tags: PlacedTag[] = [];
+  for (const [, name, attributes, quoted] of rest!.replace(SPAN, '').matchAll(TAG_WORDS)) {
+    const start = onlyAt(kept, quoted!);
+    const end = start + quoted!.length;
+    if (start < 0 || tags.some((tag) => (tag.start < start && start < tag.end && tag.end < end)
+      || (start < tag.start && tag.start < end && end < tag.end))) {
+      rejected.tags++;
+      continue;
+    }
+    const written = (attributes ?? '').split(',').flatMap((pair) => {
+      const [key, value] = pair.split('=').map((part) => part.trim());
+      return key && value ? [` ${key}="${value}"`] : [];
+    }).join('');
+    tags.push({ start, end, name: name!, open: `<${name}${written}>` });
+  }
+  const body = withTags(kept, tags);
+  return sentence.speaker === undefined ? body : `${sentence.speaker}: ${body}`;
+}
+
 // ---- the pipeline
 
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
@@ -650,34 +790,39 @@ export async function writeMarkup(input: {
   const items = markupItems(references).filter((item) => cited.has(item.candidate));
   const groups = markupChunks(items);
   // A failed chunk cancels the others.
-  const markupChunk = async (index: number, own: AbortSignal): Promise<string> => {
+  const markupChunk = async (index: number, own: AbortSignal) => {
+    const sentences = groups[index]!.map((item) => partSentences(item.candidate));
     const prompt: CuratePrompt = { instructions: MARKUP,
-      body: `EVIDENCE:\n\n${groups[index]!.map((item) => item.block).join('\n\n')}`, step: 'markup' };
+      body: `EVIDENCE:\n\n${groups[index]!.map((item, at) => numberedBlock(item, sentences[at]!)).join('\n\n')}`, step: 'markup' };
     let text = '';
-    // A reply counts only when it holds the heading of every part it
+    let kept = new Map<string, string[]>();
+    // A reply counts only when it holds the id line of every part it
     // was sent; a part left out would drop its evidence silently.
     let lost = groups[index]!;
     for (let attempt = 1; attempt <= TRIES && lost.length; attempt++) {
       const reply = await timed({ step: 'markup', chunk: index + 1, attempt }, () => write(prompt, own), own);
       if (typeof reply !== 'string') throw new TypeError('write must return text');
       text = reply.trim();
-      lost = groups[index]!.filter((item) => !markupSection(text, item.e));
+      kept = keepLines(text);
+      lost = groups[index]!.filter((item) => !kept.has(item.e));
     }
     if (lost.length) {
       throw new Error(`chunk ${index + 1} of ${groups.length} ${text
         ? `left out ${lost.map((item) => `${item.e} (${fullId.get(item.candidate)})`).join(', ')}`
         : 'came back empty'} after ${TRIES} calls`);
     }
-    return text;
+    const rejected = { spans: 0, tags: 0 };
+    const rendered = groups[index]!.map((item, at) => [`## ${item.e} (said ${item.said || 'unknown'})`,
+      ...kept.get(item.e)!.map((line) => renderLine(line, sentences[at]!, rejected)).filter((line) => line !== null)].join('\n'));
+    return { rendered, rejected };
   };
-  let pieces: string[] = [];
+  let pieces: Awaited<ReturnType<typeof markupChunk>>[] = [];
   try {
     pieces = await inOrder(groups.length, MARKUP_CALLS_AT_ONCE, signal, markupChunk);
   } catch (error) {
     fail('markup', message(error), error);
   }
-  const markup = pieces.join('\n\n');
-  const sections = items.map((item) => markupSection(markup, item.e));
+  const sections = pieces.flatMap((piece) => piece.rendered);
   const markupMs = Date.now() - markupStarted;
 
   // Put each row's exact quote back under every part it cites when the
@@ -696,6 +841,8 @@ export async function writeMarkup(input: {
     rows: extracted, probabilities, counted: counted.length, uncountedListed: uncounted.length,
     marked,
     restored, restoreSkipped,
+    rejectedSpans: pieces.reduce((sum, piece) => sum + piece.rejected.spans, 0),
+    rejectedTags: pieces.reduce((sum, piece) => sum + piece.rejected.tags, 0),
     chunks: groups.length, calls,
     ms: { extract: extractMs, decide: decideMs, markup: markupMs, total: Date.now() - started },
   } };

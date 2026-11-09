@@ -33,10 +33,11 @@ interface Row { who?: string; what?: string; status?: string; date?: string; sai
 const row = (fields: Row) => ({ who: 'you', what: 'an event', status: 'done', date: '', said: '', amount: '', quantity: '', source: [], quote: 'words', ...fields });
 const rowsReply = (rows: readonly Row[]) => JSON.stringify({ rows: rows.map(row) });
 
-/** A stand-in markup model: one section per heading it was sent, in order. */
+/** A stand-in markup model: one entry per item it was sent, in order,
+ *  keeping and tagging each item's first sentence. */
 function markupReply(body: string): string {
-  return [...body.matchAll(/^### (E\d+) \(said ([^)]*)\): [^\n]*\n\n([^\n]*)/gm)]
-    .map(([, e, said, text]) => `## ${e} (said ${said})\nuser: <event who="you" status="done">${text}</event>`).join('\n\n');
+  return [...body.matchAll(/^### (E\d+) \(said [^)]*\): [^\n]*\n\n\[1\] ([^\n]*)/gm)]
+    .map(([, e, text]) => `${e}\nS1 event(who=you,status=done)="${text}"`).join('\n\n');
 }
 
 function model(rows: readonly Row[] | string, markup: (prompt: CuratePrompt) => Promise<string> | string = (prompt) => markupReply(prompt.body)) {
@@ -89,8 +90,8 @@ describe("compression: 'low'", () => {
     const result = await curate(TASK, GARDEN, { compression: 'low', decide: decider().decide, write });
     expect(markups()).toHaveLength(1);
     expect(markups()[0]).toEqual({ instructions: MARKUP, step: 'markup', body: 'EVIDENCE:\n\n'
-      + '### E1 (said 2024-03-02): Title note#1\n\nNetted the koi pond.\n\n'
-      + '### E3 (said 2024-03-09): Title note#1\n\nPlanted the quince row.' });
+      + '### E1 (said 2024-03-02): Title note#1\n\n[1] Netted the koi pond.\n\n'
+      + '### E3 (said 2024-03-09): Title note#1\n\n[1] Planted the quince row.' });
     expect(result.record.marked).toEqual([
       { e: 'E1', id: '["pond","note#1"]', said: '2024-03-02' },
       { e: 'E3', id: '["orchard","note#1"]', said: '2024-03-09' },
@@ -166,13 +167,13 @@ describe("compression: 'low'", () => {
       '### marked-up log, the parts the rows cite',
       '',
       '## E1 (said 2024-03-02)',
-      'user: <event who="you" status="done">Netted the koi pond.</event>',
+      '<event who="you" status="done">Netted the koi pond.</event>',
       '',
       '## E2 (said 2024-03-05)',
-      'user: <event who="you" status="done">Pruned the medlar.</event>',
+      '<event who="you" status="done">Pruned the medlar.</event>',
       '',
       '## E3 (said 2024-03-09)',
-      'user: <event who="you" status="done">Planted the quince row.</event>',
+      '<event who="you" status="done">Planted the quince row.</event>',
       '',
       '',
       '',
@@ -238,8 +239,8 @@ describe("compression: 'low'", () => {
     const result = await curate(TASK, GARDEN, { compression: 'low', decide: decider().decide, write });
     const below = result.log.slice(result.log.indexOf('### marked-up log'));
     expect(below).toBe('### marked-up log, the parts the rows cite\n\n'
-      + '## E1 (said 2024-03-02)\nuser: <event who="you" status="done">Netted the koi pond.</event>\n\n'
-      + '## E3 (said 2024-03-09)\nuser: <event who="you" status="done">Planted the quince row.</event>\n\n\n');
+      + '## E1 (said 2024-03-02)\n<event who="you" status="done">Netted the koi pond.</event>\n\n'
+      + '## E3 (said 2024-03-09)\n<event who="you" status="done">Planted the quince row.</event>\n\n\n');
     expect(result.log.indexOf('Counted rows, by date:')).toBeLessThan(result.log.indexOf('### marked-up log'));
   });
 
@@ -297,14 +298,13 @@ describe("compression: 'low'", () => {
       await new Promise((done) => setTimeout(done, 5 * (6 - n)));
       open -= 1;
       // The last chunk, which finishes first, also repeats the first part's
-      // heading: in chunk order the first part's own section comes first.
-      return markupReply(prompt.body) + (n === 5 ? '\n\n## E1 (said 2024-03-10)\nuser: a stray copy' : '');
+      // id: only the chunk that was sent a part renders it.
+      return markupReply(prompt.body) + (n === 5 ? '\n\nE1\nS1' : '');
     });
     const result = await curate(TASK, picked(items), { compression: 'low', decide: decider().decide, write });
     expect(result.record.chunks).toBe(6);
     expect(most).toBe(MARKUP_CALLS_AT_ONCE);
     expect([...result.log.matchAll(/Chunk (\d)/g)].map((match) => match[1])).toEqual(['0', '1', '2', '3', '4', '5']);
-    expect(result.log).not.toContain('a stray copy');
     const markupCalls = result.record.calls.filter((call) => call.step === 'markup');
     expect(markupCalls.map((call) => call.chunk).sort()).toEqual([1, 2, 3, 4, 5, 6]);
     expect(markupCalls.map((call) => call.chunk)).not.toEqual([1, 2, 3, 4, 5, 6]);
@@ -419,7 +419,7 @@ describe("compression: 'low' never returns failed work as an empty memory", () =
     expect(markups()).toHaveLength(3);
   });
 
-  it('fails when the markup holds no heading of any cited part', async () => {
+  it('fails when the markup holds no id line of any cited part', async () => {
     const { write } = model([row({ source: ['E1'] })], () => 'user: planted the quince row');
     await fails(curate(TASK, GARDEN, { compression: 'low', decide: decider().decide, write }), 'markup', /left out E3 \(\["orchard","note#1"\]\)/);
   });
@@ -517,5 +517,138 @@ describe('the compression option', () => {
     expect(asked).toContain(ROW_QUESTION);
     expect(recalled.result.record.compression).toBe('low');
     expect(recalled.log).toContain('koi');
+  });
+});
+
+describe('markup by sentence number', () => {
+  const said = '2024-03-02';
+  const HEADING = `## E1 (said ${said})`;
+  async function marked(text: string, reply: string, chat?: 'user' | 'assistant' | 'tool-result') {
+    const item: MemoryCandidate = { ...part('notes', 'n1', said, text),
+      ...(chat === undefined ? {} : { chat: { provider: 'codex' as const, sessionId: 's1', role: chat } }) };
+    const { write, markups } = model([row({ source: ['E1'], quote: '' })], () => reply);
+    const result = await curate(TASK, picked([item]), { compression: 'low', decide: decider().decide, write });
+    if (result.record.compression !== 'low') throw new Error('expected a low compression record');
+    return { section: result.log.split('### marked-up log, the parts the rows cite\n\n')[1]!.trim(),
+      record: result.record, prompt: markups()[0]! };
+  }
+  const CHAT = 'user: I fell. Then I rose!\nassistant: Good? Yes.';
+
+  it('numbers each sentence of an item, line by line, and keeps its heading', async () => {
+    const { prompt } = await marked(CHAT, 'E1');
+    expect(prompt.body).toBe('EVIDENCE:\n\n### E1 (said 2024-03-02): Title n1\n\n'
+      + '[1] user: I fell.\n[2] Then I rose!\n[3] assistant: Good?\n[4] Yes.');
+  });
+
+  it('breaks a sentence only where white space follows the stop', async () => {
+    const { prompt } = await marked('It cost 3.50 at v1.2 today. Fine', 'E1');
+    expect(prompt.body.endsWith('[1] It cost 3.50 at v1.2 today.\n[2] Fine')).toBe(true);
+  });
+
+  it('renders exactly the named sentence, with its source words and source speaker', async () => {
+    expect((await marked(CHAT, 'E1\nS2')).section).toBe(`${HEADING}\nuser: Then I rose!`);
+    expect((await marked(CHAT, 'E1\nS1\nS4')).section).toBe(`${HEADING}\nuser: I fell.\nassistant: Yes.`);
+  });
+
+  it('writes the heading alone for an item with no kept sentence', async () => {
+    expect((await marked(CHAT, 'E1')).section).toBe(HEADING);
+  });
+
+  it('labels the first sentences of a part that starts partway through a message with the part role', async () => {
+    const text = 'The cafe is Lumen. It opens at nine.\nuser: Thanks.\nassistant: Also Orbit.';
+    expect((await marked(text, 'E1\nS1\nS2\nS3\nS4', 'assistant')).section)
+      .toBe(`${HEADING}\nassistant: The cafe is Lumen.\nassistant: It opens at nine.\nuser: Thanks.\nassistant: Also Orbit.`);
+  });
+
+  it('prefers the nearest prefix to the part role', async () => {
+    expect((await marked('assistant: Lumen is good.\nIt opens at nine.', 'E1\nS2', 'user')).section)
+      .toBe(`${HEADING}\nassistant: It opens at nine.`);
+  });
+
+  it('writes the words with no label when the part shows no speaker', async () => {
+    expect((await marked('The cafe is Lumen.', 'E1\nS1')).section).toBe(`${HEADING}\nThe cafe is Lumen.`);
+    expect((await marked('The cafe is Lumen.', 'E1\nS1', 'tool-result')).section).toBe(`${HEADING}\nThe cafe is Lumen.`);
+  });
+
+  it('keeps a speaker word inside a line as source words', async () => {
+    expect((await marked('user: He said. user: was his name.', 'E1\nS2')).section).toBe(`${HEADING}\nuser: user: was his name.`);
+  });
+
+  const BOUGHT = 'user: I bought three red chairs for $40 yesterday.';
+
+  it('renders a tag that is the first thing after the sentence number', async () => {
+    const { section, record } = await marked(BOUGHT, 'E1\nS1 amount="$40"');
+    expect(section).toBe(`${HEADING}\nuser: I bought three red chairs for <amount>$40</amount> yesterday.`);
+    expect(record.rejectedTags).toBe(0);
+  });
+
+  it('renders nested tags well-formed with their attributes, whatever order the reply names them', async () => {
+    const want = `${HEADING}\nuser: I <event who="you" status="done" date="2024-03-01">bought <count>three</count> red chairs for <amount>$40</amount></event> yesterday.`;
+    const event = 'event(who=you,status=done,date=2024-03-01)="bought three red chairs for $40"';
+    expect((await marked(BOUGHT, `E1\nS1 ${event} count="three" amount="$40"`)).section).toBe(want);
+    expect((await marked(BOUGHT, `E1\nS1 amount="$40" count="three" ${event}`)).section).toBe(want);
+  });
+
+  it('nests two tags on the same words and keeps tags that touch apart', async () => {
+    expect((await marked(BOUGHT, 'E1\nS1 event(who=you)="three red" pref(feeling=likes)="three red"')).section)
+      .toBe(`${HEADING}\nuser: I bought <event who="you"><pref feeling="likes">three red</pref></event> chairs for $40 yesterday.`);
+    expect((await marked(BOUGHT, 'E1\nS1 count="three" said(tone=unsure)=" red"')).section)
+      .toBe(`${HEADING}\nuser: I bought <count>three</count><said tone="unsure"> red</said> chairs for $40 yesterday.`);
+  });
+
+  it('drops and counts a tag that crosses another, and loses or repeats no word', async () => {
+    const { section, record } = await marked(BOUGHT, 'E1\nS1 event(who=you)="bought three red" amount="red chairs"');
+    expect(section).toBe(`${HEADING}\nuser: I <event who="you">bought three red</event> chairs for $40 yesterday.`);
+    expect(section.replace(/<[^>]*>/g, '')).toBe(`${HEADING}\n${BOUGHT}`);
+    expect(record.rejectedTags).toBe(1);
+  });
+
+  it('cuts the sentence to a span whose anchors are each found once, with tags inside it', async () => {
+    const { section, record } = await marked(BOUGHT, 'E1\nS1 span="bought".."chairs" count="three"');
+    expect(section).toBe(`${HEADING}\nuser: bought <count>three</count> red chairs`);
+    expect([record.rejectedSpans, record.rejectedTags]).toEqual([0, 0]);
+  });
+
+  it.each([
+    ['a missing anchor', 'span="sold".."chairs"'],
+    ['an anchor found twice', 'span="e".."chairs"'],
+    ['anchors out of order', 'span="chairs".."bought"'],
+    ['an empty anchor', 'span="".."chairs"'],
+    ['two spans on one line', 'span="I".."three" span="red".."chairs"'],
+  ])('keeps the whole sentence and counts a bad span: %s', async (_name, span) => {
+    const { section, record } = await marked(BOUGHT, `E1\nS1 ${span}`);
+    expect(section).toBe(`${HEADING}\n${BOUGHT}`);
+    expect([record.rejectedSpans, record.rejectedTags]).toEqual([1, 0]);
+  });
+
+  it.each([
+    ['words not in the sentence', 'amount="$99"'],
+    ['words found twice', 'count="e"'],
+    ['empty words', 'amount=""'],
+    ['words outside the span', 'span="bought".."chairs" amount="$40"'],
+  ])('leaves out and counts a bad tag: %s', async (_name, tag) => {
+    const { section, record } = await marked(BOUGHT, `E1\nS1 ${tag}`);
+    expect(section.replace(/<[^>]*>/g, '')).toBe(tag.startsWith('span') ? `${HEADING}\nuser: bought three red chairs` : `${HEADING}\n${BOUGHT}`);
+    expect(section).not.toContain('<');
+    expect([record.rejectedSpans, record.rejectedTags]).toEqual([0, 1]);
+  });
+
+  it('reports no rejection on a clean reply, and adds up across chunks', async () => {
+    const big = (n: number) => part('notes', `p${n}`, `2024-03-1${n}`, `Chunk ${n} here. ${'x'.repeat(25_000)}`);
+    const items = [0, 1].map(big);
+    const { write } = model(items.map((_, n) => row({ source: [`E${n + 1}`], quote: '' })),
+      (prompt) => `${/^### (E\d+)/m.exec(prompt.body)![1]}\nS1 span="no".."where" amount="nothing"`);
+    const result = await curate(TASK, picked(items), { compression: 'low', decide: decider().decide, write });
+    if (result.record.compression !== 'low') throw new Error('expected a low compression record');
+    expect([result.record.rejectedSpans, result.record.rejectedTags]).toEqual([2, 2]);
+    expect((await marked(BOUGHT, 'E1\nS1')).record).toMatchObject({ rejectedSpans: 0, rejectedTags: 0 });
+  });
+
+  it('asks again when a reply leaves out an item, and an item with no kept sentence is not left out', async () => {
+    const replies = ['E1\nS1', 'E1\nE3\nS1'];
+    const { write, markups } = model([row({ source: ['E1'], quote: '' }), row({ source: ['E2'], quote: '' })], () => replies.shift()!);
+    const result = await curate(TASK, GARDEN, { compression: 'low', decide: decider().decide, write });
+    expect(markups()).toHaveLength(2);
+    expect(result.log).toContain('## E1 (said 2024-03-02)\n\n## E3 (said 2024-03-09)\nPlanted the quince row.');
   });
 });
