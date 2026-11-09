@@ -9,10 +9,11 @@ It chooses evidence and turns it into a dated, cited log that the agent reads be
 
 ## Results at a glance
 
-Curate's packages score close to other memory systems' published LongMemEval results, with far less context. The answering models and the markers differ:
+Curate scores close to or above other memory systems' published LongMemEval results, with far less context. The answering models and the markers differ:
 
 | Benchmark | System | Task model | Score | Task model tokens |
 | --- | --- | --- | --- | --- |
+| **LongMemEval S** | **[Curate, markup setting](benchmarks/longmemeval/2026-11-04/README.md)** | **gpt-6.1-sol** | **93.8** | **844** |
 | **LongMemEval S** | **Curate** | **GPT-5** | **93.4** | **449** |
 | LongMemEval S | [Mem0 platform](https://github.com/mem0ai/memory-benchmarks/blob/4b61c5d31b9c668a12b4f5e78064248a02c82d2b/results/platform/longmemeval_results.json) | GPT-5 | 93.4 | 6,787 mean (15x more) |
 | **LongMemEval S** | **Curate** | **GPT-5-mini** | **91.6** | **485** |
@@ -22,6 +23,8 @@ Curate's packages score close to other memory systems' published LongMemEval res
 The task model does the work (here, answering the question), so it should read only what the task needs.
 
 *Each multiplier compares with Curate on the same task model. The GPT-5.4 row compares with Curate on GPT-5.*
+
+*The gpt-6.1-sol row ran the markup setting outside the published packages, marked by LongMemEval's own grader. Mem0's published answers scored 91.0 under that grader in the same session.*
 
 DolphinBench: **22 of 30 tests passed**, at $0.24 a test at list prices. [See the results](benchmarks/README.md#dolphinbench-a-30-test-slice).
 
@@ -33,7 +36,7 @@ Every result, how each run was set up and its proof files are in [benchmarks](be
 - **Go straight to the source.** [Mem0](https://docs.mem0.ai/core-concepts/memory-operations/add) extracts facts with a model, [Mastra](https://mastra.ai/docs/memory/observational-memory) keeps observations written by a model, and [Zep](https://help.getzep.com/v4/how-graph-creation-works) builds a knowledge graph. Curate selects from the original history for each task.
 - **Keep the task model focused.** It gets a dated, cited log chosen for its task, even when the history spans thousands of parts.
 
-[LongMemEval](benchmarks/longmemeval/2026-10-22/README.md): **449 to 485 task-model tokens** from histories of about **50 sessions** and **102,580 tokens** on average (o200k, every turn's role and text): about 230 times less with GPT-5. [DolphinBench slice](benchmarks/dolphinbench/2026-10-22/results.md): Curate turns **5,400–5,900 history parts** into a log the agent reads, with a median of **about 4,500 tokens** (o200k). The published copies of those logs use shorter part IDs, so they count about 3,200.
+[LongMemEval](benchmarks/longmemeval/2026-10-22/README.md): **449 to 485 task-model tokens** from histories of about **50 sessions** and **102,580 tokens** on average (o200k, every turn's role and text): about 230 times less with GPT-5. The markup setting gives gpt-6.1-sol **844** tokens, [about 121 times less](benchmarks/longmemeval/2026-11-04/README.md#context-sizes). [DolphinBench slice](benchmarks/dolphinbench/2026-10-22/results.md): Curate turns **5,400–5,900 history parts** into a log the agent reads, with a median of **about 4,500 tokens** (o200k). The published copies of those logs use shorter part IDs, so they count about 3,200.
 
 ## Install only what you need
 
