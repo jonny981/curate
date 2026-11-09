@@ -125,6 +125,18 @@ describe("compression: 'none'", () => {
     expect(log).toContain('#### repo (said 2024-03-05)\n\nTitle c1');
   });
 
+  it('names the file inside the source, and keeps two files of one day apart', async () => {
+    const first = { ...part('notes', 'p1', '2024-03-05', 'Mulched the pears.'), path: 'garden/pears.md' };
+    const second = { ...part('notes', 'p2', '2024-03-05', 'Fed the hens.'), path: 'garden/hens.md' };
+    const third = { ...part('notes', 'p3', '2024-03-05', 'Cleaned the coop.'), path: 'garden/hens.md' };
+    const fourth = { ...part('notes', 'p4', '2024-03-05', 'Thinned the pears.'), path: 'garden/pears.md' };
+    const { log } = await curate(TASK, picked([[first, 0.9, 0], [second, 0.8, 0], [third, 0.7, 0], [fourth, 0.6, 0]]), { compression: 'none' });
+    expect(log).toContain('#### garden/pears.md (said 2024-03-05)\n\nMulched the pears.');
+    expect(log).toContain('### garden/hens.md (said 2024-03-05)\n\nCleaned the coop.');
+    expect(log).toContain('### garden/pears.md (said 2024-03-05)\n\nThinned the pears.');
+    expect(log).not.toContain('notes (said');
+  });
+
   it('holds one item under the answer heading alone', async () => {
     const { log } = await curate(TASK, picked([[MEDLAR, 0.4, 0]]), { compression: 'none' });
     expect(log).toBe('### Most likely answer\n\n#### orchard (said 2024-03-05)\n\nPruned the medlar.\n');

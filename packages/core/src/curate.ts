@@ -129,7 +129,9 @@ export interface CurateLowOptions extends Pick<CurateOptions, 'write' | 'taskDat
  *  said date and source, under `### <source> (said <date>)`, groups
  *  oldest first and items in weight order inside a group. An item with
  *  no date shows `(said unknown)` and its group comes last. A date that
- *  is only the file's last change shows `(file changed <date>)`. The curator's other options, `write`
+ *  is only the file's last change shows `(file changed <date>)`. A
+ *  heading names the item's file or session when it has one, so two
+ *  files of one source stay apart. The curator's other options, `write`
  *  and `decide` are rejected before any work. */
 export interface CurateNoneOptions extends Pick<CurateOptions, 'signal'> {
   readonly compression: 'none';
@@ -249,14 +251,16 @@ function layOutItems(taken: CurateNoneRecord['items']): string {
     const said = dayOf(item.candidate.date?.value);
     // A file's last-changed date is not when anything in it was said.
     const label = item.candidate.date === undefined || item.candidate.date.meaning === 'recorded' ? 'said' : 'file changed';
-    return { said, label, heading: `${item.candidate.sourceId} (${label} ${said || 'unknown'})` };
+    // The file or session inside the source, when the source names one.
+    const where = item.candidate.path ?? item.candidate.sourceId;
+    return { said, label, where, heading: `${where} (${label} ${said || 'unknown'})` };
   };
   // A commit with no body carries its evidence in its title.
   const body = (item: CurateNoneRecord['items'][number]) => item.candidate.text.trim() ? item.candidate.text : item.candidate.title;
   const top = taken.slice(0, 2).map((item) => `#### ${source(item).heading}\n\n${body(item)}`);
   const groups = new Map<string, CurateNoneRecord['items'][number][]>();
   for (const item of taken.slice(2)) {
-    const key = `${source(item).said}|${item.candidate.sourceId}|${source(item).label}`;
+    const key = `${source(item).said}|${item.candidate.sourceId}|${source(item).where}|${source(item).label}`;
     groups.set(key, [...(groups.get(key) ?? []), item]);
   }
   const rest = [...groups].sort(([left], [right]) => (left < right ? -1 : 1))
