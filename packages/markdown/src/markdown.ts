@@ -577,7 +577,9 @@ async function uncommitted(
   signal: AbortSignal | undefined,
 ): Promise<ReadonlySet<string>> {
   if (specs.length === 0) return new Set();
-  const output = await runGit(toplevel, ['status', '--porcelain', '-z', '--no-renames', '--untracked-files=all',
+  // Without this flag, `git status` rewrites the repository's index when a
+  // file's times have moved, and a read must not change what it reads.
+  const output = await runGit(toplevel, ['--no-optional-locks', 'status', '--porcelain', '-z', '--no-renames', '--untracked-files=all',
     '--', ...specs.map((spec) => `:(icase)${prefix === '' ? '' : `${prefix}/`}${spec}`)], { signal });
   // Each entry is two status letters, a space and the path.
   return new Set(output.split('\0').filter((entry) => entry.length > 3).map((entry) => entry.slice(3)));

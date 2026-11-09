@@ -859,7 +859,7 @@ it('saves the pick record naming the rejected batch when the decision service fa
   await mkdir(notes);
   await writeFile(join(notes, 'orchard.md'), '# Orchard\n\nThe orchard has trees. Fruit trees grow here.\n');
   const sourcesFile = join(directory, 'sources.json');
-  await writeFile(sourcesFile, JSON.stringify({ sources: [{ type: 'markdown', path: notes }] }));
+  await writeFile(sourcesFile, JSON.stringify({ records: true, sources: [{ type: 'markdown', path: notes }] }));
   const searches = Object.fromEntries(['chat', 'git-history', 'markdown'].map((kind) => [
     kind, { keywords: ['orchard', 'orchard trees'], answers: ['The orchard has trees.', 'Fruit trees grow here.'] },
   ]));
@@ -950,7 +950,7 @@ describe('a run through core decision calls', () => {
       await writeFile(join(notes, `orchard-${index}.md`), `# Orchard ${index}\n\n${ideas}\n`);
     }
     const sourcesFile = join(directory, 'sources.json');
-    await writeFile(sourcesFile, JSON.stringify({ sources: [{ type: 'markdown', path: notes }] }));
+    await writeFile(sourcesFile, JSON.stringify({ records: true, sources: [{ type: 'markdown', path: notes }] }));
     vi.stubEnv('HOME', home);
     vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
     vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
@@ -966,7 +966,7 @@ describe('a run through core decision calls', () => {
       }));
     }));
     const { call, folders } = subscriptionReply(searches());
-    const runFolder = await run(['--sources', sourcesFile, 'orchard'], call);
+    const { folder: runFolder } = await run(['--sources', sourcesFile, 'orchard'], call);
     expect(runFolder).toBe(folders[0]);
 
     const record = JSON.parse(await readFile(join(runFolder, 'record.json'), 'utf8'));
@@ -1004,7 +1004,7 @@ describe('a run through core decision calls', () => {
       }),
     ].join('\n'));
     const sourcesFile = join(directory, 'sources.json');
-    await writeFile(sourcesFile, JSON.stringify({ sources: [{ type: 'claude-code', path: transcripts }] }));
+    await writeFile(sourcesFile, JSON.stringify({ records: true, sources: [{ type: 'claude-code', path: transcripts }] }));
     vi.stubEnv('HOME', home);
     vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
     vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
@@ -1013,7 +1013,7 @@ describe('a run through core decision calls', () => {
       answers: Object.fromEntries(Object.keys(JSON.parse(String(init.body)).questions).map((key) => [key, { noul: 0.8 }])),
     }))));
     const { call, folders } = subscriptionReply(searches());
-    const runFolder = await run(['--sources', sourcesFile, 'What did Ada decide about the cache?'], call);
+    const { folder: runFolder } = await run(['--sources', sourcesFile, 'What did Ada decide about the cache?'], call);
     expect(runFolder).toBe(folders[0]);
 
     const record = JSON.parse(await readFile(join(runFolder, 'record.json'), 'utf8'));
@@ -1033,6 +1033,7 @@ describe('a run through core decision calls', () => {
     await writeFile(join(notes, 'orchard.md'), '# Orchard\n\nThe orchard has trees. Fruit trees grow here.\n');
     const sourcesFile = join(directory, 'sources.json');
     await writeFile(sourcesFile, JSON.stringify({
+      records: true,
       sources: [{ type: 'markdown', path: notes }], thoroughness: 'quick',
     }));
     vi.stubEnv('HOME', home);
@@ -1043,7 +1044,7 @@ describe('a run through core decision calls', () => {
       answers: Object.fromEntries(Object.keys(JSON.parse(String(init.body)).questions).map((key) => [key, { noul: 0.8 }])),
     }))));
     const { call, folders } = subscriptionReply(searches());
-    const runFolder = await run(['--sources', sourcesFile, 'orchard'], call);
+    const { folder: runFolder } = await run(['--sources', sourcesFile, 'orchard'], call);
     expect(runFolder).toBe(folders[0]);
 
     const record = JSON.parse(await readFile(join(runFolder, 'record.json'), 'utf8'));
@@ -1062,7 +1063,7 @@ describe('a run through core decision calls', () => {
     await mkdir(notes);
     await writeFile(join(notes, 'orchard.md'), '# Orchard\n\nThe orchard has trees. Fruit trees grow here.\n');
     const sourcesFile = join(directory, 'sources.json');
-    await writeFile(sourcesFile, JSON.stringify({ sources: [{ type: 'markdown', path: notes }], compression: 'low' }));
+    await writeFile(sourcesFile, JSON.stringify({ records: true, sources: [{ type: 'markdown', path: notes }], compression: 'low' }));
     vi.stubEnv('HOME', home);
     vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
     vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
@@ -1083,7 +1084,7 @@ describe('a run through core decision calls', () => {
       return [...prompt.matchAll(/^### (E\d+) \(said /gm)]
         .map(([, e]) => `${e}\nS${sentence} event(who=you,status=done)="Fruit trees grow here."`).join('\n');
     };
-    const runFolder = await run(['--sources', sourcesFile, 'orchard'], call);
+    const { folder: runFolder } = await run(['--sources', sourcesFile, 'orchard'], call);
 
     expect(calls.map((entry) => entry.label)).toEqual(['searches', 'extract', 'markup']);
     for (const { prompt } of calls.slice(1)) expect(prompt).not.toContain('End each line at its final closing parenthesis');
@@ -1107,7 +1108,7 @@ describe('a run through core decision calls', () => {
     await mkdir(notes);
     await writeFile(join(notes, 'orchard.md'), '# Orchard\n\nThe orchard has trees.\n');
     const sourcesFile = join(directory, 'sources.json');
-    await writeFile(sourcesFile, JSON.stringify({ sources: [{ type: 'markdown', path: notes }], compression: 'low' }));
+    await writeFile(sourcesFile, JSON.stringify({ records: true, sources: [{ type: 'markdown', path: notes }], compression: 'low' }));
     vi.stubEnv('HOME', home);
     vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
     vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
@@ -1170,7 +1171,7 @@ describe('a run through core decision calls', () => {
     git('add', 'docs/secret.md');
     git('commit', '-q', '-m', 'hidden orchard docs');
     const sourcesFile = join(directory, 'sources.json');
-    await writeFile(sourcesFile, JSON.stringify({ sources: [
+    await writeFile(sourcesFile, JSON.stringify({ records: true, sources: [
       { type: 'git', path: repo, since: '400 days', include: ['src'], exclude: ['docs/secret.md'] },
       { type: 'markdown', path: notes, since: '30 days', exclude: ['archive'] },
       { type: 'claude-code', path: transcripts, since: '14 days', exclude: ['old'] },
@@ -1184,7 +1185,7 @@ describe('a run through core decision calls', () => {
       answers: Object.fromEntries(Object.keys(JSON.parse(String(init.body)).questions).map((key) => [key, { noul: 0.8 }])),
     }))));
     const { call, folders } = subscriptionReply(searches());
-    const runFolder = await run(['--sources', sourcesFile, 'orchard'], call);
+    const { folder: runFolder } = await run(['--sources', sourcesFile, 'orchard'], call);
     expect(runFolder).toBe(folders[0]);
 
     const record = JSON.parse(await readFile(join(runFolder, 'record.json'), 'utf8'));
@@ -1231,7 +1232,7 @@ describe('search line repair', () => {
     await mkdir(notes);
     await writeFile(join(notes, 'orchard.md'), '# Orchard\n\nThe orchard has trees. Fruit trees grow here.\n');
     const sourcesFile = join(directory, 'sources.json');
-    await writeFile(sourcesFile, JSON.stringify({ sources: [{ type: 'markdown', path: notes }] }));
+    await writeFile(sourcesFile, JSON.stringify({ records: true, sources: [{ type: 'markdown', path: notes }] }));
     vi.stubEnv('HOME', home);
     vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
     vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
@@ -1274,7 +1275,7 @@ describe('search line repair', () => {
   it('repairs a trailing-comma reply once and records one repair', async () => {
     const bad = trailingComma();
     const { sourcesFile, calls, callSubscription, saved, folder: runFolder } = await harness([bad, JSON.stringify(searches())]);
-    expect(await run(['--sources', sourcesFile, 'orchard'], callSubscription)).toBe(runFolder());
+    expect((await run(['--sources', sourcesFile, 'orchard'], callSubscription)).folder).toBe(runFolder());
     expect(calls.map((call) => call.label)).toEqual(['searches', 'searches', 'curator']);
     expect(calls[1]?.prompt).toContain('TASK: orchard');
     expect(calls[1]?.prompt).toContain(bad);
@@ -1329,7 +1330,7 @@ describe('search line repair', () => {
     await mkdir(notes);
     await writeFile(join(notes, 'orchard.md'), '# Orchard\n\nThe orchard has trees. Fruit trees grow here.\n');
     const sourcesFile = join(directory, 'sources.json');
-    await writeFile(sourcesFile, JSON.stringify({ sources: [{ type: 'markdown', path: notes }] }));
+    await writeFile(sourcesFile, JSON.stringify({ records: true, sources: [{ type: 'markdown', path: notes }] }));
     vi.stubEnv('HOME', home);
     vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
     vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
@@ -1618,14 +1619,14 @@ describe('search lines for the kinds the sources read', () => {
       }
     }
     const sourcesFile = join(directory, 'sources.json');
-    await writeFile(sourcesFile, JSON.stringify({ sources }));
+    await writeFile(sourcesFile, JSON.stringify({ records: true, sources }));
     vi.stubEnv('HOME', home);
     vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
     vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
     vi.stubGlobal('fetch', answerAll());
     // The reply holds only the kinds the sources read, and it is enough.
     const { call, calls, folders } = subscriptionReply(searchesFor(expected));
-    const runFolder = await run(['--sources', sourcesFile, 'orchard'], call);
+    const { folder: runFolder } = await run(['--sources', sourcesFile, 'orchard'], call);
     expect(runFolder).toBe(folders[0]);
     const prompt = calls.find((entry) => entry.label === 'searches')!.prompt;
     expect(prompt.match(/^(chat|git-history|markdown):/gm) ?? []).toEqual(expected.map((kind) => `${kind}:`));
@@ -1644,7 +1645,7 @@ describe('search lines for the kinds the sources read', () => {
     await mkdir(notes);
     await writeFile(join(notes, 'orchard.md'), '# Orchard\n\nThe orchard has trees. Fruit trees grow here.\n');
     const sourcesFile = join(directory, 'sources.json');
-    await writeFile(sourcesFile, JSON.stringify({ sources: [{ type: 'markdown', path: notes }] }));
+    await writeFile(sourcesFile, JSON.stringify({ records: true, sources: [{ type: 'markdown', path: notes }] }));
     vi.stubEnv('HOME', home);
     vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
     vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
@@ -1666,7 +1667,7 @@ describe('search lines for the kinds the sources read', () => {
       await save();
       return reply;
     };
-    const runFolder = await run(['--sources', sourcesFile, 'orchard'], shifting);
+    const { folder: runFolder } = await run(['--sources', sourcesFile, 'orchard'], shifting);
     const record = JSON.parse(await readFile(join(runFolder, 'record.json'), 'utf8'));
     expect(record.status).toBe('complete');
     expect(record.searchRepairs).toBe(1);
@@ -1693,6 +1694,7 @@ describe('readAudit through the skill', () => {
     }
     const sourcesFile = join(directory, 'sources.json');
     await writeFile(sourcesFile, JSON.stringify({
+      records: true,
       sources: [{ type: 'markdown', path: notes }],
       ...(readAudit === undefined ? {} : { readAudit }),
     }));
@@ -1709,7 +1711,7 @@ describe('readAudit through the skill', () => {
       }));
     }));
     const { call } = subscriptionReply(searchesMarkdown());
-    const runFolder = await run(['--sources', sourcesFile, 'orchard'], call);
+    const { folder: runFolder } = await run(['--sources', sourcesFile, 'orchard'], call);
     const record = JSON.parse(await readFile(join(runFolder, 'record.json'), 'utf8'));
     return { runFolder, record, bodies };
   };
@@ -1765,7 +1767,7 @@ describe('the saved record under overlapping replies', () => {
       await writeFile(join(notes, `orchard-${index}.md`), `# Orchard ${index}\n\n${ideas}\n`);
     }
     const sourcesFile = join(directory, 'sources.json');
-    await writeFile(sourcesFile, JSON.stringify({ sources: [{ type: 'markdown', path: notes }] }));
+    await writeFile(sourcesFile, JSON.stringify({ records: true, sources: [{ type: 'markdown', path: notes }] }));
     vi.stubEnv('HOME', home);
     vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
     vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
@@ -1793,7 +1795,7 @@ describe('the saved record under overlapping replies', () => {
       }
       await new Promise((resolve) => setTimeout(resolve, 1));
     }
-    const runFolder = await runPromise;
+    const { folder: runFolder } = await runPromise;
     expect(simultaneous).toBeGreaterThan(1);
     const record = JSON.parse(await readFile(join(runFolder, 'record.json'), 'utf8'));
     expect(record.jev).toHaveLength(bodies.length);

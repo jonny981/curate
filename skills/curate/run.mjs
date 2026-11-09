@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { closeSync, constants, openSync, readSync, realpathSync } from 'node:fs';
-import { copyFile, mkdir, readFile, readdir, realpath, stat, utimes, writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
+import { closeSync, constants, openSync, readSync, realpathSync, rmSync } from 'node:fs';
+import { copyFile, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, utimes, writeFile } from 'node:fs/promises';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { curate, levelDistribution, pickFromSources } from '@curatejs/core';
@@ -92,7 +92,7 @@ export function parseSources(value) {
   if (value.maxCandidates !== undefined || value.userMaxCandidates !== undefined) {
     throw new Error('Remove maxCandidates and userMaxCandidates; the decision feed has no count limit.');
   }
-  for (const key of ['userFirst', 'recentFirst']) {
+  for (const key of ['userFirst', 'recentFirst', 'records']) {
     if (value[key] !== undefined && typeof value[key] !== 'boolean') throw new Error(`${key} must be a boolean.`);
   }
   if (value.embeddingModel !== undefined && (typeof value.embeddingModel !== 'string' || !value.embeddingModel.trim())) {
@@ -264,8 +264,9 @@ const startedCalls = new WeakMap();
 
 // A signal, when given, stops the call: before it starts, its own child
 // process while it runs, or a capacity wait. The record marks the
-// stopped call cancelled.
-export async function subscription(prompt, folder, label, record, save, isolated = sandboxAvailable(), signal = undefined) {
+// stopped call cancelled. `temporary` says the folder is removed when the
+// run ends.
+export async function subscription(prompt, folder, label, record, save, isolated = sandboxAvailable(), signal = undefined, temporary = false) {
   for (;;) {
     signal?.throwIfAborted();
     const numbers = startedCalls.get(record) ?? new Map();
@@ -276,10 +277,17 @@ export async function subscription(prompt, folder, label, record, save, isolated
     const started = Date.now();
     const env = { ...process.env };
     for (const key of Object.keys(env)) if (/API_KEY$/.test(key)) delete env[key];
+    // Even with --ephemeral, Codex keeps state and log databases in its
+    // home and leaves a small plugin folder there on every call. Each call
+    // gets its own databases, because Codex calls can run at once.
+    const codexFiles = join(folder, `${label}-${number}-codex`);
     const args = ['exec', '--ignore-user-config', '--ignore-rules', '--ephemeral', '--skip-git-repo-check',
       '-C', folder, '-s', 'read-only', '-m', 'gpt-6.1-sol', '-c', 'model_reasoning_effort="low"',
       '-c', 'features.memories=false', '-c', 'model_provider="openai"', '-c', 'forced_login_method="chatgpt"',
-      '-c', 'project_doc_max_bytes=0', '-c', 'skills.include_instructions=false', '--json', '-o', output, '-'];
+      '-c', 'project_doc_max_bytes=0', '-c', 'skills.include_instructions=false',
+      ...(temporary ? ['-c', `log_dir=${JSON.stringify(join(codexFiles, 'log'))}`,
+        '-c', `sqlite_home=${JSON.stringify(join(codexFiles, 'state'))}`, '-c', 'features.plugins=false'] : []),
+      '--json', '-o', output, '-'];
     const [command, argv] = isolated ? ['/usr/bin/sandbox-exec', ['-p', instructionsProfile(), 'codex', ...args]] : ['codex', args];
     let stopChild;
     const result = await new Promise((resolveResult, reject) => {
@@ -306,7 +314,10 @@ export async function subscription(prompt, folder, label, record, save, isolated
     if (result.code === 0) return readFile(output, 'utf8');
     const errors = [result.stderr, ...events.filter((event) => event.type === 'error' || event.type === 'turn.failed').map((event) => JSON.stringify(event))].join('\n');
     if (!/at capacity|capacity exceeded|usage limit|rate limit|too many requests|quota.*(?:exceeded|reached)/i.test(errors)) {
-      throw new Error(`Subscription route failed during ${label}; see ${label}-${number}.stderr. No API fallback was used.`);
+      // A temporary folder is gone by the time anyone reads this message.
+      throw new Error(temporary
+        ? `Subscription route failed during ${label}: ${errors.trim().slice(-2000)} No API fallback was used.`
+        : `Subscription route failed during ${label}; see ${label}-${number}.stderr. No API fallback was used.`);
     }
     console.error(`Subscription capacity during ${label}; waiting 60 seconds before retry.`);
     await new Promise((done, stop) => {
@@ -450,9 +461,9 @@ export function curationEvidence(picked, collectedDate) {
 // With `low`, the memory is compression 'low': its extraction and markup
 // prompts go to the model as written, labelled by step, and never
 // through the log writer's added instructions or reply edits.
-export async function writeLog(task, picked, folder, record, save, callSubscription = subscription, low = undefined) {
+export async function writeLog(task, picked, folder, record, save, callSubscription = subscription, low = undefined, collectedDate = undefined) {
   const started = Date.now();
-  const evidence = curationEvidence(picked, basenameDate(folder));
+  const evidence = curationEvidence(picked, collectedDate);
   const result = low !== undefined ? await curate(task, evidence, { compression: 'low', decide: low.decide,
     write: (prompt, signal) => callSubscription(`${prompt.instructions}\n\n${prompt.body}`, folder, prompt.step, record, save, undefined, signal) })
   : await curate(task, evidence, { write: async (prompt) => {
@@ -470,8 +481,6 @@ export async function writeLog(task, picked, folder, record, save, callSubscript
   console.log(result.log);
   return result;
 }
-
-function basenameDate(folder) { return folder.split(sep).at(-1).slice(0, 10); }
 
 // Wall time while at least one tracked piece of work runs, so work that
 // runs at once is counted once.
@@ -503,16 +512,34 @@ async function searchLines(prompt, folder, record, save, callSubscription, requi
     try {
       return parseSearches(JSON.parse(repaired), required);
     } catch (secondError) {
-      throw new Error(`Search lines failed to parse twice: ${firstError.message}; after one repair: ${secondError.message}. Both replies are in ${folder} (${firstFile}, ${replyFile()}).`);
+      throw new Error(`Search lines failed to parse twice: ${firstError.message}; after one repair: ${secondError.message}.${record.settings.records === true ? ` Both replies are in ${folder} (${firstFile}, ${replyFile()}).` : ''}`);
     }
   }
 }
 
+// The temporary folders of the calls now running, so a stopped command can
+// remove them.
+const workingFolders = new Set();
+
+// Resolves to { memory, record, folder }: the printed log or memory, the
+// call's record, and the records folder, which is null unless the settings
+// turn records on.
 export async function run(args = process.argv.slice(2), callSubscription = subscription) {
   const options = parseArgs(args);
   const settings = parseSources(JSON.parse(await readFile(options.sources, 'utf8')));
-  const folder = join(homedir(), '.curate/runs', new Date().toISOString().replace(/[:.]/g, '-'));
-  await mkdir(folder, { recursive: true, mode: 0o700 });
+  const records = settings.records === true;
+  // One UTC time, taken once, names the records folder and dates undated
+  // parts, whether or not records are on.
+  const startedAt = new Date().toISOString();
+  const collectedDate = startedAt.slice(0, 10);
+  // The temporary folder's real path, because readers report real paths
+  // and the Codex reader's results are matched against this folder.
+  const folder = records ? join(homedir(), '.curate/runs', startedAt.replace(/[:.]/g, '-'))
+    : await realpath(await mkdtemp(join(tmpdir(), 'curate-work-')));
+  if (records) await mkdir(folder, { recursive: true, mode: 0o700 });
+  else workingFolders.add(folder);
+  const callCodex = records ? callSubscription
+    : (prompt, at, label, entry, saveEntry, isolated, signal) => callSubscription(prompt, at, label, entry, saveEntry, isolated, signal, true);
   const started = Date.now();
   const record = { task: options.task, sourcesFile: options.sources, settings, status: 'started', subscription: [], sessions: [], reads: [], jev: [], timings: {} };
   let local;
@@ -522,12 +549,14 @@ export async function run(args = process.argv.slice(2), callSubscription = subsc
   // rejects only its own caller; the chain still writes the next state.
   let saving = Promise.resolve();
   const save = () => {
+    if (!records) return Promise.resolve();
     const write = saving.then(() =>
       writeFile(join(folder, 'record.json'), JSON.stringify(record, null, 2), { mode: 0o600 }));
     saving = write.catch(() => {});
     return write;
   };
-  console.error(`Run record: ${folder}`);
+  if (records) console.error(`Run record: ${folder}`);
+  let memory;
   try {
     // The environment wins over an optional KEY=VALUE file; never save credentials.
     if (settings.envFile) for (const line of (await readFile(homePath(settings.envFile), 'utf8')).split('\n')) {
@@ -575,7 +604,7 @@ export async function run(args = process.argv.slice(2), callSubscription = subsc
       ? 'Return only JSON with these three keys, each containing {"keywords":[...],"answers":[...]}.'
       : `Return only JSON for ${searchKinds.map((kind) => `"${kind}"`).join(', ')}, each containing {"keywords":[...],"answers":[...]}.`}`;
     const searchStart = Date.now();
-    record.searches = await searchLines(searchPrompt, folder, record, save, callSubscription, searchKinds);
+    record.searches = await searchLines(searchPrompt, folder, record, save, callCodex, searchKinds);
     record.timings.searchesMs = Date.now() - searchStart;
     const { createLocalEmbedder } = await import('@curatejs/core/local-embeddings');
     const modelPath = settings.embeddingModel ?? join(homedir(), '.cache/curate/models/embeddinggemma-300M-Q8_0.gguf');
@@ -623,7 +652,10 @@ export async function run(args = process.argv.slice(2), callSubscription = subsc
       ...(settings.thoroughness === undefined ? {} : { thoroughness: settings.thoroughness }),
       ...(settings.threshold === undefined ? {} : { everyScored: { bar: settings.threshold } }) };
     const picked = await pickFullSources(sources.map((source) => {
-      const searched = searchSource({ ...source, labelKinds: [], rare: false }, record.searches, record.reads, folder, settings);
+      // A read's full result can be very large, so with records off it is
+      // never written, even to the temporary folder.
+      const searched = searchSource({ ...source, labelKinds: [], rare: false }, record.searches, record.reads, folder,
+        records ? settings : { ...settings, readAudit: false });
       return { ...searched, read: (readRequest, context) => reading.track(() => searched.read(readRequest, context)) };
     }), request, pickOptions);
     record.pick = picked.record;
@@ -631,6 +663,10 @@ export async function run(args = process.argv.slice(2), callSubscription = subsc
       parts: read.candidates?.length ?? 0, complete: read.complete, partial: read.partial, reason: read.reason,
       ...(read.noSearchMatch === true ? { noSearchMatch: true } : {}),
       ...(read.lanes === undefined ? {} : { lanes: read.lanes }) }));
+    for (const read of record.sourcesRead) {
+      if (read.status === 'absent') console.error(`Source missing: ${read.source}: ${read.reason}`);
+      else if (read.complete === false) console.error(`Source only partly read: ${read.source}: ${read.partial ?? 'no reason given'}`);
+    }
     record.timings.rankAndDecideMs = Date.now() - pickStart;
     // Reads and decisions never overlap in a pick: every read ends before
     // the first decision starts. Ranking is the rest.
@@ -644,7 +680,7 @@ export async function run(args = process.argv.slice(2), callSubscription = subsc
     }
     await save();
     await writeFile(join(folder, 'selection.json'), JSON.stringify({ selected: picked.selected, record: { ...picked.record, candidates: picked.record.candidates.filter((entry) => entry.status === 'selected') } }), { mode: 0o600 });
-    await writeLog(options.task, picked, folder, record, save, callSubscription, rows);
+    memory = (await writeLog(options.task, picked, folder, record, save, callCodex, rows, collectedDate)).log;
   } catch (error) {
     // A PickError carries the pick's record: the failed batch's ids, the
     // unanswered candidates, and the answers that came back. Keep it.
@@ -655,11 +691,21 @@ export async function run(args = process.argv.slice(2), callSubscription = subsc
   }
   finally {
     try { await local?.dispose(); }
-    finally { record.timings.totalMs = Date.now() - started; await save(); }
+    finally {
+      record.timings.totalMs = Date.now() - started;
+      await save();
+      if (!records) { await rm(folder, { recursive: true, force: true }); workingFolders.delete(folder); }
+    }
   }
-  return folder;
+  return { memory, record, folder: records ? folder : null };
 }
 
 if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
+  for (const [name, code] of [['SIGINT', 130], ['SIGTERM', 143], ['SIGHUP', 129]]) {
+    process.once(name, () => {
+      for (const folder of workingFolders) rmSync(folder, { recursive: true, force: true });
+      process.exit(code);
+    });
+  }
   run().catch((error) => { console.error(error.message); process.exitCode = 1; });
 }

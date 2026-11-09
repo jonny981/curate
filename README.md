@@ -505,7 +505,7 @@ Measured on a replayed ~116,000-part history, each level cost about 1, 5 and 17 
 Each source can also set `since` (an ISO date or a duration such as `"14 days"`, counted back from the task date), `exclude` (paths that source alone refuses, resolved inside `path`), and, for `git` only, `include` (only commits that changed one of the paths).
 The skill combines keyword and meaning lanes, and disables label admission and the rare-word round.
 Saved embeddings are reused when the model file and input text match. Identical text shares matching decision answers within each pick.
-It prints the log and saves the log, source reads, model usage and timings under `~/.curate/runs/`.
+It prints the log. Curate keeps no files of its own outside its caches under `~/.cache/curate`. Set `records` to `true` in the sources file to also save the log, source reads, model usage and timings under `~/.curate/runs/`.
 Subscription route failures never fall back to an API.
 
 ## Rank, decide, curate
