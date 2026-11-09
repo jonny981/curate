@@ -467,6 +467,7 @@
    ".settings.compression",
    ".settings.readAudit",
    ".settings.records",
+   ".settings.searchModel",
    ".settings.sources[].allowedCwd",
    ".settings.sources[].path",
    ".settings.sources[].type",

@@ -202,7 +202,7 @@ function standInCodex(fail?: Fail) {
 }
 
 async function call(fixture: Fixture, settings: Settings, fail?: Fail) {
-  await writeFile(fixture.sourcesFile, JSON.stringify({ sources: fixture.sources, ...settings }));
+  await writeFile(fixture.sourcesFile, JSON.stringify({ sources: fixture.sources, searchModel: 'sol', ...settings }));
   vi.stubEnv('HOME', fixture.at('home'));
   vi.stubEnv('CODEX_HOME', fixture.at('codex-home'));
   vi.stubEnv('TMPDIR', fixture.at('tmp'));
@@ -451,7 +451,7 @@ describe('a stopped command', () => {
   it.each([['SIGTERM', 143], ['SIGINT', 130]] as const)('removes its temporary folder on %s', async (signal, code) => {
     const fixture = await makeFixture();
     await mkdir(fixture.at('bin'));
-    await writeFile(fixture.sourcesFile, JSON.stringify({ sources: fixture.sources }));
+    await writeFile(fixture.sourcesFile, JSON.stringify({ sources: fixture.sources, searchModel: 'sol' }));
     const marker = fixture.at('started');
     // Stands in for Codex and ends by itself; only the command is signalled.
     await writeFile(fixture.at('bin', 'codex'), `#!/bin/sh\n: > "${marker}"\nsleep 5\nexit 1\n`, { mode: 0o755 });

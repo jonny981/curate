@@ -462,7 +462,7 @@ See the [core package](packages/core/README.md) for question sets, tags, local m
 ### The `/curate` skill
 
 The [coding-agent skill](skills/curate/SKILL.md) reads sources and prints a log for a task.
-It needs Jev credentials and a signed-in model subscription.
+It needs Jev credentials and signed-in Claude and ChatGPT subscriptions.
 Build the repository and save your source settings outside it:
 
 ```sh
