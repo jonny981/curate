@@ -1986,6 +1986,19 @@ process.stdin.on('data', (chunk) => { input += chunk; }).on('end', () => {
     expect(record.droppedSearchLines).toBe(1);
   });
 
+  it('keeps the lines when the reply names the group after the task and nests the scope in it', async () => {
+    const group = { keywords: ['keyword 0', 'keyword 1'], answers: ['answer 0', 'answer 1', 'answer 2', 'answer 3'] };
+    const { directory, captured } = await standIn([{ stdout: reply(JSON.stringify({ chat: { ...group, scope: { kinds: ['all'], since: 'none' } } })) }]);
+    const { home, sourcesFile } = await markdownRun(directory);
+    await expect(run(['--sources', sourcesFile, 'what did we say in our conversations about the orchard'])).rejects.toThrow();
+    expect(await captured()).toHaveLength(1);
+    const { record } = await savedRecord(home);
+    expect(record.searches).toEqual({ markdown: group });
+    expect(record.renamedSearchKinds).toBe(1);
+    expect(record.searchRepairs).toBeUndefined();
+    expect(record.scope.proposed).toEqual({ kinds: ['all'], since: 'none' });
+  });
+
   it('sends a reply with fewer than four answers back once, and uses a repair that is still short', async () => {
     const { directory, captured } = await standIn([{ stdout: reply(lines(2, 2)) }, { stdout: reply(lines(2, 3)) }]);
     const { home, sourcesFile } = await markdownRun(directory);

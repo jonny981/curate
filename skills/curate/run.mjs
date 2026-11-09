@@ -669,6 +669,32 @@ export function searchLinesPrompt(task, searchKinds, searchModel = 'haiku', scop
     : '\nWrite exactly two keyword lines and exactly four answer lines for each source kind. No other text.'}${scopeDate === undefined ? '' : scopeAsk(scopeDate)}`;
 }
 
+// Haiku sometimes names a group after the task's words ("chat" for "our
+// conversations") when a different kind was asked for, or puts the scope
+// inside a group. The lines are still good, so they are kept under the kind
+// asked for, and the record counts the renamed groups.
+function asAsked(value, required, record) {
+  if (value === null || typeof value !== 'object') return value;
+  const isGroup = (group) => Array.isArray(group?.keywords) && Array.isArray(group?.answers);
+  const out = { ...value };
+  const spare = Object.keys(out).filter((key) => key !== 'scope' && !required.includes(key) && isGroup(out[key]));
+  let renamed = 0;
+  for (const kind of required) {
+    if (isGroup(out[kind]) || !spare.length) continue;
+    out[kind] = out[spare[Math.min(renamed, spare.length - 1)]];
+    renamed += 1;
+  }
+  if (renamed) for (const key of spare) delete out[key];
+  for (const kind of required) {
+    if (!isGroup(out[kind]) || out[kind].scope === undefined) continue;
+    const { scope, ...group } = out[kind];
+    out[kind] = group;
+    out.scope ??= scope;
+  }
+  if (renamed) record.renamedSearchKinds = renamed;
+  return out;
+}
+
 // The search reply gets one repair round, like the curator's log: a reply
 // that fails JSON parsing or the shape check goes back once with the
 // reason and the rejected text; a second failure stops the run.
@@ -676,8 +702,8 @@ export async function searchLines(prompt, folder, record, save, callSubscription
   // The first reply must hold all four answer lines. A repaired reply that
   // still has fewer is used, so a short reply never stops the call.
   const read = (reply, repaired = false) => {
-    const parsed = parseSearches(JSON.parse(reply), required);
-    if (!capped) return parsed;
+    if (!capped) return parseSearches(JSON.parse(reply), required);
+    const parsed = parseSearches(callSubscription === haikuCall ? asAsked(JSON.parse(reply), required, record) : JSON.parse(reply), required);
     if (!repaired && callSubscription === haikuCall && required.some((kind) => parsed[kind].answers.length < 4)) {
       throw new Error('Search output needs four hypothetical-answer lines for each source kind.');
     }
