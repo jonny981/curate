@@ -86,8 +86,12 @@ export function parseSources(value) {
     && !['quick', 'normal', 'deep'].includes(value.thoroughness)) {
     throw new Error("thoroughness must be 'quick', 'normal' or 'deep'.");
   }
-  if (value.compression !== undefined && !['high', 'low'].includes(value.compression)) {
-    throw new Error("compression must be 'high' or 'low'.");
+  if (value.compression !== undefined && !['high', 'low', 'none'].includes(value.compression)) {
+    throw new Error("compression must be 'high', 'low' or 'none'.");
+  }
+  if (value.answerTokens !== undefined) {
+    if (value.compression !== 'none') throw new Error("answerTokens needs compression 'none'.");
+    if (!Number.isSafeInteger(value.answerTokens) || value.answerTokens < 1) throw new Error('answerTokens must be a positive integer.');
   }
   if (value.searchModel !== undefined && !['haiku', 'sol'].includes(value.searchModel)) {
     throw new Error("searchModel must be 'haiku' or 'sol'.");
@@ -515,11 +519,13 @@ export function curationEvidence(picked, collectedDate) {
 
 // With `low`, the memory is compression 'low': its extraction and markup
 // prompts go to the model as written, labelled by step, and never
-// through the log writer's added instructions or reply edits.
-export async function writeLog(task, picked, folder, record, save, callSubscription = subscription, low = undefined, collectedDate = undefined) {
+// through the log writer's added instructions or reply edits. With
+// `none`, the memory is compression 'none': no model call.
+export async function writeLog(task, picked, folder, record, save, callSubscription = subscription, low = undefined, collectedDate = undefined, none = undefined) {
   const started = Date.now();
   const evidence = curationEvidence(picked, collectedDate);
-  const result = low !== undefined ? await curate(task, evidence, { compression: 'low', decide: low.decide,
+  const result = none !== undefined ? await curate(task, evidence, { compression: 'none', answerTokens: none.answerTokens })
+  : low !== undefined ? await curate(task, evidence, { compression: 'low', decide: low.decide,
     write: (prompt, signal) => callSubscription(`${prompt.instructions}\n\n${prompt.body}`, folder, prompt.step, record, save, undefined, signal) })
   : await curate(task, evidence, { write: async (prompt) => {
     const instructions = prompt.instructions + '\nFor UNDATED SOURCE items, say that the original statement date is unknown unless the source text explicitly dates that statement. Use the collection date for the said date; it dates the collected note, not the person\'s statement. If the event date is also unknown, use collection date with (when not stated). Do not resolve relative event phrases against a collection date; their event date stays unknown unless another cited source supplies the original statement date. Every said date must use YYYY-MM-DD. End each line at its final closing parenthesis, without a trailing period. Copy the item ids exactly from headers.';
@@ -766,7 +772,8 @@ export async function run(args = process.argv.slice(2), callSubscription = subsc
     }
     await save();
     await writeFile(join(folder, 'selection.json'), JSON.stringify({ selected: picked.selected, record: { ...picked.record, candidates: picked.record.candidates.filter((entry) => entry.status === 'selected') } }), { mode: 0o600 });
-    memory = (await writeLog(options.task, picked, folder, record, save, callCodex, rows, collectedDate)).log;
+    memory = (await writeLog(options.task, picked, folder, record, save, callCodex, rows, collectedDate,
+      settings.compression === 'none' ? { answerTokens: settings.answerTokens } : undefined)).log;
   } catch (error) {
     // A PickError carries the pick's record: the failed batch's ids, the
     // unanswered candidates, and the answers that came back. Keep it.

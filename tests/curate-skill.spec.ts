@@ -172,10 +172,17 @@ describe('curate command input', () => {
     expect(() => parseSources({ sources: [source] })).toThrow();
   });
 
-  it("takes compression 'high' or 'low' and rejects any other value", () => {
+  it("takes compression 'high', 'low' or 'none' and rejects any other value", () => {
     const sources = [{ type: 'markdown', path: '/notes' }];
     expect(parseSources({ sources, compression: 'low' }).compression).toBe('low');
-    expect(() => parseSources({ sources, compression: 'medium' })).toThrow("compression must be 'high' or 'low'.");
+    expect(() => parseSources({ sources, compression: 'medium' })).toThrow("compression must be 'high', 'low' or 'none'.");
+  });
+
+  it("takes compression 'none' with answerTokens, and answerTokens only with it", () => {
+    const sources = [{ type: 'markdown', path: '/notes' }];
+    expect(parseSources({ sources, compression: 'none', answerTokens: 500 })).toMatchObject({ compression: 'none', answerTokens: 500 });
+    expect(() => parseSources({ sources, compression: 'none', answerTokens: 0 })).toThrow('answerTokens must be a positive integer.');
+    expect(() => parseSources({ sources, answerTokens: 500 })).toThrow("answerTokens needs compression 'none'.");
   });
 
   it('names the unknown key, the source type and its accepted keys', () => {
@@ -850,6 +857,33 @@ it('labels collection dates for undated evidence without changing weights or ord
   } });
   expect(result.log).toBe(log);
   expect(result.record.items.map((item) => [item.id, item.weight])).toEqual([['dated', 0.9], ['undated', 0.7]]);
+});
+
+it("under compression 'none', calls no model and dates an undated item by its labelled collection date", async () => {
+  const directory = join(await folder(), '2026-02-01-run');
+  await mkdir(directory);
+  const reference = (id: string, text: string, date?: string): MemoryCandidate => ({
+    id, sourceId: 'documents', role: 'reference', title: id, text, signals: {},
+    ...(date === undefined ? {} : { date: { value: date, meaning: 'recorded' as const } }),
+  });
+  const items = [reference('dated', 'An orchard was planted.', '2026-01-01'), reference('undated', 'The person prefers fruit trees.')];
+  const picked = {
+    selected: items,
+    record: { levers: {}, candidates: items.map((item, priority) => ({
+      sourceId: item.sourceId, id: item.id, role: item.role, priority, signals: {}, status: 'selected', asked: true, probability: 0.9 - priority / 10,
+    })) },
+  };
+  const record: { curate?: { compression: string; answerTokens: number }; status?: string; timings: Record<string, number> } = { timings: {} };
+  const noCall = vi.fn();
+  vi.spyOn(console, 'log').mockImplementation(() => {});
+  await writeLog('orchard evidence', picked, directory, record, async () => {}, noCall, undefined, '2026-02-01', { answerTokens: 500 });
+  const log = await readFile(join(directory, 'log.md'), 'utf8');
+  expect(noCall).not.toHaveBeenCalled();
+  expect(log).toContain('#### documents (said 2026-01-01)\n\nAn orchard was planted.');
+  expect(log).toContain('#### documents (said 2026-02-01)\n\nUNDATED SOURCE collected 2026-02-01.');
+  expect(log).toContain('This header date is collection only');
+  expect(record.curate).toMatchObject({ compression: 'none', answerTokens: 500 });
+  expect(record.status).toBe('complete');
 });
 
 it('saves the pick record naming the rejected batch when the decision service fails', async () => {

@@ -2,7 +2,7 @@ import type { MemoryCandidate, PickDecide, PickRecordEntry, PickResult } from '.
 import type { CurateLeverStates } from './levers.js';
 import { ANSWER_TYPES, classifyTask, type RouteOption, type TaskKind } from './task.js';
 import { checkCompression, checkCurateOptions } from './options.js';
-import { writeMarkup, type CurateMarkupRecord } from './markup.js';
+import { dayOf, writeMarkup, type CurateMarkupRecord } from './markup.js';
 
 export interface CuratePrompt {
   readonly instructions: string;
@@ -21,6 +21,14 @@ export type CurateWrite = (prompt: CuratePrompt, signal: AbortSignal) => Promise
 export const DEFAULT_BATCH_TOKENS = 150_000;
 
 const DEFAULT_WEIGHT_BANDS: readonly [number, number] = [0.1, 0.6];
+
+/** The estimated tokens `compression: 'none'` keeps its text within
+ *  when `answerTokens` is omitted. At four characters per token, this is
+ *  the value that came closest to a 2,000-token cut on real chat text. */
+export const DEFAULT_ANSWER_TOKENS = 2_250;
+
+/** Curate's token estimate: four characters per token. */
+const estimateTokens = (text: string) => Math.ceil(text.length / 4);
 
 /** One write pass over the log, recorded in order. */
 export interface CurateBatch {
@@ -93,7 +101,7 @@ export interface CurateOptions {
    *  more whole. Omitted means [0.1, 0.6]. */
   readonly weightBands?: readonly [number, number];
   /** `'high'`, the default, writes the dated, cited log. For `'low'`, see
-   *  CurateLowOptions. */
+   *  CurateLowOptions; for `'none'`, CurateNoneOptions. */
   readonly compression?: 'high';
   readonly signal?: AbortSignal;
 }
@@ -111,6 +119,26 @@ export interface CurateLowOptions extends Pick<CurateOptions, 'write' | 'taskDat
   readonly compression: 'low';
   /** Asks whether each row counts toward the task. */
   readonly decide: PickDecide;
+}
+
+/** `compression: 'none'` calls no model. Code lays out the selected
+ *  reference items, strongest first, for the answering model to read.
+ *  The two items with the highest decision weight (ties broken by the
+ *  fused order) sit under `### Most likely answer`, each under its own
+ *  `#### <source> (said <date>)` heading. Every other item is grouped by
+ *  said date and source, under `### <source> (said <date>)`, groups
+ *  oldest first and items in weight order inside a group. An item with
+ *  no date shows `(said unknown)` and its group comes last. A date that
+ *  is only the file's last change shows `(file changed <date>)`. The curator's other options, `write`
+ *  and `decide` are rejected before any work. */
+export interface CurateNoneOptions extends Pick<CurateOptions, 'signal'> {
+  readonly compression: 'none';
+  /** Keep the whole text within this many estimated tokens, at four
+   *  characters per token. Items are taken in weight order, and the
+   *  first item that would take the text over this stops the taking.
+   *  The strongest item is always kept whole, even over the budget.
+   *  Omitted means DEFAULT_ANSWER_TOKENS (2,250). */
+  readonly answerTokens?: number;
 }
 
 /** What one curate option did to the log. */
@@ -196,6 +224,44 @@ export interface CurateResult {
 export interface CurateMarkupResult {
   readonly log: string;
   readonly record: CurateMarkupRecord;
+}
+
+export interface CurateNoneRecord {
+  readonly compression: 'none';
+  readonly levers: CurateLeverStates;
+  /** The items taken, in the order they were taken, with exact weights. */
+  readonly items: CurateRecord['items'];
+  /** The returned text's estimated tokens. */
+  readonly estimatedTokens: number;
+  /** The budget the text was kept within. */
+  readonly answerTokens: number;
+}
+
+/** What `compression: 'none'` returns: the memory text in `log`. */
+export interface CurateNoneResult {
+  readonly log: string;
+  readonly record: CurateNoneRecord;
+}
+
+/** The memory text for the items taken, strongest first. */
+function layOutItems(taken: CurateNoneRecord['items']): string {
+  const source = (item: CurateNoneRecord['items'][number]) => {
+    const said = dayOf(item.candidate.date?.value);
+    // A file's last-changed date is not when anything in it was said.
+    const label = item.candidate.date === undefined || item.candidate.date.meaning === 'recorded' ? 'said' : 'file changed';
+    return { said, label, heading: `${item.candidate.sourceId} (${label} ${said || 'unknown'})` };
+  };
+  // A commit with no body carries its evidence in its title.
+  const body = (item: CurateNoneRecord['items'][number]) => item.candidate.text.trim() ? item.candidate.text : item.candidate.title;
+  const top = taken.slice(0, 2).map((item) => `#### ${source(item).heading}\n\n${body(item)}`);
+  const groups = new Map<string, CurateNoneRecord['items'][number][]>();
+  for (const item of taken.slice(2)) {
+    const key = `${source(item).said}|${item.candidate.sourceId}|${source(item).label}`;
+    groups.set(key, [...(groups.get(key) ?? []), item]);
+  }
+  const rest = [...groups].sort(([left], [right]) => (left < right ? -1 : 1))
+    .map(([, group]) => `### ${source(group[0]!).heading}\n\n${group.map(body).join('\n\n')}`);
+  return [`### Most likely answer\n\n${top.join('\n\n')}\n`, ...rest].join('\n\n');
 }
 
 const WORKING_HEADING = "Working (the curator's; check it against the log):";
@@ -579,15 +645,17 @@ function curateEffects(log: string, input: {
   return effects;
 }
 
-/** Write the reference log, or under `compression: 'low'` the marked-up
- *  memory. Selected rules remain the caller's instructions. */
+/** Write the reference log, under `compression: 'low'` the marked-up
+ *  memory, or under `compression: 'none'` the selected items as they
+ *  stand. Selected rules remain the caller's instructions. */
+export async function curate(task: string, picked: PickResult, options: CurateNoneOptions): Promise<CurateNoneResult>;
 export async function curate(task: string, picked: PickResult, options: CurateLowOptions): Promise<CurateMarkupResult>;
 export async function curate(task: string, picked: PickResult, options: CurateOptions): Promise<CurateResult>;
 export async function curate(
   task: string,
   picked: PickResult,
-  lowOrHigh: CurateOptions | CurateLowOptions,
-): Promise<CurateResult | CurateMarkupResult> {
+  lowOrHigh: CurateOptions | CurateLowOptions | CurateNoneOptions,
+): Promise<CurateResult | CurateMarkupResult | CurateNoneResult> {
   checkCurateOptions(lowOrHigh);
   checkCompression(lowOrHigh);
   const lowOptions = lowOrHigh.compression === 'low' ? lowOrHigh : undefined;
@@ -660,6 +728,23 @@ export async function curate(
     return { id, candidate, weight: entry.probability };
   });
   if (!items.length) throw new Error('curate: no selected reference items to curate.');
+  if (lowOrHigh.compression === 'none') {
+    const answerTokens = lowOrHigh.answerTokens ?? DEFAULT_ANSWER_TOKENS;
+    // `items` follows `picked.selected`, so a stable sort leaves equal weights in the fused order.
+    const ordered = [...items].sort((left, right) => right.weight - left.weight);
+    let taken = 0;
+    let log = '';
+    for (; taken < ordered.length; taken += 1) {
+      const text = layOutItems(ordered.slice(0, taken + 1));
+      if (taken > 0 && estimateTokens(text) > answerTokens) break;
+      log = text;
+    }
+    return { log, record: {
+      compression: 'none',
+      levers: { ...picked.record.levers, route: { asked: picked.record.levers?.route === true, applied: false } },
+      items: ordered.slice(0, taken), estimatedTokens: estimateTokens(log), answerTokens,
+    } };
+  }
 
   const tagText = (id: string) => {
     const tags = entries.get(id)?.tags;
@@ -712,7 +797,7 @@ export async function curate(
   if (batchTokens !== undefined && contextLimit !== undefined) {
     throw new TypeError('curate: a chained write (batchTokens) and contextLimit do not combine; a condensing pass cannot preserve a chained log\'s line ids.');
   }
-  const cost = (index: number) => Math.ceil(blocks[index]!.length / 4);
+  const cost = (index: number) => estimateTokens(blocks[index]!);
   const evidenceTokens = batchTokens === undefined && contextLimit === undefined
     ? blocks.reduce((total, _, index) => total + cost(index), 0) : undefined;
   const batchDefault = evidenceTokens !== undefined && evidenceTokens > DEFAULT_BATCH_TOKENS;

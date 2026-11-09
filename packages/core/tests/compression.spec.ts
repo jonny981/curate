@@ -483,7 +483,7 @@ describe('the compression option', () => {
   it('needs decide for low, rejects it for high, and rejects an unknown value', async () => {
     await expect(curate(TASK, GARDEN, { compression: 'low', write: never } as never)).rejects.toThrow(/needs decide/);
     await expect(curate(TASK, GARDEN, { write: never, decide } as never)).rejects.toThrow(/decide is read only with compression: 'low'/);
-    await expect(curate(TASK, GARDEN, { compression: 'medium', write: never } as never)).rejects.toThrow(/'high' or 'low'/);
+    await expect(curate(TASK, GARDEN, { compression: 'medium', write: never } as never)).rejects.toThrow(/'high', 'low' or 'none'/);
   });
 
   it('memory rejects an unsupported low option before any read or decision call', async () => {
@@ -500,7 +500,7 @@ describe('the compression option', () => {
     await expect(memory({ sources: [source], decide: counting, write: never, curate: { compression: 'low', working: true } as never }).recall(TASK))
       .rejects.toThrow(/cannot take working/);
     await expect(memory({ sources: [source], decide: counting, write: never, curate: { compression: 'medium' } as never }).recall(TASK))
-      .rejects.toThrow(/'high' or 'low'/);
+      .rejects.toThrow(/'high', 'low' or 'none'/);
     expect([reads, decisions]).toEqual([0, 0]);
   });
 
