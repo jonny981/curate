@@ -12,7 +12,7 @@ import { chat, CHAT_CASCADE, chatSettings } from '@curatejs/chat';
 import { git as gitSource } from '@curatejs/git';
 import { MARKDOWN_SEARCH_LINE_REGISTER } from '@curatejs/markdown';
 // @ts-expect-error The standalone JavaScript command has no type declarations.
-import { allowedSession, curationEvidence, decisionAnswers, haikuCall, instructionsProfile, pickFullSources, rankMatches, parseArgs, parseSearches, parseSources, run, sandboxAvailable, searchSource, sessionHeader, snapshotCodex, subscription, writeLog } from '../skills/curate/run.mjs';
+import { acceptScope, allowedSession, curationEvidence, decisionAnswers, haikuCall, instructionsProfile, pickFullSources, rankMatches, parseArgs, parseSearches, parseSources, run, sandboxAvailable, scopedEntries, searchLinesPrompt, searchSource, sessionHeader, snapshotCodex, subscription, writeLog } from '../skills/curate/run.mjs';
 
 const uncutPick = { everyRanked: true, everyScored: true, rare: false } as const;
 
@@ -2092,5 +2092,227 @@ process.stdin.on('data', (chunk) => { input += chunk; }).on('end', () => {
     expect(record.searches.markdown.keywords).toHaveLength(5);
     expect(record.searches.markdown.answers).toHaveLength(7);
     expect(record).not.toHaveProperty('droppedSearchLines');
+  });
+});
+
+describe('the question sets the search scope', () => {
+  const NOW = Date.parse('2026-11-09T12:00:00Z');
+  const KINDS = ['chat', 'git-history', 'markdown'];
+  const accept = (task: string, proposed: unknown, kinds = KINDS) => acceptScope(proposed, task, kinds, NOW, 'UTC');
+  const all = (since: string) => ({ kinds: ['all'], since });
+
+  it.each([
+    ['I remember that we were talking about something in a session last week.', '28 days'],
+    ['I remember we were talking about renting GPU machines in a chat session a couple of weeks ago. What did I say?', '40 days'],
+    ['Last month, in one of our chats, I listed memory sources we would add later.', '60 days'],
+    ['In mid-October I talked in chat about how many candidates to keep.', '60 days'],
+    ["What did I say in our chat sessions over the last three weeks about Curate's modes?", '42 days'],
+  ])('accepts the scope a question names: %s', (task, since) => {
+    expect(accept(task, { kinds: ['chat'], since })).toEqual({ kinds: ['chat'], since, dropped: [] });
+  });
+
+  it.each([
+    'Everything Jonny said about renting GPU machines for Obversa and Curate.',
+    'Everything Jonny said about decision questions needing to differ for chat, git and markdown. Give his exact words with their dates.',
+    'Everything Jonny said about chat transcripts as a memory source: chat memory as a useful source, the release gate supporting git, markdown and chat transcripts, and chat covering Slack in future.',
+    'Everything Jonny said about adding more memory sources later: Slack, emails, logs, and agent-to-agent memory through the run log.',
+  ])('drops a guess when the question names no source and no time: %s', (task) => {
+    expect(accept(task, { kinds: ['chat'], since: '60 days' })).toEqual({
+      kinds: ['all'], since: 'none',
+      dropped: ['kinds: the question does not name chat.', 'since: the question names no time something was said.'],
+    });
+  });
+
+  it('keeps every kind unless the question names each kind the reply kept', () => {
+    expect(accept('What did we say in a chat session?', { kinds: ['chat', 'markdown'], since: 'none' })).toEqual({
+      ...all('none'), dropped: ['kinds: the question does not name markdown.'],
+    });
+  });
+
+  it('leaves the scope open when the reply asks for nothing narrower', () => {
+    expect(accept('What did we say in a chat session?', all('none'))).toEqual({ ...all('none'), dropped: [] });
+    expect(accept('What did we say in a chat session?', { kinds: ['chat'], since: 'none' }, ['chat'])).toEqual({ ...all('none'), dropped: [] });
+  });
+
+  it('never narrows to a kind no source reads', () => {
+    expect(accept('What is in my notes?', { kinds: ['markdown'], since: 'none' }, ['chat'])).toEqual({
+      ...all('none'), dropped: ['kinds: no source reads markdown.'],
+    });
+  });
+
+  it.each([
+    [undefined, ['The reply held no scope.']],
+    ['chat only', ['The reply held no scope.']],
+    [{ kinds: ['slack'], since: 'none' }, ['kinds: ["slack"] is not a list of source kinds.']],
+    [{ kinds: 'chat', since: 'none' }, ['kinds: "chat" is not a list of source kinds.']],
+    [{ kinds: ['all'], since: 'last week' }, ['since: "last week" is not "N days" or "none".']],
+    [{ kinds: ['all'] }, ['since: undefined is not "N days" or "none".']],
+  ])('drops a malformed scope and says why: %j', (proposed, dropped) => {
+    expect(accept('What did we say in a chat session last week?', proposed)).toEqual({ ...all('none'), dropped });
+  });
+
+  it.each([
+    ['Last month, in one of our chats, what did I list?', '7 days', '54 days'],
+    ['What did I say over the last three weeks?', '21 days', '35 days'],
+    ['What did I say a couple of weeks ago?', '14 days', '28 days'],
+    ['What did I say a few months ago?', '30 days', '107 days'],
+    ['What did I say last Tuesday?', '1 day', '21 days'],
+    ['In late October, what did I say?', '3 days', '54 days'],
+  ])('widens a window to reach the time the question names plus two weeks: %s', (task, since, widened) => {
+    expect(accept(task, { kinds: ['all'], since })).toEqual({ ...all(widened), dropped: [] });
+  });
+
+  it('keeps a wider window the reply asked for', () => {
+    expect(accept('Last month, what did I list?', all('90 days')).since).toBe('90 days');
+  });
+
+  it('never sets a window under 14 days', () => {
+    expect(accept('What did we decide today?', all('1 days')).since).toBe('15 days');
+  });
+
+  it('keeps the scope open when a source is what the question is about', () => {
+    expect(accept('What did Jonny say about including git history as a memory source?', { kinds: ['git-history'], since: 'none' })).toEqual({
+      ...all('none'), dropped: ['kinds: the question does not name git-history.'],
+    });
+  });
+
+  it.each([
+    'What is planned for 2026-12-25?',
+    'What did we say about the 3 October outage?',
+    'What did we say we would ship by 2026-12-25?',
+    'What did we say in December 2026?',
+    'What happened last week at the orchard?',
+    'What did we agree to ship on October 15?',
+    'For the October 15 release, what did we agree to ship?',
+    "Last month's release plan: what did we agree?",
+    "What did we say last year's budget was?",
+    'What did we decide about the release on October 15?',
+    'What did we decide in our chats about the release on October 15?',
+    'What did we decide about the release last week?',
+  ])('sets no window from a date that is not when something was said: %s', (task) => {
+    expect(accept(task, all('14 days'))).toEqual({ ...all('none'), dropped: ['since: the question names no time something was said.'] });
+  });
+
+  it('reads every kind the question names, even one the reply left out', () => {
+    expect(accept('Search in my notes and in our chats for the deployment decision', { kinds: ['chat'], since: 'none' })).toEqual({
+      kinds: ['chat', 'markdown'], since: 'none', dropped: [],
+    });
+  });
+
+  it('keeps the git sources for a question about the Git history', () => {
+    const scope = accept('What does the git history say about the cache from the last two months?', { kinds: ['git-history'], since: '124 days' });
+    expect(scope).toEqual({ kinds: ['git-history'], since: '124 days', dropped: [] });
+    const entries = [{ type: 'claude-code', path: 'a' }, { type: 'git', path: 'b' }, { type: 'markdown', path: 'c' }];
+    expect(scopedEntries(entries, scope, NOW)).toEqual([{ type: 'git', path: 'b', since: '124 days' }]);
+  });
+
+  it('counts a commit or a note named as the place to look, and not as the subject', () => {
+    expect(accept('Which commit added the cache?', { kinds: ['git-history'], since: 'none' }).kinds).toEqual(['git-history']);
+    expect(accept('What is in our notes about the cache?', { kinds: ['markdown'], since: 'none' }).kinds).toEqual(['markdown']);
+    expect(accept('Should every commit carry a note?', { kinds: ['git-history'], since: 'none' }).kinds).toEqual(['all']);
+  });
+
+  it("uses the later of the window and a source's own look-back", () => {
+    const entries = [{ type: 'claude-code', path: 'a', since: '30 days' }, { type: 'codex', path: 'b', since: '90 days' },
+      { type: 'git', path: 'c' }, { type: 'markdown', path: 'd', since: '2026-11-01' }];
+    expect(scopedEntries(entries, all('60 days'), NOW).map((entry: { since?: string }) => entry.since))
+      .toEqual(['30 days', '60 days', '60 days', '2026-11-01']);
+    expect(scopedEntries(entries, all('none'), NOW)).toEqual(entries);
+  });
+
+  it('checks the scope setting', () => {
+    const sources = [{ type: 'markdown', path: '/notes' }];
+    expect(() => parseSources({ sources, scope: 'off' })).toThrow('scope must be a boolean.');
+    expect(parseSources({ sources, scope: false }).scope).toBe(false);
+  });
+
+  it('asks for a scope, with the date, only when given the date', () => {
+    const asked = searchLinesPrompt('the task', ['chat'], 'haiku', '2026-11-09');
+    expect(asked).toContain('"scope"');
+    expect(asked).toContain("Today's date is 2026-11-09.");
+    expect(asked).toContain('at least twice the span');
+    expect(searchLinesPrompt('the task', ['chat'], 'haiku')).not.toContain('"scope"');
+    expect(searchLinesPrompt('the task', ['chat'], 'sol')).not.toContain('"scope"');
+  });
+
+  describe('through a run', () => {
+    const answerAll = () => vi.fn(async (_url: unknown, init: RequestInit) => new Response(JSON.stringify({
+      usage: null,
+      answers: Object.fromEntries(Object.keys(JSON.parse(String(init.body)).questions).map((key) => [key, { noul: 0.8 }])),
+    })));
+    const daysAgo = (days: number) => new Date(Date.now() - days * 86_400_000).toISOString();
+
+    async function threeKinds(settings: Record<string, unknown> = {}) {
+      const directory = await folder();
+      const home = join(directory, 'home');
+      const transcripts = join(directory, 'claude');
+      const notes = join(directory, 'notes');
+      const repo = join(directory, 'repo');
+      await mkdir(home);
+      await mkdir(transcripts);
+      await mkdir(notes);
+      await mkdir(repo);
+      const said = (session: string, days: number) => [
+        JSON.stringify({ type: 'user', sessionId: session, timestamp: daysAgo(days), message: { content: `What grows in the orchard, ${session}?` } }),
+        JSON.stringify({ type: 'assistant', sessionId: session, timestamp: daysAgo(days), message: { content: [{ type: 'text', text: 'Fruit trees grow in the orchard.' }] } }),
+      ].join('\n');
+      await writeFile(join(transcripts, 'recent.jsonl'), said('recent', 2));
+      await writeFile(join(transcripts, 'old.jsonl'), said('old', 400));
+      await writeFile(join(notes, 'orchard.md'), '# Orchard\n\nThe orchard has trees. Fruit trees grow here.\n');
+      await writeFile(join(repo, 'note.md'), 'orchard note\n');
+      const git = (args: string[]) => execFileSync('git', ['-C', repo, '-c', 'core.hooksPath=/dev/null',
+        '-c', 'commit.gpgsign=false', '-c', 'user.name=T', '-c', 'user.email=t@t', ...args], { stdio: 'pipe' });
+      git(['init', '-q', '-b', 'main']);
+      git(['add', '-A']);
+      git(['commit', '-qm', 'orchard']);
+      const sourcesFile = join(directory, 'sources.json');
+      await writeFile(sourcesFile, JSON.stringify({ sources: [{ type: 'claude-code', path: transcripts },
+        { type: 'markdown', path: notes }, { type: 'git', path: repo }], ...settings }));
+      vi.stubEnv('HOME', home);
+      vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
+      vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
+      vi.stubGlobal('fetch', answerAll());
+      return sourcesFile;
+    }
+    const proposal = { kinds: ['chat'], since: '28 days' };
+    const read = (record: { sourcesRead: { source: string }[] }) => record.sourcesRead.map((entry) => entry.source.split(':')[0]).sort();
+
+    it('reads only the kinds and the window the question names, and records the scope', async () => {
+      const sourcesFile = await threeKinds();
+      const { call, calls } = subscriptionReply({ ...searches(), scope: proposal });
+      const { record } = await run(['--sources', sourcesFile, 'What did we say about the orchard in a session last week?'], call);
+      expect(calls[0]!.prompt).toContain('"scope"');
+      expect(record.scope).toEqual({ proposed: proposal, kinds: ['chat'], since: '28 days', dropped: [] });
+      expect(read(record)).toEqual(['chat']);
+      expect(record.searches).not.toHaveProperty('scope');
+      const ids = record.pick.candidates.map((entry: { id: string }) => entry.id).join(' ');
+      expect(ids).toContain('recent.jsonl');
+      expect(ids).not.toContain('old.jsonl');
+    });
+
+    it('reads every source and says why when the question names no scope', async () => {
+      const sourcesFile = await threeKinds();
+      const { call } = subscriptionReply({ ...searches(), scope: proposal });
+      const { record } = await run(['--sources', sourcesFile, 'What grows in the orchard?'], call);
+      expect(record.scope.dropped).toEqual(['kinds: the question does not name chat.', 'since: the question names no time something was said.']);
+      expect(read(record)).toEqual(['chat', 'git', 'knowledge-base']);
+    });
+
+    it('reads every source when the reply holds no scope', async () => {
+      const sourcesFile = await threeKinds();
+      const { call } = subscriptionReply(searches());
+      const { record } = await run(['--sources', sourcesFile, 'What did we say in a session last week?'], call);
+      expect(record.scope).toEqual({ kinds: ['all'], since: 'none', dropped: ['The reply held no scope.'] });
+      expect(read(record)).toEqual(['chat', 'git', 'knowledge-base']);
+    });
+
+    it.each([[{ scope: false }], [{ searchModel: 'sol' }]])('asks for no scope and applies none under %j', async (settings) => {
+      const sourcesFile = await threeKinds(settings);
+      const { call, calls } = subscriptionReply({ ...searches(), scope: proposal });
+      const { record } = await run(['--sources', sourcesFile, 'What did we say about the orchard in a session last week?'], call);
+      expect(calls[0]!.prompt).not.toContain('"scope"');
+      expect(record).not.toHaveProperty('scope');
+      expect(read(record)).toEqual(['chat', 'git', 'knowledge-base']);
+    });
   });
 });

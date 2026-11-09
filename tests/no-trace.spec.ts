@@ -453,8 +453,8 @@ describe('a stopped command', () => {
     await mkdir(fixture.at('bin'));
     await writeFile(fixture.sourcesFile, JSON.stringify({ sources: fixture.sources, searchModel: 'sol' }));
     const marker = fixture.at('started');
-    // Stands in for Codex and ends by itself; only the command is signalled.
-    await writeFile(fixture.at('bin', 'codex'), `#!/bin/sh\n: > "${marker}"\nsleep 5\nexit 1\n`, { mode: 0o755 });
+    // Stands in for Codex, leaves a file in the working folder and ends by itself; only the command is signalled.
+    await writeFile(fixture.at('bin', 'codex'), `#!/bin/sh\nwhile [ "$1" != "-C" ]; do shift; done\n: > "$2/partial"\n: > "${marker}"\nsleep 5\nexit 1\n`, { mode: 0o755 });
     const script = join(__dirname, '../skills/curate/run.mjs');
     const child = realSpawn(process.execPath, [script, '--sources', fixture.sourcesFile, 'orchard'], {
       cwd: fixture.at('cwd'), stdio: 'ignore',
@@ -465,7 +465,7 @@ describe('a stopped command', () => {
     while (!existsSync(marker)) await new Promise((done) => setTimeout(done, 20));
     const [working] = await readdir(fixture.at('tmp'));
     expect(working).toMatch(/^curate-work-/);
-    expect(await readdir(fixture.at('tmp', working!))).toContain('codex-1');
+    expect(await readdir(fixture.at('tmp', working!))).toContain('partial');
     child.kill(signal);
     expect(await closed).toBe(code);
     expect(await readdir(fixture.at('tmp'))).toEqual([]);

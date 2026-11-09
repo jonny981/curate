@@ -14,5 +14,5 @@ export * from './meaning.js';
 export * from './levers.js';
 export { jevRequest } from './models.js';
 export { judgmentFacts, judgmentPopulation, modelScore, type JudgmentFacts, type JudgmentPopulation } from './judgments.js';
-export { taskMoment, taskPeriod, type TaskPeriod } from './time.js';
+export { sinceCutoff, taskMoment, taskPeriod, type TaskPeriod } from './time.js';
 export type { StoredIndexOptions, StoredIndexReport } from './stored-index.js';

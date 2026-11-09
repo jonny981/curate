@@ -4,7 +4,7 @@ import { copyFile, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, utimes
 import { homedir, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { curate, levelDistribution, pickFromSources } from '@curatejs/core';
+import { curate, levelDistribution, pickFromSources, sinceCutoff, taskPeriod } from '@curatejs/core';
 import { jev } from '@curatejs/core/models';
 import { chat, AGENT_CHAT_CASCADE, CHAT_SEARCH_LINE_REGISTER, JUDGMENT_CHAT_CASCADE } from '@curatejs/chat';
 import { git, GIT_HISTORY_CASCADE, GIT_SEARCH_LINE_REGISTER } from '@curatejs/git';
@@ -99,7 +99,7 @@ export function parseSources(value) {
   if (value.maxCandidates !== undefined || value.userMaxCandidates !== undefined) {
     throw new Error('Remove maxCandidates and userMaxCandidates; the decision feed has no count limit.');
   }
-  for (const key of ['userFirst', 'recentFirst', 'records']) {
+  for (const key of ['userFirst', 'recentFirst', 'records', 'scope']) {
     if (value[key] !== undefined && typeof value[key] !== 'boolean') throw new Error(`${key} must be a boolean.`);
   }
   if (value.embeddingModel !== undefined && (typeof value.embeddingModel !== 'string' || !value.embeddingModel.trim())) {
@@ -569,12 +569,104 @@ function keepAskedLines(searches, required, record) {
   return searches;
 }
 
-export function searchLinesPrompt(task, searchKinds, searchModel = 'haiku') {
+const sourceKind = (type) => type === 'git' ? 'git-history' : type === 'markdown' ? 'markdown' : 'chat';
+
+// A kind counts as named only when the task says to look there, so a task
+// about chat transcripts or about Git history does not narrow to that source.
+const THERE = String.raw`(?:in|from|across|over|during|via)\s+(?:(?:an?|the|our|my|some|that|this|those|these|previous|earlier|recent|one\s+of\s+(?:our|my|the))\s+)*`;
+const SAYS = String.raw`\s+(?:say|says|said|show|shows|showed)\b`;
+const NAMES_KIND = {
+  chat: new RegExp(String.raw`\b${THERE}(?:chats?|sessions?|conversations?|transcripts?)\b|\b(?:chats?|sessions?|conversations?|transcripts?)${SAYS}`, 'i'),
+  'git-history': new RegExp(String.raw`\b(?:which|what)\s+commits?\b|\b${THERE}(?:git\s+(?:history|log)|commit\s+(?:history|log|messages?)|commits?)\b|\b(?:git\s+(?:history|log)|commit\s+(?:history|log|messages?)|commits?)${SAYS}`, 'i'),
+  markdown: new RegExp(String.raw`\b${THERE}(?:notes?|docs?|documents?|markdown|wiki)\b|\b(?:notes?|docs?|documents?|wiki)${SAYS}`, 'i'),
+};
+
+const COUNT_WORDS = { a: 1, an: 1, one: 1, two: 2, couple: 2, three: 3, few: 3, four: 4, five: 5, six: 6, several: 6,
+  seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12 };
+const COUNT = String.raw`\d+|(?:a\s+)?(?:couple|few)(?:\s+of)?|${Object.keys(COUNT_WORDS).join('|')}`;
+const SPAN_DAYS = { day: 1, week: 7, month: 31, year: 366 };
+// Time words taskPeriod() does not read: "last three weeks", "past month",
+// "a couple of weeks ago", "last Tuesday".
+const TIME_PHRASE = new RegExp(String.raw`\b(?:(?:last|past)\s+(?:(?<span>${COUNT})\s+)?|(?<ago>${COUNT})\s+(?=\w+\s+ago\b))(?<unit>day|week|month|year|(?:mon|tues|wednes|thurs|fri|satur|sun)day)s?\b`, 'gi');
+const countOf = (text) => text === undefined ? 1
+  : Number(text) || COUNT_WORDS[text.toLowerCase().replace(/\s+of$/, '').split(/\s+/).at(-1)] || 1;
+
+// A time narrows the search only when the words date the saying itself:
+// opening the question, straight after a word of saying or the place to
+// look, or as a window back from now. Anywhere else it can be the date
+// of the thing talked about, so the search stays open.
+const SAID_WORDS = String.raw`say|says|said|saying|talk(?:s|ed|ing)?|discuss(?:es|ed|ing)?|mention(?:s|ed|ing)?|ask(?:s|ed|ing)?|told|wrote|written|list(?:s|ed|ing)?|decid(?:e|es|ed|ing)|agree(?:s|d|ing)?|chat(?:s|ted|ting)?|sessions?|conversations?|notes?|commit(?:s|ted)?`;
+const SAID = new RegExp(String.raw`\b(?:${SAID_WORDS})\b`, 'i');
+const TIME = String.raw`((?:(?:on|in|during|over|back\s+in)\s+)?(?:(?:the|a)\s+)?(?:last|past|couple|few|\d|one|two|three|four|five|six|yesterday|today|this\s|early|mid|late|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[^,.?;]*)`;
+const OPENING_TIME = new RegExp(String.raw`^\s*${TIME}`, 'i');
+const TIME_AFTER_SAYING = new RegExp(String.raw`\b(?:${SAID_WORDS}|transcripts?|docs?|documents?|wiki|history|log)\s+${TIME}`, 'gi');
+const WINDOW = /\b(?:from|over|in|during|within)\s+the\s+(?:last|past)\s[^,.?;]*/i;
+
+// How many days back the task's own words reach; undefined when they name
+// no time something was said. taskPeriod() reads "in October" but not "in
+// mid-October".
+function daysBackNamed(asked, now, timeZone) {
+  if (!SAID.test(asked)) return undefined;
+  // "Last month's plan" dates the plan, not the saying.
+  const whole = asked.replace(/\b(?:(?:last|this|past)\s+)?[\p{L}\d]+['’]s\b/giu, ' ');
+  const task = [OPENING_TIME.exec(whole)?.[1] ?? '', ...[...whole.matchAll(TIME_AFTER_SAYING)].map((match) => match[1]), WINDOW.exec(whole)?.[0] ?? ''].join(' ');
+  const found = taskPeriod(task.replace(/\b(?:early|mid|late)[-\s]+/gi, ''), { asOf: new Date(now).toISOString(), timeZone });
+  const period = found !== undefined && Date.parse(found.from) > now ? undefined : found;
+  const phrases = [...task.matchAll(TIME_PHRASE)].map(({ groups }) =>
+    countOf(groups.span ?? groups.ago) * (SPAN_DAYS[groups.unit.toLowerCase()] ?? 7));
+  if (period === undefined && !phrases.length) return undefined;
+  return Math.max(0, ...phrases, ...(period === undefined ? [] : [Math.ceil((now - Date.parse(period.from)) / 86_400_000)]));
+}
+
+// A wrong or tight filter silently drops the answer, so the reply's scope
+// stands only on a cue in the task's own words, a window always reaches two
+// weeks past the time the task names, and anything else is dropped with its
+// reason.
+export function acceptScope(proposed, task, searchKinds, now = Date.now(), timeZone = undefined) {
+  if (proposed === null || typeof proposed !== 'object') return { kinds: ['all'], since: 'none', dropped: ['The reply held no scope.'] };
+  const dropped = [];
+  let scopeKinds = ['all'];
+  const asked = proposed.kinds;
+  if (!Array.isArray(asked) || !asked.every((kind) => kind === 'all' || Object.hasOwn(NAMES_KIND, kind))) {
+    dropped.push(`kinds: ${JSON.stringify(asked)} is not a list of source kinds.`);
+  } else if (!asked.includes('all')) {
+    const read = asked.filter((kind) => searchKinds.includes(kind));
+    const unnamed = read.filter((kind) => !NAMES_KIND[kind].test(task));
+    if (!read.length) dropped.push(`kinds: no source reads ${asked.join(', ')}.`);
+    else if (unnamed.length) dropped.push(`kinds: the question does not name ${unnamed.join(', ')}.`);
+    else {
+      // Every kind the task names is read, even one the reply left out.
+      const named = searchKinds.filter((kind) => NAMES_KIND[kind].test(task));
+      if (named.length < searchKinds.length) scopeKinds = named;
+    }
+  }
+  let since = 'none';
+  if (proposed.since !== 'none') {
+    const window = typeof proposed.since === 'string' ? /^(\d+(?:\.\d+)?) days?$/.exec(proposed.since) : null;
+    const back = daysBackNamed(task, now, timeZone);
+    if (window === null) dropped.push(`since: ${JSON.stringify(proposed.since)} is not "N days" or "none".`);
+    else if (back === undefined) dropped.push('since: the question names no time something was said.');
+    else since = `${Math.ceil(Math.max(Number(window[1]), back + 14))} days`;
+  }
+  return { kinds: scopeKinds, since, dropped };
+}
+
+// The source entries a scope reads, each with the later of the window and
+// its own look-back.
+export function scopedEntries(entries, scope, now = Date.now()) {
+  const later = (own) => own === undefined || sinceCutoff(own, now) < sinceCutoff(scope.since, now) ? scope.since : own;
+  return entries.filter((entry) => scope.kinds.includes('all') || scope.kinds.includes(sourceKind(entry.type)))
+    .map((entry) => scope.since === 'none' ? entry : { ...entry, since: later(entry.since) });
+}
+
+const scopeAsk = (today) => `\nThe JSON also holds a key "scope": {"kinds": [...], "since": "..."}, set only from the task's own words. "kinds" lists the source kinds the task says to look in: "chat" for a chat, conversation or session, "git-history" for a commit or the Git history, "markdown" for a note or document. Use ["all"] when the task does not say where to look; a source that is only the task's subject does not count. "since" is how far back to search, as "N days" counted back from today, or "none" when the task names no time. When the task names a time, pad it generously: at least twice the span it names and never under 14 days, because a window that is too tight loses the answer. Never guess. Today's date is ${today}.`;
+
+export function searchLinesPrompt(task, searchKinds, searchModel = 'haiku', scopeDate = undefined) {
   const registers = { chat: CHAT_SEARCH_LINE_REGISTER, 'git-history': GIT_SEARCH_LINE_REGISTER, markdown: MARKDOWN_SEARCH_LINE_REGISTER };
   return `TASK: ${task}\nWrite search expansions, not a factual answer. For each source kind, give two keyword lines (one naming the subject, one without it) and four plausible hypothetical-answer lines (two naming the subject, two without it). Use varied wording for directions, constraints, tried ideas, rejected ideas and unfinished experiments where the task asks for them. Do not invent evidence.\nRegisters:\n${searchKinds.map((kind) => `${kind}: ${registers[kind]}`).join('\n')}\n${searchKinds.length === kinds.length
     ? 'Return only JSON with these three keys, each containing {"keywords":[...],"answers":[...]}.'
     : `Return only JSON for ${searchKinds.map((kind) => `"${kind}"`).join(', ')}, each containing {"keywords":[...],"answers":[...]}.`}${searchModel === 'sol' ? ''
-    : '\nWrite exactly two keyword lines and exactly four answer lines for each source kind. No other text.'}`;
+    : '\nWrite exactly two keyword lines and exactly four answer lines for each source kind. No other text.'}${scopeDate === undefined ? '' : scopeAsk(scopeDate)}`;
 }
 
 // The search reply gets one repair round, like the curator's log: a reply
@@ -657,8 +749,28 @@ export async function run(args = process.argv.slice(2), callSubscription = subsc
     }
     const apiKey = process.env.TYPESAFE_API_KEY;
     if (!apiKey) throw new Error('Set TYPESAFE_API_KEY or name a KEY=VALUE envFile in the sources file.');
+    // The configured sources decide the kinds asked for: the reply's scope
+    // then decides which sources are read, before any is opened.
+    const searchKinds = kinds.filter((kind) => settings.sources.some((entry) => sourceKind(entry.type) === kind));
+    const searchModel = settings.searchModel ?? 'haiku';
+    const scoped = searchModel !== 'sol' && settings.scope !== false;
+    const searchPrompt = searchLinesPrompt(options.task, searchKinds, searchModel, scoped ? collectedDate : undefined);
+    const searchStart = Date.now();
+    // An injected call stands in for the model on either route.
+    const callSearches = searchModel === 'sol' || callSubscription !== subscription ? callCodex : haikuCall;
+    const { scope: proposedScope, ...searchedLines } = await searchLines(searchPrompt, folder, record, save, callSearches, searchKinds, searchModel !== 'sol');
+    record.searches = searchedLines;
+    record.timings.searchesMs = Date.now() - searchStart;
+    let entries = settings.sources;
+    if (scoped) {
+      const now = Date.parse(startedAt);
+      const scope = acceptScope(proposedScope, options.task, searchKinds, now);
+      record.scope = { proposed: proposedScope, ...scope };
+      entries = scopedEntries(entries, scope, now);
+    }
+    const filterStart = Date.now();
     const sources = [];
-    for (const entry of settings.sources) {
+    for (const entry of entries) {
       // An entry's include/exclude paths resolve inside its own path.
       const inside = (list) => list?.map((entry_) => isAbsolute(entry_) ? entry_ : join(entry.path, entry_));
       if (entry.type === 'git') {
@@ -687,17 +799,8 @@ export async function run(args = process.argv.slice(2), callSubscription = subsc
         }
       }
     }
-    record.timings.filterMs = Date.now() - started;
+    record.timings.filterMs = Date.now() - filterStart;
     await save();
-    // Only the kinds the constructed sources read are asked for.
-    const searchKinds = kinds.filter((kind) => sources.some((source) => source.kind === kind));
-    const searchModel = settings.searchModel ?? 'haiku';
-    const searchPrompt = searchLinesPrompt(options.task, searchKinds, searchModel);
-    const searchStart = Date.now();
-    // An injected call stands in for the model on either route.
-    const callSearches = searchModel === 'sol' || callSubscription !== subscription ? callCodex : haikuCall;
-    record.searches = await searchLines(searchPrompt, folder, record, save, callSearches, searchKinds, searchModel !== 'sol');
-    record.timings.searchesMs = Date.now() - searchStart;
     const { createLocalEmbedder } = await import('@curatejs/core/local-embeddings');
     const modelPath = settings.embeddingModel ?? join(homedir(), '.cache/curate/models/embeddinggemma-300M-Q8_0.gguf');
     const cacheDirectory = join(process.env.XDG_CACHE_HOME ?? join(homedir(), '.cache'), 'curate/embeddings');
