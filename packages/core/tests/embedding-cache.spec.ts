@@ -30,7 +30,7 @@ it('persists each complete unique input across runs and separates model identiti
   const other = cachedEmbeddings(embed, { directory, modelId: 'model-b' });
   await other(['reply']);
   expect(calls).toEqual([['reply', 'previous\nreply'], ['edited reply'], ['reply']]);
-  const models = (await readdir(directory)).filter((name) => name.endsWith('.vectors.sqlite'));
+  const models = (await readdir(directory)).filter((name) => name.endsWith('.vectors.waiting.sqlite'));
   expect(models).toHaveLength(2);
   const counts = [];
   for (const model of models) {
@@ -44,7 +44,7 @@ it('persists each complete unique input across runs and separates model identiti
   expect(counts.sort()).toEqual([1, 3]);
 });
 
-it('migrates a vector left in the per-text JSON folder into the model vector file', async () => {
+it('migrates a vector left in the per-text JSON folder into the model\'s waiting file', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'curate-embeddings-'));
   directories.push(directory);
   const modelHash = createHash('sha256').update('model-a').digest('hex');
@@ -60,7 +60,7 @@ it('migrates a vector left in the per-text JSON folder into the model vector fil
   const [vector] = await cached(['kept text']);
   expect(calls).toEqual([]);
   expect(Array.from(vector!)).toEqual([0.6, 0.8]);
-  const database = await openIndexFile(join(directory, `${modelHash}.vectors.sqlite`), directory);
+  const database = await openIndexFile(join(directory, `${modelHash}.vectors.waiting.sqlite`), directory);
   try {
     expect(database.prepare('SELECT COUNT(*) AS n FROM vectors').get()).toEqual({ n: 1 });
   } finally {

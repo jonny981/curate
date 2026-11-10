@@ -422,7 +422,13 @@ try {
   embedding, including a commit with only a subject.
   Its original body and title remain in the returned evidence.
 - **Storage:** Set `cacheDirectory` on `createLocalEmbedder()` to persist vectors by model bytes and complete input text.
-  Each model holds one SQLite file of normalized vectors; a text the file misses is read once from the earlier per-text JSON files, which are never written.
+  Each model holds one vector file of normalized 64-bit vectors, read whole into memory once per process, so a stored text costs no lookup on disk.
+  New vectors wait in a SQLite file beside it (`<model>.vectors.waiting.sqlite`) and are folded into the vector file once 4,096 wait. The file is only ever written whole and renamed into place.
+  An earlier `<model>.vectors.sqlite` store is read once, to build the vector file when there is none, and is never written: code from before the vector file keeps finding its vectors there.
+  Nothing deletes that earlier store. Delete it by hand once no older checkout shares the folder.
+  A fold leaves out a vector unused for 30 days, so the vectors of deleted or changed parts do not pile up; using such a text again embeds it again.
+  A text neither file holds is read once from the earlier per-text JSON files, which are never written.
+  A returned vector can be the stored one itself: read it, do not write to it.
   Repeated inputs reuse these files across calls. The vector files contain hashes and vectors, not source text.
   With no directory supplied, vectors exist only while a batch is scored.
   Vectors are kept apart from the [stored index](#stored-index), whose file per source does hold the history's text.

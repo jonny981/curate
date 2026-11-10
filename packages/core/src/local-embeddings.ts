@@ -49,16 +49,20 @@ export async function createLocalEmbedder(options: {
       return vectors;
     };
     let cached = embed;
+    let flush = () => {};
     if (options.cacheDirectory !== undefined) {
       const hash = createHash('sha256');
       for await (const chunk of createReadStream(options.modelPath)) hash.update(chunk);
-      cached = cachedEmbeddings(embed, { directory: options.cacheDirectory,
+      const stored = cachedEmbeddings(embed, { directory: options.cacheDirectory,
         modelId: `llama-embedding-window-mean-1:${hash.digest('hex')}` });
+      cached = stored;
+      flush = () => stored.flush();
     }
     return {
       embed: cached,
       gpu: llama.gpu,
       async dispose() {
+        flush();
         await context.dispose();
         await model.dispose();
         await llama.dispose();
