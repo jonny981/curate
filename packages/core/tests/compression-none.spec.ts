@@ -66,18 +66,49 @@ describe("compression: 'none'", () => {
     const { log, record } = await curate(TASK, GARDEN, { compression: 'none', answerTokens: 500 });
     expect(record.compression).toBe('none');
     expect(record.answerTokens).toBe(500);
-    expect(record.estimatedTokens).toBe(Math.ceil(log.length / 4));
+    expect(record.estimatedTokens).toBeGreaterThan(0);
+    expect(record.estimatedTokens).toBeLessThanOrEqual(500);
+    expect(log.length).toBeGreaterThan(0);
     expect(record.items.map((item) => item.weight)).toEqual([0.9, 0.9, 0.5, 0.3, 0.2, 0.1]);
     expect(record.levers.route).toEqual({ asked: false, applied: false });
   });
 
-  it('budgets 2,250 estimated tokens by default', async () => {
-    const big = part('orchard', 'big', '2024-03-01', 'x'.repeat(8_900));
-    const after = part('orchard', 'after', '2024-03-01', 'y'.repeat(400));
-    const { log, record } = await curate(TASK, picked([[big, 0.9, 0], [after, 0.8, 1]]), { compression: 'none' });
-    expect(record.answerTokens).toBe(2_250);
+  it('budgets 2,000 estimated tokens by default', async () => {
+    const big = part('orchard', 'big', '2024-03-01', 'pear '.repeat(1_900));
+    const after = part('orchard', 'after', '2024-03-01', 'plum '.repeat(200));
+    const { record } = await curate(TASK, picked([[big, 0.9, 0], [after, 0.8, 1]]), { compression: 'none' });
+    expect(record.answerTokens).toBe(2_000);
     expect(record.items.map((item) => item.candidate.id)).toEqual(['big']);
-    expect(Math.ceil(log.length / 4)).toBeLessThanOrEqual(2_250);
+    expect(record.estimatedTokens).toBeLessThanOrEqual(2_000);
+    expect(record.estimatedTokens).toBeGreaterThan(1_900);
+  });
+
+  it('estimates tokens from words, numbers, punctuation and lines, set a little high', async () => {
+    const one = async (text: string) =>
+      (await curate(TASK, picked([[part('orchard', 'one', '2024-03-05', text), 0.9, 0]]), { compression: 'none' })).record.estimatedTokens;
+    // Eight more words and one more full stop: about nine tokens.
+    expect(await one('Pear. The medlar was pruned hard before the frost.') - await one('Pear.')).toBe(9);
+    // Characters alone would call these two the same size.
+    const prose = 'the pear tree by the pond '.repeat(16);
+    const dense = '4,812.07|3,950.11|77,204.9;'.repeat(16).slice(0, prose.length);
+    expect(dense.length).toBe(prose.length);
+    expect(await one(dense)).toBeGreaterThan(2 * await one(prose));
+  });
+
+  it('counts a long run of letters that is no word by its length', async () => {
+    const one = async (text: string) =>
+      (await curate(TASK, picked([[part('orchard', 'one', '2024-03-05', text), 0.9, 0]]), { compression: 'none' })).record.estimatedTokens;
+    expect(await one('k'.repeat(900)) - await one('k')).toBeGreaterThanOrEqual(300);
+  });
+
+  it('keeps fewer dense items than prose items inside one budget', async () => {
+    const prose = (id: string) => part('orchard', id, '2024-03-01', 'the pear tree by the pond '.repeat(16));
+    const dense = (id: string) => part('orchard', id, '2024-03-01', '4,812.07|3,950.11|77,204.9;'.repeat(16).slice(0, 416));
+    const four = (make: (id: string) => MemoryCandidate) => picked([[make('a'), 0.9, 0], [make('b'), 0.8, 1], [make('c'), 0.7, 2], [make('d'), 0.6, 3]]);
+    const kept = async (make: (id: string) => MemoryCandidate) =>
+      (await curate(TASK, four(make), { compression: 'none', answerTokens: 450 })).record.items.length;
+    expect(await kept(prose)).toBe(4);
+    expect(await kept(dense)).toBeLessThan(4);
   });
 
   it('stops at the first item that would take the whole text over the budget', async () => {

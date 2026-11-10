@@ -23,12 +23,34 @@ export const DEFAULT_BATCH_TOKENS = 150_000;
 const DEFAULT_WEIGHT_BANDS: readonly [number, number] = [0.1, 0.6];
 
 /** The estimated tokens `compression: 'none'` keeps its text within
- *  when `answerTokens` is omitted. At four characters per token, this is
- *  the value that came closest to a 2,000-token cut on real chat text. */
-export const DEFAULT_ANSWER_TOKENS = 2_250;
+ *  when `answerTokens` is omitted. */
+export const DEFAULT_ANSWER_TOKENS = 2_000;
 
-/** Curate's token estimate: four characters per token. */
+/** Curate's batch estimate: four characters per token. */
 const estimateTokens = (text: string) => Math.ceil(text.length / 4);
+
+/** The estimate `compression: 'none'` holds its budget with. Characters
+ *  alone run far too low on dense text (figures, tables, code), so this
+ *  counts what a tokenizer splits on: words, with a little more for long
+ *  ones and for capitals inside a word; digits in threes; runs of one
+ *  punctuation mark; line ends; and characters outside ASCII. A run of
+ *  more than 20 letters is no word and counts a token per three letters.
+ *  The weights were fitted to a real tokenizer's counts, with a margin
+ *  on top. It is still an estimate, not a ceiling: text full of rare
+ *  names (products, medicines) can cost more tokens than it counts. */
+const ANSWER_ESTIMATE_MARGIN = 1.09;
+function estimateAnswerTokens(text: string): number {
+  let tokens = 0;
+  for (const word of text.match(/\p{L}+/gu) ?? []) {
+    tokens += word.length > 20 ? Math.ceil(word.length / 3) : 0.93 + 0.13 * (Math.ceil(word.length / 6) - 1);
+    tokens += 0.51 * (word.slice(1).match(/\p{Lu}/gu)?.length ?? 0);
+  }
+  for (const digits of text.match(/\p{N}+/gu) ?? []) tokens += 1.39 * Math.ceil(digits.length / 3);
+  tokens += 0.84 * (text.match(/([^\s\p{L}\p{N}])\1*/gu)?.length ?? 0);
+  tokens += 0.45 * (text.match(/\n/g)?.length ?? 0);
+  tokens += 0.85 * (text.match(/[^\x00-\x7f]/g)?.length ?? 0);
+  return Math.ceil(ANSWER_ESTIMATE_MARGIN * tokens);
+}
 
 /** One write pass over the log, recorded in order. */
 export interface CurateBatch {
@@ -135,11 +157,13 @@ export interface CurateLowOptions extends Pick<CurateOptions, 'write' | 'taskDat
  *  and `decide` are rejected before any work. */
 export interface CurateNoneOptions extends Pick<CurateOptions, 'signal'> {
   readonly compression: 'none';
-  /** Keep the whole text within this many estimated tokens, at four
-   *  characters per token. Items are taken in weight order, and the
-   *  first item that would take the text over this stops the taking.
-   *  The strongest item is always kept whole, even over the budget.
-   *  Omitted means DEFAULT_ANSWER_TOKENS (2,250). */
+  /** Keep the whole text within this many estimated tokens. The
+   *  estimate needs no tokenizer and is set a little high, but it is an
+   *  approximate budget: a real tokenizer can count more on text full of
+   *  rare names. Items are taken in weight order,
+   *  and the first item that would take the text over this stops the
+   *  taking. The strongest item is always kept whole, even over the
+   *  budget. Omitted means DEFAULT_ANSWER_TOKENS (2,000). */
   readonly answerTokens?: number;
 }
 
@@ -740,13 +764,13 @@ export async function curate(
     let log = '';
     for (; taken < ordered.length; taken += 1) {
       const text = layOutItems(ordered.slice(0, taken + 1));
-      if (taken > 0 && estimateTokens(text) > answerTokens) break;
+      if (taken > 0 && estimateAnswerTokens(text) > answerTokens) break;
       log = text;
     }
     return { log, record: {
       compression: 'none',
       levers: { ...picked.record.levers, route: { asked: picked.record.levers?.route === true, applied: false } },
-      items: ordered.slice(0, taken), estimatedTokens: estimateTokens(log), answerTokens,
+      items: ordered.slice(0, taken), estimatedTokens: estimateAnswerTokens(log), answerTokens,
     } };
   }
 
