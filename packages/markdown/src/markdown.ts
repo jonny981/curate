@@ -1121,6 +1121,34 @@ interface CorpusGroup {
   repo?: { readonly toplevel: string; readonly prefix: string };
 }
 
+/** Internal to this package and not part of its public surface: the
+ *  one-pass read's switch and a count of the reads it served. A test
+ *  turns it off to get the per-read path as its oracle. */
+export const onePass = { on: true, served: 0 };
+
+/** What one call knows about a reader's whole corpus, built once and
+ *  shared by every read of the call. It holds nothing a request sets:
+ *  each read derives its own word hits from it. */
+interface Corpus {
+  readonly groups: readonly CorpusGroup[];
+  readonly metas: readonly FileMeta[];
+  /** Each file's `stale_after` moment, NaN without one. */
+  readonly stale: readonly number[];
+  /** The words of each file's name and frontmatter. */
+  readonly fileWords: readonly ReadonlySet<string>[];
+  /** Every part with no request-set hit on it. */
+  readonly parts: readonly PartStat[];
+  /** Each part as stored, for its title and text. */
+  readonly refs: readonly NotePart[];
+  /** The parts whose heading holds a word. */
+  readonly headings: ReadonlyMap<string, readonly number[]>;
+  readonly totalLength: number;
+  /** Each part's place in id order; equal ids share a place. */
+  readonly rank: Uint32Array;
+  /** Each word's postings as part indexes, read from the index once. */
+  readonly postings: Map<string, { readonly hitsOf: readonly { readonly index: number; readonly f: number }[]; readonly held: number }>;
+}
+
 /** Markdown from folders, files or glob patterns, classified by the caller. */
 export function markdown(options: MarkdownOptions): CandidateSource {
   return historySource({ reader: markdownSource(options), ...markdownSettings });
@@ -1233,16 +1261,25 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
       const meaningLane = request.meaningLane !== undefined;
       const groups: CorpusGroup[] = [];
       const metas: FileMeta[] = [];
-      const parts: PartStat[] = [];
+      let parts: PartStat[] = [];
       const documentFrequency = new Map<string, number>();
       let totalLength = 0;
       let taskNow: number | undefined;
-      const selected: {
-        readonly state: ReadState;
-        readonly files: readonly string[];
-        readonly notePaths: ReadonlySet<string>;
-        readonly notesByName: ReadonlyMap<string, readonly string[]>;
-      }[] = [];
+      const selected: { readonly state: ReadState; readonly files: readonly string[] }[] = [];
+      /** The notes a link can name: each by its path, and by its file name. */
+      const namesOf = (state: ReadState, files: readonly string[]) => {
+        const notePaths = new Set<string>();
+        const notesByName = new Map<string, string[]>();
+        for (const file of files) {
+          const name = relative(state.root, file).split(sep).join('/');
+          notePaths.add(name);
+          const leaf = name.slice(name.lastIndexOf('/') + 1);
+          const same = notesByName.get(leaf);
+          if (same === undefined) notesByName.set(leaf, [name]);
+          else same.push(name);
+        }
+        return { notePaths, notesByName };
+      };
 
       // The statistics pass reads each file once: it keeps the fields the
       // emitted parts will need, counts the query terms' document
@@ -1292,17 +1329,7 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
           }
           return true;
         });
-        const notePaths = new Set<string>();
-        const notesByName = new Map<string, string[]>();
-        for (const file of files) {
-          const name = relative(state.root, file).split(sep).join('/');
-          notePaths.add(name);
-          const leaf = name.slice(name.lastIndexOf('/') + 1);
-          const same = notesByName.get(leaf);
-          if (same === undefined) notesByName.set(leaf, [name]);
-          else same.push(name);
-        }
-        selected.push({ state, files, notePaths, notesByName });
+        selected.push({ state, files });
       }
       if (indexPath !== undefined) {
         // Several paths can share a root, so each root is brought up to
@@ -1325,7 +1352,219 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
               context, request.signal)));
         }
       }
-      for (const { state, files, notePaths, notesByName } of selected) {
+      /** The notes one note links to, by path. Links count from every
+       *  file, including ones a scope rule skips, like the old read's
+       *  notes map. */
+      const linksOf = (
+        entry: NoteEntry, state: ReadState, file: string, name: string,
+        notePaths: ReadonlySet<string>, notesByName: ReadonlyMap<string, readonly string[]>,
+      ): string[] => {
+        const links: string[] = [];
+        for (const match of entry.links()) {
+          const raw = (match[0] ?? match[1] ?? '').trim();
+          if (raw === '') continue;
+          let target: string | undefined;
+          if (match[0] === undefined) {
+            // A link that starts with `/` is written from the source root.
+            target = relative(state.root, raw.startsWith('/') ? join(state.root, raw) : resolve(dirname(file), raw)).split(sep).join('/');
+            if (target.startsWith('..')) continue;
+          } else {
+            const linked = raw.endsWith('.md') ? raw : `${raw}.md`;
+            const rooted = relative(state.root, resolve(state.root, linked)).split(sep).join('/');
+            if (notePaths.has(rooted)) {
+              target = rooted;
+            } else {
+              const same = notesByName.get(linked.slice(linked.lastIndexOf('/') + 1));
+              target = same?.length === 1 ? same[0] : undefined;
+            }
+          }
+          if (target === undefined || target === name) continue;
+          links.push(target);
+        }
+        return links;
+      };
+      /** What a group's files need once every note is read: inbound link
+       *  counts, the scope gate, and each file's repository path and
+       *  date. Returns the files the scope gate deferred and kept. */
+      const finishGroup = async (group: CorpusGroup, linksByMeta: readonly (readonly string[])[], anyUndeclared: boolean): Promise<FileMeta[]> => {
+        const state = group.state;
+        const inbound = new Map<string, number>();
+        for (const links of linksByMeta) {
+          for (const target of links) inbound.set(target, (inbound.get(target) ?? 0) + 1);
+        }
+        let lastChanged: ReadonlyMap<string, string> = new Map();
+        let dirty: ReadonlySet<string> = new Set();
+        group.repo = state.repo;
+        if (state.repo !== undefined && (legacy === undefined || anyUndeclared)) {
+          try {
+            const repo = state.repo;
+            lastChanged = indexPath === undefined
+              ? await logDates(repo.toplevel, repo.prefix, state.pinned?.revision, request.signal)
+              : await once(context, JSON.stringify(['dates', repo.toplevel, repo.prefix]),
+                () => logDates(repo.toplevel, repo.prefix, undefined, request.signal));
+            if (state.pinned === undefined) {
+              // Only the reader's Markdown names are checked for
+              // uncommitted work, so status never scans the rest of the
+              // repository; a superset of the listed files is fine.
+              const dirtySpecs = legacy === 'knowledge' ? ['*.md']
+                : legacy === 'rules' ? ['*.md', '*.mdc', '*.cursorrules']
+                  : ['*.md', '*.mdc', '*.markdown', '*.cursorrules'];
+              dirty = indexPath === undefined ? await uncommitted(repo.toplevel, repo.prefix, dirtySpecs, request.signal)
+                : await once(context, JSON.stringify(['dirty', repo.toplevel, repo.prefix, dirtySpecs]),
+                  () => uncommitted(repo.toplevel, repo.prefix, dirtySpecs, request.signal));
+            }
+          } catch (error) {
+            if (state.pinned !== undefined || isCancel(error)) throw asSourceReadError(error);
+            group.repo = undefined;
+          }
+        }
+        const scopeRoot = group.repo?.toplevel ?? state.scopeRoot ?? state.root;
+        const taskPaths = (request.paths ?? []).map((hint) =>
+          relative(scopeRoot, resolve(scopeRoot, hint)).split(sep).join('/'));
+        const deferredFiles: FileMeta[] = [];
+        for (const meta of group.metas) {
+          meta.inbound = inbound.get(meta.name) ?? 0;
+          meta.scopeSkipped = meta.alwaysOn !== undefined || (meta.scope !== undefined && taskPaths.length > 0
+            && !taskPaths.some((hint) => meta.scope!.some((glob) => matchesGlob(hint, glob))));
+          if (meta.deferred && !meta.scopeSkipped) deferredFiles.push(meta);
+          if (meta.scopeSkipped) continue;
+          meta.repoPath = group.repo === undefined ? undefined
+            : relative(group.repo.toplevel, meta.file).split(sep).join('/');
+          meta.repository = meta.repoPath === undefined ? undefined
+            : options.repository ?? group.repo!.toplevel;
+          const changed = meta.repoPath === undefined ? undefined : lastChanged.get(meta.repoPath);
+          // A declared date wins outside a repository and for the older
+          // readers. Otherwise the last commit dates the file, unless the
+          // file sits outside a repository, has no commit yet or has
+          // uncommitted changes: then its modified time does. A pinned
+          // read never uses a modified time.
+          const modified = state.pinned === undefined
+            && (meta.repoPath === undefined || changed === undefined || dirty.has(meta.repoPath));
+          meta.date = (legacy !== undefined || group.repo === undefined) && meta.declared !== undefined ? meta.declared
+            : modified ? { value: updates.get(state.root)?.modified.get(meta.file)
+              ?? (await stat(meta.file)).mtime.toISOString(), meaning: 'modified' }
+            : changed === undefined ? undefined : { value: changed, meaning: 'changed' };
+          meta.location = options.kind === 'instructions'
+            ? instructionLocation(meta.directory, request.paths ?? [], group.repo?.toplevel ?? group.state.root) : 0;
+        }
+        return deferredFiles;
+      };
+      // One pass for the whole call: with the stored index on and a shared
+      // read context, a reference reader walks its notes once and every
+      // read of the call derives its own statistics from that walk. A
+      // read that names paths, decay or a period, a rule reader and a
+      // pinned read take the per-read pass below.
+      const onePassRead = onePass.on && given !== undefined && indexPath !== undefined && role !== 'rule'
+        && (request.paths ?? []).length === 0 && request.decayHalfLife === undefined && request.taskPeriod === undefined
+        && selected.every(({ state }) => state.pinned === undefined && updates.has(state.root));
+      const corpus = !onePassRead ? undefined
+        : await once(context, JSON.stringify(['corpus', indexPath, requestExclude]), async (): Promise<Corpus> => {
+          const corpusGroups: CorpusGroup[] = [];
+          const corpusMetas: FileMeta[] = [];
+          const stale: number[] = [];
+          const fileWords: Set<string>[] = [];
+          const corpusParts: PartStat[] = [];
+          const refs: NotePart[] = [];
+          const headings = new Map<string, number[]>();
+          let total = 0;
+          for (const { state, files } of selected) {
+            const { notePaths, notesByName } = namesOf(state, files);
+            const group: CorpusGroup = { state, files, metas: [] };
+            const linksByMeta: string[][] = [];
+            let anyUndeclared = false;
+            for await (const { file, entry } of entries(state, files)) {
+              const name = nameOf(state, file);
+              const declared = declaredDate(entry.fields, legacy === undefined);
+              if (legacy !== undefined && declared === undefined) anyUndeclared = true;
+              const meta: FileMeta = {
+                index: corpusMetas.length,
+                file, name, directory: dirname(file), scope: undefined, deferred: false, scopeSkipped: false,
+                replaced: entry.replaced(), fileHits: 0, declared,
+                partStart: corpusParts.length, partCount: 0, inbound: 0, location: 0,
+              };
+              stale.push(Date.parse(entry.fields.get('stale_after') ?? ''));
+              fileWords.push(new Set(tokenize(`${name} ${entry.frontmatter}`)));
+              for (const part of entry.parts()) {
+                const len = part.tokens?.length ?? 0;
+                total += len;
+                for (const word of new Set(tokenize(part.heading))) {
+                  const held = headings.get(word);
+                  if (held === undefined) headings.set(word, [corpusParts.length]);
+                  else held.push(corpusParts.length);
+                }
+                corpusParts.push({ file: meta.index, id: part.id, len, headingHits: 0, namedPath: false,
+                  ...(part.date === undefined ? {} : { date: part.date }) });
+                refs.push(part);
+              }
+              meta.partCount = corpusParts.length - meta.partStart;
+              corpusMetas.push(meta);
+              group.metas.push(meta);
+              linksByMeta.push(linksOf(entry, state, file, name, notePaths, notesByName));
+            }
+            await finishGroup(group, linksByMeta, anyUndeclared);
+            corpusGroups.push(group);
+          }
+          // Ties in a lane order by id; each part's place in id order
+          // stands in for the comparison.
+          const byId = corpusParts.map((_, index) => index).sort((left, right) =>
+            (corpusParts[left]!.id < corpusParts[right]!.id ? -1 : corpusParts[left]!.id > corpusParts[right]!.id ? 1 : 0));
+          const rank = new Uint32Array(corpusParts.length);
+          for (let place = 1; place < byId.length; place += 1) {
+            rank[byId[place]!] = corpusParts[byId[place]!]!.id === corpusParts[byId[place - 1]!]!.id
+              ? rank[byId[place - 1]!]! : place;
+          }
+          return { groups: corpusGroups, metas: corpusMetas, stale, fileWords, parts: corpusParts, refs, headings,
+            totalLength: total, rank, postings: new Map() };
+        });
+      if (corpus !== undefined) {
+        onePass.served += 1;
+        for (const [index, meta] of corpus.metas.entries()) {
+          const staleAfter = corpus.stale[index]!;
+          const words = corpus.fileWords[index]!;
+          metas.push({
+            ...meta,
+            replaced: meta.replaced
+              || (Number.isFinite(staleAfter) && staleAfter <= (taskNow ??= taskMoment(request.taskDate ?? request.asOf, timeZoneOf(request.timeZone)))),
+            fileHits: terms.filter((term) => words.has(term)).length,
+          });
+        }
+        let first = 0;
+        for (const group of corpus.groups) {
+          groups.push({ ...group, metas: metas.slice(first, first + group.metas.length) });
+          first += group.metas.length;
+        }
+        if (meaningLane) parts = corpus.parts as PartStat[];
+        else if (!phraseLane || kindLane) {
+          parts = corpus.parts.slice();
+          totalLength = corpus.totalLength;
+          const headingHits = new Map<number, number>();
+          for (const term of terms) {
+            for (const index of corpus.headings.get(term) ?? []) headingHits.set(index, (headingHits.get(index) ?? 0) + 1);
+          }
+          for (const [index, hit] of headingHits) parts[index] = { ...parts[index]!, headingHits: hit };
+          if (kindLane) {
+            for (const [index, part] of corpus.refs.entries()) {
+              const phrased = phraseCount(part.text, request.task) + phraseCount(part.title, request.task);
+              if (phrased > 0) parts[index] = { ...parts[index]!, phrased };
+            }
+          }
+        }
+      }
+      /** The notes of some of a group's files, in that order: from the
+       *  call's one walk when there is one, else read again. */
+      const walk = (group: CorpusGroup, list: readonly FileMeta[]): AsyncIterable<{ readonly entry: Pick<NoteEntry, 'parts'> }> =>
+        corpus === undefined ? entries(group.state, list.map((meta) => meta.file)) : (async function* () {
+          for (const meta of list) {
+            if (request.signal?.aborted) throw new SourceReadError('cancelled', 'The read was cancelled.');
+            yield { entry: { parts: () => corpus.refs.slice(meta.partStart, meta.partStart + meta.partCount) } };
+          }
+        })();
+      /** Ties order by id. */
+      const byPartId = corpus === undefined
+        ? (left: number, right: number) => (parts[left]!.id < parts[right]!.id ? -1 : parts[left]!.id > parts[right]!.id ? 1 : 0)
+        : (left: number, right: number) => corpus.rank[left]! - corpus.rank[right]!;
+      for (const { state, files } of corpus === undefined ? selected : []) {
+        const { notePaths, notesByName } = namesOf(state, files);
         const group: CorpusGroup = { state, files, metas: [] };
         // A group the index covers reads its BM25 inputs from the
         // postings at score time, so its parts enumerate without
@@ -1335,30 +1574,7 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
         let anyUndeclared = false;
         for await (const { file, entry } of entries(state, files)) {
           const name = nameOf(state, file);
-          // Links count from every file, including ones a scope rule
-          // skips, like the old read's notes map.
-          const links: string[] = [];
-          for (const match of entry.links()) {
-            const raw = (match[0] ?? match[1] ?? '').trim();
-            if (raw === '') continue;
-            let target: string | undefined;
-            if (match[0] === undefined) {
-              // A link that starts with `/` is written from the source root.
-              target = relative(state.root, raw.startsWith('/') ? join(state.root, raw) : resolve(dirname(file), raw)).split(sep).join('/');
-              if (target.startsWith('..')) continue;
-            } else {
-              const linked = raw.endsWith('.md') ? raw : `${raw}.md`;
-              const rooted = relative(state.root, resolve(state.root, linked)).split(sep).join('/');
-              if (notePaths.has(rooted)) {
-                target = rooted;
-              } else {
-                const same = notesByName.get(linked.slice(linked.lastIndexOf('/') + 1));
-                target = same?.length === 1 ? same[0] : undefined;
-              }
-            }
-            if (target === undefined || target === name) continue;
-            links.push(target);
-          }
+          const links = linksOf(entry, state, file, name, notePaths, notesByName);
           const marker = role !== 'rule' ? undefined
             : entry.fields.get('alwaysapply') === 'true' ? 'alwaysApply: true'
               : entry.fields.get('applies') === 'always' ? 'applies: always' : undefined;
@@ -1439,65 +1655,7 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
           group.metas.push(meta);
           linksByMeta.push(links);
         }
-        const inbound = new Map<string, number>();
-        for (const links of linksByMeta) {
-          for (const target of links) inbound.set(target, (inbound.get(target) ?? 0) + 1);
-        }
-        let lastChanged: ReadonlyMap<string, string> = new Map();
-        let dirty: ReadonlySet<string> = new Set();
-        group.repo = state.repo;
-        if (state.repo !== undefined && (legacy === undefined || anyUndeclared)) {
-          try {
-            const repo = state.repo;
-            lastChanged = indexPath === undefined
-              ? await logDates(repo.toplevel, repo.prefix, state.pinned?.revision, request.signal)
-              : await once(context, JSON.stringify(['dates', repo.toplevel, repo.prefix]),
-                () => logDates(repo.toplevel, repo.prefix, undefined, request.signal));
-            if (state.pinned === undefined) {
-              // Only the reader's Markdown names are checked for
-              // uncommitted work, so status never scans the rest of the
-              // repository; a superset of the listed files is fine.
-              const dirtySpecs = legacy === 'knowledge' ? ['*.md']
-                : legacy === 'rules' ? ['*.md', '*.mdc', '*.cursorrules']
-                  : ['*.md', '*.mdc', '*.markdown', '*.cursorrules'];
-              dirty = indexPath === undefined ? await uncommitted(repo.toplevel, repo.prefix, dirtySpecs, request.signal)
-                : await once(context, JSON.stringify(['dirty', repo.toplevel, repo.prefix, dirtySpecs]),
-                  () => uncommitted(repo.toplevel, repo.prefix, dirtySpecs, request.signal));
-            }
-          } catch (error) {
-            if (state.pinned !== undefined || isCancel(error)) throw asSourceReadError(error);
-            group.repo = undefined;
-          }
-        }
-        const scopeRoot = group.repo?.toplevel ?? state.scopeRoot ?? state.root;
-        const taskPaths = (request.paths ?? []).map((hint) =>
-          relative(scopeRoot, resolve(scopeRoot, hint)).split(sep).join('/'));
-        const deferredFiles: FileMeta[] = [];
-        for (const meta of group.metas) {
-          meta.inbound = inbound.get(meta.name) ?? 0;
-          meta.scopeSkipped = meta.alwaysOn !== undefined || (meta.scope !== undefined && taskPaths.length > 0
-            && !taskPaths.some((hint) => meta.scope!.some((glob) => matchesGlob(hint, glob))));
-          if (meta.deferred && !meta.scopeSkipped) deferredFiles.push(meta);
-          if (meta.scopeSkipped) continue;
-          meta.repoPath = group.repo === undefined ? undefined
-            : relative(group.repo.toplevel, meta.file).split(sep).join('/');
-          meta.repository = meta.repoPath === undefined ? undefined
-            : options.repository ?? group.repo!.toplevel;
-          const changed = meta.repoPath === undefined ? undefined : lastChanged.get(meta.repoPath);
-          // A declared date wins outside a repository and for the older
-          // readers. Otherwise the last commit dates the file, unless the
-          // file sits outside a repository, has no commit yet or has
-          // uncommitted changes: then its modified time does. A pinned
-          // read never uses a modified time.
-          const modified = state.pinned === undefined
-            && (meta.repoPath === undefined || changed === undefined || dirty.has(meta.repoPath));
-          meta.date = (legacy !== undefined || group.repo === undefined) && meta.declared !== undefined ? meta.declared
-            : modified ? { value: updates.get(state.root)?.modified.get(meta.file)
-              ?? (await stat(meta.file)).mtime.toISOString(), meaning: 'modified' }
-            : changed === undefined ? undefined : { value: changed, meaning: 'changed' };
-          meta.location = options.kind === 'instructions'
-            ? instructionLocation(meta.directory, request.paths ?? [], group.repo?.toplevel ?? group.state.root) : 0;
-        }
+        const deferredFiles = await finishGroup(group, linksByMeta, anyUndeclared);
         // The scope gate has resolved; files it deferred re-read once to
         // count their parts into the statistics.
         if (!phraseLane || kindLane) {
@@ -1644,7 +1802,7 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
           };
           for (const group of groups) {
             let cursor = 0;
-            for await (const { entry } of entries(group.state, group.files)) {
+            for await (const { entry } of walk(group, group.metas)) {
               const meta = group.metas[cursor++]!;
               if (meta.partCount === 0) continue;
               let local = 0;
@@ -1672,24 +1830,24 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
         }
         let at = lite.queries.indexOf(request.task);
         if (at === -1) { lite = await compute([request.task]); at = 0; }
-        const simOf = new Map<number, number>();
-        for (const [index, part] of parts.entries()) {
+        // Each part's similarity to this lane's query; zero when unscored.
+        const sim = new Float64Array(parts.length);
+        for (let index = 0; index < parts.length; index += 1) {
           const scores = lite.sims.get(index);
-          if (scores !== undefined) simOf.set(index, scores[at]!);
+          if (scores !== undefined) sim[index] = scores[at]!;
         }
         const order = parts.map((_, index) => index)
           .filter(inside)
-          .sort((left, right) => (simOf.get(right) ?? 0) - (simOf.get(left) ?? 0)
-            || (parts[left]!.id < parts[right]!.id ? -1 : parts[left]!.id > parts[right]!.id ? 1 : 0));
+          .sort((left, right) => sim[right]! - sim[left]! || byPartId(left, right));
         const cut = request.wholeLanes === false;
         // With `wholeLanes` on the read keeps every part and marks each
         // one the cut would have dropped.
         const mark = request.wholeLanes === true;
-        const bend = cut || mark ? laneBend(order.map((index) => simOf.get(index) ?? 0)) : undefined;
+        const bend = cut || mark ? laneBend(order.map((index) => sim[index]!)) : undefined;
         // A cut lane where nothing scored above zero matched nothing:
         // it keeps no parts rather than read back every body.
-        const matched = order.some((index) => (simOf.get(index) ?? 0) > 0);
-        const passes = (index: number) => bend === undefined ? matched : (simOf.get(index) ?? 0) > bend;
+        const matched = order.some((index) => sim[index]! > 0);
+        const passes = (index: number) => bend === undefined ? matched : sim[index]! > bend;
         const keptAll = cut ? order.filter(passes) : order;
         // `limit` carries the caller's `nearest` cap: it slices the kept
         // set after the curve, not the enumeration before it.
@@ -1712,14 +1870,14 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
           });
           if (needed.length === 0) continue;
           let cursor = 0;
-          for await (const { entry } of entries(group.state, needed.map((meta) => meta.file))) {
+          for await (const { entry } of walk(group, needed)) {
             const meta = needed[cursor++]!;
             let local = 0;
             for (const part of entry.parts()) {
               const index = meta.partStart + local;
               local += 1;
               if (!wanted.has(index)) continue;
-              const similarity = simOf.get(index) ?? 0;
+              const similarity = sim[index]!;
               byIndex.set(index, {
                 ...emit(meta, part, { similarity }),
                 laneScore: similarity,
@@ -1741,7 +1899,7 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
           candidates: emitted,
           meaningLane: true as const,
           meaningScores: (mark ? order : kept).map((index) => ({
-            id: parts[index]!.id, similarity: simOf.get(index) ?? 0,
+            id: parts[index]!.id, similarity: sim[index]!,
             ...(mark && !passes(index) ? { pastLaneCut: true as const } : {}),
           })),
           ...indexed,
@@ -1761,7 +1919,7 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
         const matched: { candidate: MemoryCandidate; count: number }[] = [];
         for (const group of groups) {
           let cursor = 0;
-          for await (const { entry } of entries(group.state, group.files)) {
+          for await (const { entry } of walk(group, group.metas)) {
             const meta = group.metas[cursor++]!;
             if (meta.scopeSkipped) continue;
             for (const part of entry.parts()) {
@@ -1818,25 +1976,34 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
       let database: IndexDatabase | undefined;
       const byFile = new Map<string, FileMeta>();
       try {
-        if (posted.length > 0) {
+        if (posted.length > 0 && (corpus === undefined || terms.some((term) => !corpus.postings.has(term)))) {
           database = await openIndexFile(indexPath!, indexFolder!);
           for (const group of posted) for (const meta of group.metas) byFile.set(meta.file, meta);
         }
         const average = count === 0 ? 0 : totalLength / count;
         if (average > 0) {
-          if (database !== undefined) {
-            const postingOf = database.prepare('SELECT path, ordinal, count FROM postings WHERE term = ?');
-            for (const term of terms) {
+          if (posted.length > 0) {
+            const postingOf = database?.prepare('SELECT path, ordinal, count FROM postings WHERE term = ?');
+            const postingsFor = (term: string) => {
               const held = new Set<number>();
               const hitsOf: { index: number; f: number }[] = [];
-              for (const row of postingOf.all(term) as { path: string; ordinal: number; count: number }[]) {
+              for (const row of postingOf!.all(term) as { path: string; ordinal: number; count: number }[]) {
                 const meta = byFile.get(row.path);
                 if (meta === undefined || row.ordinal >= meta.partCount) continue;
                 const index = meta.partStart + row.ordinal;
                 held.add(index);
                 hitsOf.push({ index, f: row.count });
               }
-              const n = (documentFrequency.get(term) ?? 0) + held.size;
+              return { hitsOf, held: held.size };
+            };
+            for (const term of terms) {
+              let posting = corpus?.postings.get(term);
+              if (posting === undefined) {
+                posting = postingsFor(term);
+                corpus?.postings.set(term, posting);
+              }
+              const { hitsOf, held } = posting;
+              const n = (documentFrequency.get(term) ?? 0) + held;
               documentFrequency.set(term, n);
               if (n === 0) continue;
               for (const { index, f } of hitsOf) {
@@ -1905,8 +2072,7 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
       const mark = request.wholeLanes === true;
       const select = (totals: readonly number[]) => {
         const ranked = parts.map((_, index) => index)
-          .sort((left, right) => totals[right]! - totals[left]!
-            || (parts[left]!.id < parts[right]!.id ? -1 : parts[left]!.id > parts[right]!.id ? 1 : 0));
+          .sort((left, right) => totals[right]! - totals[left]! || byPartId(left, right));
         // A kind lane's lane is its exact-phrase matches, ranked by the
         // topic's signal sum — never by how often the phrase occurs, so a
         // direction said once survives a phrase everyone says.
@@ -1959,7 +2125,7 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
         });
         if (needed.length === 0) continue;
         let cursor = 0;
-        for await (const { entry } of entries(group.state, needed.map((meta) => meta.file))) {
+        for await (const { entry } of walk(group, needed)) {
           const meta = needed[cursor++]!;
           let local = 0;
           for (const part of entry.parts()) {
