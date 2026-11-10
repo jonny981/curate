@@ -43,7 +43,7 @@ const MEANING_KEYS: readonly (keyof MeaningSearchOptions)[] = ['embed', 'nearest
 const CURATE_KEYS: readonly (keyof CurateOptions | keyof CurateLowOptions | keyof CurateNoneOptions)[] = [
   'write', 'working', 'context', 'routeByTask', 'route', 'preferenceAdvice',
   'preferenceChange', 'taskDate', 'answerHint', 'contextLimit', 'batchTokens', 'weightBands',
-  'compression', 'decide', 'answerTokens', 'signal',
+  'compression', 'decide', 'answerTokens', 'sentenceCutoff', 'signal',
 ];
 /** The fixed keys of the maps keyed by source kind — tagsByKind and
  *  the read request's kindLanes — and the values sourceKinds maps to. */
@@ -351,10 +351,11 @@ export function checkCurateOptions(options: CurateOptions | CurateLowOptions | C
 }
 
 /** And for the compression setting, before any source read or call:
- *  'high', 'low' or 'none'; `decide` only with 'low', which needs it;
- *  `answerTokens` only with 'none'; under 'low', none of the options
- *  only the log reads; and under 'none', no model function and none of
- *  the options only a curator reads. */
+ *  'high', 'low' or 'none'; `decide` only with 'low', which needs it,
+ *  or with `sentenceCutoff`, which needs it too; `answerTokens` and
+ *  `sentenceCutoff` only with 'none'; under 'low', none of the options
+ *  only the log reads; and under 'none', no `write` and none of the
+ *  options only a curator reads. */
 export function checkCompression(options: CurateOptions | CurateLowOptions | CurateNoneOptions): void {
   const compression: unknown = options.compression;
   if (compression !== undefined && compression !== 'high' && compression !== 'low' && compression !== 'none') {
@@ -362,10 +363,11 @@ export function checkCompression(options: CurateOptions | CurateLowOptions | Cur
   }
   if (options.compression === 'none') {
     const given = options as Partial<Record<keyof CurateOptions | 'decide', unknown>>;
+    const cutoff: unknown = options.sentenceCutoff;
     const unsupported = [
       ...(['working', 'context', 'routeByTask', 'preferenceAdvice', 'preferenceChange', 'answerHint'] as const)
         .filter((key) => given[key] === true),
-      ...(['write', 'decide', 'route', 'contextLimit', 'batchTokens', 'weightBands', 'taskDate'] as const)
+      ...(['write', ...(cutoff === undefined ? ['decide'] as const : []), 'route', 'contextLimit', 'batchTokens', 'weightBands', 'taskDate'] as const)
         .filter((key) => given[key] !== undefined),
     ];
     if (unsupported.length) {
@@ -374,10 +376,21 @@ export function checkCompression(options: CurateOptions | CurateLowOptions | Cur
     if (options.answerTokens !== undefined && (!Number.isInteger(options.answerTokens) || options.answerTokens <= 0)) {
       throw new TypeError('curate: answerTokens must be a positive integer of estimated tokens.');
     }
+    if (cutoff !== undefined) {
+      if (typeof cutoff !== 'number' || !(cutoff >= 0 && cutoff <= 1)) {
+        throw new TypeError('curate: sentenceCutoff must be a number between 0 and 1.');
+      }
+      if (typeof options.decide !== 'function') {
+        throw new TypeError('curate: sentenceCutoff needs decide, the decision function that judges each sentence.');
+      }
+    }
     return;
   }
   if ((options as { readonly answerTokens?: unknown }).answerTokens !== undefined) {
     throw new TypeError("curate: answerTokens is read only with compression: 'none'.");
+  }
+  if ((options as { readonly sentenceCutoff?: unknown }).sentenceCutoff !== undefined) {
+    throw new TypeError("curate: sentenceCutoff is read only with compression: 'none'.");
   }
   if (options.compression !== 'low') {
     if ('decide' in options && options.decide !== undefined) {

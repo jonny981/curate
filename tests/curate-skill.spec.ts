@@ -185,6 +185,16 @@ describe('curate command input', () => {
     expect(() => parseSources({ sources, answerTokens: 500 })).toThrow("answerTokens needs compression 'none'.");
   });
 
+  it("takes sentenceCutoff from 0 to 1, and only with compression 'none'", () => {
+    const sources = [{ type: 'markdown', path: '/notes' }];
+    expect(parseSources({ sources, compression: 'none', sentenceCutoff: 0.5 })).toMatchObject({ compression: 'none', sentenceCutoff: 0.5 });
+    expect(parseSources({ sources, compression: 'none' }).sentenceCutoff).toBeUndefined();
+    for (const sentenceCutoff of [-0.1, 1.5, '0.5', true]) {
+      expect(() => parseSources({ sources, compression: 'none', sentenceCutoff })).toThrow('sentenceCutoff must be a number between 0 and 1.');
+    }
+    expect(() => parseSources({ sources, sentenceCutoff: 0.5 })).toThrow("sentenceCutoff needs compression 'none'.");
+  });
+
   it('names the unknown key, the source type and its accepted keys', () => {
     expect(() => parseSources({ sources: [{ type: 'git', path: 'repository', only: 'src' }] }))
       .toThrow('Unknown key "only" on a git source; allowed keys are type, path, since, exclude, include');
@@ -884,6 +894,64 @@ it("under compression 'none', calls no model and dates an undated item by its la
   expect(log).toContain('This header date is collection only');
   expect(record.curate).toMatchObject({ compression: 'none', answerTokens: 500 });
   expect(record.status).toBe('complete');
+});
+
+describe("compression 'none' with sentenceCutoff, and what it tells the caller", () => {
+  const reference = (id: string, text: string): MemoryCandidate => ({
+    id, sourceId: 'documents', role: 'reference', title: id, text, signals: {}, date: { value: '2026-01-01', meaning: 'recorded' as const },
+  });
+  const pickOf = (items: readonly (readonly [MemoryCandidate, number])[]) => ({
+    selected: items.map(([item]) => item),
+    record: { levers: {}, candidates: items.map(([item, probability], priority) => ({
+      sourceId: item.sourceId, id: item.id, role: item.role, priority, signals: {}, status: 'selected', asked: true, probability,
+    })) },
+  });
+  const ORCHARD = reference('orchard', 'An orchard was planted. The day was cold.');
+  const told = async (items: readonly (readonly [MemoryCandidate, number])[], none: Record<string, unknown>) => {
+    const directory = join(await folder(), 'run');
+    await mkdir(directory);
+    const record: { curate?: Record<string, unknown>; timings: Record<string, number> } = { timings: {} };
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const result = await writeLog('orchard evidence', pickOf(items), directory, record, async () => {}, vi.fn(), undefined, '2026-02-01', none);
+    return { log: result.log as string, record, lines: errors.mock.calls.map((call) => String(call[0])) };
+  };
+
+  it('keeps the sentences the decision function rates at the cutoff or more, and records what it did', async () => {
+    const decide = vi.fn(async (batch: { questions: readonly { key: string; text: string }[] }) => Object.fromEntries(batch.questions.map((question) =>
+      [question.key, { status: 'answered', probability: question.text.includes('cold') ? 0.1 : 0.9 }])));
+    const { log, record, lines } = await told([[ORCHARD, 0.9]], { sentenceCutoff: 0.5, decide });
+    expect(decide).toHaveBeenCalledTimes(1);
+    expect(decide.mock.calls[0]![0]).toMatchObject({ task: 'orchard evidence' });
+    expect(log).toBe('### Most likely answer\n\n#### documents (said 2026-01-01)\n\nAn orchard was planted. …\n');
+    expect(record.curate).toMatchObject({ compression: 'none', sentences: { cutoff: 0.5, kept: 1, of: 2 } });
+    expect(lines).toEqual([]);
+  });
+
+  it('says on standard error that the sentence request failed, and returns the whole text', async () => {
+    const { log, lines } = await told([[ORCHARD, 0.9]], { sentenceCutoff: 0.5, decide: async () => { throw new Error('service down'); } });
+    expect(log).toContain('An orchard was planted. The day was cold.');
+    expect(lines).toEqual(['Sentence request failed (service down); the whole text is returned.']);
+  });
+
+  it('says on standard error that no sentence reached the cutoff', async () => {
+    const decide = async (batch: { questions: readonly { key: string }[] }) => Object.fromEntries(batch.questions.map((question) => [question.key, { status: 'answered', probability: 0.1 }]));
+    const { log, lines } = await told([[ORCHARD, 0.9]], { sentenceCutoff: 0.5, decide });
+    expect(log).toBe('');
+    expect(lines).toEqual(['No sentence was rated at sentenceCutoff 0.5 or more; the text is empty.']);
+  });
+
+  it('says on standard error how many parts at weight 0.5 or more the budget left out, and how to ask for more', async () => {
+    const wide = (id: string) => reference(id, `${'the pear tree by the pond '.repeat(40)}${id}`);
+    const { lines } = await told([[ORCHARD, 0.9], [wide('one'), 0.8], [wide('two'), 0.5], [wide('three'), 0.3]], { answerTokens: 60 });
+    expect(lines).toEqual(['The answerTokens budget of 60 left out 2 parts at weight 0.5 or more; raise answerTokens to read them.']);
+  });
+
+  it('says nothing on standard error when the budget left out only weaker parts, or none', async () => {
+    const wide = reference('wide', `${'the pear tree by the pond '.repeat(40)}wide`);
+    expect((await told([[ORCHARD, 0.9], [wide, 0.4]], { answerTokens: 60 })).lines).toEqual([]);
+    expect((await told([[ORCHARD, 0.9], [wide, 0.8]], { answerTokens: 2_000 })).lines).toEqual([]);
+  });
 });
 
 it('saves the pick record naming the rejected batch when the decision service fails', async () => {

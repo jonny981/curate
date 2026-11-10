@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { curate, type MemoryCandidate, type PickResult } from '../src/index.js';
+import { curate, type MemoryCandidate, type PickBatch, type PickDecide, type PickResult } from '../src/index.js';
 
 function part(sourceId: string, id: string, date: string | undefined, text: string, role: 'reference' | 'rule' = 'reference'): MemoryCandidate {
   return {
@@ -295,5 +295,175 @@ describe("compression: 'none'", () => {
   it('rejects answerTokens under the other compressions', async () => {
     await expect(curate(TASK, GARDEN, { write: async () => '', answerTokens: 100 } as never))
       .rejects.toThrow("answerTokens is read only with compression: 'none'");
+  });
+});
+
+describe('what the budget left out', () => {
+  it('records how many selected items were not taken, the strongest weight among them and how many are at 0.5 or more', async () => {
+    const first = part('orchard', 'first', '2024-03-01', 'a'.repeat(100));
+    const wide = part('orchard', 'wide', '2024-03-01', 'b'.repeat(800));
+    const small = part('orchard', 'small', '2024-03-01', 'small');
+    const faint = part('orchard', 'faint', '2024-03-01', 'faint');
+    const alone = await curate(TASK, picked([[first, 0.9, 0]]), { compression: 'none' });
+    const { record } = await curate(TASK, picked([[first, 0.9, 0], [wide, 0.8, 1], [small, 0.5, 2], [faint, 0.3, 3]]),
+      { compression: 'none', answerTokens: alone.record.estimatedTokens + 50 });
+    expect(record.leftOut).toEqual({ count: 3, strongestWeight: 0.8, atHalfOrMore: 2 });
+  });
+
+  it('records none left out when every selected item was taken', async () => {
+    const { record } = await curate(TASK, GARDEN, { compression: 'none' });
+    expect(record.leftOut).toEqual({ count: 0, atHalfOrMore: 0 });
+  });
+
+  it('does not count a copy as left out', async () => {
+    const copy = part('pond', 'copy', '2024-03-20', KOI.text);
+    const { record } = await curate(TASK, picked([[KOI, 0.9, 0], [copy, 0.8, 1]]), { compression: 'none' });
+    expect(record.collapsed).toBe(1);
+    expect(record.leftOut.count).toBe(0);
+  });
+});
+
+describe('sentenceCutoff', () => {
+  const DIARY = part('orchard', 'h', '2024-03-12', 'Planted the quince row. The weather was grey.\n\nBought string at the market. Staked the young quinces.');
+  const SHED = part('shed', 'j', '2024-03-14', 'Painted the shed door. Oiled the hinges.');
+  const TALK = part('pond', 'k', '2024-03-13', 'user: The koi are fat. Should I net the pond?\nassistant: Nets help. Herons took two fish last spring.');
+  const WORK = picked([[DIARY, 0.9, 0], [SHED, 0.6, 1]]);
+
+  /** A stand-in decision function: 0.2 for a sentence holding one of `low`, 0.8 for every other. */
+  const judge = (low: readonly string[], seen: PickBatch[] = [], weak = 0.2): PickDecide => async (batch) => {
+    seen.push(batch);
+    return Object.fromEntries(batch.questions.map((question) =>
+      [question.key, { status: 'answered' as const, probability: low.some((word) => question.text.includes(word)) ? weak : 0.8 }]));
+  };
+
+  it('keeps the sentences at or over the cutoff, in order, under the same headings, with a mark where text is left out', async () => {
+    const { log } = await curate(TASK, WORK, { compression: 'none', sentenceCutoff: 0.5, decide: judge(['weather', 'string', 'hinges']) });
+    expect(log).toBe([
+      '### Most likely answer\n\n',
+      '#### orchard (said 2024-03-12)\n\nPlanted the quince row.\n… Staked the young quinces.\n\n',
+      '#### shed (said 2024-03-14)\n\nPainted the shed door. …\n',
+    ].join(''));
+  });
+
+  it('keeps a sentence rated exactly at the cutoff and drops it under a higher one', async () => {
+    const at = await curate(TASK, WORK, { compression: 'none', sentenceCutoff: 0.2, decide: judge(['hinges']) });
+    expect(at.log).toContain('Painted the shed door. Oiled the hinges.');
+    const over = await curate(TASK, WORK, { compression: 'none', sentenceCutoff: 0.21, decide: judge(['hinges']) });
+    expect(over.log).toContain('Painted the shed door. …');
+    expect(over.log).not.toContain('hinges');
+  });
+
+  it('keeps the speaker of a kept sentence when the line that named the speaker lost its first sentence', async () => {
+    const { log } = await curate(TASK, picked([[TALK, 0.9, 0]]), { compression: 'none', sentenceCutoff: 0.5, decide: judge(['fat', 'Nets']) });
+    expect(log).toBe('### Most likely answer\n\n#### pond (said 2024-03-13)\n\n… user: Should I net the pond?\n… assistant: Herons took two fish last spring.\n');
+  });
+
+  it('judges the strongest item like any other, and leaves out and counts an item with no sentence kept', async () => {
+    const { log, record } = await curate(TASK, picked([[SHED, 0.9, 0], [DIARY, 0.6, 1], [FIG, 0.5, 2]]),
+      { compression: 'none', sentenceCutoff: 0.5, decide: judge(['shed', 'hinges']) });
+    expect(log).not.toContain('shed');
+    expect(log).toContain('#### orchard (said 2024-03-12)\n\nPlanted the quince row. The weather was grey.\nBought string at the market. Staked the young quinces.');
+    expect(log).toContain('#### orchard (said 2024-03-05)\n\nWrapped the fig.');
+    expect(record.items.map((item) => item.candidate.id)).toEqual(['h', 'd']);
+    expect(record.sentences).toMatchObject({ itemsLeftOut: 1, itemsTrimmed: 0, kept: 5, of: 7 });
+  });
+
+  it('returns no text when no sentence reaches the cutoff', async () => {
+    const { log, record } = await curate(TASK, WORK, { compression: 'none', sentenceCutoff: 0.9, decide: judge([]) });
+    expect(log).toBe('');
+    expect(record.items).toEqual([]);
+    expect(record.sentences).toMatchObject({ itemsLeftOut: 2, kept: 0, of: 6 });
+    expect(record.estimatedTokens).toBe(0);
+  });
+
+  it('asks in one request: each sentence alone, its speaker on a line\'s first sentence, the item\'s date on its first', async () => {
+    const seen: PickBatch[] = [];
+    await curate(TASK, picked([[DIARY, 0.9, 0], [TALK, 0.6, 1]]), { compression: 'none', sentenceCutoff: 0.5, decide: judge([], seen) });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.task).toBe(TASK);
+    expect(seen[0]!.questions.map((question) => [question.key, question.text])).toEqual([
+      ['p0u0', 'Planted the quince row.'], ['p0u1', 'The weather was grey.'],
+      ['p0u2', 'Bought string at the market.'], ['p0u3', 'Staked the young quinces.'],
+      ['p1u0', 'user: The koi are fat.'], ['p1u1', 'Should I net the pond?'],
+      ['p1u2', 'assistant: Nets help.'], ['p1u3', 'Herons took two fish last spring.'],
+    ]);
+    expect(seen[0]!.questions[0]).toEqual({
+      key: 'p0u0', sourceId: 'p0', id: 'u0', role: 'reference', title: '', anonymous: true, text: 'Planted the quince row.',
+      date: { value: '2024-03-12', meaning: 'recorded' },
+      question: 'Does this sentence supply evidence, a constraint or a decision for this task?',
+      trueCriterion: 'It helps with this task, or is needed to understand a sentence that does.',
+      falseCriterion: 'It gives nothing that helps with this task.',
+    });
+    expect(seen[0]!.questions[1]).not.toHaveProperty('date');
+  });
+
+  it('judges only the items the budget took', async () => {
+    const seen: PickBatch[] = [];
+    const alone = await curate(TASK, picked([[DIARY, 0.9, 0]]), { compression: 'none' });
+    const { record } = await curate(TASK, WORK, { compression: 'none', answerTokens: alone.record.estimatedTokens, sentenceCutoff: 0.5, decide: judge([], seen) });
+    expect(seen[0]!.questions).toHaveLength(4);
+    expect(record.leftOut).toEqual({ count: 1, strongestWeight: 0.6, atHalfOrMore: 1 });
+  });
+
+  it('records the cutoff, the sentences kept of how many, the items that lost sentences and the estimate before and after', async () => {
+    const whole = await curate(TASK, WORK, { compression: 'none' });
+    const { record } = await curate(TASK, WORK, { compression: 'none', sentenceCutoff: 0.5, decide: judge(['weather', 'string', 'hinges']) });
+    expect(record.sentences).toEqual({
+      cutoff: 0.5, kept: 3, of: 6, unanswered: 0, itemsTrimmed: 2, itemsLeftOut: 0, estimatedTokensBefore: whole.record.estimatedTokens,
+    });
+    expect(record.estimatedTokens).toBeLessThan(whole.record.estimatedTokens);
+    expect(record.items.map((item) => item.candidate.text)).toEqual(['Planted the quince row.\n… Staked the young quinces.', 'Painted the shed door. …']);
+  });
+
+  it('keeps and counts a sentence the decision function left unanswered', async () => {
+    const decide: PickDecide = async (batch) => Object.fromEntries(batch.questions.map((question) =>
+      [question.key, question.text.includes('hinges') ? { status: 'refused' as const } : { status: 'answered' as const, probability: 0.1 }]));
+    const { log, record } = await curate(TASK, WORK, { compression: 'none', sentenceCutoff: 0.5, decide });
+    expect(log).toBe('### Most likely answer\n\n#### shed (said 2024-03-14)\n\n… Oiled the hinges.\n');
+    expect(record.sentences).toMatchObject({ kept: 1, of: 6, unanswered: 1 });
+  });
+
+  it('returns the untrimmed text and says so in the record when the decision request fails', async () => {
+    const whole = await curate(TASK, WORK, { compression: 'none' });
+    const { log, record } = await curate(TASK, WORK, { compression: 'none', sentenceCutoff: 0.5, decide: async () => { throw new Error('service down'); } });
+    expect(log).toBe(whole.log);
+    expect(record.items).toEqual(whole.record.items);
+    expect(record.estimatedTokens).toBe(whole.record.estimatedTokens);
+    expect(record.sentences).toEqual({
+      cutoff: 0.5, kept: 6, of: 6, unanswered: 6, itemsTrimmed: 0, itemsLeftOut: 0, failed: 'service down', estimatedTokensBefore: whole.record.estimatedTokens,
+    });
+  });
+
+  it('stops, without a text, when the caller ends the run during the decision request', async () => {
+    const stop = new AbortController();
+    await expect(curate(TASK, WORK, { compression: 'none', sentenceCutoff: 0.5, signal: stop.signal,
+      decide: async () => { stop.abort(); throw new Error('stopped'); } })).rejects.toThrow();
+  });
+
+  it('changes nothing when it is not set', async () => {
+    const { log, record } = await curate(TASK, GARDEN, { compression: 'none' });
+    expect(log).toBe(LAID_OUT);
+    expect(record).not.toHaveProperty('sentences');
+  });
+
+  it('keeps the place and date of a copy on the trimmed item\'s heading', async () => {
+    const copy = part('notes', 'copy', '2024-03-20', DIARY.text);
+    const { log } = await curate(TASK, picked([[DIARY, 0.9, 0], [copy, 0.8, 1]]), { compression: 'none', sentenceCutoff: 0.5, decide: judge(['weather']) });
+    expect(log).toContain('#### orchard (said 2024-03-12), also notes (said 2024-03-20)\n\nPlanted the quince row.\n… Bought string');
+  });
+
+  it.each([-0.1, 1.5, Number.NaN, '0.5'])('rejects sentenceCutoff %s', async (sentenceCutoff) => {
+    await expect(curate(TASK, GARDEN, { compression: 'none', sentenceCutoff, decide: judge([]) } as never))
+      .rejects.toThrow('sentenceCutoff must be a number between 0 and 1');
+  });
+
+  it('rejects sentenceCutoff with no decision function', async () => {
+    await expect(curate(TASK, GARDEN, { compression: 'none', sentenceCutoff: 0.5 } as never))
+      .rejects.toThrow('sentenceCutoff needs decide, the decision function that judges each sentence');
+  });
+
+  it('rejects sentenceCutoff under the other compressions', async () => {
+    await expect(curate(TASK, GARDEN, { write: async () => '', sentenceCutoff: 0.5 } as never))
+      .rejects.toThrow("sentenceCutoff is read only with compression: 'none'");
   });
 });

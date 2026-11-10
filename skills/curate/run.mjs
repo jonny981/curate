@@ -93,6 +93,12 @@ export function parseSources(value) {
     if (value.compression !== 'none') throw new Error("answerTokens needs compression 'none'.");
     if (!Number.isSafeInteger(value.answerTokens) || value.answerTokens < 1) throw new Error('answerTokens must be a positive integer.');
   }
+  if (value.sentenceCutoff !== undefined) {
+    if (value.compression !== 'none') throw new Error("sentenceCutoff needs compression 'none'.");
+    if (typeof value.sentenceCutoff !== 'number' || !(value.sentenceCutoff >= 0 && value.sentenceCutoff <= 1)) {
+      throw new Error('sentenceCutoff must be a number between 0 and 1.');
+    }
+  }
   if (value.searchModel !== undefined && !['haiku', 'sol'].includes(value.searchModel)) {
     throw new Error("searchModel must be 'haiku' or 'sol'.");
   }
@@ -540,11 +546,12 @@ export function curationEvidence(picked, collectedDate) {
 // With `low`, the memory is compression 'low': its extraction and markup
 // prompts go to the model as written, labelled by step, and never
 // through the log writer's added instructions or reply edits. With
-// `none`, the memory is compression 'none': no model call.
+// `none`, the memory is compression 'none': no model call, unless
+// `none.sentenceCutoff` is set, when `none.decide` rates each sentence.
 export async function writeLog(task, picked, folder, record, save, callSubscription = subscription, low = undefined, collectedDate = undefined, none = undefined) {
   const started = Date.now();
   const evidence = curationEvidence(picked, collectedDate);
-  const result = none !== undefined ? await curate(task, evidence, { compression: 'none', answerTokens: none.answerTokens })
+  const result = none !== undefined ? await curate(task, evidence, { compression: 'none', ...none })
   : low !== undefined ? await curate(task, evidence, { compression: 'low', decide: low.decide,
     write: (prompt, signal) => callSubscription(`${prompt.instructions}\n\n${prompt.body}`, folder, prompt.step, record, save, undefined, signal) })
   : await curate(task, evidence, { write: async (prompt) => {
@@ -557,6 +564,13 @@ export async function writeLog(task, picked, folder, record, save, callSubscript
   } });
   record.curate = result.record;
   record.timings.curateMs = Date.now() - started;
+  // What ended the text is said here too, since records are off by default.
+  const { leftOut, sentences, answerTokens } = result.record;
+  if (leftOut?.atHalfOrMore > 0) {
+    console.error(`The answerTokens budget of ${answerTokens} left out ${leftOut.atHalfOrMore} ${leftOut.atHalfOrMore === 1 ? 'part' : 'parts'} at weight 0.5 or more; raise answerTokens to read them.`);
+  }
+  if (sentences?.failed !== undefined) console.error(`Sentence request failed (${sentences.failed}); the whole text is returned.`);
+  else if (sentences !== undefined && sentences.kept === 0) console.error(`No sentence was rated at sentenceCutoff ${sentences.cutoff} or more; the text is empty.`);
   await writeFile(join(folder, 'log.md'), result.log, { mode: 0o600 });
   record.status = 'complete';
   console.log(result.log);
@@ -927,6 +941,12 @@ export async function run(args = process.argv.slice(2), callSubscription = subsc
     const rows = settings.compression === 'low'
       ? { decide: jev({ apiKey, onCall: async (call) => { record.jev.push({ step: 'decide', ...call, usage: call.usage ?? 'unavailable' }); await save(); } }) }
       : undefined;
+    // Under `sentenceCutoff`, the sentence ratings' request goes there too.
+    const none = settings.compression !== 'none' ? undefined : {
+      answerTokens: settings.answerTokens,
+      ...(settings.sentenceCutoff === undefined ? {} : { sentenceCutoff: settings.sentenceCutoff,
+        decide: jev({ apiKey, onCall: async (call) => { record.jev.push({ step: 'sentences', ...call, usage: call.usage ?? 'unavailable' }); await save(); } }) }),
+    };
     const reading = busyTime();
     const deciding = busyTime();
     const decide = Object.assign((batch, signal) => deciding.track(async () => {
@@ -986,8 +1006,7 @@ export async function run(args = process.argv.slice(2), callSubscription = subsc
     }
     await save();
     await writeFile(join(folder, 'selection.json'), JSON.stringify({ selected: picked.selected, record: { ...picked.record, candidates: picked.record.candidates.filter((entry) => entry.status === 'selected') } }), { mode: 0o600 });
-    memory = (await writeLog(options.task, picked, folder, record, save, callCodex, rows, collectedDate,
-      settings.compression === 'none' ? { answerTokens: settings.answerTokens } : undefined)).log;
+    memory = (await writeLog(options.task, picked, folder, record, save, callCodex, rows, collectedDate, none)).log;
   } catch (error) {
     // A PickError carries the pick's record: the failed batch's ids, the
     // unanswered candidates, and the answers that came back. Keep it.

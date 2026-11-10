@@ -1,4 +1,4 @@
-import type { MemoryCandidate, PickDecide, PickRecordEntry, PickResult } from './pick.js';
+import type { MemoryCandidate, PickBatch, PickDecide, PickRecordEntry, PickResult } from './pick.js';
 import type { CurateLeverStates } from './levers.js';
 import { ANSWER_TYPES, classifyTask, type RouteOption, type TaskKind } from './task.js';
 import { checkCompression, checkCurateOptions } from './options.js';
@@ -143,7 +143,7 @@ export interface CurateLowOptions extends Pick<CurateOptions, 'write' | 'taskDat
   readonly decide: PickDecide;
 }
 
-/** `compression: 'none'` calls no model. Code lays out the selected
+/** `compression: 'none'` calls no model unless `sentenceCutoff` is set. Code lays out the selected
  *  reference items, strongest first, for the answering model to read.
  *  The two items with the highest decision weight (ties broken by the
  *  fused order) sit under `### Most likely answer`, each under its own
@@ -159,8 +159,8 @@ export interface CurateLowOptions extends Pick<CurateOptions, 'write' | 'taskDat
  *  may be a quote, a rejected plan or a later restatement, and the longer
  *  item's place and date are not its own. The taken item's heading then also names where and when the
  *  copy was said, when that differs: `<heading>, also <source> (said
- *  <date>)`. The curator's other options, `write` and `decide` are
- *  rejected before any work. */
+ *  <date>)`. The curator's other options and `write` are rejected
+ *  before any work, and so is `decide` without `sentenceCutoff`. */
 export interface CurateNoneOptions extends Pick<CurateOptions, 'signal'> {
   readonly compression: 'none';
   /** Keep the whole text within this many estimated tokens. The
@@ -171,6 +171,25 @@ export interface CurateNoneOptions extends Pick<CurateOptions, 'signal'> {
    *  taking. The strongest item is always kept whole, even over the
    *  budget. Omitted means DEFAULT_ANSWER_TOKENS (2,000). */
   readonly answerTokens?: number;
+  /** Keep only the sentences that bear on the task. After the items are
+   *  taken, `decide` rates every sentence of them in one request, and a
+   *  sentence stays when its rating is this number or more, from 0 to 1.
+   *  Kept sentences stay in their own words and order under the same
+   *  headings, and `…` marks each place text was left out. An item with
+   *  no sentence kept is left out. A sentence is the text up to a full
+   *  stop, question mark or exclamation mark followed by a space, or to
+   *  the line's end; blank lines go. A line that opens `user: ` or
+   *  `assistant: ` names its speaker, and the first kept sentence of
+   *  that speaker's turn carries the name. A sentence `decide` gives no
+   *  rating stays. When the request fails, the whole text is returned as
+   *  if this were not set, and `record.sentences.failed` says why.
+   *  `answerTokens` bounds the text that is rated, so the returned text
+   *  is usually far smaller. A kept sentence can lose the sentence that
+   *  says what it refers to. Omitted means no sentence is rated and no
+   *  model is called. Needs `decide`. */
+  readonly sentenceCutoff?: number;
+  /** Rates each sentence for `sentenceCutoff`; read only with it. */
+  readonly decide?: PickDecide;
 }
 
 /** What one curate option did to the log. */
@@ -261,15 +280,44 @@ export interface CurateMarkupResult {
 export interface CurateNoneRecord {
   readonly compression: 'none';
   readonly levers: CurateLeverStates;
-  /** The items taken, in the order they were taken, with exact weights. */
+  /** The items in the returned text, in the order they were taken, with
+   *  exact weights. Under `sentenceCutoff`, each holds its text as
+   *  returned. */
   readonly items: CurateRecord['items'];
   /** The returned text's estimated tokens. */
   readonly estimatedTokens: number;
-  /** The budget the text was kept within. */
+  /** The budget the items were taken within. */
   readonly answerTokens: number;
   /** How many items were left out as copies of an item taken before
    *  them: the same text. */
   readonly collapsed: number;
+  /** The selected items the budget stopped before: how many, the
+   *  highest weight among them, and how many have a weight of 0.5 or
+   *  more. A copy counted in `collapsed` is not counted here. */
+  readonly leftOut: {
+    readonly count: number;
+    readonly strongestWeight?: number;
+    readonly atHalfOrMore: number;
+  };
+  /** Present when `sentenceCutoff` was set: what the sentence pass did. */
+  readonly sentences?: {
+    readonly cutoff: number;
+    /** Sentences in the returned text, of how many the taken items held. */
+    readonly kept: number;
+    readonly of: number;
+    /** Sentences `decide` gave no rating; each one stays. */
+    readonly unanswered: number;
+    /** Items in the returned text that lost at least one sentence. */
+    readonly itemsTrimmed: number;
+    /** Taken items left out because no sentence of theirs was kept. */
+    readonly itemsLeftOut: number;
+    /** The text's estimated tokens before any sentence was left out;
+     *  `estimatedTokens` is the figure after. */
+    readonly estimatedTokensBefore: number;
+    /** Present when the decision request failed: its message. The text
+     *  is then returned whole. */
+    readonly failed?: string;
+  };
 }
 
 /** What `compression: 'none'` returns: the memory text in `log`. */
@@ -310,6 +358,52 @@ function layOutItems(taken: readonly NoneItem[], copies: ReadonlyMap<NoneItem, r
   const rest = [...groups].sort(([left], [right]) => (left < right ? -1 : 1))
     .map(([, group]) => `### ${heading(group[0]!)}\n\n${group.map(body).join('\n\n')}`);
   return [`### Most likely answer\n\n${top.join('\n\n')}\n`, ...rest].join('\n\n');
+}
+
+const SENTENCE_QUESTION = 'Does this sentence supply evidence, a constraint or a decision for this task?';
+const SENTENCE_TRUE = 'It helps with this task, or is needed to understand a sentence that does.';
+const SENTENCE_FALSE = 'It gives nothing that helps with this task.';
+
+interface Sentence {
+  readonly text: string;
+  readonly line: number;
+  /** Counts the speaker lines so far; 0 before the first. */
+  readonly turn: number;
+  /** The speaker's name, on the first sentence of the line that names it. */
+  readonly speaker?: string;
+}
+
+/** A text as sentences, in order. Blank lines hold none. */
+function sentencesOf(text: string): Sentence[] {
+  const sentences: Sentence[] = [];
+  let turn = 0;
+  text.split('\n').forEach((line, index) => {
+    const named = /^(user|assistant): /.exec(line);
+    if (named) turn += 1;
+    let speaker = named?.[1];
+    for (const sentence of (named ? line.slice(named[0].length) : line).split(/(?<=[.!?])\s+/)) {
+      if (!sentence.trim()) continue;
+      sentences.push({ text: sentence, line: index, turn, ...(speaker === undefined ? {} : { speaker }) });
+      speaker = undefined;
+    }
+  });
+  return sentences;
+}
+
+/** The kept sentences as text: one line per source line, `…` where
+ *  sentences were left out, and the speaker's name on the first kept
+ *  sentence of each turn. */
+function keptText(sentences: readonly Sentence[], keep: readonly boolean[]): string {
+  const speakers = new Map(sentences.flatMap((sentence) => sentence.speaker === undefined ? [] : [[sentence.turn, sentence.speaker] as const]));
+  let text = '', gap = false, lastLine = -1, lastTurn = -1;
+  sentences.forEach((sentence, index) => {
+    if (!keep[index]) { gap = true; return; }
+    const speaker = sentence.turn === lastTurn ? undefined : speakers.get(sentence.turn);
+    text += (text ? (sentence.line === lastLine ? ' ' : '\n') : '') + (gap ? '… ' : '')
+      + (speaker === undefined ? '' : `${speaker}: `) + sentence.text;
+    [gap, lastLine, lastTurn] = [false, sentence.line, sentence.turn];
+  });
+  return gap && text ? `${text} …` : text;
 }
 
 const WORKING_HEADING = "Working (the curator's; check it against the log):";
@@ -783,21 +877,73 @@ export async function curate(
     let taken: NoneItem[] = [];
     let copies = new Map<NoneItem, readonly NoneItem[]>();
     let log = '';
-    for (const item of ordered) {
+    let stopped = ordered.length;
+    for (const [index, item] of ordered.entries()) {
       // A copy of an item already taken adds only a place and date to that item's heading.
       const shown = body(item).trim();
       const original = taken.find((kept) => body(kept).trim() === shown);
       const nextTaken = original === undefined ? [...taken, item] : taken;
       const nextCopies = original === undefined ? copies : new Map(copies).set(original, [...(copies.get(original) ?? []), item]);
       const text = layOutItems(nextTaken, nextCopies);
-      if (taken.length > 0 && estimateAnswerTokens(text) > answerTokens) break;
+      if (taken.length > 0 && estimateAnswerTokens(text) > answerTokens) { stopped = index; break; }
       [taken, copies, log] = [nextTaken, nextCopies, text];
     }
-    return { log, record: {
+    const leftOut = ordered.slice(stopped);
+    const record: CurateNoneRecord = {
       compression: 'none',
       levers: { ...picked.record.levers, route: { asked: picked.record.levers?.route === true, applied: false } },
       items: taken, estimatedTokens: estimateAnswerTokens(log), answerTokens,
       collapsed: [...copies.values()].reduce((sum, list) => sum + list.length, 0),
+      leftOut: {
+        count: leftOut.length, ...(leftOut.length ? { strongestWeight: leftOut[0]!.weight } : {}),
+        atHalfOrMore: leftOut.filter((item) => item.weight >= 0.5).length,
+      },
+    };
+    const cutoff = lowOrHigh.sentenceCutoff;
+    if (cutoff === undefined) return { log, record };
+
+    const split = taken.map((item) => sentencesOf(body(item)));
+    const batch: PickBatch = { task, questions: split.flatMap((sentences, part) => sentences.map((sentence, index) => ({
+      key: `p${part}u${index}`, sourceId: `p${part}`, id: `u${index}`, role: 'reference' as const, title: '', anonymous: true,
+      text: sentence.speaker === undefined ? sentence.text : `${sentence.speaker}: ${sentence.text}`,
+      // The item's date rides on its first sentence.
+      ...(index === 0 && taken[part]!.candidate.date ? { date: taken[part]!.candidate.date } : {}),
+      question: SENTENCE_QUESTION, trueCriterion: SENTENCE_TRUE, falseCriterion: SENTENCE_FALSE,
+    }))) };
+    const counts = { cutoff, of: batch.questions.length, estimatedTokensBefore: record.estimatedTokens };
+    let answers: Awaited<ReturnType<PickDecide>>;
+    try {
+      answers = await lowOrHigh.decide!(batch, signal);
+    } catch (error) {
+      signal.throwIfAborted();
+      // A failed request must not lose the answer: the whole text goes back.
+      return { log, record: { ...record, sentences: {
+        ...counts, kept: counts.of, unanswered: counts.of, itemsTrimmed: 0, itemsLeftOut: 0,
+        failed: error instanceof Error ? error.message : String(error),
+      } } };
+    }
+    let kept = 0, unanswered = 0, itemsTrimmed = 0;
+    const shown = new Map<NoneItem, NoneItem>();
+    taken.forEach((item, part) => {
+      const keep = split[part]!.map((_, index) => {
+        const answer = answers?.[`p${part}u${index}`];
+        const rating = answer?.status === 'answered' && 'probability' in answer ? answer.probability : NaN;
+        // A sentence with no rating stays: a missing answer must not lose evidence.
+        if (!Number.isFinite(rating)) { unanswered += 1; return true; }
+        return rating >= cutoff;
+      });
+      const text = keptText(split[part]!, keep);
+      if (!text.trim()) return;
+      kept += keep.filter(Boolean).length;
+      if (keep.includes(false)) itemsTrimmed += 1;
+      shown.set(item, { ...item, candidate: { ...item.candidate, text } });
+    });
+    const left = [...shown.values()];
+    const trimmed = left.length === 0 ? '' : layOutItems(left,
+      new Map([...copies].flatMap(([item, list]) => shown.has(item) ? [[shown.get(item)!, list] as const] : [])));
+    return { log: trimmed, record: {
+      ...record, items: left, estimatedTokens: estimateAnswerTokens(trimmed),
+      sentences: { ...counts, kept, unanswered, itemsTrimmed, itemsLeftOut: taken.length - left.length },
     } };
   }
 
