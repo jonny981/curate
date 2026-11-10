@@ -35,7 +35,7 @@ const LABEL_KEYS: readonly (keyof PickLabels)[] = ['directory', 'deciderId', 'qu
 const CACHE_KEYS: readonly (keyof PickCache)[] = ['store', 'deciderId', 'questionVersion'];
 const READ_REQUEST_KEYS: readonly (keyof CandidateReadRequest)[] = [
   'task', 'searchLines', 'searchPhrases', 'meaning', 'kindLanes', 'wholeLanes',
-  'speakerOnly', 'phraseLane', 'topic', 'meaningLane', 'meaningPositions', 'labelPool',
+  'speakerOnly', 'phraseLane', 'topic', 'meaningLane', 'meaningPositions', 'keptBodiesOnly', 'labelPool',
   'stripSearchInstructions', 'paths', 'exclude', 'revision', 'limit',
   'maxQuestionText', 'taskDate', 'timeZone', 'asOf', 'taskPeriod', 'decayHalfLife', 'decayLimit', 'signal',
 ];

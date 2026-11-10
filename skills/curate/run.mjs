@@ -482,7 +482,12 @@ export async function pickFullSources(sources, call, options) {
             meaningQueries,
             wholeLanes: options.everyRanked === undefined ? true
               : meaningLane.wholeLanes ?? request.wholeLanes ?? false,
-            limit: options.everyRanked === undefined ? undefined : meaningLane.nearest }),
+            limit: options.everyRanked === undefined ? undefined : meaningLane.nearest,
+            // The pick asks its lane reads for kept bodies only under a
+            // level, so the cached read must be the same read.
+            ...(options.everyRanked === undefined
+              && !(meaningLane.wholeLanes ?? !(request.wholeLanes !== true && source.role === 'reference'))
+              ? { keptBodiesOnly: true } : {}) }),
           ...(revision === undefined ? {} : { revision }) };
         const read = await source.read(readRequest, context);
         if (read.status === 'read' && read.revision !== undefined) revision ??= read.revision;

@@ -919,9 +919,12 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           // The lane reports its whole scored list as ids and scores in
           // `meaningScores`; `candidates` still holds every kept part —
           // under `wholeLanes` that is the whole list, with the parts a
-          // cut would drop marked.
+          // cut would drop marked. A caller that uses whole candidates
+          // only inside the bend gets those alone, so the marked parts'
+          // text is never read back.
+          const bodies = mark && request.keptBodiesOnly === true ? limited.filter(passes) : limited;
           const wanted = new Map<number, Set<number>>();
-          for (const index of limited) {
+          for (const index of bodies) {
             const file = partFile[index]!;
             const bucket = wanted.get(file);
             if (bucket === undefined) wanted.set(file, new Set([index]));
@@ -945,7 +948,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
               });
             }
           }
-          const candidates = limited.map((index) => byIndex.get(index))
+          const candidates = bodies.map((index) => byIndex.get(index))
             .filter((candidate): candidate is MemoryCandidate => candidate !== undefined);
           if (skips.n) reasons.push(`skipped ${skips.n} symbolic links or undated messages`);
           if (limited.length < order.length) {

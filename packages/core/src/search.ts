@@ -64,7 +64,11 @@ export function phraseCount(text: string, phrase: string): number {
   const words = (value: string) => value.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
   const wanted = words(phrase);
   if (!wanted.length) return 0;
-  const tokens = words(text);
+  // A word of the phrase that the text lacks even as a substring cannot
+  // be one of its tokens, so the text is not split at all.
+  const lower = text.toLowerCase();
+  if (wanted.some((word) => !lower.includes(word))) return 0;
+  const tokens = lower.match(/[\p{L}\p{N}]+/gu) ?? [];
   let count = 0;
   for (let index = 0; index <= tokens.length - wanted.length; index++) {
     if (wanted.every((word, offset) => word === tokens[index + offset])) count++;

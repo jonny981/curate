@@ -775,8 +775,11 @@ export function git(
           // `meaningScores`; `candidates` still holds every kept commit —
           // under `wholeLanes` that is the whole list, with the commits a
           // cut would drop marked.
-          for (let start = 0; start < limited.length; start += BODY_PAGE) {
-            const slice = limited.slice(start, start + BODY_PAGE);
+          // A caller that uses whole candidates only inside the bend gets
+          // those alone, so the marked commits' bodies are never fetched.
+          const whole = mark && request.keptBodiesOnly === true ? limited.filter(passes) : limited;
+          for (let start = 0; start < whole.length; start += BODY_PAGE) {
+            const slice = whole.slice(start, start + BODY_PAGE);
             const bodies = await bodiesOf(slice.map((index) => admitted[index]!.sha));
             slice.forEach((index, at) => { admitted[index]!.body = bodies[at]!; });
           }
@@ -790,7 +793,7 @@ export function git(
               id: `commit ${admitted[index]!.short}`, similarity: similarities[index]!,
               ...(mark && !passes(index) ? { pastLaneCut: true as const } : {}),
             })),
-            candidates: limited.map((index): MemoryCandidate => ({
+            candidates: whole.map((index): MemoryCandidate => ({
               sourceId: id,
               sourceRevision: sha,
               role: 'reference',

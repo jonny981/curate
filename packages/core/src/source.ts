@@ -104,6 +104,13 @@ export interface CandidateReadRequest {
    *  the position reaches every part or only the ones a lane kept.
    *  Leave unset otherwise: the score is unused without a level. */
   readonly meaningPositions?: boolean;
+  /** Internal to pickFromSources: on a meaning lane read that keeps
+   *  whole lanes, the pick uses a whole candidate only for a part the
+   *  lane's own bend keeps. A reader that honours this returns those
+   *  candidates alone, in lane order; `meaningScores` still lists every
+   *  part with its mark, and `matched` still counts every part. A
+   *  reader that ignores it returns every part as before. */
+  readonly keptBodiesOnly?: boolean;
   /** Internal to pickFromSources: 'gate' when the pick's label gate is
    *  on, 'count' when only a decide-feed dial is (`everyRanked: { c }`
    *  or `rare`). The read result also carries the reference source's
@@ -784,6 +791,10 @@ async function readSearches(
       // `nearest` applies in the merge rather than hiding parts here.
       limit: request.meaningPositions === true ? undefined : request.meaning.nearest,
       wholeLanes: request.meaningPositions === true ? true : request.meaning.wholeLanes ?? !laneCut,
+      // Under a level every part's similarity is read, but a part past
+      // its lane's bend is held by no lane unless `meaning.wholeLanes`
+      // says so: its whole candidate would be built and dropped.
+      ...(request.meaningPositions === true && !(request.meaning.wholeLanes ?? !laneCut) ? { keptBodiesOnly: true } : {}),
       meaningLane: request.meaning,
       meaningQueries: queries,
       ...(read.revision === undefined ? {} : { revision: read.revision }) }, context);

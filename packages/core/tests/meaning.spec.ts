@@ -267,6 +267,41 @@ describe('local meaning search', () => {
     expect(streamedRead.noSearchMatch).toBeUndefined();
   });
 
+  it('under a level asks a lane for kept bodies only, and a reader that honours it changes no pick', async () => {
+    const scores = [{ id: 'dog', similarity: 0.9 }, { id: 'cat', similarity: 0.8 },
+      { id: 'bill', similarity: 0.1, pastLaneCut: true as const }];
+    const texts: Record<string, string> = { dog: 'puppy', cat: 'kitten', bill: 'invoice' };
+    const asked: (boolean | undefined)[] = [];
+    const source = (honours: boolean) => ({
+      id: 'notes', role: 'reference' as const,
+      read: async (request: Parameters<Parameters<typeof pickFromSources>[0][number]['read']>[0]) => {
+        if (request.meaningLane === undefined) {
+          return { status: 'read' as const, complete: true,
+            candidates: [item('bill', 'invoice', 9), item('dog', 'puppy'), item('cat', 'kitten')] };
+        }
+        asked.push(request.keptBodiesOnly);
+        return {
+          status: 'read' as const, complete: true, meaningLane: true as const, matched: scores.length, meaningScores: scores,
+          candidates: scores.filter((score) => !(honours && request.keptBodiesOnly === true && score.pastLaneCut === true))
+            .map(({ id, similarity, pastLaneCut }) => ({ ...item(id, texts[id]!), signals: { similarity }, laneScore: similarity,
+              ...(pastLaneCut === true ? { pastLaneCut } : {}) })),
+        };
+      },
+    });
+    const level = { task: 'pets', decide, thoroughness: 'deep' as const, taskDate: '2026-01-01T00:00:00Z' };
+    const whole = await pickFromSources([source(false)], { task: 'pets', meaning: { embed } }, level);
+    expect(asked).toEqual([true]);
+    const lean = await pickFromSources([source(true)], { task: 'pets', meaning: { embed } }, level);
+    expect(lean.record).toEqual(whole.record);
+    expect(lean.selected).toEqual(whole.selected);
+    expect(lean.reads).toEqual(whole.reads);
+    // A lane that holds every part needs every body, and so does a pick with no level.
+    asked.length = 0;
+    await pickFromSources([source(true)], { task: 'pets', meaning: { embed, wholeLanes: true } }, level);
+    await pickFromSources([source(true)], { task: 'pets', meaning: { embed } }, { ...uncutPick, task: 'pets', decide });
+    expect(asked).toEqual([undefined, undefined]);
+  });
+
   it('merges a lane\'s id and score list, needing bodies only for the parts it holds', async () => {
     // Each lane scored three parts but kept only its top one, so the
     // body for 'dog' in the second lane is the only one it carries —

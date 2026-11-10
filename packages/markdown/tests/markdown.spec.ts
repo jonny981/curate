@@ -155,6 +155,14 @@ describe('knowledgeBase', () => {
       expect(kept.size).toBeLessThan(whole.candidates.length);
       expect(whole.candidates.filter((candidate) => candidate.pastLaneCut === true).map((candidate) => candidate.id))
         .toEqual(whole.candidates.filter((candidate) => !kept.has(candidate.id)).map((candidate) => candidate.id));
+      if ('meaningLane' in lane) {
+        // A caller that uses whole candidates only inside the bend gets those alone, with every score still listed.
+        const lean = await source.read({ ...lane, wholeLanes: true, keptBodiesOnly: true });
+        if (lean.status !== 'read') throw new Error('Expected a read');
+        expect(lean.meaningScores).toEqual(whole.meaningScores);
+        expect(lean.candidates).toEqual(whole.candidates.filter((candidate) => candidate.pastLaneCut !== true));
+        expect([lean.matched, lean.complete]).toEqual([whole.matched, whole.complete]);
+      }
     }
   });
 

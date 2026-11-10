@@ -999,9 +999,14 @@ async function syncNotes(
           for (const [term, count] of bagEntries(words)) insertPosting.run(term, file, ordinal, count);
         });
       };
-      const rows = new Map((database.prepare('SELECT path, size, mtime, modified, parts FROM notes WHERE root = ?')
-        .all(root) as { path: string; size: number; mtime: string; modified: string; parts: number }[])
+      // `parts` is stored after the note's whole text, so reading it for
+      // every note would walk every stored text. It is read only for a
+      // note that changed or went.
+      const rows = new Map((database.prepare('SELECT path, size, mtime, modified FROM notes WHERE root = ?')
+        .all(root) as { path: string; size: number; mtime: string; modified: string }[])
         .map((row) => [row.path, row]));
+      const partsOf = database.prepare('SELECT parts FROM notes WHERE path = ?');
+      const storedParts = (file: string) => (partsOf.get(file) as { parts: number } | undefined)?.parts ?? 0;
       const write = database.prepare(`INSERT INTO notes (path, root, size, mtime, modified, entry, parts)
         VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (path) DO UPDATE SET root = excluded.root, size = excluded.size,
         mtime = excluded.mtime, modified = excluded.modified, entry = excluded.entry, parts = excluded.parts`);
@@ -1033,21 +1038,21 @@ async function syncNotes(
           throw new SourceReadError('failed', `Could not read ${file}: ${message(error)}`);
         }
         const stored = storeEntry(build(file, text));
+        if (row !== undefined) removed += storedParts(file);
         write.run(file, root, size, mtime, changed, JSON.stringify(stored), stored.parts.length);
         wipePostings.run(file);
         postParts(file, stored);
         modified.set(file, changed);
         added += stored.parts.length;
-        removed += row?.parts ?? 0;
       }
       if (prune) {
         const walked = new Set(files);
         const remove = database.prepare('DELETE FROM notes WHERE path = ?');
-        for (const [file, row] of rows) {
+        for (const file of rows.keys()) {
           if (walked.has(file)) continue;
+          removed += storedParts(file);
           remove.run(file);
           wipePostings.run(file);
-          removed += row.parts;
         }
       }
       return { added, removed, ms: Math.round(performance.now() - started), modified };
@@ -1552,18 +1557,23 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
       let indexed: { readonly index?: StoredIndexReport } = {};
       if (indexPath !== undefined && updates.size > 0) {
         const done = [...updates.values()];
-        const database = await openIndexFile(indexPath, indexFolder!);
-        try {
-          indexed = { index: {
-            parts: (database.prepare('SELECT COALESCE(SUM(parts), 0) AS n FROM notes').get() as { n: number }).n,
-            added: done.reduce((sum, update) => sum + update.added, 0),
-            removed: done.reduce((sum, update) => sum + update.removed, 0),
-            rebuilt: false,
-            ms: done.reduce((sum, update) => sum + update.ms, 0),
-          } };
-        } finally {
-          database.close();
-        }
+        // The total is counted once per call: the count walks every stored
+        // note, and every read of the call reports the same update.
+        const total = await once(context, JSON.stringify(['parts', indexPath, [...updates.keys()], requestExclude]), async () => {
+          const database = await openIndexFile(indexPath, indexFolder!);
+          try {
+            return (database.prepare('SELECT COALESCE(SUM(parts), 0) AS n FROM notes').get() as { n: number }).n;
+          } finally {
+            database.close();
+          }
+        });
+        indexed = { index: {
+          parts: total,
+          added: done.reduce((sum, update) => sum + update.added, 0),
+          removed: done.reduce((sum, update) => sum + update.removed, 0),
+          rebuilt: false,
+          ms: done.reduce((sum, update) => sum + update.ms, 0),
+        } };
       }
       alwaysOn.sort((left, right) => (left.file < right.file ? -1 : left.file > right.file ? 1 : 0));
       const skippedAlwaysOn = alwaysOn.length === 0 ? {} : { alwaysOnSkipped: alwaysOn };
@@ -1687,8 +1697,11 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
         // The lane reports its whole scored list as ids and scores in
         // `meaningScores`; `candidates` still holds every kept part —
         // under `wholeLanes` that is the whole list, with the parts a
-        // cut would drop marked.
-        const wanted = new Set<number>(kept);
+        // cut would drop marked. A caller that uses whole candidates only
+        // inside the bend gets those alone, so the marked parts are
+        // never read back.
+        const bodies = mark && request.keptBodiesOnly === true ? kept.filter(passes) : kept;
+        const wanted = new Set<number>(bodies);
         const byIndex = new Map<number, MemoryCandidate>();
         for (const group of groups) {
           const needed = group.metas.filter((meta) => {
@@ -1715,7 +1728,7 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
             }
           }
         }
-        const emitted = kept.map((index) => byIndex.get(index))
+        const emitted = bodies.map((index) => byIndex.get(index))
           .filter((candidate): candidate is MemoryCandidate => candidate !== undefined);
         const partial: string[] = [];
         if (limit !== undefined && keptAll.length > limit) {
