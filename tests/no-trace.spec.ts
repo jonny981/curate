@@ -471,4 +471,37 @@ describe('a stopped command', () => {
     expect(await readdir(fixture.at('tmp'))).toEqual([]);
     expect(existsSync(fixture.at('home', '.curate'))).toBe(false);
   });
+
+  it('stops the search-lines call and the git it started early', async () => {
+    const fixture = await makeFixture();
+    await mkdir(fixture.at('bin'));
+    await writeFile(fixture.sourcesFile, JSON.stringify({ sources: fixture.sources, searchModel: 'sol' }));
+    // Each stand-in records its process id and stays alive far longer than the test.
+    const standIn = (name: string) => writeFile(fixture.at('bin', name),
+      `#!/bin/sh\necho $$ >> "${fixture.at(`${name}.pids`)}"\nexec sleep 30\n`, { mode: 0o755 });
+    await standIn('codex');
+    await standIn('git');
+    const pids = async () => (await Promise.all(['codex', 'git'].map(async (name) =>
+      existsSync(fixture.at(`${name}.pids`)) ? (await readFile(fixture.at(`${name}.pids`), 'utf8')).split('\n').filter(Boolean).map(Number) : [])));
+    const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+    const script = join(__dirname, '../skills/curate/run.mjs');
+    const child = realSpawn(process.execPath, [script, '--sources', fixture.sourcesFile, 'orchard'], {
+      cwd: fixture.at('cwd'), stdio: 'ignore',
+      env: { ...process.env, HOME: fixture.at('home'), CODEX_HOME: fixture.at('codex-home'), TMPDIR: fixture.at('tmp'),
+        XDG_CACHE_HOME: fixture.at('cache'), TYPESAFE_API_KEY: 'test-key', PATH: `${fixture.at('bin')}:${process.env.PATH}` },
+    });
+    const closed = new Promise<number | null>((done) => child.on('close', (exit) => done(exit)));
+    try {
+      while ((await pids()).some((list) => list.length === 0)) await new Promise((done) => setTimeout(done, 20));
+      child.kill('SIGTERM');
+      expect(await closed).toBe(143);
+      const started = (await pids()).flat();
+      for (let waited = 0; waited < 2_000 && started.some(alive); waited += 20) await new Promise((done) => setTimeout(done, 20));
+      expect(started.filter(alive)).toEqual([]);
+      expect(await readdir(fixture.at('tmp'))).toEqual([]);
+    } finally {
+      child.kill('SIGKILL');
+      for (const pid of (await pids()).flat()) if (alive(pid)) process.kill(pid, 'SIGKILL');
+    }
+  });
 });
