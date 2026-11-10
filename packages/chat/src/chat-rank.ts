@@ -52,8 +52,10 @@ export interface ChatRankSession {
   /** The part at `index` in a postings read, counted once for the
    *  corpus statistics: its title's tokens (folded into the counts and
    *  document frequencies exactly as `storedBag` folds them) and its
-   *  stored word total. */
-  observeIndexed(index: number, title: string, long: number): void;
+   *  stored word total. `words` is the title already lower-cased and
+   *  split on what is not a letter or digit, for a caller that splits
+   *  each title once for every lane; the counts are the same. */
+  observeIndexed(index: number, title: string, long: number, words?: readonly string[]): void;
   /** One posting row of the read's population: the part at `index`
    *  holds `term` `count` times. A `short` row's word stems the way
    *  `storedBag` stems it before it counts. */
@@ -65,8 +67,10 @@ export interface ChatRankSession {
   scoreIndexed(fields: { heading: string; name: string; front: string }): void;
   /** Merge the scored parts. `ids` ties equal scores to a stable order;
    *  returns the merged ordering score (`scores`) and the pre-merge
-   *  lane score (`base`) in part order. */
-  finish(ids: readonly string[]): { scores: readonly number[]; base: readonly number[] };
+   *  lane score (`base`) in part order. `places` is each id's place in
+   *  that order, equal ids sharing one, for a caller that orders the
+   *  ids once for every lane; the merge is the same. */
+  finish(ids: readonly string[], places?: ArrayLike<number>): { scores: readonly number[]; base: readonly number[] };
 }
 
 /** A text's words as the stored index keeps them, worked out once when
@@ -214,10 +218,23 @@ export function startChatRank(task: string, settings: Partial<ChatKeywordSetting
       sparse = true;
       return { stems: [...queryTerms], shorts: [...shortIds] };
     },
-    observeIndexed(index, title, long) {
+    observeIndexed(index, title, long, words) {
       sparse = true;
-      const bag = textBag(title);
       docs += 1;
+      if (words !== undefined) {
+        // The same tokens `tok` keeps, counted one at a time.
+        let kept = 0;
+        for (const word of words) {
+          if (!(word.length > 2 || shortIds.has(word))) continue;
+          kept += 1;
+          const stem = stemOf(word);
+          if (queryTerms.has(stem)) addTerm(index, stem, 1);
+        }
+        statLen.set(index, kept + long);
+        length += kept + long;
+        return;
+      }
+      const bag = textBag(title);
       statLen.set(index, bag.length + long);
       length += bag.length + long;
       for (const [word, count] of bag.tf) if (queryTerms.has(word)) addTerm(index, word, count);
@@ -241,17 +258,22 @@ export function startChatRank(task: string, settings: Partial<ChatKeywordSetting
         });
       }
     },
-    finish(ids) {
+    finish(ids, places) {
       const count = sparse ? ids.length : parts.length;
       if (!count) return { scores: [], base: [] };
       let top = 1e-9;
       for (let index = 0; index < count; index += 1) top = Math.max(top, scored(index).raw);
       const base = Array.from({ length: count }, (_, index) => 3 * scored(index).raw / top + scored(index).extra);
       if (config.rrf === false) return { scores: base, base };
-      const order = (values: readonly number[]) => values
-        .map((value, index) => ({ value, index }))
-        .sort((a, b) => b.value - a.value || ids[a.index]!.localeCompare(ids[b.index]!))
-        .map((entry) => entry.index);
+      // With `places`, ties break on each id's place in the id order:
+      // the same order as comparing the ids, without comparing them.
+      const order = (values: readonly number[]): ArrayLike<number> & { forEach(visit: (index: number, rank: number) => void): void } =>
+        places === undefined ? values
+          .map((value, index) => ({ value, index }))
+          .sort((a, b) => b.value - a.value || ids[a.index]!.localeCompare(ids[b.index]!))
+          .map((entry) => entry.index)
+          : Uint32Array.from({ length: count }, (_, index) => index)
+            .sort((a, b) => values[b]! - values[a]! || places[a]! - places[b]!);
       const lists = [order(base)];
       const contentScores = queries.content === null ? null : order(Array.from({ length: count }, (_, index) => scored(index).content));
       const namesScores = queries.names === null ? null : order(Array.from({ length: count }, (_, index) => scored(index).names));

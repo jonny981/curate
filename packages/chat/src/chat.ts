@@ -380,6 +380,40 @@ interface ChatKeywordEnum {
   skips: number;
 }
 
+/** Internal to this package and not part of its public surface: the
+ *  one-pass read's switch and a count of the reads it served. A test
+ *  turns it off to get the per-lane path as its oracle. */
+export const onePass = { on: true, served: 0 };
+
+/** What one call knows about the whole stored history, read once and
+ *  shared by every lane of the call: each in-window part as stored, and
+ *  what every lane would otherwise work out from it again. It holds
+ *  nothing a request's task sets. */
+interface ChatCorpus {
+  /** What decides which parts are in it. */
+  readonly key: string;
+  readonly parts: readonly StoredPart[];
+  readonly ids: string[];
+  readonly refs: string[];
+  readonly partFile: number[];
+  readonly fileRanges: { provider: ChatProvider; root: string; file: string; start: number }[];
+  /** Each part's date as its titles and its candidate show it. */
+  readonly iso: string[];
+  readonly titles: string[];
+  /** Each title lower-cased and split once. */
+  readonly titleWords: string[][];
+  readonly longs: number[];
+  /** Each part's place in id order; equal ids share a place. */
+  readonly places: Uint32Array;
+  /** Each part's index by its row in the stored index. */
+  readonly indexOf: ReadonlyMap<string, number>;
+  /** Each word's postings as part indexes, read from the index once. */
+  readonly postings: Map<string, { readonly index: number[]; readonly count: number[] }>;
+  readonly skips: number;
+  /** Each part's unit vector, once a meaning lane has embedded them. */
+  units?: Float64Array[];
+}
+
 /** A source's entry in a read context's shared space: the meaning
  *  lanes' held scores, the part ids scrubbed once for every lane that
  *  asks for them, and the keyword lanes' once-per-call enumeration. */
@@ -387,6 +421,7 @@ interface Shared {
   meaning?: Lite;
   ids?: Map<string, string>;
   keyword?: ChatKeywordEnum;
+  corpus?: ChatCorpus;
 }
 
 /** One transcript the stored index holds. */
@@ -819,21 +854,22 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           transcripts.map((transcript) => [`${provider}\0${transcript.file}`, transcript] as const)));
         /** Every part, counting skips on the read's first pass. A stored
          *  part's text is read only when `withText` asks for it. */
+        const eachStored = function* (counting: boolean, withText: boolean, light: boolean): Generator<StoredPart> {
+          for (const { provider, root, transcripts, symlinks } of storedRoots!) {
+            if (counting) skips.n += symlinks;
+            for (const transcript of transcripts) {
+              cancelled(request.signal);
+              if (counting) skips.n += transcript.undated;
+              for (const part of storedParts(database!, provider, root, transcript, withText, light)) {
+                if (inDates(part)) yield part;
+              }
+            }
+          }
+        };
         const each = (counting: boolean, withText: boolean, light = false): AsyncIterable<RawPart> | Iterable<RawPart> =>
           storedRoots === undefined
             ? eachPart(walkable, exclusions, counting ? { ...ctx, countSkips: skips } : ctx)
-            : (function* () {
-                for (const { provider, root, transcripts, symlinks } of storedRoots) {
-                  if (counting) skips.n += symlinks;
-                  for (const transcript of transcripts) {
-                    cancelled(request.signal);
-                    if (counting) skips.n += transcript.undated;
-                    for (const part of storedParts(database!, provider, root, transcript, withText, light)) {
-                      if (inDates(part)) yield part;
-                    }
-                  }
-                }
-              })();
+            : eachStored(counting, withText, light);
         /** One transcript's parts again, as the first pass met them. */
         const partsOf = (
           range: { provider: ChatProvider; root: string; file: string }, withText: boolean,
@@ -896,6 +932,79 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           if (value === undefined) idCache.set(key, value = partId(part));
           return value;
         };
+        // One pass for the whole call: with the stored index and a shared
+        // read context, every in-window part is read once, text and all,
+        // and each lane of the call works from that. The walk does not
+        // wait, so lanes started together still share one. A read with no
+        // index or no shared context takes the per-lane path below, and
+        // so does a read whose window, time zone or exclusions are not
+        // the walk's own (a period read, for one).
+        let corpus: ChatCorpus | undefined;
+        if (onePass.on && shared !== undefined && storedRoots !== undefined) {
+          const key = JSON.stringify([stored!.path, since, until, zone, exclusions]);
+          if (shared.corpus === undefined) {
+            const before = skips.n;
+            const parts: StoredPart[] = [];
+            const ids: string[] = [];
+            const refs: string[] = [];
+            const partFile: number[] = [];
+            const fileRanges: ChatCorpus['fileRanges'] = [];
+            const iso: string[] = [];
+            const titles: string[] = [];
+            const titleWords: string[][] = [];
+            const longs: number[] = [];
+            for (const part of eachStored(true, true, false)) {
+              const last = fileRanges.at(-1);
+              if (last === undefined || last.file !== part.file) {
+                fileRanges.push({ provider: part.provider, root: part.root, file: part.file, start: ids.length });
+              }
+              partFile.push(fileRanges.length - 1);
+              parts.push(part);
+              ids.push(idOf(part));
+              refs.push(part.at);
+              const date = zonedIso(part.date, zone);
+              const title = `${part.provider} ${part.sessionId} ${part.role} ${date}`;
+              iso.push(date);
+              titles.push(title);
+              titleWords.push(title.toLowerCase().split(/[^a-z0-9]+/));
+              longs.push(part.words.long);
+            }
+            // Ties in a lane order by id; each part's place in id order
+            // stands in for the comparison.
+            const byId = ids.map((_, index) => index).sort((a, b) => ids[a]!.localeCompare(ids[b]!));
+            const places = new Uint32Array(ids.length);
+            for (let place = 1; place < byId.length; place += 1) {
+              places[byId[place]!] = ids[byId[place]!]!.localeCompare(ids[byId[place - 1]!]!) === 0
+                ? places[byId[place - 1]!]! : place;
+            }
+            shared.corpus = {
+              key, parts, ids, refs, partFile, fileRanges, iso, titles, titleWords, longs, places,
+              indexOf: new Map(refs.map((ref, index) => [ref, index] as const)), postings: new Map(),
+              skips: skips.n - before,
+            };
+            // Each lane counts the skips where its own walk would have.
+            skips.n = before;
+          }
+          if (shared.corpus.key === key) {
+            corpus = shared.corpus;
+            onePass.served += 1;
+          }
+        }
+        /** A part of the call's one walk as a lane hands it on. */
+        const held = (index: number, extra: Pick<MemoryCandidate, 'signals' | 'laneScore' | 'pastLaneCut'>): MemoryCandidate => {
+          const part = corpus!.parts[index]!;
+          return {
+            sourceId: id, role: 'reference',
+            id: corpus!.ids[index]!,
+            title: `${part.provider} ${part.sessionId} ${part.role}${part.authorName === undefined ? AUTHOR_TITLES[part.author]
+              : ` (${part.author} ${part.authorName})`} ${corpus!.iso[index]!}`,
+            text: part.text,
+            contentRef: `${part.provider}:${part.sessionId}:${part.line}:${part.block}:${part.piece}`,
+            chat: chatOf(part),
+            date: { value: corpus!.iso[index]!, meaning: 'recorded' as const },
+            ...extra,
+          };
+        };
 
         // A meaning lane embeds each part in bounded batches and keeps
         // the parts the similarity curve keeps: the corpus's text is
@@ -907,21 +1016,50 @@ export function chat(options: ChatOptions = {}): CandidateSource {
         if (request.meaningLane !== undefined) {
           const embed = request.meaningLane.embed;
           const queries = request.meaningQueries ?? [request.task];
+          // Scores a per-lane read of this call left behind are not the
+          // walk's: this lane then reads them as the per-lane path does.
+          if (corpus !== undefined && shared!.meaning !== undefined && shared!.meaning.ids !== corpus.ids) {
+            corpus = undefined;
+            onePass.served -= 1;
+          }
           const compute = async (list: readonly string[]): Promise<Lite> => {
             const queryVectors = (await embed(list, request.signal)).map((vector) => normalized(vector));
-            const lite: Lite = { queries: list, similarities: [], ids: [], refs: [], partFile: [], fileRanges: [] };
+            const lite: Lite = corpus === undefined
+              ? { queries: list, similarities: [], ids: [], refs: [], partFile: [], fileRanges: [] }
+              : { queries: list, similarities: [], ids: corpus.ids, refs: corpus.refs, partFile: corpus.partFile, fileRanges: corpus.fileRanges };
             let pending: string[] = [];
             let previous: { file: string; text: string } | undefined;
+            // With the call's one walk, each part's unit vector is kept
+            // for the call: a later query list scores the same vectors
+            // without embedding the parts again.
+            const units: Float64Array[] | undefined = corpus === undefined ? undefined : [];
             const flush = async () => {
               if (pending.length === 0) return;
               const vectors = await embed(pending, request.signal);
               if (vectors.length !== pending.length) throw new TypeError('embed must return one vector per input text.');
               for (const vector of vectors) {
                 const unit = normalized(vector, queryVectors[0]!.length);
+                units?.push(unit);
                 lite.similarities.push(queryVectors.map((query) => similarity(unit, query)));
               }
               pending = [];
             };
+            if (corpus !== undefined) {
+              skips.n += corpus.skips;
+              if (corpus.units !== undefined && (corpus.units[0]?.length ?? queryVectors[0]!.length) === queryVectors[0]!.length) {
+                for (const unit of corpus.units) lite.similarities.push(queryVectors.map((query) => similarity(unit, query)));
+                return lite;
+              }
+              for (const [index, part] of corpus.parts.entries()) {
+                const text = /[^\s\p{Cf}]/u.test(part.text) ? part.text : corpus.titles[index]!;
+                pending.push(previous?.file === part.file ? `${previous.text}\n${text}` : text);
+                previous = { file: part.file, text };
+                if (pending.length === 32) await flush();
+              }
+              await flush();
+              corpus.units = units;
+              return lite;
+            }
             for await (const part of each(true, true)) {
               const last = lite.fileRanges.at(-1);
               if (last === undefined || last.file !== part.file) {
@@ -948,8 +1086,11 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           if (at === -1) { lite = await compute([request.task]); at = 0; }
           const similarities = lite.similarities.map((row) => row[at]!);
           const { ids, refs, partFile, fileRanges } = lite;
+          const places = corpus?.places;
           const order = ids.map((_, index) => index)
-            .sort((a, b) => (similarities[b] ?? 0) - (similarities[a] ?? 0) || ids[a]!.localeCompare(ids[b]!));
+            .sort(places === undefined
+              ? (a, b) => (similarities[b] ?? 0) - (similarities[a] ?? 0) || ids[a]!.localeCompare(ids[b]!)
+              : (a, b) => (similarities[b] ?? 0) - (similarities[a] ?? 0) || places[a]! - places[b]!);
           const cut = request.wholeLanes === false;
           // With `wholeLanes` on the read keeps every part and marks each
           // one the cut would have dropped.
@@ -978,7 +1119,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
             else bucket.add(index);
           }
           const byIndex = new Map<number, MemoryCandidate>();
-          for await (const [index, part] of keptParts(wanted, fileRanges, refs)) {
+          for await (const [index, part] of corpus === undefined ? keptParts(wanted, fileRanges, refs) : []) {
             byIndex.set(index, {
               sourceId: id, role: 'reference',
               id: ids[index]!, title: shownTitle(part, zone), text: part.text,
@@ -989,8 +1130,13 @@ export function chat(options: ChatOptions = {}): CandidateSource {
               ...(mark && !passes(index) ? { pastLaneCut: true as const } : {}),
             });
           }
-          const candidates = bodies.map((index) => byIndex.get(index))
-            .filter((candidate): candidate is MemoryCandidate => candidate !== undefined);
+          const candidates = corpus !== undefined
+            ? bodies.map((index) => held(index, {
+              signals: { similarity: similarities[index]! }, laneScore: similarities[index]!,
+              ...(mark && !passes(index) ? { pastLaneCut: true as const } : {}),
+            }))
+            : bodies.map((index) => byIndex.get(index))
+              .filter((candidate): candidate is MemoryCandidate => candidate !== undefined);
           if (skips.n) reasons.push(`skipped ${skips.n} symbolic links or undated messages`);
           if (limited.length < order.length) {
             reasons.push(`the limit kept ${limited.length} of ${order.length} candidates`);
@@ -1016,11 +1162,20 @@ export function chat(options: ChatOptions = {}): CandidateSource {
         if (request.phraseLane === true && request.topic !== undefined) {
           const rank = startChatRank([request.topic, ...(request.paths ?? [])].join(' '), options.keyword);
           const matchOf = new Map<number, number>();
-          const ids: string[] = [];
-          const refs: string[] = [];
-          const partFile: number[] = [];
-          const fileRanges: { provider: ChatProvider; root: string; file: string; start: number }[] = [];
-          for await (const part of each(true, true)) {
+          const ids: string[] = corpus?.ids ?? [];
+          const refs: string[] = corpus?.refs ?? [];
+          const partFile: number[] = corpus?.partFile ?? [];
+          const fileRanges: { provider: ChatProvider; root: string; file: string; start: number }[] = corpus?.fileRanges ?? [];
+          if (corpus !== undefined) {
+            skips.n += corpus.skips;
+            for (const [index, part] of corpus.parts.entries()) {
+              const title = corpus.titles[index]!;
+              rank.observeStored(title, part.words);
+              const count = phraseCount(part.text, request.task) + phraseCount(title, request.task);
+              if (count > 0 && (request.speakerOnly !== true || part.role === 'user')) matchOf.set(index, count);
+            }
+          }
+          for await (const part of corpus === undefined ? each(true, true) : []) {
             const last = fileRanges.at(-1);
             if (last === undefined || last.file !== part.file) {
               fileRanges.push({ provider: part.provider, root: part.root, file: part.file, start: ids.length });
@@ -1040,7 +1195,15 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           const matchedIndexes: number[] = [];
           const matchedIds: string[] = [];
           const filesWithMatches = new Set([...matchOf.keys()].map((index) => partFile[index]!));
-          for (const fileIndex of fileRanges.keys()) {
+          if (corpus !== undefined) {
+            // The matches score in the order the walk met them.
+            for (const index of matchOf.keys()) {
+              rank.scoreStored(corpus.titles[index]!, corpus.parts[index]!.words, { heading: '', name: '', front: '' });
+              matchedIndexes.push(index);
+              matchedIds.push(ids[index]!);
+            }
+          }
+          for (const fileIndex of corpus === undefined ? fileRanges.keys() : []) {
             if (!filesWithMatches.has(fileIndex)) continue;
             const range = fileRanges[fileIndex]!;
             const end = fileRanges[fileIndex + 1]?.start ?? ids.length;
@@ -1076,7 +1239,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
             else bucket.add(index);
           }
           const byIndex = new Map<number, MemoryCandidate>();
-          for await (const [index, part] of keptParts(wanted, fileRanges, refs)) {
+          for await (const [index, part] of corpus === undefined ? keptParts(wanted, fileRanges, refs) : []) {
             const position = at.get(index)!;
             byIndex.set(index, {
               sourceId: id, role: 'reference',
@@ -1089,8 +1252,14 @@ export function chat(options: ChatOptions = {}): CandidateSource {
               ...(mark && !passes(index) ? { pastLaneCut: true as const } : {}),
             });
           }
-          const candidates = kept.map((index) => byIndex.get(index))
-            .filter((candidate): candidate is MemoryCandidate => candidate !== undefined);
+          const candidates = corpus !== undefined
+            ? kept.map((index) => held(index, {
+              signals: { keyword: scores[at.get(index)!]!, phrase: matchOf.get(index)! },
+              laneScore: base[at.get(index)!]!,
+              ...(mark && !passes(index) ? { pastLaneCut: true as const } : {}),
+            }))
+            : kept.map((index) => byIndex.get(index))
+              .filter((candidate): candidate is MemoryCandidate => candidate !== undefined);
           if (skips.n) reasons.push(`skipped ${skips.n} symbolic links or undated messages`);
           if (request.limit !== undefined && curveKept.length > request.limit) {
             reasons.push(`the limit kept ${request.limit} of ${curveKept.length} candidates`);
@@ -1107,7 +1276,14 @@ export function chat(options: ChatOptions = {}): CandidateSource {
         // matching parts; the corpus is never scored.
         if (request.phraseLane === true) {
           const matched: MemoryCandidate[] = [];
-          for await (const part of each(true, true)) {
+          if (corpus !== undefined) {
+            skips.n += corpus.skips;
+            for (const [index, part] of corpus.parts.entries()) {
+              const count = phraseCount(part.text, request.task) + phraseCount(corpus.titles[index]!, request.task);
+              if (count > 0) matched.push(held(index, { signals: { phrase: count }, laneScore: count }));
+            }
+          }
+          for await (const part of corpus === undefined ? each(true, true) : []) {
             const title = partTitle(part, zone);
             const count = phraseCount(part.text, request.task) + phraseCount(title, request.task);
             if (count > 0) {
@@ -1139,7 +1315,46 @@ export function chat(options: ChatOptions = {}): CandidateSource {
         let refs: string[] = [];
         let partFile: number[];
         let fileRanges: { provider: ChatProvider; root: string; file: string; start: number }[];
-        if (storedRoots === undefined) {
+        // An enumeration a per-lane read of this call left behind is not
+        // the walk's: this lane then shares it as the per-lane path does.
+        if (corpus !== undefined && shared!.keyword !== undefined && shared!.keyword.ids !== corpus.ids) {
+          corpus = undefined;
+          onePass.served -= 1;
+        }
+        if (corpus !== undefined) {
+          // The call's one walk carries the corpus: each word's postings
+          // are read from the index once for every lane, each title was
+          // split once, and ties order by each id's held place.
+          skips.n += corpus.skips;
+          // A later keyword lane on the per-lane path shares the call's
+          // first enumeration, whatever its own window: it finds this one.
+          shared!.keyword ??= { ids: corpus.ids, refs: corpus.refs, partFile: corpus.partFile, fileRanges: corpus.fileRanges,
+            titles: corpus.titles, longs: corpus.longs, skips: corpus.skips };
+          ({ ids, refs, partFile, fileRanges } = corpus);
+          const { stems, shorts } = rank.postingTerms();
+          let postingOf: ReturnType<IndexDatabase['prepare']> | undefined;
+          const fold = (term: string, word: string, short: boolean) => {
+            let posting = corpus.postings.get(term);
+            if (posting === undefined) {
+              postingOf ??= database!.prepare('SELECT transcript, ordinal, count FROM postings WHERE term = ?');
+              posting = { index: [], count: [] };
+              for (const row of postingOf.all(term) as { transcript: number; ordinal: number; count: number }[]) {
+                const index = corpus.indexOf.get(`${row.transcript}:${row.ordinal}`);
+                if (index === undefined) continue;
+                posting.index.push(index);
+                posting.count.push(row.count);
+              }
+              corpus.postings.set(term, posting);
+            }
+            for (let at = 0; at < posting.index.length; at += 1) rank.posting(posting.index[at]!, word, posting.count[at]!, short);
+          };
+          for (const term of stems) fold(term, term, false);
+          for (const word of shorts) fold(`!${word}`, word, true);
+          for (let index = 0; index < ids.length; index += 1) {
+            rank.observeIndexed(index, corpus.titles[index]!, corpus.longs[index]!, corpus.titleWords[index]!);
+          }
+          rank.scoreIndexed({ heading: '', name: '', front: '' });
+        } else if (storedRoots === undefined) {
           ids = [];
           partFile = [];
           fileRanges = [];
@@ -1205,10 +1420,13 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           held.titles.forEach((title, index) => rank.observeIndexed(index, title, held.longs[index]!));
           rank.scoreIndexed({ heading: '', name: '', front: '' });
         }
-        const { scores, base } = rank.finish(ids);
+        const places = corpus?.places;
+        const { scores, base } = rank.finish(ids, places);
         const order = ids.map((_, index) => index)
           .filter((index) => index < scores.length)
-          .sort((a, b) => scores[b]! - scores[a]! || ids[a]!.localeCompare(ids[b]!));
+          .sort(places === undefined
+            ? (a, b) => scores[b]! - scores[a]! || ids[a]!.localeCompare(ids[b]!)
+            : (a, b) => scores[b]! - scores[a]! || places[a]! - places[b]!);
         const limited = request.limit === undefined ? order : order.slice(0, request.limit);
         // A bare read keeps every scored part; only a lane the pick
         // resolved with `wholeLanes: false` narrows inside the read. A
@@ -1230,7 +1448,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           else bucket.add(index);
         }
         const byIndex = new Map<number, MemoryCandidate>();
-        for await (const [index, part] of keptParts(wanted, fileRanges, refs)) {
+        for await (const [index, part] of corpus === undefined ? keptParts(wanted, fileRanges, refs) : []) {
           byIndex.set(index, {
             sourceId: id, role: 'reference',
             id: ids[index]!, title: shownTitle(part, zone), text: part.text,
@@ -1243,8 +1461,13 @@ export function chat(options: ChatOptions = {}): CandidateSource {
         }
         // A transcript that shrank mid-read leaves a kept index with no
         // part to materialize; it simply emits fewer.
-        const candidates = kept.map((index) => byIndex.get(index))
-          .filter((candidate): candidate is MemoryCandidate => candidate !== undefined);
+        const candidates = corpus !== undefined
+          ? kept.map((index) => held(index, {
+            signals: { keyword: scores[index]! }, laneScore: base[index]!,
+            ...(mark && !passes(index) ? { pastLaneCut: true as const } : {}),
+          }))
+          : kept.map((index) => byIndex.get(index))
+            .filter((candidate): candidate is MemoryCandidate => candidate !== undefined);
         if (skips.n) reasons.push(`skipped ${skips.n} symbolic links or undated messages`);
         if (request.limit !== undefined && order.length > request.limit) {
           reasons.push(`the limit kept ${request.limit} of ${order.length} candidates`);
