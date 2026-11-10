@@ -153,8 +153,14 @@ export interface CurateLowOptions extends Pick<CurateOptions, 'write' | 'taskDat
  *  no date shows `(said unknown)` and its group comes last. A date that
  *  is only the file's last change shows `(file changed <date>)`. A
  *  heading names the item's file or session when it has one, so two
- *  files of one source stay apart. The curator's other options, `write`
- *  and `decide` are rejected before any work. */
+ *  files of one source stay apart. An item whose text, trimmed, is the
+ *  same as an item taken before it is not taken again, and the next item
+ *  gets its room. A text that only sits inside a longer item stays: it
+ *  may be a quote, a rejected plan or a later restatement, and the longer
+ *  item's place and date are not its own. The taken item's heading then also names where and when the
+ *  copy was said, when that differs: `<heading>, also <source> (said
+ *  <date>)`. The curator's other options, `write` and `decide` are
+ *  rejected before any work. */
 export interface CurateNoneOptions extends Pick<CurateOptions, 'signal'> {
   readonly compression: 'none';
   /** Keep the whole text within this many estimated tokens. The
@@ -261,6 +267,9 @@ export interface CurateNoneRecord {
   readonly estimatedTokens: number;
   /** The budget the text was kept within. */
   readonly answerTokens: number;
+  /** How many items were left out as copies of an item taken before
+   *  them: the same text. */
+  readonly collapsed: number;
 }
 
 /** What `compression: 'none'` returns: the memory text in `log`. */
@@ -269,9 +278,15 @@ export interface CurateNoneResult {
   readonly record: CurateNoneRecord;
 }
 
-/** The memory text for the items taken, strongest first. */
-function layOutItems(taken: CurateNoneRecord['items']): string {
-  const source = (item: CurateNoneRecord['items'][number]) => {
+type NoneItem = CurateNoneRecord['items'][number];
+
+// A commit with no body carries its evidence in its title.
+const body = (item: NoneItem) => item.candidate.text.trim() ? item.candidate.text : item.candidate.title;
+
+/** The memory text for the items taken, strongest first. A taken item's
+ *  heading also names each other place and date its copies were said. */
+function layOutItems(taken: readonly NoneItem[], copies: ReadonlyMap<NoneItem, readonly NoneItem[]>): string {
+  const source = (item: NoneItem) => {
     const said = dayOf(item.candidate.date?.value);
     // A file's last-changed date is not when anything in it was said.
     const label = item.candidate.date === undefined || item.candidate.date.meaning === 'recorded' ? 'said' : 'file changed';
@@ -279,16 +294,21 @@ function layOutItems(taken: CurateNoneRecord['items']): string {
     const where = item.candidate.path ?? item.candidate.sourceId;
     return { said, label, where, heading: `${where} (${label} ${said || 'unknown'})` };
   };
-  // A commit with no body carries its evidence in its title.
-  const body = (item: CurateNoneRecord['items'][number]) => item.candidate.text.trim() ? item.candidate.text : item.candidate.title;
-  const top = taken.slice(0, 2).map((item) => `#### ${source(item).heading}\n\n${body(item)}`);
-  const groups = new Map<string, CurateNoneRecord['items'][number][]>();
+  const heading = (item: NoneItem) => {
+    const own = source(item).heading;
+    const elsewhere = [...new Set((copies.get(item) ?? []).map((copy) => source(copy).heading))].filter((other) => other !== own);
+    if (!elsewhere.length) return own;
+    return `${own}, also ${elsewhere.length === 1 ? elsewhere[0] : `${elsewhere.slice(0, -1).join(', ')} and ${elsewhere[elsewhere.length - 1]}`}`;
+  };
+  const top = taken.slice(0, 2).map((item) => `#### ${heading(item)}\n\n${body(item)}`);
+  const groups = new Map<string, NoneItem[]>();
   for (const item of taken.slice(2)) {
-    const key = `${source(item).said}|${item.candidate.sourceId}|${source(item).where}|${source(item).label}`;
+    // The heading closes the key, so an item whose copies were said elsewhere never shares a heading with one whose were not.
+    const key = `${source(item).said}|${item.candidate.sourceId}|${source(item).where}|${source(item).label}|${heading(item)}`;
     groups.set(key, [...(groups.get(key) ?? []), item]);
   }
   const rest = [...groups].sort(([left], [right]) => (left < right ? -1 : 1))
-    .map(([, group]) => `### ${source(group[0]!).heading}\n\n${group.map(body).join('\n\n')}`);
+    .map(([, group]) => `### ${heading(group[0]!)}\n\n${group.map(body).join('\n\n')}`);
   return [`### Most likely answer\n\n${top.join('\n\n')}\n`, ...rest].join('\n\n');
 }
 
@@ -760,17 +780,24 @@ export async function curate(
     const answerTokens = lowOrHigh.answerTokens ?? DEFAULT_ANSWER_TOKENS;
     // `items` follows `picked.selected`, so a stable sort leaves equal weights in the fused order.
     const ordered = [...items].sort((left, right) => right.weight - left.weight);
-    let taken = 0;
+    let taken: NoneItem[] = [];
+    let copies = new Map<NoneItem, readonly NoneItem[]>();
     let log = '';
-    for (; taken < ordered.length; taken += 1) {
-      const text = layOutItems(ordered.slice(0, taken + 1));
-      if (taken > 0 && estimateAnswerTokens(text) > answerTokens) break;
-      log = text;
+    for (const item of ordered) {
+      // A copy of an item already taken adds only a place and date to that item's heading.
+      const shown = body(item).trim();
+      const original = taken.find((kept) => body(kept).trim() === shown);
+      const nextTaken = original === undefined ? [...taken, item] : taken;
+      const nextCopies = original === undefined ? copies : new Map(copies).set(original, [...(copies.get(original) ?? []), item]);
+      const text = layOutItems(nextTaken, nextCopies);
+      if (taken.length > 0 && estimateAnswerTokens(text) > answerTokens) break;
+      [taken, copies, log] = [nextTaken, nextCopies, text];
     }
     return { log, record: {
       compression: 'none',
       levers: { ...picked.record.levers, route: { asked: picked.record.levers?.route === true, applied: false } },
-      items: ordered.slice(0, taken), estimatedTokens: estimateAnswerTokens(log), answerTokens,
+      items: taken, estimatedTokens: estimateAnswerTokens(log), answerTokens,
+      collapsed: [...copies.values()].reduce((sum, list) => sum + list.length, 0),
     } };
   }
 

@@ -102,8 +102,9 @@ describe("compression: 'none'", () => {
   });
 
   it('keeps fewer dense items than prose items inside one budget', async () => {
-    const prose = (id: string) => part('orchard', id, '2024-03-01', 'the pear tree by the pond '.repeat(16));
-    const dense = (id: string) => part('orchard', id, '2024-03-01', '4,812.07|3,950.11|77,204.9;'.repeat(16).slice(0, 416));
+    // The id ends each text, so no item is a copy of another.
+    const prose = (id: string) => part('orchard', id, '2024-03-01', `${'the pear tree by the pond '.repeat(16)}${id}`);
+    const dense = (id: string) => part('orchard', id, '2024-03-01', `${'4,812.07|3,950.11|77,204.9;'.repeat(16).slice(0, 416)}${id}`);
     const four = (make: (id: string) => MemoryCandidate) => picked([[make('a'), 0.9, 0], [make('b'), 0.8, 1], [make('c'), 0.7, 2], [make('d'), 0.6, 3]]);
     const kept = async (make: (id: string) => MemoryCandidate) =>
       (await curate(TASK, four(make), { compression: 'none', answerTokens: 450 })).record.items.length;
@@ -166,6 +167,91 @@ describe("compression: 'none'", () => {
     expect(log).toContain('### garden/hens.md (said 2024-03-05)\n\nCleaned the coop.');
     expect(log).toContain('### garden/pears.md (said 2024-03-05)\n\nThinned the pears.');
     expect(log).not.toContain('notes (said');
+  });
+
+  describe('copies', () => {
+    const count = (log: string, text: string) => log.split(text).length - 1;
+    const ROW = 'Planted the quince row along the south wall, six trees a metre apart, each one staked.';
+    const RAKED = 'Then I raked the gravel path, cut back the willow by the bridge and fed the koi their spring pellets.';
+
+    it('takes an exact copy in another file once, and names both files', async () => {
+      const kept = { ...part('notes', 'q1', '2024-03-09', ROW), path: 'garden/orchard.md' };
+      const copy = { ...part('notes', 'q2', '2024-03-09', `\n  ${ROW}\n`), path: 'garden/diary.md' };
+      const { log, record } = await curate(TASK, picked([[kept, 0.9, 0], [copy, 0.9, 1], [KOI, 0.5, 2]]), { compression: 'none' });
+      expect(count(log, ROW)).toBe(1);
+      expect(log).toContain(`#### garden/orchard.md (said 2024-03-09), also garden/diary.md (said 2024-03-09)\n\n${ROW}`);
+      expect(record.items.map((item) => item.candidate.id)).toEqual(['q1', 'b']);
+    });
+
+    it('keeps a text that only sits inside a stronger item, with its own place and date', async () => {
+      const diary = part('pond', 'p1', '2024-03-02', `Rejected plan: "${RAKED}" Not this month.`);
+      const inside = part('orchard', 'p2', '2024-03-09', RAKED);
+      const { log, record } = await curate(TASK, picked([[diary, 0.9, 0], [inside, 0.7, 1]]), { compression: 'none' });
+      expect(count(log, RAKED)).toBe(2);
+      expect(log).toContain(`#### orchard (said 2024-03-09)\n\n${RAKED}`);
+      expect(log).not.toContain('also');
+      expect(record.collapsed).toBe(0);
+    });
+
+    it('keeps two items that share only a header line', async () => {
+      const header = '# Garden log, March';
+      const medlar = part('orchard', 'h1', '2024-03-05', `${header}\nPruned the medlar back to three buds on every spur.`);
+      const lilies = part('pond', 'h2', '2024-03-06', `${header}\nThinned the lilies so the koi have open water again.`);
+      const { log, record } = await curate(TASK, picked([[medlar, 0.9, 0], [lilies, 0.8, 1]]), { compression: 'none' });
+      expect(record.items.map((item) => item.candidate.id)).toEqual(['h1', 'h2']);
+      expect(record.collapsed).toBe(0);
+      expect(count(log, header)).toBe(2);
+      expect(log).not.toContain('also');
+    });
+
+    it('takes a line found inside a stronger item again, but not its exact copy', async () => {
+      const diary = part('pond', 's1', '2024-03-02', 'Netted the koi pond. Fed the hens and swept the yard before the rain came in.');
+      const line = part('orchard', 's2', '2024-03-03', 'Netted the koi pond.');
+      const same = part('notes', 's3', '2024-03-04', 'Netted the koi pond.');
+      const { record } = await curate(TASK, picked([[diary, 0.9, 0], [line, 0.8, 1], [same, 0.7, 2]]), { compression: 'none' });
+      expect(record.items.map((item) => item.candidate.id)).toEqual(['s1', 's2']);
+      expect(record.collapsed).toBe(1);
+    });
+
+    it('names every other place and date a copy was said, each once, under the kept heading', async () => {
+      const quince = part('orchard', 'k1', '2024-03-09', 'Planted the quince row.');
+      const koi = part('pond', 'k2', '2024-03-02', 'Netted the koi pond.');
+      const fig = part('orchard', 'k3', '2024-03-05', 'Wrapped the fig.');
+      const medlar = part('orchard', 'k4', '2024-03-05', 'Pruned the medlar.');
+      const { log, record } = await curate(TASK, picked([
+        [quince, 0.9, 0], [koi, 0.8, 1], [fig, 0.6, 2], [medlar, 0.5, 3],
+        [part('pond', 'k5', '2024-03-06', 'Pruned the medlar.'), 0.4, 4],
+        [part('pond', 'k6', '2024-03-01', 'Planted the quince row.'), 0.3, 5],
+        [part('notes', 'k7', undefined, 'Planted the quince row.'), 0.3, 6],
+        [part('orchard', 'k8', '2024-03-09', 'Planted the quince row.'), 0.2, 7],
+        [part('pond', 'k9', '2024-03-01', 'Planted the quince row.'), 0.2, 8],
+      ]), { compression: 'none' });
+      expect(log).toBe([
+        '### Most likely answer\n\n',
+        '#### orchard (said 2024-03-09), also pond (said 2024-03-01) and notes (said unknown)\n\nPlanted the quince row.\n\n',
+        '#### pond (said 2024-03-02)\n\nNetted the koi pond.\n\n\n',
+        '### orchard (said 2024-03-05)\n\nWrapped the fig.\n\n',
+        '### orchard (said 2024-03-05), also pond (said 2024-03-06)\n\nPruned the medlar.',
+      ].join(''));
+      expect(record.collapsed).toBe(5);
+    });
+
+    it('gives the room a copy would take to the next item', async () => {
+      const long = part('orchard', 'l1', '2024-03-05', `${ROW} ${RAKED}`);
+      const copy = part('orchard', 'l2', '2024-03-05', `${ROW} ${RAKED}`);
+      const next = part('orchard', 'l3', '2024-03-05', 'Fed the koi.');
+      const without = await curate(TASK, picked([[long, 0.9, 0], [next, 0.7, 1]]), { compression: 'none' });
+      const { log, record } = await curate(TASK, picked([[long, 0.9, 0], [copy, 0.8, 1], [next, 0.7, 2]]),
+        { compression: 'none', answerTokens: without.record.estimatedTokens });
+      expect(record.items.map((item) => item.candidate.id)).toEqual(['l1', 'l3']);
+      expect(log).toBe(without.log);
+      expect(record.collapsed).toBe(1);
+    });
+
+    it('records no collapsed items when nothing repeats', async () => {
+      const { record } = await curate(TASK, GARDEN, { compression: 'none' });
+      expect(record.collapsed).toBe(0);
+    });
   });
 
   it('holds one item under the answer heading alone', async () => {
