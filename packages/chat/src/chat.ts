@@ -361,6 +361,8 @@ interface Lite {
   queries: readonly string[];
   similarities: number[][];
   ids: string[];
+  /** Each part's row in the stored index, empty on a direct read. */
+  refs: string[];
   partFile: number[];
   fileRanges: { provider: ChatProvider; root: string; file: string; start: number }[];
 }
@@ -640,17 +642,31 @@ function* storedParts(
     ${withText ? 'text' : "'' AS text"}, long,
     ${light ? "'' AS stems, '' AS short" : 'stems, short'} FROM parts WHERE transcript = ? ORDER BY ordinal`)
     .all(transcript.id) as Record<string, unknown>[];
-  for (const row of rows) {
-    yield {
-      provider, root, file: transcript.file,
-      at: `${transcript.id}:${row.ordinal as number}`,
-      line: row.line as number, block: row.block as number, piece: row.piece as number,
-      sessionId: row.session as string, role: row.role as MessageRole, author: row.author as Author,
-      ...(row.author_name === null ? {} : { authorName: row.author_name as string }),
-      date: row.date as number, text: row.text as string,
-      words: { long: row.long as number, stems: row.stems as string, short: row.short as string },
-    };
-  }
+  for (const row of rows) yield storedPart(provider, root, transcript, row);
+}
+
+function storedPart(provider: ChatProvider, root: string, transcript: StoredTranscript, row: Record<string, unknown>): StoredPart {
+  return {
+    provider, root, file: transcript.file,
+    at: `${transcript.id}:${row.ordinal as number}`,
+    line: row.line as number, block: row.block as number, piece: row.piece as number,
+    sessionId: row.session as string, role: row.role as MessageRole, author: row.author as Author,
+    ...(row.author_name === null ? {} : { authorName: row.author_name as string }),
+    date: row.date as number, text: row.text as string,
+    words: { long: row.long as number, stems: row.stems as string, short: row.short as string },
+  };
+}
+
+/** The named rows of one stored transcript, with their text, found by
+ *  the table's own key: a lane that keeps a few parts of a long
+ *  transcript reads those rows and no others. */
+function storedRows(
+  database: IndexDatabase, provider: ChatProvider, root: string, transcript: StoredTranscript, ordinals: readonly number[],
+): StoredPart[] {
+  const rows = database.prepare(`SELECT ordinal, line, block, piece, session, role, author, author_name, date, text,
+    long, stems, short FROM parts WHERE transcript = ? AND ordinal IN (SELECT value FROM json_each(?)) ORDER BY ordinal`)
+    .all(transcript.id, JSON.stringify(ordinals)) as Record<string, unknown>[];
+  return rows.map((row) => storedPart(provider, root, transcript, row));
 }
 
 /** Local JSONL transcripts. Each provider decodes its own message format;
@@ -831,6 +847,36 @@ export function chat(options: ChatOptions = {}): CandidateSource {
             }
           })();
         };
+        /** The parts a lane keeps, each with its place in the lane's
+         *  enumeration. With the index, each is read by its own row;
+         *  a direct read walks the transcript again, as before. */
+        const keptParts = async function* (
+          wanted: ReadonlyMap<number, ReadonlySet<number>>,
+          fileRanges: readonly { provider: ChatProvider; root: string; file: string; start: number }[],
+          refs: readonly string[],
+        ): AsyncGenerator<readonly [number, RawPart]> {
+          for (const [fileIndex, indexes] of wanted) {
+            const range = fileRanges[fileIndex]!;
+            const transcript = storedRoots === undefined ? undefined : byFile.get(`${range.provider}\0${range.file}`);
+            if (storedRoots !== undefined) {
+              if (transcript === undefined) continue;
+              cancelled(request.signal);
+              const indexOf = new Map([...indexes].map((index) => [refs[index]!, index] as const));
+              const ordinals = [...indexOf.keys()].map((ref) => Number(ref.slice(ref.indexOf(':') + 1)));
+              for (const part of storedRows(database!, range.provider, range.root, transcript, ordinals)) {
+                // A transcript another call re-indexed mid-read can hold a
+                // different part under this row, so the date is checked again.
+                if (inDates(part)) yield [indexOf.get(part.at)!, part];
+              }
+              continue;
+            }
+            let local = range.start;
+            for await (const part of partsOf(range, true)) {
+              const index = local++;
+              if (indexes.has(index)) yield [index, part];
+            }
+          }
+        };
         const observe = (rank: ChatRankSession, part: RawPart) => 'words' in part
           ? rank.observeStored(partTitle(part, zone), (part as StoredPart).words)
           : rank.observe(`${partTitle(part, zone)} ${part.text}`);
@@ -863,7 +909,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           const queries = request.meaningQueries ?? [request.task];
           const compute = async (list: readonly string[]): Promise<Lite> => {
             const queryVectors = (await embed(list, request.signal)).map((vector) => normalized(vector));
-            const lite: Lite = { queries: list, similarities: [], ids: [], partFile: [], fileRanges: [] };
+            const lite: Lite = { queries: list, similarities: [], ids: [], refs: [], partFile: [], fileRanges: [] };
             let pending: string[] = [];
             let previous: { file: string; text: string } | undefined;
             const flush = async () => {
@@ -883,6 +929,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
               }
               lite.partFile.push(lite.fileRanges.length - 1);
               lite.ids.push(idOf(part));
+              if ('at' in part) lite.refs.push((part as StoredPart).at);
               const text = /[^\s\p{Cf}]/u.test(part.text) ? part.text : partTitle(part, zone);
               pending.push(previous?.file === part.file ? `${previous.text}\n${text}` : text);
               previous = { file: part.file, text };
@@ -900,7 +947,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           let at = lite.queries.indexOf(request.task);
           if (at === -1) { lite = await compute([request.task]); at = 0; }
           const similarities = lite.similarities.map((row) => row[at]!);
-          const { ids, partFile, fileRanges } = lite;
+          const { ids, refs, partFile, fileRanges } = lite;
           const order = ids.map((_, index) => index)
             .sort((a, b) => (similarities[b] ?? 0) - (similarities[a] ?? 0) || ids[a]!.localeCompare(ids[b]!));
           const cut = request.wholeLanes === false;
@@ -931,22 +978,16 @@ export function chat(options: ChatOptions = {}): CandidateSource {
             else bucket.add(index);
           }
           const byIndex = new Map<number, MemoryCandidate>();
-          for (const [fileIndex, indexes] of wanted) {
-            const range = fileRanges[fileIndex]!;
-            let local = range.start;
-            for await (const part of partsOf(range, true)) {
-              const index = local++;
-              if (!indexes.has(index)) continue;
-              byIndex.set(index, {
-                sourceId: id, role: 'reference',
-                id: ids[index]!, title: shownTitle(part, zone), text: part.text,
-                contentRef: `${part.provider}:${part.sessionId}:${part.line}:${part.block}:${part.piece}`,
-                chat: chatOf(part),
-                date: dated(part),
-                signals: { similarity: similarities[index]! }, laneScore: similarities[index]!,
-                ...(mark && !passes(index) ? { pastLaneCut: true as const } : {}),
-              });
-            }
+          for await (const [index, part] of keptParts(wanted, fileRanges, refs)) {
+            byIndex.set(index, {
+              sourceId: id, role: 'reference',
+              id: ids[index]!, title: shownTitle(part, zone), text: part.text,
+              contentRef: `${part.provider}:${part.sessionId}:${part.line}:${part.block}:${part.piece}`,
+              chat: chatOf(part),
+              date: dated(part),
+              signals: { similarity: similarities[index]! }, laneScore: similarities[index]!,
+              ...(mark && !passes(index) ? { pastLaneCut: true as const } : {}),
+            });
           }
           const candidates = bodies.map((index) => byIndex.get(index))
             .filter((candidate): candidate is MemoryCandidate => candidate !== undefined);
@@ -976,6 +1017,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           const rank = startChatRank([request.topic, ...(request.paths ?? [])].join(' '), options.keyword);
           const matchOf = new Map<number, number>();
           const ids: string[] = [];
+          const refs: string[] = [];
           const partFile: number[] = [];
           const fileRanges: { provider: ChatProvider; root: string; file: string; start: number }[] = [];
           for await (const part of each(true, true)) {
@@ -985,6 +1027,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
             }
             partFile.push(fileRanges.length - 1);
             ids.push(idOf(part));
+            if ('at' in part) refs.push((part as StoredPart).at);
             observe(rank, part);
             const count = phraseCount(part.text, request.task) + phraseCount(partTitle(part, zone), request.task);
             if (count > 0 && (request.speakerOnly !== true || part.role === 'user')) {
@@ -1033,24 +1076,18 @@ export function chat(options: ChatOptions = {}): CandidateSource {
             else bucket.add(index);
           }
           const byIndex = new Map<number, MemoryCandidate>();
-          for (const [fileIndex, indexes] of wanted) {
-            const range = fileRanges[fileIndex]!;
-            let local = range.start;
-            for await (const part of partsOf(range, true)) {
-              const index = local++;
-              if (!indexes.has(index)) continue;
-              const position = at.get(index)!;
-              byIndex.set(index, {
-                sourceId: id, role: 'reference',
-                id: ids[index]!, title: shownTitle(part, zone), text: part.text,
-                contentRef: `${part.provider}:${part.sessionId}:${part.line}:${part.block}:${part.piece}`,
-                chat: chatOf(part),
-                date: dated(part),
-                signals: { keyword: scores[position]!, phrase: matchOf.get(index)! },
-                laneScore: base[position]!,
-                ...(mark && !passes(index) ? { pastLaneCut: true as const } : {}),
-              });
-            }
+          for await (const [index, part] of keptParts(wanted, fileRanges, refs)) {
+            const position = at.get(index)!;
+            byIndex.set(index, {
+              sourceId: id, role: 'reference',
+              id: ids[index]!, title: shownTitle(part, zone), text: part.text,
+              contentRef: `${part.provider}:${part.sessionId}:${part.line}:${part.block}:${part.piece}`,
+              chat: chatOf(part),
+              date: dated(part),
+              signals: { keyword: scores[position]!, phrase: matchOf.get(index)! },
+              laneScore: base[position]!,
+              ...(mark && !passes(index) ? { pastLaneCut: true as const } : {}),
+            });
           }
           const candidates = kept.map((index) => byIndex.get(index))
             .filter((candidate): candidate is MemoryCandidate => candidate !== undefined);
@@ -1099,6 +1136,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
         // third pass reads back only the files that kept a part.
         const rank = startChatRank([request.task, ...(request.paths ?? [])].join(' '), options.keyword);
         let ids: string[];
+        let refs: string[] = [];
         let partFile: number[];
         let fileRanges: { provider: ChatProvider; root: string; file: string; start: number }[];
         if (storedRoots === undefined) {
@@ -1152,7 +1190,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           } else {
             skips.n += held.skips;
           }
-          ({ ids, partFile, fileRanges } = held);
+          ({ ids, refs, partFile, fileRanges } = held);
           const { stems, shorts } = rank.postingTerms();
           const indexOf = new Map(held.refs.map((ref, index) => [ref, index] as const));
           const postingOf = database!.prepare('SELECT transcript, ordinal, count FROM postings WHERE term = ?');
@@ -1192,22 +1230,16 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           else bucket.add(index);
         }
         const byIndex = new Map<number, MemoryCandidate>();
-        for (const [fileIndex, indexes] of wanted) {
-          const range = fileRanges[fileIndex]!;
-          let local = range.start;
-          for await (const part of partsOf(range, true)) {
-            const index = local++;
-            if (!indexes.has(index)) continue;
-            byIndex.set(index, {
-              sourceId: id, role: 'reference',
-              id: ids[index]!, title: shownTitle(part, zone), text: part.text,
-              contentRef: `${part.provider}:${part.sessionId}:${part.line}:${part.block}:${part.piece}`,
-              chat: chatOf(part),
-              date: dated(part),
-              signals: { keyword: scores[index]! }, laneScore: base[index]!,
-              ...(mark && !passes(index) ? { pastLaneCut: true as const } : {}),
-            });
-          }
+        for await (const [index, part] of keptParts(wanted, fileRanges, refs)) {
+          byIndex.set(index, {
+            sourceId: id, role: 'reference',
+            id: ids[index]!, title: shownTitle(part, zone), text: part.text,
+            contentRef: `${part.provider}:${part.sessionId}:${part.line}:${part.block}:${part.piece}`,
+            chat: chatOf(part),
+            date: dated(part),
+            signals: { keyword: scores[index]! }, laneScore: base[index]!,
+            ...(mark && !passes(index) ? { pastLaneCut: true as const } : {}),
+          });
         }
         // A transcript that shrank mid-read leaves a kept index with no
         // part to materialize; it simply emits fewer.

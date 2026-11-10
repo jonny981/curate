@@ -854,6 +854,44 @@ describe('stored index', () => {
     }
   });
 
+  it('reads kept parts back by their own rows: every lane matches the direct read when a date window cuts into long transcripts', { timeout: 60_000 }, async () => {
+    // Old turns sit between new ones, so a kept part's place in the
+    // window is not its row in the stored transcript.
+    const directory = await folder();
+    const turn = (index: number) => [
+      message('codex', 'user', `The orchard row ${index} was pruned early.`, index % 3 === 0 ? OLD : NEW),
+      message('codex', 'assistant', index % 7 === 0 ? `We said the pond pump ${index} needs a filter.` : `Noted item ${index}.`,
+        index % 4 === 0 ? OLD : NEW),
+    ];
+    await transcript('codex', Array.from({ length: 60 }, (_, index) => turn(index)).flat(), directory, 'orchard');
+    await transcript('codex', Array.from({ length: 40 }, (_, index) => turn(index + 100)).flat(), directory, 'pond');
+    await transcript('claude-code', [message('claude-code', 'user', 'The pond pump was replaced on Friday.')], directory, 'third');
+    const embed = async (texts: readonly string[]) =>
+      texts.map((text) => (text.split('\n').at(-1)!.includes('pump') ? [1, 0] : [0, 1]));
+    const lanes: CandidateReadRequest[] = [
+      { task: 'pond pump filter', wholeLanes: false },
+      { task: 'pond pump filter', wholeLanes: true },
+      { task: 'orchard pruned', wholeLanes: false, limit: 5 },
+      { task: 'we said', phraseLane: true, topic: 'pond pump', wholeLanes: false },
+      { task: 'we said', phraseLane: true, topic: 'pond pump', wholeLanes: true },
+      { task: 'pond pump', wholeLanes: false, meaningLane: { embed } },
+      { task: 'pond pump', wholeLanes: true, meaningLane: { embed } },
+      { task: 'pond pump', wholeLanes: true, keptBodiesOnly: true, meaningLane: { embed } },
+    ];
+    const cache = await folder();
+    const options = { paths: [directory], since: '2026-09-15T00:00:00Z' };
+    // One shared context for the indexed lanes, as a pick gives its readers.
+    const context = { files: new Map(), shared: new Map() };
+    const indexed = chat({ ...options, index: { directory: cache } });
+    for (const lane of lanes) {
+      const direct = withoutReport(await chat({ ...options, index: false }).read(lane));
+      expect(direct.candidates.length, JSON.stringify(lane)).toBeGreaterThan(0);
+      expect(direct.candidates.every((candidate) => candidate.text.length > 0)).toBe(true);
+      expect(withoutReport(await indexed.read(lane, context)), JSON.stringify(lane)).toEqual(direct);
+      expect(withoutReport(await chat({ ...options, index: { directory: cache } }).read(lane)), JSON.stringify(lane)).toEqual(direct);
+    }
+  });
+
   it('reads only the new bytes of a transcript that grew, and reads an edited one again whole', async () => {
     const directory = await folder();
     const cache = await folder();
