@@ -49,6 +49,9 @@ const lanes = [
   { task, wholeLanes: false, meaningLane: { embed }, meaningQueries: queries },
   { task: queries[1]!, wholeLanes: true, keptBodiesOnly: true, meaningLane: { embed }, meaningQueries: queries },
   { task, wholeLanes: true, meaningLane: { embed }, limit: 3 },
+  // The call's query list again, after a lane with a list of its own:
+  // the parts are scored from the vectors the call already holds.
+  { task: queries[1]!, wholeLanes: false, meaningLane: { embed }, meaningQueries: queries },
   { task, wholeLanes: true, exclude: ['notes/alice.md'] },
   // These take the per-read path on both sides and must still agree.
   { task, wholeLanes: true, paths: ['src/backup.ts'] },
@@ -56,7 +59,7 @@ const lanes = [
   { task, wholeLanes: false, taskPeriod: { from: '2026-10-01T00:00:00Z', to: '2026-10-15T00:00:00Z' } },
 ].map((lane): CandidateReadRequest => ({ ...lane, taskDate: '2026-10-28T12:00:00Z' }));
 /** How many of the lanes above the one-pass path serves. */
-const SERVED = 14;
+const SERVED = 15;
 
 const notes = {
   'notes/battery.md': '---\ntitle: Battery\nupdated: 2026-10-10\n---\n# Battery\n\n## Backup\n\nThe battery backup runs nightly from src/backup.ts. See [[retention]].\n\n## Checks\n\nBackup checks run weekly. See [the log](../log.md).\n',

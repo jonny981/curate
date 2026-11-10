@@ -1147,6 +1147,9 @@ interface Corpus {
   readonly rank: Uint32Array;
   /** Each word's postings as part indexes, read from the index once. */
   readonly postings: Map<string, { readonly hitsOf: readonly { readonly index: number; readonly f: number }[]; readonly held: number }>;
+  /** Each embedded part's unit vector, kept for the call so a later
+   *  query list scores the same vectors without embedding again. */
+  readonly units: Map<number, Float64Array>;
 }
 
 /** Markdown from folders, files or glob patterns, classified by the caller. */
@@ -1514,7 +1517,7 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
               ? rank[byId[place - 1]!]! : place;
           }
           return { groups: corpusGroups, metas: corpusMetas, stale, fileWords, parts: corpusParts, refs, headings,
-            totalLength: total, rank, postings: new Map() };
+            totalLength: total, rank, postings: new Map(), units: new Map() };
         });
       if (corpus !== undefined) {
         onePass.served += 1;
@@ -1789,6 +1792,26 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
         const compute = async (list: readonly string[]): Promise<Lite> => {
           const queryVectors = (await embed(list, request.signal)).map((vector) => normalized(vector));
           const lite: Lite = { queries: list, sims: new Map() };
+          // With the call's one walk, a part embedded earlier in the call
+          // is scored from its held vector. A part not yet held sends
+          // every part through the embedder as before.
+          if (corpus !== undefined && corpus.units.size > 0) {
+            const dimensions = queryVectors[0]!.length;
+            let every = true;
+            for (let index = 0; index < parts.length && every; index += 1) {
+              if (!inside(index)) continue;
+              const unit = corpus.units.get(index);
+              every = unit !== undefined && unit.length === dimensions;
+            }
+            if (every) {
+              for (let index = 0; index < parts.length; index += 1) {
+                if (!inside(index)) continue;
+                const unit = corpus.units.get(index)!;
+                lite.sims.set(index, queryVectors.map((query) => similarity(unit, query)));
+              }
+              return lite;
+            }
+          }
           let pending: { key: number; text: string }[] = [];
           const flush = async () => {
             if (pending.length === 0) return;
@@ -1796,6 +1819,7 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
             if (vectors.length !== pending.length) throw new TypeError('embed must return one vector per input text.');
             pending.forEach((part, index) => {
               const unit = normalized(vectors[index]!, queryVectors[0]!.length);
+              corpus?.units.set(part.key, unit);
               lite.sims.set(part.key, queryVectors.map((query) => similarity(unit, query)));
             });
             pending = [];
