@@ -182,6 +182,7 @@ These levers act on the whole call:
 | --- | --- |
 | `read.wholeLanes` | Off: cut each search lane |
 | `pick.thoroughness` | `'deep'`: decide the top 12,896 of the fused order; `quick` 672, `normal` 3,674 |
+| `pick.feed` | Unset: the fused order at the level's depth. `{ order: 'combsum', size }` feeds by summed lane places, `size` parts |
 | `pick.everyRanked` | Unset: `thoroughness` bounds the feed. `true` decides every ranked part; `{ c }` a scaled top-k |
 | `pick.route` and `curate.route` | Off |
 | `pick.everyScored` | Unset: each source's bar. When set, one bar for every source |

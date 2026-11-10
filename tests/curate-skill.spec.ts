@@ -2329,3 +2329,65 @@ describe('the question sets the search scope', () => {
     });
   });
 });
+
+describe('the feed setting', () => {
+  const sources = [{ type: 'markdown', path: 'documents' }];
+
+  it('keeps a feed order with or without a size, and stays unset by default', () => {
+    expect(parseSources({ sources, feed: { order: 'combsum', size: 400 } }).feed).toEqual({ order: 'combsum', size: 400 });
+    expect(parseSources({ sources, feed: { order: 'combsum' } }).feed).toEqual({ order: 'combsum' });
+    expect(parseSources({ sources }).feed).toBeUndefined();
+  });
+
+  it.each([
+    [{ order: 'rrf' }], [{ size: 400 }], ['combsum'], [null],
+    [{ order: 'combsum', size: 0 }], [{ order: 'combsum', size: 2.5 }], [{ order: 'combsum', size: '400' }],
+    [{ order: 'combsum', depth: 400 }],
+  ])('rejects feed %j', (feed) => {
+    expect(() => parseSources({ sources, feed })).toThrow("feed must be { order: 'combsum' } with an optional positive integer size.");
+  });
+
+  it.each(['high', 'low', 'none'])("feeds the pick by it under compression '%s' and records what it left unjudged", async (compression) => {
+    const directory = await folder();
+    const home = join(directory, 'home');
+    const notes = join(directory, 'notes');
+    await mkdir(home);
+    await mkdir(notes);
+    await writeFile(join(notes, 'orchard.md'), '# Orchard\n\nThe orchard has trees. Fruit trees grow here.\n');
+    await writeFile(join(notes, 'pond.md'), '# Pond\n\nThe pond by the orchard has koi. Trees shade it.\n');
+    const sourcesFile = join(directory, 'sources.json');
+    await writeFile(sourcesFile, JSON.stringify({
+      records: true, sources: [{ type: 'markdown', path: notes }], compression, thoroughness: 'quick',
+      feed: { order: 'combsum', size: 1 },
+    }));
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
+    vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
+    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => new Response(JSON.stringify({
+      usage: null,
+      answers: Object.fromEntries(Object.keys(JSON.parse(String(init.body)).questions).map((key) => [key, { noul: 0.8 }])),
+    }))));
+    const call = async (prompt: string, _runFolder: string, label: string,
+      record: { subscription: { label: string; attempt: number; code: number }[] }, save: () => Promise<void>) => {
+      record.subscription.push({ label, attempt: record.subscription.filter((entry) => entry.label === label).length + 1, code: 0 });
+      await save();
+      if (label === 'searches') return JSON.stringify(searches());
+      if (label === 'extract') return JSON.stringify({ rows: [] });
+      return [...prompt.matchAll(/^### (.+) \([^)]*\):/gm)]
+        .map((match) => `[2026-01-01] Evidence ${match[1]} (said 2026-01-01; ${match[1]})`).join('\n') || 'Log line.';
+    };
+    const { folder: runFolder } = await run(['--sources', sourcesFile, 'orchard'], call);
+
+    const record = JSON.parse(await readFile(join(runFolder!, 'record.json'), 'utf8'));
+    expect(record.status).toBe('complete');
+    expect(record.curate.compression ?? 'high').toBe(compression);
+    const pick = record.pick.pick;
+    expect(pick.feed.order).toBe('combsum');
+    expect(pick.feed.size).toBe(1);
+    expect(pick.feed.unjudged).toBeGreaterThan(0);
+    expect(pick.thoroughness).toEqual({ level: 'quick', depth: 1 });
+    expect(pick.sent).toBe(1);
+    expect(pick.feed.unjudged).toBe(record.pick.candidates.filter((entry: { status: string; reason?: string }) =>
+      entry.status === 'unassessed' && entry.reason === 'thoroughness').length);
+  });
+});

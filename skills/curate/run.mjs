@@ -96,6 +96,14 @@ export function parseSources(value) {
   if (value.searchModel !== undefined && !['haiku', 'sol'].includes(value.searchModel)) {
     throw new Error("searchModel must be 'haiku' or 'sol'.");
   }
+  if (value.feed !== undefined) {
+    const feed = value.feed;
+    if (feed === null || typeof feed !== 'object' || feed.order !== 'combsum'
+      || Object.keys(feed).some((key) => key !== 'order' && key !== 'size')
+      || (feed.size !== undefined && (!Number.isSafeInteger(feed.size) || feed.size < 1))) {
+      throw new Error("feed must be { order: 'combsum' } with an optional positive integer size.");
+    }
+  }
   if (value.maxCandidates !== undefined || value.userMaxCandidates !== undefined) {
     throw new Error('Remove maxCandidates and userMaxCandidates; the decision feed has no count limit.');
   }
@@ -947,6 +955,7 @@ export async function run(args = process.argv.slice(2), callSubscription = subsc
       limits: { maxBatchChars,
         ...(settings.maxInFlight === undefined ? {} : { maxInFlight: settings.maxInFlight }) },
       ...(settings.thoroughness === undefined ? {} : { thoroughness: settings.thoroughness }),
+      ...(settings.feed === undefined ? {} : { feed: settings.feed }),
       ...(settings.threshold === undefined ? {} : { everyScored: { bar: settings.threshold } }) };
     const picked = await pickFullSources(sources.map((source) => {
       // A read's full result can be very large, so with records off it is

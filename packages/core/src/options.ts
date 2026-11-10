@@ -22,7 +22,7 @@ const PICK_OPTION_KEYS: readonly (keyof PickOptions)[] = [
   'ranking', 'task', 'decide', 'questionsBySource', 'sourceKinds', 'labelKindsBySource', 'labelBarBySource',
   'keepTop', 'rankProtection', 'bestPartFirst', 'tags', 'tagsByKind',
   'labels', 'cache', 'route', 'answerTypes', 'writeQuestions', 'findNames', 'everyRanked', 'everyScored', 'rare', 'rareBySource',
-  'thoroughness',
+  'thoroughness', 'feed',
   'barBySource', 'ruleBarBySource', 'rulesEnumerationComplete', 'readsBySource', 'limits', 'thresholds',
   'taskDate', 'timeZone', 'taskPeriod', 'signal',
 ];
@@ -241,6 +241,18 @@ export function checkPickOptions(options: PickOptions): void {
     // The dials name two different feeds and are never combined.
     if (options.everyRanked !== undefined) {
       throw new TypeError('everyRanked and thoroughness cannot both be set; thoroughness applies only when everyRanked is not given.');
+    }
+  }
+  if (options.feed !== undefined) {
+    checkKeys(options.feed, ['order', 'size'], 'feed');
+    if (options.feed === null || typeof options.feed !== 'object' || options.feed.order !== 'combsum') {
+      throw new TypeError("feed.order must be 'combsum'.");
+    }
+    if (options.feed.size !== undefined && (!Number.isSafeInteger(options.feed.size) || options.feed.size < 1)) {
+      throw new TypeError('feed.size must be a positive integer.');
+    }
+    if (options.everyRanked !== undefined) {
+      throw new TypeError('feed and everyRanked cannot both be set; feed orders the feed a thoroughness level bounds.');
     }
   }
   checkKeys(options.everyScored, ['bar', 'bySize'], 'everyScored');

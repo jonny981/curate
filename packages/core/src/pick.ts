@@ -612,6 +612,11 @@ export interface PickRecord {
     /** The level and the depth in parts it cut the fused order at,
      *  present when a `thoroughness` level was in force. */
     readonly thoroughness?: { readonly level: Thoroughness; readonly depth: number };
+    /** Present when the `feed` option was given: the order the feed
+     *  was cut in, the size given (absent when the level's depth
+     *  stood), and how many ranked reference parts the cut left
+     *  unjudged. With a size, `thoroughness.depth` is that size. */
+    readonly feed?: { readonly order: 'combsum'; readonly size?: number; readonly unjudged: number };
     readonly ranking: 'keyword' | 'fusion';
     readonly rare?: {
       readonly share: number;
@@ -790,6 +795,24 @@ export interface PickOptions {
    *  so the reference parts sent never pass the depth. A part the depth
    *  left out records 'unassessed' with reason 'thoroughness'. */
   readonly thoroughness?: Thoroughness;
+  /** Off unless set. Which reference parts the decide step is asked
+   *  about under a thoroughness level, and how many.
+   *  `order: 'combsum'` cuts the fused order by the SUM of a part's lane
+   *  places in place of its best place, which favours a part several
+   *  search lanes agree on over a part one lane placed high. A keyword
+   *  lane's place is the part's share of that lane across every
+   *  source; a meaning lane's place is its share among its own
+   *  source's members of that lane; a names lane adds nothing. Equal
+   *  sums keep the queue's order, as equal places do by default.
+   *  `size` is the number of reference parts fed, in place of the
+   *  level's depth, smaller or larger; unset, the level's depth stands.
+   *  A shorter feed costs fewer decision questions and judges fewer
+   *  parts: a part the default order would have fed can go unjudged.
+   *  A part the cut leaves out records 'unassessed' with reason
+   *  'thoroughness', and the record's `pick.feed` keeps the order, the
+   *  size and the count left unjudged. Rules are never cut. Passing
+   *  `feed` with `everyRanked` throws a TypeError before any read. */
+  readonly feed?: { readonly order: 'combsum'; readonly size?: number };
   /** The decision-score bars for every source at once, in place of
    *  each source's own `bar` (`barBySource`). Unset, each source's bar
    *  applies. Keep every scored part with true. `{ bar }` cuts references
@@ -1174,6 +1197,8 @@ interface EffectInput {
   /** The thoroughness level in force and the depth it cut the fused
    *  order at; undefined when `everyRanked` was given. */
   readonly thoroughness: { readonly level: Thoroughness; readonly depth: number } | undefined;
+  /** The `feed` size, when one stood in place of the level's depth. */
+  readonly feedSize: number | undefined;
   readonly reads: Readonly<Record<string, PickSourceRead>>;
   /** `taskPeriod` was on, the period the task named, and which parts it brought in. */
   readonly taskPeriod: boolean;
@@ -1489,10 +1514,12 @@ function settingEffects(input: EffectInput): PickSettingEffect[] {
       const ranked = input.rankedBySource.get(id) ?? 0;
       const left = input.cutBySource.get(id) ?? 0;
       const { level, depth } = input.thoroughness;
+      const cut = input.feedSize === undefined
+        ? `the '${level}' depth of ${count(depth, 'part')}` : `the feed size of ${count(depth, 'part')}`;
       effects.push({ setting: 'thoroughness', source: id, actedOn: ranked, added: 0, dropped: null,
         summary: left > 0
-          ? `thoroughness on ${id}: the '${level}' depth of ${count(depth, 'part')} kept ${ranked - left} of ${count(ranked, 'ranked part')} and left ${left} undecided.`
-          : `thoroughness on ${id}: the '${level}' depth of ${count(depth, 'part')} kept every one of ${count(ranked, 'ranked part')}, so it left 0 undecided.` });
+          ? `thoroughness on ${id}: ${cut} kept ${ranked - left} of ${count(ranked, 'ranked part')} and left ${left} undecided.`
+          : `thoroughness on ${id}: ${cut} kept every one of ${count(ranked, 'ranked part')}, so it left 0 undecided.` });
     }
   }
   for (const id of input.typedSources.keys()) {
@@ -1679,7 +1706,8 @@ export async function pick(
   // THOROUGHNESS[level] parts of the fused order; it is in force
   // whenever `everyRanked` is not given, at 'deep' by default.
   const thoroughness = options.everyRanked === undefined ? (options.thoroughness ?? 'deep') : undefined;
-  const depth = thoroughness === undefined ? undefined : THOROUGHNESS[thoroughness];
+  // A `feed` size stands in place of the level's depth.
+  const depth = thoroughness === undefined ? undefined : options.feed?.size ?? THOROUGHNESS[thoroughness];
   // A decide-feed dial is on when `everyRanked` supplies a c or the
   // rare-word round is on: pool-only parts then count toward the
   // history's size without joining the feed or the record, the
@@ -1874,7 +1902,32 @@ export async function pick(
         if (candidate.role === 'reference' && permitted(candidate)) fusedScore.set(candidate, 0);
       }
     }
-    for (const candidate of [...fusedScore.keys()].sort((left, right) => fusedScore.get(right)! - fusedScore.get(left)!)) {
+    // `feed.order: 'combsum'`: the depth cut reads the sum of a part's
+    // lane places, so a part several lanes agree on outranks one a
+    // single lane placed first. A meaning lane's place is the part's
+    // place among its own source's members of that lane; a names lane
+    // adds nothing. The label lane still reads `fusedScore`.
+    const feedScore = options.feed === undefined ? fusedScore : new Map<MemoryCandidate, number>();
+    if (options.feed !== undefined) {
+      const meaningLength = new Map<string, number>();
+      for (const candidate of queue) {
+        candidate.searchRanks?.forEach((rank, index) => {
+          if (rank === null || !meaningLane(candidate, index)) return;
+          const key = `${candidate.sourceId}\0${index}`;
+          meaningLength.set(key, (meaningLength.get(key) ?? 0) + 1);
+        });
+      }
+      for (const candidate of fusedScore.keys()) {
+        let sum = 0;
+        candidate.searchRanks?.forEach((rank, index) => {
+          if (rank === null || options.readsBySource?.[candidate.sourceId]?.lanes[index] === 'names') return;
+          if (meaningLane(candidate, index)) sum += 1 - rank / meaningLength.get(`${candidate.sourceId}\0${index}`)!;
+          else if (heldByLane[index]?.has(candidate)) sum += (laneLength.get(index)! - rank) / laneLength.get(index)!;
+        });
+        feedScore.set(candidate, sum);
+      }
+    }
+    for (const candidate of [...fusedScore.keys()].sort((left, right) => feedScore.get(right)! - feedScore.get(left)!)) {
       if (insideOrder.length === depth) break;
       eligible.add(candidate);
       insideDepth.add(candidate);
@@ -2987,6 +3040,11 @@ export async function pick(
     ...(topK === undefined ? {} : { c: topK }),
     kept: feed.reduce((count, candidate) => count + Number(candidate.role === 'reference'), 0),
     ...(thoroughness === undefined ? {} : { thoroughness: { level: thoroughness, depth: depth! } }),
+    ...(options.feed === undefined ? {} : { feed: {
+      order: options.feed.order,
+      ...(options.feed.size === undefined ? {} : { size: options.feed.size }),
+      unjudged: [...cutBySource.values()].reduce((total, left) => total + left, 0),
+    } }),
     ranking: feedFused || thoroughness !== undefined ? 'fusion' : 'keyword',
     ...(rareResult === undefined ? {} : { rare: rareResult }),
   };
@@ -3001,11 +3059,13 @@ export async function pick(
     linkedPathBar: thresholds.linkedPathBar, rareBar, topK,
     ended: [
       ...(cutBySource.size > 0
-        ? [thoroughness === undefined ? `a feed cut (everyRanked c ${topK})` : `a feed cut (thoroughness '${thoroughness}')`]
+        ? [thoroughness === undefined ? `a feed cut (everyRanked c ${topK})`
+          : options.feed?.size === undefined ? `a feed cut (thoroughness '${thoroughness}')` : `a feed cut (feed size ${options.feed.size})`]
         : []),
       ...(feedStop === undefined ? [] : [`a stop (${feedStop})`]),
     ],
     thoroughness: thoroughness === undefined ? undefined : { level: thoroughness, depth: depth! },
+    feedSize: options.feed?.size,
     typedSources: new Map(Object.entries(options.questionsBySource ?? {}).flatMap(([id, set]) =>
       (set.typed?.length ?? 0) > 0 ? [[id, set.typed!.some((q) => neededTypes.has(q.answerType))] as const] : [])),
     typedAsked: new Set(candidates.filter((candidate) =>

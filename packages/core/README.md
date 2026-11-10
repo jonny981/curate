@@ -1214,6 +1214,35 @@ compared meaning lanes cut at each query's score bend with whole
 lanes: the bend kept every answer part at the smaller depth, so a
 level reads the bend lanes.
 
+### Feed
+
+`feed` is off unless set. It changes which reference parts a
+thoroughness level sends to `decide`, and how many.
+`feed: { order: 'combsum' }` cuts the fused order by the sum of a
+part's lane places where the default takes its best place, which
+favours a part several search lanes agree on over a part one lane
+placed high. A keyword lane's place is the part's share of that lane across
+every source, a meaning lane's place is its share among its own
+source's members of that lane, and a names lane adds nothing. Equal
+sums keep the queue's order. `size` is the number of reference parts
+fed, in place of the level's depth, smaller or larger; with no `size`
+the level's depth stands.
+
+```ts
+const picked = await pick(candidates, {
+  task, decide, thoroughness: 'normal', feed: { order: 'combsum', size: 400 },
+});
+picked.record.pick?.feed; // { order: 'combsum', size: 400, unjudged: 3274 } when 3,674 parts were ranked
+```
+
+A shorter feed asks fewer decision questions and judges fewer parts: a
+part the default order would have fed and scored can go unjudged. It
+records `unassessed` with reason `'thoroughness'`, and the record's
+`pick.feed` keeps the order, the size and how many ranked parts the cut
+left unjudged; with a size, `pick.thoroughness.depth` is that size.
+Rules are never cut. `feed` with `everyRanked` throws a `TypeError`
+before any read, because `everyRanked` has no fused feed to order.
+
 ### Optional rare-word round
 
 A second, narrow round after selection, run within each source on its own.
