@@ -422,6 +422,10 @@ export function git(
   // update stored. A read with no context updates alone.
   const calls = new WeakMap<object, Map<string,
     { readonly since: number; readonly until: number; readonly loading: Promise<GitIndex> }[]>>();
+  // One call asks git where the work tree is once, and a commit the call
+  // already resolved is its own name: the pick pins every later lane to
+  // the first lane's commit, so those lanes start no git process here.
+  const asked = new WeakMap<object, { toplevel?: string; readonly commits: Set<string> }>();
   const resolveExcluded = async (entries: readonly string[], toplevel: string) => {
     const resolved = new Set<string>();
     for (const entry of entries) {
@@ -469,24 +473,33 @@ export function git(
       }
       if (!info.isDirectory()) return { status: 'absent', reason: 'not-a-directory' };
 
-      let probe;
+      let call = context === undefined ? undefined : asked.get(context);
+      if (context !== undefined && call === undefined) asked.set(context, call = { commits: new Set() });
       let toplevel: string;
-      try {
-        probe = await probeWorkTree(resolved, signal);
-        // realpath matches knowledgeBase's canonicalisation, so a
-        // repository key is the same value on both sides of a link.
-        toplevel = probe.status === 'worktree' ? await realpath(probe.toplevel) : '';
-      } catch (error) {
-        throw asSourceReadError(error);
+      if (call?.toplevel !== undefined) {
+        toplevel = call.toplevel;
+      } else {
+        let probe;
+        try {
+          probe = await probeWorkTree(resolved, signal);
+          // realpath matches knowledgeBase's canonicalisation, so a
+          // repository key is the same value on both sides of a link.
+          toplevel = probe.status === 'worktree' ? await realpath(probe.toplevel) : '';
+        } catch (error) {
+          throw asSourceReadError(error);
+        }
+        if (probe.status === 'absent') return probe;
+        if (call !== undefined) call.toplevel = toplevel;
       }
-      if (probe.status === 'absent') return probe;
 
       // The pinned revision (HEAD by default) is resolved once here, at
       // read start; every git call below addresses the SHA it returned,
       // so the whole read sees one snapshot even when HEAD moves on.
       let sha: string;
       try {
-        sha = await resolveCommit(toplevel, request.revision ?? 'HEAD', signal);
+        sha = request.revision !== undefined && call?.commits.has(request.revision) === true
+          ? request.revision : await resolveCommit(toplevel, request.revision ?? 'HEAD', signal);
+        call?.commits.add(sha);
       } catch (error) {
         if (error instanceof GitFailure) {
           if (error.kind === 'cancelled') throw new SourceReadError('cancelled', 'The read was cancelled.');

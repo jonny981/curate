@@ -1216,6 +1216,32 @@ describe('git stored index', () => {
     expect(await listings()).toBe(lanes.length);
   });
 
+  it('asks git where the work tree is and which commit a pinned lane names once per call, with the same results', async () => {
+    const directory = await history();
+    const cache = await mkdtemp(join(tmpdir(), 'curate-git-index-'));
+    temporaryDirectories.push(cache);
+    const source = gitSource(directory, { index: { directory: cache } });
+    const context = { files: new Map<string, Promise<string>>() };
+    const first = await source.read({ task, wholeLanes: true }, context);
+    if (first.status !== 'read' || first.revision === undefined) throw new Error('Expected a read');
+    for (const lane of lanes) {
+      // Each read alone, with no context, is the oracle: it asks git every time.
+      const pinned = { ...lane, revision: first.revision, asOf: '2026-11-10T00:00:00Z' };
+      const alone = await source.read(pinned);
+      gitCalls.length = 0;
+      const later = await source.read(pinned, context);
+      if (later.status !== 'read' || alone.status !== 'read') throw new Error('Expected a read');
+      const { index: _index, ...rest } = later;
+      expect(rest, JSON.stringify(lane)).toEqual(alone);
+      expect(gitCalls.filter((args) => args.includes('rev-parse')), JSON.stringify(lane)).toEqual([]);
+    }
+    // A lane that names no revision still asks which commit the head is.
+    gitCalls.length = 0;
+    await source.read({ task, wholeLanes: true }, context);
+    expect(gitCalls.filter((args) => args.includes('--verify')).length).toBe(1);
+    expect(gitCalls.filter((args) => args.includes('--show-toplevel'))).toEqual([]);
+  });
+
   it('reuses the call\'s stored index for a later lane after the clock moves a relative since', async () => {
     const directory = await history();
     const cache = await mkdtemp(join(tmpdir(), 'curate-git-index-'));
