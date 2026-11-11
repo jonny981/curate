@@ -4,17 +4,14 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { chatSettings } from '@curatejs/chat';
-import { curate, DEFAULT_BATCH_TOKENS, historySource, type PickSourcesResult } from '@curatejs/core';
-import {
-  chatSource, CURATE_WAYS, curatePick, curatePrompts, fixturePick, pickFields, PICK_RUNS, recordingWriter, sha256,
-} from './fixtures/bars-and-batches.js';
-import { fixtureSource, parts, task } from './fixtures/source-settings.js';
+import { historySource, type PickSourcesResult } from '@curatejs/core';
+import { chatSource, fixturePick, pickFields, PICK_RUNS } from './fixtures/bars-and-batches.js';
+import { fixtureSource, parts } from './fixtures/source-settings.js';
 
 // What the build before these settings made on these fixtures: for each pick run, the selected ids and the
-// SHA-256 of `pickFields`; for each curate way, the SHA-256 of every prompt it wrote.
+// SHA-256 of `pickFields`.
 interface Baseline {
   readonly picks: Readonly<Record<string, { readonly selected: readonly string[]; readonly sha256: string }>>;
-  readonly prompts: Readonly<Record<string, string>>;
 }
 const baseline: Baseline = JSON.parse(readFileSync(join(__dirname, 'fixtures/bars-and-batches-baseline.json'), 'utf8'));
 
@@ -74,91 +71,5 @@ describe('labelBar on a source', () => {
   it.each([1.5, Number.NaN, -0.1])('historySource refuses labelBar %s', (labelBar) => {
     expect(() => historySource({ reader: fixtureSource('chat', parts('chat', 'chatword'), { rare: false }),
       ...chatSettings, labelBar })).toThrow(TypeError);
-  });
-});
-
-describe('weightBands on curate', () => {
-  it('builds the weight instruction and the condense steps from the two numbers', async () => {
-    const { prompts } = await curatePrompts({ contextLimit: 40, weightBands: [0.2, 0.7] });
-    const [write, condense] = prompts.map((p) => p.instructions);
-    for (const text of ['weighted 0.7 or more', 'from 0.2 to 0.7', 'below 0.2']) expect(write).toContain(text);
-    expect(write).not.toMatch(/0\.6|0\.1\b/);
-    expect(condense).toContain('items weighted below 0.2.');
-    expect(condense).toContain('items weighted from 0.2 to below 0.7.');
-    expect(condense).toContain('items weighted 0.7 or more whole');
-  });
-
-  it.each(Object.keys(CURATE_WAYS))('with the option absent the prompts equal the baseline: %s', async (name) => {
-    const { prompts } = await curatePrompts(CURATE_WAYS[name]!);
-    expect(sha256(prompts)).toBe(baseline.prompts[name]);
-  });
-
-  it('records the bands and says what they did when they differ', async () => {
-    const plain = await curatePrompts({});
-    expect(plain.result.record.weightBands).toEqual([0.1, 0.6]);
-    expect(plain.result.record.effects.find((e) => e.setting === 'weightBands')).toBeUndefined();
-    const set = await curatePrompts({ weightBands: [0.2, 0.7] });
-    expect(set.result.record.weightBands).toEqual([0.2, 0.7]);
-    expect(set.result.record.effects.find((e) => e.setting === 'weightBands')).toEqual({ setting: 'weightBands', lines: null,
-      summary: "weightBands: the curator's weight instructions used 0.2 and 0.7. One call cannot count which lines that changed." });
-  });
-
-  it.each([[[0.6, 0.1]], [[0, 0.5]], [[0.5, 1]], [[0.2, Number.NaN]]])('curate refuses %j', async (weightBands) => {
-    await expect(curatePrompts({ weightBands: weightBands as unknown as readonly [number, number] }))
-      .rejects.toThrow(TypeError);
-  });
-});
-
-describe('the default batch size', () => {
-  it('is 150,000 estimated tokens', () => {
-    expect(DEFAULT_BATCH_TOKENS).toBe(150_000);
-  });
-
-  it('writes evidence over the default in layered batches', async () => {
-    const { prompts, result } = await curatePrompts({}, curatePick(160, 4000));
-    expect(prompts).toHaveLength(2);
-    expect(prompts[1]!.body).toContain('LOG SO FAR:');
-    expect(result.record.batches).toHaveLength(2);
-    expect(result.record.batchTokens).toBe(150_000);
-    expect(result.record.batchDefault).toBe(true);
-    const effect = result.record.effects.find((e) => e.setting === 'batchTokens');
-    expect(effect?.lines).toBeNull();
-    expect(effect?.summary).toMatch(/^batchTokens: the evidence was about [\d,]+ estimated tokens, over 150,000, so the log was written in 2 layered batches\.$/);
-  });
-
-  it('writes evidence within the default in one call, as with no batch size', async () => {
-    const { prompts, result } = await curatePrompts({});
-    expect(prompts).toHaveLength(1);
-    expect(sha256(prompts)).toBe(baseline.prompts['no options']);
-    expect(result.record).not.toHaveProperty('batchTokens');
-    expect(result.record).not.toHaveProperty('batchDefault');
-    const effect = result.record.effects.find((e) => e.setting === 'batchTokens');
-    expect(effect?.lines).toBeNull();
-    expect(effect?.summary).toMatch(/^batchTokens: the evidence was about [\d,]+ estimated tokens, within one batch of 150,000, so the log was written in one call, as with no batch size\.$/);
-  });
-
-  it('leaves contextLimit as it was: one write, then the condense call', async () => {
-    const { prompts, result } = await curatePrompts(CURATE_WAYS.contextLimit!);
-    expect(prompts).toHaveLength(2);
-    expect(sha256(prompts)).toBe(baseline.prompts.contextLimit);
-    expect(result.record.condensed).toBe(true);
-    expect(result.record).not.toHaveProperty('batchDefault');
-    expect(result.record.effects.find((e) => e.setting === 'batchTokens')).toBeUndefined();
-  });
-
-  it('leaves an explicit batchTokens as it was', async () => {
-    const { prompts, result } = await curatePrompts(CURATE_WAYS.batchTokens!);
-    expect(result.record.batches).toHaveLength(3);
-    expect(sha256(prompts)).toBe(baseline.prompts.batchTokens);
-    expect(result.record).not.toHaveProperty('batchDefault');
-    expect(result.record.effects.find((e) => e.setting === 'batchTokens')).toBeUndefined();
-  });
-
-  it('still writes a layered log when one explicit batch holds everything', async () => {
-    const writer = recordingWriter();
-    const result = await curate(task, curatePick(), { write: writer.write, batchTokens: DEFAULT_BATCH_TOKENS });
-    expect(writer.prompts).toHaveLength(1);
-    expect(result.record.batches).toHaveLength(1);
-    expect(result.record.batchTokens).toBe(DEFAULT_BATCH_TOKENS);
   });
 });

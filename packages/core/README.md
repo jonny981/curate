@@ -1,12 +1,12 @@
 # @curatejs/core
 
-Curate selects the memory an agent needs for a task from typed sources. Its RDC process ranks candidates, asks your decision function how strongly each item bears on the task, and asks your writer to turn the evidence into the dated log the task needs. Selection and curation each return a record.
+Curate selects the memory an agent needs for a task from typed sources. Its RDC process ranks candidates, asks your decision function how strongly each item bears on the task, and lays out the strongest items in their own words within a token budget. No model writes the memory text. Selection and curation each return a record.
 
 ## RDC process
 
 - **Rank:** Order memory candidates by their signals.
 - **Decide:** Judge ranked evidence with narrow questions. Keep references scored 0.0146 or more, ordered and weighted by decision probability. Check rules against their separate applicability bar.
-- **Curate:** Call `curate(task, picked, { write })` to write the dated log the working model reads.
+- **Curate:** Call `curate(task, picked, { decide })` to lay out the kept references for the working model to read, keeping the sentences `decide` rates 0.1 or more.
 
 ## Install
 
@@ -14,7 +14,7 @@ Curate selects the memory an agent needs for a task from typed sources. Its RDC 
 pnpm add @curatejs/core
 ```
 
-The host supplies its own sources, decision function, and writer. The default entry imports no model engine. The optional local embedding entry uses a separately installed runtime.
+The host supplies its own sources and decision function. The default entry imports no model engine. The optional local embedding entry uses a separately installed runtime.
 
 ## Requirements
 
@@ -22,36 +22,35 @@ Node.js 22.20 or later.
 
 ## Recall context
 
-`memory()` reads sources, selects evidence and writes a dated, cited log in one call.
-Supply the readers and your two model functions:
+`memory()` reads sources, selects evidence and lays it out in one call.
+Supply the readers and your decision function:
 
 ```ts
 import { memory } from '@curatejs/core';
 
-const mem = memory({ sources, decide, write });
+const mem = memory({ sources, decide });
 const { log, rules, picked, result } = await mem.recall('What billing constraint must this change preserve?');
 ```
 
-- **Log:** `log` is the writer's text after format checks and any recovery. `result` is the full `CurateResult`, including its record.
-- **Rules:** `rules` joins selected rules with blank lines and preserves each rule's text. Rules do not go to the writer.
+- **Log:** `log` is the text `curate()` lays out from the kept references, with each sentence `decide` rates under 0.1 left out. `result` is the full `CurateResult`, including its record. See [Curating](#curating).
+- **Rules:** `rules` joins selected rules with blank lines and preserves each rule's text. Rules are not in `log`.
 - **Selection:** `picked` is the full `PickSourcesResult`, including source reads and decision records.
 - **Questions:** Each source carries its decision question set as `questions`, set through `historySource()`, and each built-in reader carries its fitted set. `memory()`, `pickFromSources()` and the `/curate` skill all ask each source its own set. A source without one asks core's ordinary question. A direct `pick()` takes the sets by source id as `questionsBySource`.
-- **Incomplete collection:** Absent or incomplete reads, unanswered candidates and interrupted decisions throw before the writer runs. Parts intentionally excluded by the label questions are allowed. The error's `cause` holds `picked` for inspection. Source read errors propagate. A limit that leaves candidates unassessed also throws; use `pickFromSources()` directly if you need to accept a partial selection.
-- **Cancellation:** `mem.recall(task, { signal })` passes the signal to the readers and both model functions.
+- **Incomplete collection:** Absent or incomplete reads, unanswered candidates and interrupted decisions throw before the layout. Parts intentionally excluded by the label questions are allowed. The error's `cause` holds `picked` for inspection. Source read errors propagate. A limit that leaves candidates unassessed also throws; use `pickFromSources()` directly if you need to accept a partial selection.
+- **Cancellation:** `mem.recall(task, { signal })` passes the signal to the readers and every `decide` call.
 
 Each source carries its own settings: whether the rare-word round runs on it, which label kinds its parts are asked, and the decision-score bars its parts are cut at.
 Git and Markdown run the rare-word round and chat leaves it off; chat asks the seven label kinds and git and Markdown ask none; every reader keeps references scored 0.0146 or more.
-Out of the box the call decides the top of the fused order at the `deep` thoroughness depth, with routing off.
+Out of the box the call decides the top of the fused order at the `normal` thoroughness depth, with routing off.
 Explicit `read`, `pick` and `curate` options apply to the whole call:
 
 ```ts
 const mem = memory({
   sources: [historySource({ reader: chat(), ...chatSettings, questions: AGENT_CHAT_CASCADE }), git('.')],
   decide,
-  write,
   read: { wholeLanes: true },
   pick: { everyScored: { bar: 0.05 } },
-  curate: { context: true },
+  curate: { answerTokens: 4000, sentenceCutoff: false },
 });
 ```
 
@@ -63,13 +62,12 @@ See the [runnable example](https://github.com/jonny981/curate#use-it) for instal
 
 ## Model helpers
 
-The optional `@curatejs/core/models` entry supplies four factories using Node's built-in `fetch`:
+The optional `@curatejs/core/models` entry supplies three decision factories using Node's built-in `fetch`:
 
 ```ts
-import { jev, chatWriter } from '@curatejs/core/models';
+import { jev } from '@curatejs/core/models';
 
 const decide = jev({ apiKey: process.env.TYPESAFE_API_KEY });
-const write = chatWriter({ apiKey: process.env.CHAT_API_KEY, model: 'gpt-5-mini' });
 ```
 
 - **Jev:** `jev({ apiKey?, model?, url? })` returns a `PickDecide` function for TypeSafe's System One endpoint, with `deciderId: typesafe:${model}:items-once`. The model defaults to `'jev-latest'`. Missing or invalid probabilities become missing answers.
@@ -81,12 +79,11 @@ const write = chatWriter({ apiKey: process.env.CHAT_API_KEY, model: 'gpt-5-mini'
 - **Labels and decisions stored by an older `jev()`:** they are keyed by its earlier ID, `typesafe:${model}`, so `jev()` asks for them once more. A pick that sets `labels.deciderId`, or a decision cache with its own `deciderId`, keeps its stored entries.
 - **OpenAI Decisions:** `openAIDecisions({ apiKey, model? })` returns a `PickDecide` function for the [Decisions API](https://developers.openai.com/api/docs/guides/decisions), with `deciderId: openai:${model}`. The model defaults to `'gpt-6-luna'`. Predicate answers become probabilities; refusals become `{ status: 'refused' }`. Missing or invalid probabilities become missing answers.
 - **Local decisions:** `localDecisions({ url, model, apiKey? })` returns a `PickDecide` function for an OpenAI-compatible chat completions address, with `deciderId: local:${host}${path}:${model}`. It sends one request a question, one after another. Each request holds the task, the question with its true and false criteria, and the item's id, date, title and text, and asks for one token with `temperature: 0`, `logprobs: true` and `top_logprobs: 20`. The answer is the probability of the "yes" tokens over the "yes" and "no" tokens among the first token's top log-probabilities, with case and leading whitespace ignored. When neither is there, the answer is missing. No `authorization` header is sent without a key.
-- **Chat writer:** `chatWriter({ apiKey?, model, url? })` returns a `CurateWrite` function. The URL defaults to OpenAI's Chat Completions endpoint. Set `url` for another provider using that format; the key is then optional, and no `authorization` header is sent without one. Empty text passes through for later batches that add no observations; Curate checks the log itself.
 - **Separate IDs per server:** the IDs built from `url` leave out its scheme and query. Set `labels.deciderId` yourself for two servers that differ only there. A decision cache keeps its own `deciderId`, so give it a different one for each server.
-- **Errors:** `jev()` and `chatWriter()` reject a missing API key at their default addresses, and `openAIDecisions()` always does. A `localDecisions()` reply with no log-probabilities throws `The model server at <url> returned no log-probabilities; localDecisions needs a server that does.` An HTTP 429 reply to a `jev()` request waits as its Retry-After header directs, then sends the same request again. Other HTTP failures and missing writer text throw. Cancellation reaches `fetch`.
+- **Errors:** `jev()` rejects a missing API key at its default address, and `openAIDecisions()` always does. A `localDecisions()` reply with no log-probabilities throws `The model server at <url> returned no log-probabilities; localDecisions needs a server that does.` An HTTP 429 reply to a `jev()` request waits as its Retry-After header directs, then sends the same request again. Other HTTP failures throw. Cancellation reaches `fetch`.
 
 > [!NOTE]
-> At their default addresses, `jev()`, `openAIDecisions()` and `chatWriter()` make paid model calls. A local model server needs no hosted service. You can also supply plain `decide` and `write` functions using any model route.
+> At their default addresses, `jev()` and `openAIDecisions()` make paid model calls. A local model server needs no hosted service. You can also supply a plain `decide` function using any model route.
 
 ## Source packages
 
@@ -698,18 +695,18 @@ either runs, and go alone otherwise. A type answered at 0.5 or more is
 needed; `answerTypes: { bar }` sets another bar. It is off by default,
 and `memory()` passes it through `pick` like any pick option.
 
-| Key | Phrase in the hint | Question | True when | False when |
-| --- | --- | --- | --- | --- |
-| `date` | a date | Is the answer a point in time? | The answer names when something happened or will happen: a calendar date, a day of the week, a month, a year or a time of day. | The answer is not a point in time. |
-| `duration` | a length of time | Is the answer a length of time? | The answer is how long something lasted or took, or how much time passed between two events or since an event (days, weeks, months, years). | The answer is not a length of time. |
-| `order` | the order of events | Does the answer depend on the order of two or more events? | The question asks which happened first, last, before or after, or asks for events in sequence. | The question does not ask about the order of events. |
-| `number` | a number | Is the answer a number? | The answer is a number: a quantity, a count, an amount of money, a measurement, an age, a score or a percentage. | The answer is not a number. |
-| `entity` | a specific name | Is the answer a specific named thing? | The answer is a particular person, place, product, brand, organisation, pet, or title of a book, film, show or song. | The answer is not a particular named person, place, product or title. |
-| `yesno` | a yes or no | Can the question be answered with yes or no? | The question asks whether something is true, happened or holds, so a yes or a no answers it. | A yes or a no does not answer the question. |
-| `list` | a full count or list | Does the answer need every instance of something gathered? | The answer is a count of items or events, or a complete list of them, so every instance must be found. | The answer does not need instances counted or listed. |
-| `advice` | a recommendation | Does the question ask for a recommendation, a suggestion or an opinion? | The user asks what they should do, choose, try or think, rather than asking for a fact from their past. | The user asks for a fact, not for a recommendation or an opinion. |
-| `preference` | the user's own tastes | Does the answer depend on the user's own preferences? | The user's stated likes, dislikes, tastes, wants or limits shape what a good answer is. | The user's preferences do not shape the answer. |
-| `latest` | the latest value | Does the question ask for the current or most recent value of something that can change? | The answer is the most recent value or state of something that may have changed over time; an earlier value would be out of date. | The question does not ask for a current or latest value. |
+| Key | Question | True when | False when |
+| --- | --- | --- | --- |
+| `date` | Is the answer a point in time? | The answer names when something happened or will happen: a calendar date, a day of the week, a month, a year or a time of day. | The answer is not a point in time. |
+| `duration` | Is the answer a length of time? | The answer is how long something lasted or took, or how much time passed between two events or since an event (days, weeks, months, years). | The answer is not a length of time. |
+| `order` | Does the answer depend on the order of two or more events? | The question asks which happened first, last, before or after, or asks for events in sequence. | The question does not ask about the order of events. |
+| `number` | Is the answer a number? | The answer is a number: a quantity, a count, an amount of money, a measurement, an age, a score or a percentage. | The answer is not a number. |
+| `entity` | Is the answer a specific named thing? | The answer is a particular person, place, product, brand, organisation, pet, or title of a book, film, show or song. | The answer is not a particular named person, place, product or title. |
+| `yesno` | Can the question be answered with yes or no? | The question asks whether something is true, happened or holds, so a yes or a no answers it. | A yes or a no does not answer the question. |
+| `list` | Does the answer need every instance of something gathered? | The answer is a count of items or events, or a complete list of them, so every instance must be found. | The answer does not need instances counted or listed. |
+| `advice` | Does the question ask for a recommendation, a suggestion or an opinion? | The user asks what they should do, choose, try or think, rather than asking for a fact from their past. | The user asks for a fact, not for a recommendation or an opinion. |
+| `preference` | Does the answer depend on the user's own preferences? | The user's stated likes, dislikes, tastes, wants or limits shape what a good answer is. | The user's preferences do not shape the answer. |
+| `latest` | Does the question ask for the current or most recent value of something that can change? | The answer is the most recent value or state of something that may have changed over time; an earlier value would be out of date. | The question does not ask for a current or latest value. |
 
 The true and false columns are each entry's `trueCriterion` and
 `falseCriterion`. `AnswerType` is the type of the keys.
@@ -748,23 +745,13 @@ const DATED = {
 const mem = memory({
   sources: [historySource({ reader: git('.'), ...gitSettings, questions: DATED })],
   decide,
-  write,
   pick: { answerTypes: true },
-  curate: { answerHint: true },
 });
 ```
 
 No preset carries a typed question. A pick whose sources carry typed
 questions while `answerTypes` is off throws a `TypeError` that names
 the source, before any read.
-
-`answerHint: true` on `curate` adds one line under the task line of the
-curator's `TASK:` block. It names the needed types by their phrases, in
-`ANSWER_TYPES` order: "The answer likely needs: a date, a number." When
-no type cleared the bar it adds no line. `CurateRecord.answerHint`
-holds the line. It reads `record.answerTypes` on the pick's record, and
-throws a `TypeError` when the pick did not record one. It is off by
-default.
 
 ### Keeping a part on one typed answer
 
@@ -783,16 +770,14 @@ carries it. Add it to a set with `answerTypes` on:
 
 ```ts
 import { COUNT_MARKER, historySource, memory } from '@curatejs/core';
-import { chatWriter, jev } from '@curatejs/core/models';
+import { jev } from '@curatejs/core/models';
 import { chat, chatSettings, AGENT_CHAT_CASCADE } from '@curatejs/chat';
 
 const decide = jev({ apiKey: process.env.TYPESAFE_API_KEY });
-const write = chatWriter({ apiKey: process.env.CHAT_API_KEY, model: 'gpt-5-mini' });
 
 const mem = memory({
   sources: [historySource({ reader: chat(), ...chatSettings, questions: { ...AGENT_CHAT_CASCADE, typed: [COUNT_MARKER] } })],
   decide,
-  write,
   pick: { answerTypes: true },
 });
 ```
@@ -806,8 +791,9 @@ pick's signal and returns `PickCriterion` questions. Curate keys them
 `task1` to `task4` and asks them of the reference parts of every source
 whose question set has `written` weights. It is off by default.
 
-`taskQuestionWriter(write)` builds the option from the same `write`
-function the curator uses. It sends `TASK_QUESTION_PROMPT` as the
+`taskQuestionWriter(write)` builds the option from a `write` function,
+a `CurateWrite`: it gets `{ instructions, body }` and a signal, and
+returns the model's reply text. It sends `TASK_QUESTION_PROMPT` as the
 instructions, with the task in the body, and reads the JSON array in
 the reply.
 
@@ -820,17 +806,17 @@ asked only when the other questions are, and a part outside the band
 keeps the `firstOnly` score.
 
 ```ts
-import { historySource, memory, taskQuestionWriter } from '@curatejs/core';
-import { chatWriter, jev } from '@curatejs/core/models';
+import { historySource, memory, taskQuestionWriter, type CurateWrite } from '@curatejs/core';
+import { jev } from '@curatejs/core/models';
 import { chat, chatSettings, PERSONAL_CHAT_WRITTEN_CASCADE } from '@curatejs/chat';
 
 const decide = jev({ apiKey: process.env.TYPESAFE_API_KEY });
-const write = chatWriter({ apiKey: process.env.CHAT_API_KEY, model: 'gpt-5-mini' });
+// Any model call: it gets { instructions, body } and returns the reply text.
+const write: CurateWrite = async ({ instructions, body }, signal) => askYourModel(instructions, body, signal);
 
 const mem = memory({
   sources: [historySource({ reader: chat(), ...chatSettings, questions: PERSONAL_CHAT_WRITTEN_CASCADE })],
   decide,
-  write,
   pick: { writeQuestions: taskQuestionWriter(write) },
 });
 ```
@@ -943,7 +929,7 @@ and `keepTop` retains its explicit promotion.
 
 This affects order only. Reference score cuts still apply; rules keep
 their separate applicability bar. The record stores `orderScore`
-separately; curator weights remain the original decision probabilities. Omit the option or pass
+separately; the weights curate receives remain the original decision probabilities. Omit the option or pass
 `false` to retain the default order and record format.
 
 ### Optional best part first
@@ -1076,14 +1062,11 @@ something. They go through the decide port once per pick: in the same
 request as the task's kind labels when the label gate asks them, alone
 otherwise, and always as one request whatever the request-size dials
 allow. An answer at `LABEL_LANE_BAR` or more switches on the
-curator options its route maps to: `taste` switches on
+options its route maps to: `taste` switches on
 `preferenceAdvice` and `preferenceChange`, and `count`, `date` and
-`latest` switch on `working`. `latest` routes to worked notes because
-a worked note carries each fact's date, so the curator can order the
-changes and pick the newest. The record's `route` field keeps the
-answers and the options they switched on; `curate`'s own `route: 'jev'`
-applies them. Omit the option and the pick is identical to a pick
-without it.
+`latest` switch on `working`. The record's `route` field keeps the
+answers and the options they switched on. Omit the option and the pick
+is identical to a pick without it.
 
 ### Optional decision cache
 
@@ -1181,7 +1164,7 @@ broadly, then sends one bounded short list to `decide`: the top
 candidate the best of its keyword-lane positions (a keyword lane is
 one `searchRanks` index across every source) and its position in the
 history's own best-similarity ranking. `quick`, `normal` and `deep`
-hold 672, 3,674 and 12,896 parts. The level defaults to `deep` whenever
+hold 672, 3,674 and 12,896 parts. The level defaults to `normal` whenever
 `everyRanked` is unset and records under `levers.thoroughness`. A part
 outside the depth is never asked by the first pass and records
 `unassessed` with reason `'thoroughness'`; the rare-word round can
@@ -1208,7 +1191,7 @@ history. On the largest set, the seven smaller sets together and the
 largest of them `quick` kept 4 of 14, 20 of 42 and 9 of 13 known
 answer parts, and `normal` kept 12 of 14, 37 of 42 and 13 of 13.
 Decide-step minutes on the largest set, 30 seconds plus
-33 ms per asked part and leaving out reading and the curator, were about
+33 ms per asked part and leaving out reading and curation, were about
 0.8, 2.3 and 6.6 at `quick`, `normal` and `deep`. The replay also
 compared meaning lanes cut at each query's score bend with whole
 lanes: the bend kept every answer part at the smaller depth, so a
@@ -1306,398 +1289,98 @@ bytes between overlapping reads within one `pickFromSources` call.
 
 ## Curating
 
-`curate(task, picked, { write })` accepts the result of `pick` or
-`pickFromSources`. It calls your `write(prompt, signal)` function to
-write the log the task needs, with no fixed character cap.
-`prompt.instructions` contains the v4 dated-log wording and three weight
-tiers: 0.6 or more, 0.1 to below 0.6, and below 0.1. `weightBands: [low, high]`
-sets the two numbers, with 0 < low < high < 1; absent means `[0.1, 0.6]`.
-Each number is written into the instructions as JavaScript prints it, so
-`0.1` stays `0.1`. `prompt.body` contains the
-task and selected reference items in their selected order. Each header
-shows the item's short id (`E1`, `E2`, and so on in selected order),
-the candidate's date value, its source kind when
-the read recorded one, its decision weight without rounding, and any
-recorded tags: `### E1 (2023-05-30, markdown, 0.87, intent: correction): title`.
-A missing date stays missing.
+`curate(task, picked, { answerTokens?, sentenceCutoff?, decide?, signal? })`
+accepts the result of `pick` or `pickFromSources` and lays out its
+selected reference items for the working model to read. No model
+writes the text: each item keeps its own words. It returns `{ log,
+record }`, with the laid-out text in `log`. Selected rules stay out of
+`log`; `memory()` returns them as `rules`.
 
-A chat candidate can say who wrote it in `chat.author`: `'person'`,
-`'agent'`, `'tool'`, `'system'` or `'unmarked'`. `chat.authorName` holds the
-agent's name or id when the transcript gives one. The chat reader sets both.
-The header then ends with the author: `by the person`, `by agent <name>`
-(`by an agent` with no name), `by a tool` or `system`, as in
-`### E1 (2023-05-30, 0.87, by the person): title`. An `'unmarked'` or absent
-author adds nothing.
-When at least one header names an author, the instructions add two rules:
-
-- Words quoted as the person's must come from an item marked 'by the
-  person'. An item by an agent may report what the person wants: say it is
-  the agent's account, and do not quote it as the person's words.
-- When an item by the person and any item not by the person say the same
-  thing, or the other item quotes or reports the person's words, cite the
-  person's item and keep the person's words. This covers an item from any
-  source, such as a note that records what the person said. The other item
-  is cited beside the person's only for facts the person's item does not
-  hold.
-
-A chained write's later passes add one more rule. When an item by the
-person in that batch says what an earlier log line states from items not
-by the person, the pass writes the fact again from the person's item, in
-the person's words, and ends the new line with
-`(replaces Ln: the person's own words)`, where `Ln` is the earlier line's
-id. The earlier line stays in the log.
-
-A call where no header names an author sends the same prompt as before
-authors existed.
-The instructions ask the writer to keep every observation from items at
-0.6 or more, include useful facts from items at 0.1 to below 0.6, and use
-items below 0.1 only when they clearly state a needed fact. The prompt
-asks for less space for low scores; they remain available as evidence.
-The writer cites the short ids; the format check knows only them, and
-the returned log and `record.items` carry the full item ids again.
-When ids clash across sources, `record.items` keeps each id as a
-`[sourceId, id]` JSON string so callers can tell them apart.
-
-```ts
-import { curate, pick, type CurateWrite, type MemoryCandidate, type PickDecide } from '@curatejs/core';
-
-// The host supplies both functions, using its chosen model route.
-async function recall(task: string, candidates: MemoryCandidate[], decide: PickDecide, write: CurateWrite) {
-  const picked = await pick(candidates, { task, decide });
-  const curated = await curate(task, picked, { write });
-  return { log: curated.log, pickRecord: picked.record, curateRecord: curated.record };
-}
-```
-
-The returned `log` is the text for the working model to read. Its lines
-have this form:
+The two items with the highest decision weight sit under
+`### Most likely answer`, each under its own
+`#### <source> (said <date>)` heading; equal weights keep the fused
+order. Every other item is grouped by said date and source, under
+`### <source> (said <date>)`, groups oldest first and items in weight
+order inside a group. The said date is the first `YYYY-MM-DD` or
+`YYYY/MM/DD` the item's date value writes, so date labels, ISO dates
+and timestamps all read the same. An item with no date shows
+`(said unknown)` and its group comes last. A date that is only the
+file's last change shows `(file changed <date>)`. A heading names the
+item's file when it has one, and its source otherwise, so two files of
+one source stay apart. A commit with no body shows its title.
 
 ```text
-[2023-05-13] Visited York (said 2023-05-20; trips.md#2)
+### Most likely answer
+
+#### docs/billing.md (said 2026-01-12)
+
+Invoices must preserve the currency recorded when the order was placed.
+
+#### git:/home/sam/shop (said 2026-01-14)
+
+Keep the order currency on refunds.
+
+
+### chat:claude-code:/home/sam/chat (said 2026-01-10)
+
+user: Should refunds use today's rate?
 ```
 
-The event date and the date it was said are separate. The prompt asks
-the writer to keep exact names and amounts, merge repeated events with
-both ids, and mark later observations that replace earlier ones.
-Selected rules stay in `picked.selected` for the host to pass as exact
-instructions; the curator reads only reference items.
+- **Copies taken once:** an item whose text, trimmed, is the same as an
+  item taken before it is not taken again, and the next item gets its
+  room. The taken item's heading then also names where and when the copy
+  was said, when that differs: `<heading>, also <source> (said <date>)`.
+  A text that only sits inside a longer item stays: it may be a quote, a
+  rejected plan or a later restatement, and the longer item's place and
+  date are not its own. `record.collapsed` counts the copies.
+- **Budget:** `answerTokens` keeps the whole text within that many
+  estimated tokens, `DEFAULT_ANSWER_TOKENS` (2,000) when omitted. Items
+  are taken in weight order, and the first item that would take the text
+  over the budget stops the taking. The strongest item is always kept
+  whole, even over the budget. The estimate needs no tokenizer: it counts
+  words, digits in threes, runs of one punctuation mark, line ends and
+  characters outside ASCII, fitted to a real tokenizer's counts and set
+  about a tenth high. It is an approximate budget, not a ceiling: text
+  full of rare names, such as products or medicines, can cost more real
+  tokens than it counts. `record.leftOut` holds how many selected items
+  the budget stopped before, the strongest weight among them and how
+  many have a weight of 0.5 or more.
+- **Sentence cutoff:** with `decide`, curate rates every sentence of the
+  taken items in one more request and keeps a sentence when its rating
+  is `sentenceCutoff` or more, `DEFAULT_SENTENCE_CUTOFF` (0.1) when
+  omitted. `sentenceCutoff: false` rates no sentence and calls no model;
+  without `decide` no sentence is rated either, and a number then throws
+  a `TypeError`. Each sentence is asked "Does this sentence supply
+  evidence, a constraint or a decision for this task?" with no id or
+  title, the item's date on its first sentence. A sentence is the text up
+  to a full stop, question mark or exclamation mark followed by a space,
+  or to the line's end; blank lines go. Kept sentences stay in their own
+  words and order under the same headings, and `…` marks each place text
+  was left out. A line that opens `user: ` or `assistant: ` names its
+  speaker, and the first kept sentence of that speaker's turn carries
+  the name. An item with no sentence kept is left out, the strongest
+  included, so the text can be empty. A sentence `decide` gives no rating
+  stays. When the request fails, the whole text is returned as if no
+  sentence were rated, and `record.sentences.failed` holds the message;
+  a cancelled request throws. `answerTokens` bounds the text that is
+  rated, so the returned text is usually far smaller. A kept sentence
+  can lose the sentence that says what it refers to.
 
-`taskDate: '2023-05-22'` adds ` (asked 2023-05-22)` to the task in
-every writer call. The date label is kept exactly, including any time or weekday.
+`record` holds the pick's `levers`; the `items` taken, in the order they
+were taken, each with its full `id` (with the source beside it when two
+items share an id), its `candidate` as shown and its exact `weight`;
+`estimatedTokens`, the returned text's estimate; `answerTokens`;
+`collapsed`; `leftOut`; and, when sentences were rated, `sentences`:
+the `cutoff`, the sentences `kept` of how many (`of`), how many were
+`unanswered`, the items that lost a sentence (`itemsTrimmed`) or every
+sentence (`itemsLeftOut`), `estimatedTokensBefore`, and `failed` when
+the request failed.
 
-`working: true` adds worked notes below the log for counts, dates, order
-and latest values. It is off by default. The working section's title
-can be plain text or a Markdown heading.
-
-`context: true` asks the writer to keep who, where and which item or event
-on each observation. It asks for links from that observation's own session
-and forbids invented links. It is off by default. The same guidance applies
-when condensing; output checks validate dates and source ids, not whether
-the writer preserved each factual link.
-
-`routeByTask: true` chooses guidance from the task's words alone:
-
-- **Counts and lists:** Enable worked notes and ask for each distinct instance across the supplied sessions.
-- **Dates and order:** Enable worked notes for dates, gaps and order.
-- **Advice:** Enable the advice preference lines.
-- **Named things and other tasks:** Keep the ordinary dated-log guidance.
-
-The option is off by default. Explicit `working` and `preferenceAdvice`
-values override the route's choices. `context` stays independently configurable.
-`classifyTask(task)` exposes the same code-only classification. It returns
-`count`, `date`, `advice`, `named` or `other`, and can return several kinds
-for one task. It uses common English phrases and `taskNames`; it does not
-consult evidence.
-
-`route: 'jev'` chooses guidance from the route answers the pick
-recorded, off by default. A `taste` answer at the bar turns on both
-preference lines; a `count`, `date` or `latest` answer turns on worked
-notes, which carry each fact's date so the curator can order the
-changes and pick the newest. It cannot combine with `routeByTask`, and
-it needs `route` on
-the pick's record, so it must run on a pick made with `route: 'jev'`.
-Explicit `working`, `preferenceAdvice` and `preferenceChange` values
-override the route's choices. The record includes `route` when it is
-on.
-
-`preferenceAdvice: true` asks for optional `Advice preferences:` lines
-with the user's stated tastes, relevant experiences and constraints for
-advice tasks. `preferenceChange: true` asks for optional
-`Changed preference:` lines with stated changes of taste or exclusions.
-Both are off by default. Each added line must have text and cite
-the short `En` source ids in parentheses or square brackets, for
-example:
-
-```text
-Advice preferences: Likes history and quiet walks (E1)
-Changed preference: Wants quieter trips [E1]
-```
-
-The returned log restores the full item ids, as it does on
-observation lines.
-
-These lines also count toward `contextLimit`. The same preference
-instructions apply when condensing. Observation dates and source ids
-are checked with preferences enabled too; failed repairs use the recovery
-described below.
-
-`record` holds `promptVersion: 'v4'`, `weights: 'tiers'`, `weightBands`, `working`,
-`preferenceAdvice`, `preferenceChange`, `items`, `logLength`, `condensed`,
-and `overContextLimit`. It includes `taskDate` when supplied.
-It includes `empty: true` when the log is empty, `emptyRetries` when an
-empty reply was asked once more, and `repairs` when a reply was sent back
-for its format.
-When format recovery runs, `formatRecovery.keptAsWritten` lists malformed
-lines retained and `formatRecovery.dropped` lists discarded lines.
-These arrays hold the writer's raw lines, with short `En` ids mapped by
-their positions in `record.items`; the returned log restores full item ids.
-It includes `context` when supplied and `taskKinds` when routing is enabled.
-A chained write adds `batchTokens` and `batches`, and `batchDefault: true`
-when the default batch size chose it.
-Each item holds its full `id` (the prompt shows it as `E` plus the
-item's 1-based position), the full `candidate`, and
-the exact decision `weight`.
-
-Set `contextLimit` to the positive integer number of characters the
-caller's working model can accept:
-
-```ts
-const curated = await curate(task, picked, { write, contextLimit: 12000 });
-```
-
-If the first checked or recovered log exceeds that limit, Curate calls `write`
-exactly once more with the task, the full log, and exact item weights.
-The condense prompt asks the writer to merge or drop observations from
-items below 0.1 first, then those from 0.1 to below 0.6. It asks for
-observations from items weighted 0.6 or more to stay whole, and for
-retained observations to keep their event dates, said dates, source
-ids, and replacement dates. The result goes through the same format checks.
-If it fails, Curate keeps its usable lines, or the original log when none
-remain, without another writer call.
-These checks do not prove that the writer followed the tier instructions.
-
-The condense prompt's three steps use the same two numbers as
-`weightBands`.
-
-`contextLimit` cannot combine with `batchTokens`; see below. With
-`contextLimit` and no `batchTokens`, the evidence is written in one call
-however large, then condensed as above: the default batch size does not
-apply.
-The record
-includes `contextLimit` when supplied. `logLength` is the
-first checked or recovered log's length after trimming. `condensed` says whether
-the second call ran; `condensedLength` is present only when it ran.
-`overContextLimit: true` says that the returned log still exceeds the
-budget. Such a log is returned whole without another call or a length
-error. Without `contextLimit`, Curate returns the checked or recovered log
-without condensing; only a format repair or an empty reply can add
-another writer call.
-
-`working: true` asks the writer to add numbered instances inside the
-task's period, computed time gaps or order, and latest values under
-`Working (the curator's; check it against the log):`. It is off by
-default. The reader should check these notes against the log.
-
-A malformed observation fails a format check that quotes the line.
-An empty first reply is not an error: the prompt asks the writer for one when
-no evidence bears on the task, so `write` must pass an empty reply
-through rather than reject it. Curate asks once more, with one added line
-that says the reply held no observation lines and asks the writer to check
-the items again; `emptyRetries` in the record counts it. If the second reply
-is empty too, or has no line naming a supplied item, Curate returns an empty
-log and the record carries `empty: true`. A malformed second reply gets no
-repair call; its usable lines are kept as described below. A sentence that says nothing was found
-fails the check like any other line that is not an observation. Each observation must have
-valid calendar dates in its event and `said` fields and the short ids of
-items given to the writer. Merged sources can separate ids with commas,
-semicolons, `and`, or `&`. If sources recorded the same fact on different
-days, repeat the dated group: `(said 2023-05-20; E1; said 2023-05-21; E2)`,
-or list the dates in one group: `(said 2023-05-20 and 2023-05-21; E1, E2)`.
-Every source date and id is checked. Optional
-suffixes are `(when not stated)`, `(replaces [YYYY-MM-DD])` and
-`(replaces Ln)`; replacement dates must also be valid. A terminal period
-is accepted after the citation or suffix. In a chained
-write each observation line also starts with a stable `Ln` id, and a
-date marker is checked but never honoured there (see below). These
-checks verify the format and source ids;
-they do not prove the writer's
-facts or date calculations. Worked notes count toward `contextLimit`.
-A reply that fails these checks goes back to the writer once, with the
-reason, the failing line and the rejected text, and `repairs` in the
-record counts it. If repair also fails, Curate recovers the original reply:
-it keeps valid lines and malformed lines naming at least one supplied item
-id, and drops malformed lines naming none. If the original has no usable
-lines, Curate tries the repaired reply. An empty repair cannot erase a
-cited original. Recovery restores full item ids without correcting dates
-or other malformed text; inspect `record.formatRecovery` for those lines.
-A format error throws only when no usable evidence remains. The condensing
-call gets no repair; malformed condensed output uses the same line recovery,
-and an empty or unusable result keeps the original log. There is no
-truncation or fallback to raw items. Missing selected
-weights and a selection with no reference items fail before `write`.
-Writer failures propagate to the caller. `signal` reaches the writer;
-the host must make its model call honour cancellation.
-
-### Token batches and chained writes
-
-`batchTokens` writes the log in chained passes, strongest evidence
-first. References go to the writer in decision-weight order (equal
-weights put the newer date first), cut into consecutive batches that
-each hold as many whole items as fit the budget. The size is an
-estimate: characters divided by four. An item larger than `batchTokens`
-sits alone in its own batch and is never cut. No item is split.
-
-```ts
-const curated = await curate(task, picked, { write, batchTokens: 2000 });
-```
-
-The strongest batch's references go to the writer alone first. Every
-observation line then gets a stable id (`L1`, `L2`, ...) that stays
-with it for the rest of the run. Each later batch gets the task, the
-log so far with its line ids and its own evidence. The log is shown
-for reference only: the pass is asked to return just the new
-observation lines for facts the log does not already state, plus any
-working section and preference lines in full, and not to repeat an
-existing line. A later pass may return no lines at all when its batch
-holds nothing new, so `write` must pass an empty reply through rather
-than reject it. Only an empty first pass is asked once more.
-
-Every line an earlier batch wrote stays in the log, id and wording
-unchanged; a later pass only adds lines. Earlier lines keep their
-order. Each new line goes in front of the first earlier line with a
-later event date, so the log still reads oldest first; on the same
-date the earlier line comes first. A reply line that carries an
-earlier line's id is dropped as a repeat, and an earlier line left out
-of the reply stays anyway. A line a later
-pass adds may end with `(replaces L7: the subject it corrects)` to
-tell the reader it is newer; the marked line stays in the log either
-way. The writer is asked to mark only a newer correction or decision
-about the same subject that is at least as important, and to write no
-mark when it is unclear. When a header names an author, it is also asked
-to mark an earlier line that an item by the person restates, as the
-author rules above describe. A `(replaces [YYYY-MM-DD])` marker is never
-honoured in a chained write: the first pass is asked for none, and in
-any pass a date marker, or a mark naming an id the log does not hold,
-is stripped from the line it sits on.
-
-`record.batchTokens` keeps the budget and `record.batches`
-lists each pass in run order with its item count, the lines it added
-with their new ids, and the replacement marks it wrote: each mark's
-new line id and the earlier id it names. A given `batchTokens` always
-writes a chained log, even when one batch holds every item.
-
-With `batchTokens` omitted and no `contextLimit`, Curate adds up the
-same per-item estimate. Evidence at `DEFAULT_BATCH_TOKENS` (150,000)
-or less is written in one call, exactly as with no batch size; a single
-call writes no line ids. Evidence over it is written as a chained log in
-batches of 150,000, exactly as `batchTokens: 150000` would, and the
-record adds `batchDefault: true`. A chained write
-cannot combine with `contextLimit`: a condensing pass cannot preserve
-a chained log's line ids, so passing both throws a `TypeError` before
-the writer runs. `batchTokens` must be a positive integer. Nothing is
-cut or dropped; batching only splits the evidence across more calls.
-
-### Compression
-
-`compression` sets how far the kept parts are compressed. `'high'`, the
-default, is the log described above. `'low'` returns a larger memory:
-figures that code computes from the events in the kept parts, then the
-source words of the parts those events come from, marked up with inline
-tags. Call it as
-`curate(task, picked, { compression: 'low', write, decide })`, or set
-`curate: { compression: 'low' }` on `memory()`, which passes its own
-`decide`. Standalone `curate` needs `decide` only for `'low'`, and
-rejects it otherwise.
-
-`'low'` runs four steps:
-
-1. **Extract:** one `write` call reads the body a one-call log would read,
-   under its own instructions, and replies with JSON rows: who, what,
-   status, the event date, the said date, any amount and quantity, the
-   items it cites (`E1`, `E2` in selected order) and a quote. A reply
-   that holds no JSON rows is asked for again, up to three calls.
-   Evidence over `DEFAULT_BATCH_TOKENS` (150,000 estimated tokens, at
-   four characters a token) goes in consecutive batches of whole items,
-   in selected order, one call each and up to four at once. Each item
-   keeps its number in the whole selection. Rows from separate batches
-   are not merged, so an event told in two batches can give two rows.
-2. **Decide:** one `decide` call asks, for each row, whether the row counts
-   toward the task. A row counts at a probability of 0.5 or more
-   (`ROW_COUNT_BAR`).
-3. **Compute:** code counts the counted rows, adds up their amounts and
-   quantities, gives the days from the earliest to the latest, and lists
-   them by date. With `taskDate`, each dated row also says how many days
-   before the task date it falls.
-4. **Mark up:** code numbers the sentences of the parts some extracted
-   row cites. `write` names the sentences to keep and adds tags for
-   events, amounts, counts, likes and dislikes, and tone. Code copies
-   each kept sentence's words from the part and inserts the tags, so
-   the curator never writes the source's words. The markup call never
-   sees the task. The parts are numbered again
-   for markup, by said date and then id, so a markup `E3` is not the
-   extraction's `E3`. Whole parts go in chunks of up to 40,000 characters
-   of part text (`MARKUP_CHUNK_CHARS`); a longer part goes alone. Up to
-   four chunks are marked up at once (`MARKUP_CALLS_AT_ONCE`), and the
-   memory keeps them in chunk order. A reply that is empty, or leaves out
-   the `E<n>` line of a part it was sent, is asked for again, up to three
-   calls.
-
-A kept line is `speaker: words`. The speaker is the nearest `user:`,
-`assistant:` or `system:` turn prefix at or before the sentence, then
-the part's chat role when that is `user` or `assistant`. With neither,
-the line is the words alone. When a span cannot be used, the whole
-sentence is kept. A tag is left out when its words are not found exactly
-once in the kept text or when it crosses another tag.
-
-The returned `log` is the figures and counted rows, then the marked-up
-sections of the cited parts. An extracted row that scored under the
-count bar stays out of the figures. When it still carries an amount or
-quantity it is listed under them, with its probability and the ids of
-the log sections it cites. Code then puts each row's exact quote back
-at the end of the section of every part it cites, when the section does
-not already hold the quote's words. The quote must appear in the part's
-own text exactly, but for whitespace. It is written as `speaker: quote`
-when the part shows who said it, and as the quote alone otherwise.
-`record.restored` lists the lines put back and `record.restoreSkipped`
-the quotes left out and why. A said date is the first `YYYY-MM-DD` or
-`YYYY/MM/DD` in the part's date value, so date labels, ISO dates and
-timestamps all read the same. An undated part says `said unknown`.
-
-Each prompt carries `step: 'extract'` or `step: 'markup'`. Send it to the
-model with no log instructions of your own: its reply is read as returned.
-`taskDate` and `answerHint` keep their meaning: the date goes in the
-extraction's task and the decision task, and the hint line in the
-extraction's task. The log's other options are rejected before any call,
-and in `memory` before any source read:
-`working`, `context`, `routeByTask`, `preferenceAdvice` or
-`preferenceChange` set to true, and any `route`, `contextLimit`,
-`batchTokens` or `weightBands`.
-
-`record` holds `compression: 'low'`, `levers`, `items`, the extracted
-`rows`, each row's decision `probabilities`, how many were `counted`,
-how many uncounted rows the head lists (`uncountedListed`), the
-`marked` parts with their markup ids, the `restored` quotes and
-`restoreSkipped` skips, the unusable spans and left-out tags
-(`rejectedSpans`, `rejectedTags`), the number of `chunks`, every model call in
-`calls` (its step, chunk, attempt, milliseconds and status), and each
-step's wall-clock time and the total in `ms`.
-`write` returns text only, so the record holds no token counts.
-
-Failed work never comes back as an empty memory. Extraction with no JSON
-rows array of objects after three calls, a row the decision model leaves
-unanswered or refuses, a markup chunk that is still empty or still leaves
-out a cited part's `E<n>` line after three calls, a failed call and a call
-cancelled while it runs each throw a `CurateError`. It names the failed `step` and holds the `calls` made up
-to then. A failed markup call cancels the chunks still running.
-
-On all 500 LongMemEval S questions, with gpt-6.1-sol answering and
-LongMemEval's grader marking, `'low'` gave a mean of 854 tokens a
-question and scored 465 of 500. The log gave 449 tokens and scored 463
-of 500 ([results](../../benchmarks/longmemeval/2026-11-04/README.md)).
-In place of the log's `write` calls, `'low'` makes one extraction call
-per batch and one call per markup chunk, plus one decision call for its rows. Its
-memory is about twice the log's size. That run is one measurement, not a promise of better answers
-on every task.
+An unknown option, an `answerTokens` that is not a positive integer, a
+`sentenceCutoff` that is neither `false` nor a number from 0 to 1, and
+a `decide` that is not a function each throw a `TypeError` before any
+call. A reference with no selected record entry and weight, or a pick
+with no selected reference, throws too.
 
 ## Levers and source settings
 
@@ -1709,23 +1392,23 @@ takes, the options `pick` takes, or the options `curate` takes. The
 pick's record keeps every lever's resolved state under `levers`, with
 the settings each source ran with under `levers.sources`. Its `route`
 records the questions asked. The curate record carries the same lever
-set; its `route` holds both states, `{ asked, applied }`.
+set.
 `meaning.wholeLanes` resolves the meaning lanes on their own, so when it disagrees with the read request's `wholeLanes` the
 record holds `levers.wholeLanes: { keyword, meaning }`.
 
 | Lever | What "on" does | Cost when on | Measured impact | Where measured |
 | --- | --- | --- | --- | --- |
 | Read `wholeLanes` | Keeps every candidate each keyword and meaning lane returned. Off, each lane cuts where its own score curve flattens (chat: the pre-merge keyword score; `searchPhrases` lanes are never cut, and kind lanes are never cut on phrase counts). | The decide feed grows by the parts the curves would have cut; kept counts vary with each lane's scores, and deciding is the expensive stage. | The cut the off state applies missed 6 of 445 answer messages on the tuning half: three shared no words with the question, three ranked below the cut. Its score and cost impact, and the loss under the label gate, are not yet measured. | Saved tuning-half lanes, 249 questions. |
-| Pick `thoroughness` | The decide step reads the top `THOROUGHNESS[level]` reference parts of the fused order: 672 for `quick`, 3,674 for `normal`, 12,896 for `deep` (the default whenever `everyRanked` is unset). Parts deeper than the level record `unassessed` with reason `'thoroughness'`; the rare-word round can pull one in only while the depth still has room. | On the replayed ~116,000-part history the levels cost about 1, 5 and 17 pence of questions on the largest set, with an estimated 0.8, 2.3 and 6.6 decide-step minutes (30 s plus 33 ms a part, reading and curator excluded). `quick` kept 24 of the 56 known answer parts across the eight sets and `normal` 49 of 56; `deep` kept all 56. | `deep` is the smallest depth that kept every known answer part in all eight replayed sets. | Recorded-pick replay over ~116,000 parts from chat transcripts, Git history and Markdown notes, eight task sets. |
+| Pick `thoroughness` | The decide step reads the top `THOROUGHNESS[level]` reference parts of the fused order: 672 for `quick`, 3,674 for `normal` (the default whenever `everyRanked` is unset), 12,896 for `deep`. Parts deeper than the level record `unassessed` with reason `'thoroughness'`; the rare-word round can pull one in only while the depth still has room. | On the replayed ~116,000-part history the levels cost about 1, 5 and 17 pence of questions on the largest set, with an estimated 0.8, 2.3 and 6.6 decide-step minutes (30 s plus 33 ms a part, reading and curation excluded). `quick` kept 24 of the 56 known answer parts across the eight sets and `normal` 49 of 56; `deep` kept all 56. | `deep` is the smallest depth that kept every known answer part in all eight replayed sets. | Recorded-pick replay over ~116,000 parts from chat transcripts, Git history and Markdown notes, eight task sets. |
 | Pick `everyRanked` | Unset by default: `thoroughness` bounds the feed instead. `true` gives the earlier feed: every ranked reference part reaches the decide step. `{ c }` reads only the top `round(c × N^0.8)`, where N is the number of reference parts the pick received; rules pass through uncut and dropped parts record `unassessed` with reason `'pick'`. | With `true`, the decide step reads every ranked part, the whole ranking: all 850 of 850 parts at one measured size and all 8,475 of 8,475 at the largest. The off dial at c = 0.68 read 150 of the 850 and 944 of the 8,475. | On the keyword-and-label ranking the off dial at c = 0.68 kept 437–442 of 445 answer messages (98–99%) at every size from 127 to 8,475 parts (on keeps the whole ranking) and scored 229 of 249 at $0.18 a question; the on state's score and cost under the label gate are not yet measured. | Saved tuning-half rankings replayed, label gate on and `wholeLanes` on; the tuning dials in the root README. |
-| Source `bar`, pick `everyScored` | Off by default: each source cuts its references below its own `bar`, 0.0146 for every reader. `everyScored` sets one cut for every source in place of their bars: `true` keeps every part with a valid decision probability, including zero; `{ bar }` cuts below a flat bar; `{ bySize }` cuts below a bar that rises with the decided count. | The curator receives every scored part. At the 0.0146 bar it receives about 70 of a LongMemEval history's 850 parts. | At the 0.0146 bar: 225 of the 249 tuning questions at $0.13 a question (223 on the all-500 replay), and 458 of 500. A saved 0.6 bar removed every fed fragment of 183 labelled answer turns; a 0.05 bar lost 8 of 438 answer messages. 0.0146 is the highest cut that lost no answer message on the tuning questions. | Saved-decision sweep and the LongMemEval runs in the root README. |
+| Source `bar`, pick `everyScored` | Off by default: each source cuts its references below its own `bar`, 0.0146 for every reader. `everyScored` sets one cut for every source in place of their bars: `true` keeps every part with a valid decision probability, including zero; `{ bar }` cuts below a flat bar; `{ bySize }` cuts below a bar that rises with the decided count. | `curate` receives every scored part. At the 0.0146 bar it receives about 70 of a LongMemEval history's 850 parts. | At the 0.0146 bar: 225 of the 249 tuning questions at $0.13 a question (223 on the all-500 replay), and 458 of 500. A saved 0.6 bar removed every fed fragment of 183 labelled answer turns; a 0.05 bar lost 8 of 438 answer messages. 0.0146 is the highest cut that lost no answer message on the tuning questions. | Saved-decision sweep and the LongMemEval runs in the root README. |
 | Source `labels` | Per source: a source that carries label kinds has its reference parts labelled with those kind questions, and the task is asked once per distinct kind set. Sources with no kinds receive no label questions. Stores each set under `directory` and adds a label lane so parts the keyword lanes dropped can reach decide on the `everyRanked` feed; under a `thoroughness` level the lane reorders only parts already inside the depth. Uses a default cache directory and decision-function ID; `pick.labels` overrides both. | One question per kind for each part and task, once per text, kind set and `deciderId`; later picks reuse the store. | Keyword alone reached 439 of the tuning half's 445 answer messages; with each part labelled, all 445 were reached at 38% of each history. Its score and cost impact is not yet measured. | Saved label run on the tuning half, in the root README. |
-| Pick `route`, `curate` `route` | `route: 'jev'` on the pick asks the task the four route questions once. `route: 'jev'` on `curate` applies the recorded answers to the curator's guidance: worked notes, the preference lines. | Four questions asked of the task once a pick, sharing the task's label request when that runs and asked in one separate request otherwise; the curator adds the lines the answers chose. | Not yet measured. | Not yet measured. |
+| Pick `route` | `route: 'jev'` on the pick asks the task the four route questions once and records the answers. | Four questions asked of the task once a pick, sharing the task's label request when that runs and asked in one separate request otherwise. | Not yet measured. | Not yet measured. |
 | Source `rare`, pick `rare` | Per source: after the selection pass, pulls in the source's unselected references sharing a rare word with one of its selected references. Each source turns it on with its own `rare` setting; `pick.rare` sets it for every source. Each source's round counts word frequency over its own references only and pulls only its own parts, pool members included; parts at or above `rare.bar` (default `0.0146`) join the selection. A word is rare at a document frequency of at most `rare.share × N` (default `5/850`), where N is that source's reference count. | The parts it pulls are asked or their scores reused: 12.9 parts a question at the defaults on the tuning half. On a history under 340 parts the default share can pull nothing. | Holding the selection bar at 0.05 lost 15 answer messages and the round recovered 6 of them. Its score impact is not yet measured. | Saved tuning-half decisions, 249 questions. |
 
-The decision cache and the short `En` item ids are not levers: they
-lose no quality, so they stay available whenever the caller asks for
-them. The cache is on whenever the caller passes one.
+The decision cache is not a lever: it loses no quality, so it stays
+available whenever the caller asks for it. It is on whenever the caller
+passes one.
 
 ### Source settings
 
@@ -1757,7 +1440,7 @@ Each reader package exports its settings as one plain object:
 Rules have no name lanes because they are chosen by where they apply, not by search.
 
 The 0.0146 bar is the highest cut that lost no answer message on the tuning questions.
-The levers for the whole call start at: `thoroughness` at `'deep'`, `wholeLanes` off, and `route` off; `everyRanked` is unset.
+The levers for the whole call start at: `thoroughness` at `'normal'`, `wholeLanes` off, and `route` off; `everyRanked` is unset.
 `everyScored` and `rare` are unset, so each source's own `bar` and `rare` apply.
 
 A source's settings change only that source's pick, with one exception: a selected commit brings in a note it changed, through the changed-path link.
@@ -1777,7 +1460,7 @@ The record's `levers.sources` maps each source id to the settings it ran with, a
 
 So a run reads as, for example, `{ kind: 'chat', labels: true, labelBar: 0.5, rare: false, bar: 0.0146 }`: a chat source with labels on.
 `levers.rare` is `false` or `{ share, bar }`, and `levers.everyScored` is present only when the call gave it.
-`levers.thoroughness` holds the level whenever `everyRanked` is unset, `'deep'` by default; `levers.everyRanked` is present only when the call gave it, and the two never appear together.
+`levers.thoroughness` holds the level whenever `everyRanked` is unset, `'normal'` by default; `levers.everyRanked` is present only when the call gave it, and the two never appear together.
 
 Set your own with `historySource()`.
 `reader` is any source, a reader's or your own, and `rare`, `labels`, `names` and `bar` are required, so spread a settings object to start from its values:
@@ -1799,7 +1482,7 @@ A direct `pick()` takes the same settings by source id: `labelKindsBySource`, `l
 ## What each setting did
 
 `levers` says which settings were on. `effects` says what each one did.
-Each pick record and each curate record carries an `effects` list.
+Each pick record carries an `effects` list.
 A pick entry names one setting that was on and the source it acted on.
 It counts the parts the setting looked at and the kept parts it brought in or kept out.
 When the setting brought in nothing and kept out nothing, its sentence says why.
@@ -1842,7 +1525,7 @@ The mark is on the part and on its pick entry, and the read returns the same par
 
 ### Reading a record
 
-A direct `pick()` over every part of a 400-part chat history, with labels on, decides every part: all 400 sit inside the default `deep` depth.
+A direct `pick()` over every part of a 400-part chat history, with labels on, decides every part: all 400 sit inside the default `normal` depth.
 Labels had nothing to add:
 
 ```json
@@ -1871,45 +1554,18 @@ The same history through `pickFromSources`, where the keyword lane holds 60 part
 
 A benchmark or tuning run should check `effects` before it pays for answers.
 A setting with `added` and `dropped` both 0, not `null`, brought in no part and kept out none.
-It may still have changed the order of the kept parts, and the curator sees that order.
-To prove that two arms gave the curator the same input, compare their kept parts in order, or their curator prompts.
-
-### Curate's entries
-
-A curate record's `effects` covers `curate`'s own options; the pick's entries stay in the pick record.
-
-| Option | Entry when | `lines` |
-| --- | --- | --- |
-| `route` | `route: 'jev'` applied | Lines written by the options it switched on; the summary names them |
-| `routeByTask` | It is on | As `route` |
-| `working` | On, set directly or by a route | Lines in the worked-notes section |
-| `preferenceAdvice`, `preferenceChange` | On | Preference lines in the log. Both options write them, so with both on each entry gives the total and says so |
-| `contextLimit` | Set | `null`. The summary gives the log's length before and after, or says the log was within the limit |
-| `context`, `taskDate` | On or set | `null`. They change what the curator is told, and one call cannot count which lines that changed |
-| `answerHint` | On | `null`. The summary quotes the line it added to the curator's task, or says no answer type cleared the bar |
-| `weightBands` | Set to bands other than `[0.1, 0.6]` | `null`. The summary names the two numbers, and one call cannot count which lines they changed |
-| `batchTokens` | The default batch size applied: neither `batchTokens` nor `contextLimit` was given | `null`. The summary gives the evidence's estimated tokens and says the log was written in one call, or in how many layered batches |
-
-```json
-{
-  "setting": "working",
-  "lines": 3,
-  "summary": "working: the curator wrote 3 lines of worked notes."
-}
-```
+It may still have changed the order of the kept parts, and `curate` breaks equal weights by that order.
+To prove that two arms gave `curate` the same input, compare their kept parts in order.
 
 ### Record fields
 
 - **`PickRecord.effects`:** a `PickSettingEffect[]`, one entry per setting that was on, per source it applied to.
 - **`PickSettingEffect`:** `setting`, the setting's name as a caller writes it; `source`, the source the counts are for; `actedOn`, the parts it looked at; `added`, the kept parts kept only because of it; `dropped`, the parts kept out only because of it, or `null` when one pick cannot tell; and `summary`, one plain sentence.
-- **`CurateRecord.effects`:** a `CurateSettingEffect[]` for `curate`'s own options.
-- **`CurateSettingEffect`:** `setting`; `lines`, the log lines the option wrote, or `null` when one curate call cannot tell; and `summary`.
 - **`PickRecord.answerTypes`:** present when `answerTypes` was on: `bar`, `answers` with one answer per type, and `needed`, the types at or above the bar.
 - **`PickRecord.writtenQuestions`:** present when `writeQuestions` ran: `questions`, the questions it wrote, keyed `task1` to `task4`.
 - **`PickRecord.names`:** present when the pick looked for names: `found`, the names, and `by`, `'code'` when `taskNames` found them or `'caller'` when `findNames` did.
 - **`PickRecord.pick`:** present on every pick. `n` is the history's size in reference parts; `sent` the reference parts the decide port was asked at least one task question about, where an answer the decision cache supplied does not count; `questions` the task question slots actually sent, where label questions keep their own count on `labels`; `thoroughness` the level and depth in force, present whenever `everyRanked` was unset; `c` and `kept` a scaled top-k cut's coefficient and keep count; `ranking` the order the feed read; and `rare` the rare-word round's numbers when it ran.
 - **`keptBy`:** on a selected `PickRecordEntry`, the key of the typed question whose `keepAt` kept the part below its bar.
-- **`CurateRecord.answerHint`:** the line `answerHint` added to the curator's task, absent when it added none.
 - **`pastLaneCut`:** on a part and its `PickRecordEntry`, true when a read with `wholeLanes` on returned the part although the lane cut would have dropped it.
 - **`PickRecord.asOf`, `PickRecord.timeZone`, `PickRecord.taskPeriod`:** the moment and zone the pick read dates in, and the period the task named ([Time](#time)).
 - **`dateWindow`:** on a part and its `PickRecordEntry`, `'task-period'` when the task's period brought it in.
@@ -1920,7 +1576,7 @@ A direct `pick` without it gets no extra-lane or `wholeLanes` entries.
 
 ## Optional evidence limits
 
-The defaults feed the decide step the top `THOROUGHNESS.deep` reference
+The defaults feed the decide step the top `THOROUGHNESS.normal` reference
 parts of the fused order and show each part's full text.
 Enabled labels can add more candidates on the `everyRanked` feed; under a
 `thoroughness` level the label lane reorders only parts already inside
@@ -1943,8 +1599,6 @@ every returned candidate in its lane.
 | **`maxQuestionText`** | Off | Cuts each decision item to N Unicode characters and records `truncated`. For a 1,000-character item at 700, 300 characters are hidden. Readers can split instead; direct `pick` callers must choose their own cut. |
 | **Source read `limit`** | Off | Chat and Markdown keep ranked candidates; git keeps newest commits before ranking. Readers report partial coverage. A limit of 1 on 2 candidates drops 1. |
 | **A source's `ruleBar`** | 0 | A user applicability cut omits that source's rules below its probability. Quality loss on labelled rule tasks is unmeasured; the default adds no cut loss. |
-| **`contextLimit`** | Off | Requests a second writer call to condense the complete log. Format checks do not prove fact retention. No quality loss curve has been established; leave off for full retention. Cannot combine with a chained write. |
-| **`batchTokens`** | 150,000 when the evidence is over it, else one call | Splits a chained write into passes of about N estimated tokens of evidence each, strongest first. Changes only how many calls the writer makes; no evidence is dropped. Cannot combine with `contextLimit`; with `contextLimit` and no `batchTokens`, the default does not apply. |
 
 Unlimited inputs can require more decision requests and model context.
 Reader failures, cancellation, missing answers and model failures still

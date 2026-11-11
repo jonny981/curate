@@ -12,7 +12,7 @@ gpt-6.1-sol answered all 500 questions in three Curate settings:
 | Cited-only markup | 93.0 (465/500) | 854 | 120x |
 | Log | 92.6 (463/500) | 449 | 229x |
 
-- **The packages produce memory in two formats: log and cited-only markup.** The log is `compression: 'high'`, the default. Cited-only markup is `compression: 'low'`.
+- **The log and cited-only markup ran on package builds with a `compression` option.** `'high'` wrote the log and `'low'` the cited-only markup. The packages lay out the kept parts in their own words, and no model writes the memory.
 - **The markup setting ran outside the packages.** Its published results, including 93.8, came from those runs.
 - **The answers, memory texts and grader output** are in [`longmemeval/2026-11-04/`](longmemeval/2026-11-04/README.md).
 

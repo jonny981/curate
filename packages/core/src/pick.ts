@@ -488,8 +488,7 @@ export interface PickRecord {
   /** Every lever's state as resolved, with the settings each source ran
    *  with under `sources`. `wholeLanes` lives on the read request, so only a record
    *  pickFromSources produced carries it. `route` records the
-   *  questions asked; the curate record's own `levers.route` keeps
-   *  that state as `asked` beside the curator's `applied`. */
+   *  questions asked. */
   readonly levers: LeverStates;
   readonly candidates: readonly PickRecordEntry[];
   readonly rulesCoverage: 'complete' | 'incomplete';
@@ -552,7 +551,7 @@ export interface PickRecord {
    *  task: the answers, and the curator options they switch on at the
    *  shared label bar — 'taste' switches on 'preferenceAdvice' and
    *  'preferenceChange', and 'count', 'date' and 'latest' switch on
-   *  'working'. curate's own `route: 'jev'` applies them; a route
+   *  'working'. A route
    *  question a stop left unasked records 'unassessed' with the stop
    *  reason. */
   readonly route?: {
@@ -735,8 +734,7 @@ export interface PickOptions {
    *  task's kind labels when the label gate asks them, alone otherwise,
    *  and always as one request whatever the request-size dials allow.
    *  `record.route` carries the answers and the curator options each
-   *  'yes' at the shared label bar switches on; `curate`'s own
-   *  `route: 'jev'` applies them. Off by default. */
+   *  'yes' at the shared label bar switches on. Off by default. */
   readonly route?: 'jev';
   /** Ask the ten questions in `ANSWER_TYPES` of the task once per pick,
    *  through the decide port, in the same request as the task's kind
@@ -744,8 +742,7 @@ export interface PickOptions {
    *  otherwise. `true` uses a bar of 0.5; `{ bar }` sets it. A type
    *  answered at or above the bar is needed: `record.answerTypes`
    *  lists the needed types, each source's typed questions for them are
-   *  asked of its reference parts, and `curate`'s own `answerHint` can
-   *  name them to the curator. Off by default. */
+   *  asked of its reference parts. Off by default. */
   readonly answerTypes?: boolean | { readonly bar: number };
   /** Write two to four questions for the task, once per pick, before any
    *  decide request. Curate keys them `task1` to `task4` and asks them
@@ -762,7 +759,7 @@ export interface PickOptions {
    *  of strings, stops the pick. Curate ships no model for it. */
   readonly findNames?: (task: string) => Promise<readonly string[]>;
   /** Read every ranked part. Unset, a `thoroughness` level bounds the
-   *  feed instead, 'deep' when that too is unset, and passing both
+   *  feed instead, 'normal' when that too is unset, and passing both
    *  throws a TypeError before any read. `{ c }` keeps only the top
    *  `round(c × N^0.8)` reference parts of the
    *  ranking the decide step reads — the label gate's fused order when
@@ -783,7 +780,7 @@ export interface PickOptions {
   readonly everyRanked?: true | { readonly c: number };
   /** The appetite for look-back: which thoroughness level feeds the
    *  decide step. In force whenever `everyRanked` is not given (passing
-   *  both throws a TypeError), and 'deep' when unset. The
+   *  both throws a TypeError), and 'normal' when unset. The
    *  decide step is then asked about only the top `THOROUGHNESS[level]`
    *  reference parts of one fused order across the sources: a part's
    *  place is the better of its best keyword lane's share of that lane
@@ -896,8 +893,8 @@ export interface PickOptions {
  *  step reads. 'deep' is set where measured recall stopped improving:
  *  the smallest depth that kept every known answer part in all eight
  *  replayed task sets over a history of about 116,000 parts of
- *  coding-agent transcripts, git history and Markdown notes. 'normal'
- *  and 'quick' are user dials: the largest depths priced at about 5p
+ *  coding-agent transcripts, git history and Markdown notes. 'normal',
+ *  the default, and 'quick' are the largest depths priced at about 5p
  *  and 1p a call on that history, with the measured loss in the README
  *  beside each. */
 export type Thoroughness = 'quick' | 'normal' | 'deep';
@@ -1695,7 +1692,7 @@ export async function pick(
   // pickFromSources record holds it.
   const levers: Omit<LeverStates, 'sources'> = {
     ...(options.everyRanked === undefined
-      ? { thoroughness: options.thoroughness ?? 'deep' }
+      ? { thoroughness: options.thoroughness ?? 'normal' }
       : { everyRanked: options.everyRanked }),
     ...(everyScored === undefined ? {} : { everyScored }),
     route: options.route === 'jev',
@@ -1704,8 +1701,8 @@ export async function pick(
   const topK = isRecord(options.everyRanked) ? options.everyRanked.c : undefined;
   // The thoroughness lever feeds the decide step the top
   // THOROUGHNESS[level] parts of the fused order; it is in force
-  // whenever `everyRanked` is not given, at 'deep' by default.
-  const thoroughness = options.everyRanked === undefined ? (options.thoroughness ?? 'deep') : undefined;
+  // whenever `everyRanked` is not given, at 'normal' by default.
+  const thoroughness = options.everyRanked === undefined ? (options.thoroughness ?? 'normal') : undefined;
   // A `feed` size stands in place of the level's depth.
   const depth = thoroughness === undefined ? undefined : options.feed?.size ?? THOROUGHNESS[thoroughness];
   // A decide-feed dial is on when `everyRanked` supplies a c or the

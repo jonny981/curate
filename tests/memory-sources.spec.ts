@@ -43,10 +43,6 @@ it('uses each real reader question set with no question option', async () => {
         questions.push(...batch.questions);
         return Object.fromEntries(batch.questions.map((q) => [q.key, { status: 'answered', probability: 0.5 }]));
       },
-      write: async ({ body }) => {
-        expect(body).not.toContain('Never round an order twice.');
-        return '[2026-01-12] Keep the order currency (said 2026-01-12; E1)';
-      },
     }).recall('What billing constraint must this change preserve?');
     for (const [index, cascade] of [CHAT_CASCADE, GIT_HISTORY_CASCADE, MARKDOWN_CASCADE].entries()) {
       const asked = questions.filter((q) => q.sourceId === sources[index]!.id);
@@ -62,7 +58,7 @@ it('uses each real reader question set with no question option', async () => {
     expect(result.record.items).toHaveLength(3);
     expect(rules).toContain('Never round an order twice.');
     expect(log).toContain('Keep the order currency');
-    expect(log).not.toContain('; E1)');
+    expect(log).not.toContain('Never round an order twice.');
   } finally {
     vi.unstubAllEnvs();
     await rm(directory, { recursive: true, force: true });

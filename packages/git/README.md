@@ -78,7 +78,7 @@ const picked = await pickFromSources(sources, { task }, { task, decide });
 `git()` reads with `gitSettings`, `{ rare: true, labels: false, names: true, bar: 0.0146 }`: a name lane for each name the task names, references kept when scored 0.0146 or more,
 ordered and weighted by decision probability, and no label kinds.
 Set `everyScored: true` on the pick to keep every scored reference from every source.
-The curator receives exact scores. Its `tiers` instructions ask for less space for low-scored items.
+Core's `curate()` lays out the kept parts by their exact scores, strongest first.
 The rare-word round finds unselected commits that share rare words with selected commits, counting words over this history only.
 To change a setting, build the source with core's `historySource()`:
 

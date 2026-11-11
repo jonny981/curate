@@ -108,13 +108,11 @@ describe('label kinds per source', () => {
       q.sourceId === 'labels' && q.questionKey === 'other' ? { status: 'missing' }
         : { status: 'answered', probability: q.questionKey === undefined ? 0.9 : 0 },
     ]));
-    const write = vi.fn(async () => '[2026-01-12] A constraint (said 2026-01-12; E1)');
-    await expect(memory({ sources: [source('one', custom), source('two', other)], decide, write,
+    await expect(memory({ sources: [source('one', custom), source('two', other)], decide,
       pick: { everyRanked: true } }).recall(task))
       .rejects.toMatchObject({ cause: { record: { candidates: expect.arrayContaining([
         expect.objectContaining({ sourceId: 'two', id: 'extra', status: 'unassessed', reason: 'limits' }),
       ]) } } });
-    expect(write).not.toHaveBeenCalled();
   });
 
   it('records empty readers and actual candidate source IDs, and no kinds for a reader that carries none', async () => {

@@ -1,13 +1,13 @@
-// Picks and curator prompts on a task that names people and things, compared with named-tasks-baseline.json:
+// Picks on a task that names people and things, compared with named-tasks-baseline.json:
 // what the build before name lanes made with every source's name lanes off and no `named` question.
 import { chatSettings } from '@curatejs/chat';
 import { gitSettings } from '@curatejs/git';
 import { markdownSettings } from '@curatejs/markdown';
 import {
-  curate, historySource, pickFromSources, type CandidateSource, type CuratePrompt, type MemoryCandidate,
+  historySource, pickFromSources, type CandidateSource, type MemoryCandidate,
   type PickBatch, type PickDecide, type PickRecord,
 } from '@curatejs/core';
-import { curatePick, sha256 } from './bars-and-batches.js';
+import { sha256 } from './bars-and-batches.js';
 import { baselineText, decide, fixtureSource, parts } from './source-settings.js';
 
 export const namedTask = 'Which deploy constraint did Emma agree with Book Lovers Unite for the billing service?';
@@ -47,10 +47,9 @@ const asBaseline = (record: PickRecord): PickRecord => {
   return slim as PickRecord;
 };
 
-/** One pick and one curate call per task, each run's selected ids and the hashes of its record, decide
- *  requests and curator prompts. */
+/** One pick per task, each run's selected ids and the hashes of its record and decide requests. */
 export async function offRuns(tasks: readonly string[]) {
-  const runs: Record<string, { selected: string; record: string; requests: string; prompts: string }> = {};
+  const runs: Record<string, { selected: string; record: string; requests: string }> = {};
   for (const task of tasks) {
     const requests: PickBatch[] = [];
     const how: PickDecide = Object.assign(async (batch: PickBatch, signal: AbortSignal) => {
@@ -59,23 +58,12 @@ export async function offRuns(tasks: readonly string[]) {
     }, { deciderId: 'fixture' });
     // The baseline these runs reproduce was recorded on the everyRanked feed.
     const picked = await pickFromSources(offSources(), { task }, { task, decide: how, everyRanked: true });
-    const prompts: CuratePrompt[] = [];
-    const evidence = { ...picked, selected: picked.selected.map((part) => ({ ...part,
-      text: baselineText(part.sourceId, part.text) })) };
-    await curate(task, evidence, { routeByTask: true, write: async (prompt) => { prompts.push(prompt); return ''; } });
     const baselineRequests = requests.map((request) => ({ ...request,
       questions: request.questions.map((question) => ({ ...question,
         text: baselineText(question.sourceId, question.text) })),
     }));
     runs[task] = { selected: sha256(picked.selected.map((c) => c.id)), record: sha256(asBaseline(picked.record)),
-      requests: sha256(baselineRequests), prompts: sha256(prompts) };
+      requests: sha256(baselineRequests) };
   }
   return runs;
-}
-
-/** The curator prompt a `routeByTask` call writes for the task on a small fixed pick. */
-export async function routedPrompt(task: string): Promise<CuratePrompt> {
-  const prompts: CuratePrompt[] = [];
-  await curate(task, curatePick(2, 120), { routeByTask: true, write: async (prompt) => { prompts.push(prompt); return ''; } });
-  return prompts[0]!;
 }

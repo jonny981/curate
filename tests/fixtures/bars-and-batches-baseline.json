@@ -166,10 +166,5 @@
       ],
       "sha256": "b940b5a11add43b684aaf820c39a31694d1a7b0fd57211fdabafb4148c20535b"
     }
-  },
-  "prompts": {
-    "no options": "ca3b2a30f25cccef8ea65836a30817d904a8c2d5cad9ced64052982f7d78c2a0",
-    "contextLimit": "04bd2c38397ebf939714311543f5fabdc62b3b8f83900fe84d185b8433bde3bc",
-    "batchTokens": "ee9f25bbf7949980f09bc421faea23ac0b1e5b69648b0eacc39f6ecf8c9501aa"
   }
 }

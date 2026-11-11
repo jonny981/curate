@@ -46,15 +46,14 @@ describe('settings per source', () => {
     expect(git.read).toHaveBeenCalledTimes(2);
     expect(chat.read).toHaveBeenCalledTimes(1);
     expect(result.record.labels).toBeUndefined();
-    const written = await curate(task, result, { write: async () => '[2026-01-12] A constraint (said 2026-01-12; E1)' });
+    const written = await curate(task, result);
     expect(written.record.levers.sources).toEqual(result.record.levers.sources);
   });
 
   it('asks labels only of the source that carries label kinds', async () => {
     const calls = recorder();
     const recalled = await memory({ sources: [source('git', true, 2), source('chat', false, 2, true)], decide: calls.decide,
-      pick: { everyRanked: true },
-      write: async () => '[2026-01-12] A constraint (said 2026-01-12; E1)' }).recall(task);
+      pick: { everyRanked: true } }).recall(task);
     expect(recalled.picked.record.levers.sources).toEqual({ git: { labels: false, rare: true, bar: 0.0146 }, chat: { labels: true, labelBar: 0.5, rare: false, bar: 0.0146 } });
     expect(recalled.result.record.levers.sources).toEqual(recalled.picked.record.levers.sources);
     expect(calls.questions.some((q) => q.sourceId === 'chat' && q.questionKey === 'personal')).toBe(true);
@@ -68,7 +67,7 @@ describe('settings per source', () => {
     for (const rare of [false, true]) {
       const result = await run([source('git', true, 2), source('chat', false, 2)], rare);
       expect(result.record.levers.sources).toEqual({ git: { labels: false, rare, bar: 0.0146 }, chat: { labels: false, rare, bar: 0.0146 } });
-      const written = await curate(task, result, { write: async () => '[2026-01-12] A constraint (said 2026-01-12; E1)' });
+      const written = await curate(task, result);
       expect(written.record.levers.sources).toEqual(result.record.levers.sources);
     }
     const disabled = { ...source('git', true, 2), rare: false };

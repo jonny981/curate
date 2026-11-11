@@ -137,12 +137,10 @@ describe('nothing else sets questions', () => {
   it('memory refuses cascadesByKind before any read', async () => {
     const read = vi.fn(async () => ({ status: 'read' as const, complete: true, candidates: [] }));
     const source: CandidateSource = { ...chat(false), read };
-    const write = vi.fn(async () => '');
-    const recall = () => memory({ sources: [source], decide, write,
+    const recall = () => memory({ sources: [source], decide,
       pick: { cascadesByKind: { chat: CHAT_CASCADE } } as never }).recall(task);
     await expect(recall()).rejects.toThrow(TypeError);
     await expect(recall()).rejects.toThrow(/`cascadesByKind` is not an option/);
     expect(read).not.toHaveBeenCalled();
-    expect(write).not.toHaveBeenCalled();
   });
 });

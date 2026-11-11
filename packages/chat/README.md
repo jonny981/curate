@@ -143,7 +143,7 @@ title without it.
 `chat()` reads with `chatSettings` and the `AGENT_CHAT_CASCADE` question set: no rare-word round, core's seven label kinds, a name lane for each name the task names, and references kept when scored 0.0146 or more,
 ordered and weighted by decision probability.
 Set `everyScored: true` on the pick to keep every scored reference from every source.
-The curator receives exact scores. Its `tiers` instructions ask for less space for low-scored items.
+Core's `curate()` lays out the kept parts by their exact scores, strongest first.
 Labels are on because they find parts the keyword search missed, which recall needs.
 To change a setting, build the source with core's `historySource()`. To turn labels off for one chat source:
 
@@ -174,20 +174,20 @@ See [core's measured reason](https://github.com/jonny981/curate/blob/main/packag
 
   const source = historySource({ reader: chat(), ...chatSettings, questions: PERSONAL_CHAT_CASCADE });
   ```
-- **Personal questions with written ones:** `PERSONAL_CHAT_WRITTEN_CASCADE` holds the same questions, fitted together with two to four questions a model writes for each task and a question asked once per name the task names ([core's name question](https://github.com/jonny981/curate/blob/main/packages/core/README.md#a-question-about-each-name)). It needs core's `writeQuestions` pick option; `taskQuestionWriter(write)` builds one from your curator's `write` function. A pick with this set and no writer throws. See [core's written questions](https://github.com/jonny981/curate/blob/main/packages/core/README.md#questions-written-for-each-task).
+- **Personal questions with written ones:** `PERSONAL_CHAT_WRITTEN_CASCADE` holds the same questions, fitted together with two to four questions a model writes for each task and a question asked once per name the task names ([core's name question](https://github.com/jonny981/curate/blob/main/packages/core/README.md#a-question-about-each-name)). It needs core's `writeQuestions` pick option; `taskQuestionWriter(write)` builds one from a `write` function that sends a prompt to a model and returns its reply text. A pick with this set and no writer throws. See [core's written questions](https://github.com/jonny981/curate/blob/main/packages/core/README.md#questions-written-for-each-task).
 
   ```ts
-  import { historySource, memory, taskQuestionWriter } from '@curatejs/core';
-  import { chatWriter, jev } from '@curatejs/core/models';
+  import { historySource, memory, taskQuestionWriter, type CurateWrite } from '@curatejs/core';
+  import { jev } from '@curatejs/core/models';
   import { chat, chatSettings, PERSONAL_CHAT_WRITTEN_CASCADE } from '@curatejs/chat';
 
   const decide = jev({ apiKey: process.env.TYPESAFE_API_KEY });
-  const write = chatWriter({ apiKey: process.env.CHAT_API_KEY, model: 'gpt-5-mini' });
+  // Any model call: it gets { instructions, body } and returns the reply text.
+  const write: CurateWrite = async ({ instructions, body }, signal) => askYourModel(instructions, body, signal);
 
   const mem = memory({
     sources: [historySource({ reader: chat(), ...chatSettings, questions: PERSONAL_CHAT_WRITTEN_CASCADE })],
     decide,
-    write,
     pick: { writeQuestions: taskQuestionWriter(write) },
   });
   ```

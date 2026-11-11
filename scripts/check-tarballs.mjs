@@ -46,7 +46,6 @@ export const EXPECTED_FILES = {
     'package/dist/local-embeddings.d.ts',
     'package/dist/local-embeddings.js',
     'package/dist/local-embeddings.js.map',
-    'package/dist/markup.d.ts',
     'package/dist/meaning.d.ts',
     'package/dist/memory.d.ts',
     'package/dist/models.d.ts',

@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -27,27 +27,23 @@ globalThis.fetch = async (url, init) => {
   const body = JSON.parse(init.body);
   calls.push(url);
   writeFileSync('calls.json', JSON.stringify(calls));
-  if (url === 'https://api.typesafe.ai/v1/systemone') {
-    assert.equal(body.model, 'jev-latest');
-    assert.ok(Object.keys(body.questions).length > 0);
-    return Response.json({ answers: Object.fromEntries(Object.keys(body.questions).map((key) => [key, { noul: 0.5 }])) });
-  }
-  assert.equal(url, 'https://api.openai.com/v1/chat/completions');
-  assert.equal(body.model, 'gpt-5-mini');
-  assert.match(body.messages[1].content, /Invoices must preserve the currency/);
-  return Response.json({ choices: [{ message: { content: '[2026-01-12] Invoices preserve the order currency (said 2026-01-12; E1)' } }] });
+  assert.equal(url, 'https://api.typesafe.ai/v1/systemone');
+  assert.equal(body.model, 'jev-latest');
+  assert.ok(Object.keys(body.questions).length > 0);
+  return Response.json({ answers: Object.fromEntries(Object.keys(body.questions).map((key) => [key, { noul: 0.5 }])) });
 };
 `);
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
     const output = execFileSync(process.execPath, ['--import', './stub-models.mjs', 'recall.mjs'], {
       cwd: directory, encoding: 'utf8',
-      env: { ...env, XDG_CACHE_HOME: join(directory, 'cache'), TYPESAFE_API_KEY: 'test-only', CHAT_API_KEY: 'test-only' },
+      env: { ...env, XDG_CACHE_HOME: join(directory, 'cache'), TYPESAFE_API_KEY: 'test-only' },
     });
-    expect(output).toContain('[2026-01-12] Invoices preserve the order currency');
-    expect(output).toContain('billing.md#1)');
-    expect(output).not.toContain('; E1)');
+    // The README shows the same text, with the temporary folder as /home/sam.
+    const shown = /```text\n([\s\S]*?)\n```/.exec(readme)?.[1];
+    expect(output.trim().replaceAll(await realpath(directory), '/home/sam')).toBe(shown);
+    // One request decides the note and one rates its sentences.
     expect(JSON.parse(await readFile(join(directory, 'calls.json'), 'utf8'))).toEqual([
-      'https://api.typesafe.ai/v1/systemone', 'https://api.openai.com/v1/chat/completions',
+      'https://api.typesafe.ai/v1/systemone', 'https://api.typesafe.ai/v1/systemone',
     ]);
     console.log('README example (stub models):\n' + output.trim());
   } finally {

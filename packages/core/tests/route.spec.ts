@@ -4,11 +4,9 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
-  curate,
   LABEL_KINDS,
   ROUTE_QUESTIONS,
   pick,
-  type CuratePrompt,
   type MemoryCandidate,
   type PickBatch,
   type PickDecide,
@@ -19,10 +17,6 @@ const uncutPick = { everyRanked: true, everyScored: true, rare: false } as const
 
 const KIND_KEYS = new Set<string>(LABEL_KINDS.map((kind) => kind.key));
 const ROUTE_KEYS = new Set<string>(ROUTE_QUESTIONS.map((route) => route.key));
-
-const LOG = '[2023-05-13] Visited York (said 2023-05-20; notes#2)';
-// The curator sees short item ids and cites them; curate() returns the log with full ids restored.
-const WRITTEN = '[2023-05-13] Visited York (said 2023-05-20; E1)';
 
 function candidate(id: string): MemoryCandidate {
   return {
@@ -37,17 +31,6 @@ function threeParts(): MemoryCandidate[] {
     candidate('p2'),
     candidate('p3'),
   ];
-}
-
-function writer(text: string = WRITTEN): { write: (prompt: CuratePrompt) => Promise<string>; calls: CuratePrompt[] } {
-  const calls: CuratePrompt[] = [];
-  return {
-    calls,
-    write: async (prompt) => {
-      calls.push(prompt);
-      return text;
-    },
-  };
 }
 
 interface Counting {
@@ -154,29 +137,17 @@ describe('route: jev', () => {
   });
 
   it.each([
-    ['count', ['working'], { working: true, preferenceAdvice: false, preferenceChange: false }],
-    ['date', ['working'], { working: true, preferenceAdvice: false, preferenceChange: false }],
-    ['latest', ['working'], { working: true, preferenceAdvice: false, preferenceChange: false }],
-    ['taste', ['preferenceAdvice', 'preferenceChange'], { working: false, preferenceAdvice: true, preferenceChange: true }],
-  ] as const)('a %s answer at the bar switches exactly its options', async (key, on, expected) => {
+    ['count', ['working']],
+    ['date', ['working']],
+    ['latest', ['working']],
+    ['taste', ['preferenceAdvice', 'preferenceChange']],
+  ] as const)('a %s answer at the bar switches exactly its options', async (key, on) => {
     const picked = await pick([candidate('notes#2')], { ...uncutPick,
       task: 'Recall the plan', route: 'jev',
       decide: counting((question) =>
         question.questionKey === undefined ? 0.9 : question.questionKey === key ? 0.5 : 0.1).decide,
     });
     expect(picked.record.route?.on).toEqual(on);
-    const { write, calls } = writer();
-    const result = await curate('Recall the plan', picked, { write, route: 'jev' });
-    expect(result.record).toMatchObject(expected);
-    expect(result.record.route).toBe('jev');
-    if (key === 'taste') {
-      expect(calls[0]!.instructions).toContain('Advice preferences:');
-      expect(calls[0]!.instructions).toContain('Changed preference:');
-      expect(calls[0]!.instructions).not.toContain('Working (the curator');
-    } else {
-      expect(calls[0]!.instructions).toContain('number each distinct instance');
-      expect(calls[0]!.instructions).not.toContain('Advice preferences:');
-    }
   });
 
   it.each(['count', 'date', 'taste', 'latest'] as const)('a %s answer just below the bar switches nothing', async (key) => {
@@ -203,41 +174,9 @@ describe('route: jev', () => {
       decide: counting((question) => question.questionKey === undefined ? 0.9 : 0.4).decide,
     });
     expect(picked.record.route?.on).toEqual([]);
-    const result = await curate('Recall the plan', picked, { write: writer().write, route: 'jev' });
-    expect(result.record).toMatchObject({ working: false, preferenceAdvice: false, preferenceChange: false });
-    expect(result.log).toBe(LOG);
   });
 
-  it('refuses route: jev and routeByTask together', async () => {
-    const picked = await pick([candidate('notes#2')], { ...uncutPick,
-      task: 'Recall the plan', route: 'jev', decide: counting(() => 0.9).decide,
-    });
-    await expect(curate('Recall the plan', picked, {
-      write: writer().write, route: 'jev', routeByTask: true,
-    })).rejects.toThrow(/route.*routeByTask/);
-  });
-
-  it('refuses route: jev on a pick that recorded no route answers', async () => {
-    const picked = await pick([candidate('notes#2')], { ...uncutPick,
-      task: 'Recall the plan', decide: counting(() => 0.9).decide,
-    });
-    await expect(curate('Recall the plan', picked, { write: writer().write, route: 'jev' }))
-      .rejects.toThrow(/route/);
-  });
-
-  it('lets explicit curator options override the route', async () => {
-    const picked = await pick([candidate('notes#2')], { ...uncutPick,
-      task: 'Recall the plan', route: 'jev',
-      decide: counting((question) =>
-        question.questionKey === undefined ? 0.9 : question.questionKey === 'taste' ? 0.9 : 0.1).decide,
-    });
-    const result = await curate('Recall the plan', picked, {
-      write: writer().write, route: 'jev', preferenceAdvice: false, working: true,
-    });
-    expect(result.record).toMatchObject({ working: true, preferenceAdvice: false, preferenceChange: true });
-  });
-
-  it('leaves the pick and the curate identical when the route option is unset', async () => {
+  it('leaves the pick identical when the route option is unset', async () => {
     const counter = counting(() => 0.9);
     const parts = [candidate('notes#2')];
     const plain = await pick(parts, { ...uncutPick, task: 'Recall the plan', decide: counter.decide });
@@ -250,8 +189,5 @@ describe('route: jev', () => {
     const { route: _route, levers, ...record } = routed.record;
     expect({ ...record, asOf: plain.record.asOf, levers: { ...levers, route: false } }).toEqual(plain.record);
     expect(routed.selected).toEqual(plain.selected);
-
-    const result = await curate('Recall the plan', plain, { write: writer().write });
-    expect(result.record).not.toHaveProperty('route');
   });
 });

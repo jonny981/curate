@@ -79,8 +79,8 @@ leaves them to it. Every source that reads rules (`rules()`, and
 - **files whose frontmatter says they are always-on:** Cursor's
   `alwaysApply: true`, or `applies: always`.
 
-A skipped file is never asked about and puts nothing in the log or the
-rules. The read lists each one with its reason in `alwaysOnSkipped`, and
+A skipped file is never asked about and puts nothing in the laid-out text
+or the rules. The read lists each one with its reason in `alwaysOnSkipped`, and
 the pick record's `effects` names them. Knowledge and docs sources read
 these files as usual.
 
@@ -204,7 +204,7 @@ Set `everyScored: true` on the pick to keep every scored reference from every so
 0.5 is a starting value, not yet tuned; it will be fitted on the 160-task rules test.
 `markdown()` with kind `rules` or `instructions` keeps every scored rule, since an absent rule bar is 0.
 For a rule library, use `rules()`, or set `ruleBar` through `historySource()`.
-The curator receives exact scores. Its `tiers` instructions ask for less space for low-scored items.
+Core's `curate()` lays out the kept parts by their exact scores, strongest first.
 The rare-word round finds unselected notes that share rare words with selected notes, counting words over this source only.
 To change a setting, build the source with core's `historySource()`:
 

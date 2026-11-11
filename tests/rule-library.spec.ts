@@ -79,10 +79,10 @@ describe('the rule library', () => {
     const notes = await tree({ 'billing.md': 'Billing moved to cents in 2025.\n' });
     const { asked, decide } = answering({ 'integer cents': 0.95, 'Round once': 0.9, 'order currency': 0.6,
       'every refund': 0.4, 'invoices by date': 0.2 });
-    // memory() curates a log too, so one note goes in beside the library.
+    // memory() lays out the kept references too, so one note goes in beside the library.
     const library = rules(directory);
-    const { rules: text, picked } = await memory({ sources: [library, markdown({ paths: [notes], kind: 'docs' })], decide,
-      write: async () => '[2025-01-01] Billing moved to cents (said 2025-01-01; E1)' }).recall('Change how billing stores money');
+    const { rules: text, picked } = await memory({ sources: [library, markdown({ paths: [notes], kind: 'docs' })], decide })
+      .recall('Change how billing stores money');
     expect(asked.filter((q) => q.sourceId === library.id)).toHaveLength(5);
     const expected = ['- Store money as integer cents.\n', '- Round once, at the end.\n', '- Keep the order currency.\n']
       .map((rule) => `# Billing\n${rule}`);

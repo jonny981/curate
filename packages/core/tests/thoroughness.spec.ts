@@ -390,14 +390,14 @@ describe('thoroughness', () => {
       .toMatchObject({ status: 'unassessed', reason: 'limits' });
   });
 
-  it('is the default, at deep', async () => {
+  it('is the default, at normal', async () => {
     const { decide } = stubDecide((batch) => allAnswered(batch, 0.9));
     const picked = await pick(ranked('notes', 3), { task: 'recall the plan', decide });
-    expect(picked.record.levers.thoroughness).toBe('deep');
+    expect(picked.record.levers.thoroughness).toBe('normal');
     expect(picked.record.levers).not.toHaveProperty('everyRanked');
     expect(picked.record.pick).toMatchObject({
       n: 3, sent: 3, questions: 3, kept: 3,
-      thoroughness: { level: 'deep', depth: THOROUGHNESS.deep }, ranking: 'fusion' });
+      thoroughness: { level: 'normal', depth: THOROUGHNESS.normal }, ranking: 'fusion' });
   });
 
   it('cannot combine with everyRanked, checked before any decide call or read', async () => {
@@ -436,22 +436,21 @@ describe('thoroughness', () => {
     });
     const decide: PickDecide = async ({ questions }) =>
       Object.fromEntries(questions.map((q) => [q.key, { status: 'answered' as const, probability: 0.9 }]));
-    const write = async () => '[2026-01-12] The plan (said 2026-01-12; E1)';
     try {
-      const done = memory({ sources: [source(ranked('notes', 5))], decide, write,
+      const done = memory({ sources: [source(ranked('notes', 5))], decide,
         pick: { thoroughness: level } });
       const recalled = await done.recall('recall the plan');
       expect(recalled.picked.record.candidates.filter((entry) =>
         entry.status === 'unassessed' && entry.reason === 'thoroughness')).toHaveLength(3);
-      expect(recalled.log).toBe('[2026-01-12] The plan (said 2026-01-12; p0)');
+      expect(recalled.log).toBe('### Most likely answer\n\n#### notes (said unknown)\n\ntext of notes/p0\n\n#### notes (said unknown)\n\ntext of notes/p1\n');
 
-      const stopped = memory({ sources: [source(ranked('notes', 5))], decide, write,
+      const stopped = memory({ sources: [source(ranked('notes', 5))], decide,
         pick: { thoroughness: level, limits: { maxBatches: 1, maxPerBatch: 1 } } });
       await expect(stopped.recall('recall the plan')).rejects.toThrow('did not finish');
 
       // A lane's candidate limit is a stop too: the parts it cut record
       // 'limits', not 'thoroughness', so the collection stays incomplete.
-      const limited = memory({ sources: [source(ranked('notes', 5))], decide, write,
+      const limited = memory({ sources: [source(ranked('notes', 5))], decide,
         pick: { thoroughness: level, limits: { maxCandidates: 1 } } });
       await expect(limited.recall('recall the plan')).rejects.toThrow('did not finish');
     } finally {

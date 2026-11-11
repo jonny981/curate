@@ -65,12 +65,10 @@ describe('pick', () => {
     expect(picked.record.thresholds).toEqual({ linkedPathBar: 0.4 });
     expect(picked.record.levers.sources).toEqual({
       notes: { labels: false, rare: false, bar: 0 }, rules: { labels: false, rare: false, bar: 0, ruleBar: 0 } });
-    const result = await curate('Recall evidence', picked, { write: async (prompt) => {
-      expect(prompt.body).toContain('### E2 (0.01): weak');
-      expect(prompt.body).toContain('### E3 (0): zero');
-      expect(prompt.body).not.toContain('does-not-apply');
-      return '[2026-01-01] Evidence (said 2026-01-01; E3)';
-    } });
+    const result = await curate('Recall evidence', picked);
+    expect(result.log).toContain('text of notes/weak');
+    expect(result.log).toContain('text of notes/zero');
+    expect(result.log).not.toContain('does-not-apply');
     expect(result.record.items.map((item) => [item.id, item.weight])).toEqual([
       ['strong', 0.9], ['weak', 0.01], ['zero', 0],
     ]);

@@ -1,4 +1,3 @@
-import type { CurateWrite } from './curate.js';
 import { levelDistribution } from './decisions.js';
 import type { PickAnswer, PickBatch, PickDecide, PickQuestion } from './pick.js';
 
@@ -469,8 +468,6 @@ export function openAIDecisions({ apiKey, model = 'gpt-6-luna' }: {
   return Object.assign(decide, { deciderId: `openai:${model}` });
 }
 
-const OPENAI_CHAT_URL = 'https://api.openai.com/v1/chat/completions';
-
 /** The yes share of the first answer token's top log-probabilities:
  *  the "yes" tokens' probability over the "yes" and "no" tokens', with
  *  case and leading whitespace ignored. Missing when neither is there. */
@@ -520,27 +517,4 @@ export function localDecisions({ url, model, apiKey }: {
     return answers;
   };
   return Object.assign(decide, { deciderId: `local:${hostAndPath(url)}:${model}` });
-}
-
-/** Create a writer using an OpenAI-compatible Chat Completions endpoint. */
-export function chatWriter({ apiKey, model, url = OPENAI_CHAT_URL }: {
-  /** Required at OpenAI's address; sent only when given. */
-  readonly apiKey?: string | undefined;
-  readonly model: string;
-  readonly url?: string;
-}): CurateWrite {
-  if (!apiKey && url === OPENAI_CHAT_URL) throw new Error('Chat writer requires an API key.');
-  return async ({ instructions, body }, signal) => {
-    const raw = await post(url, apiKey, {
-      model,
-      messages: [
-        { role: 'system', content: instructions },
-        { role: 'user', content: body },
-      ],
-    }, signal);
-    const choices = record(raw).choices;
-    const text = record(record(Array.isArray(choices) ? choices[0] : undefined).message).content;
-    if (typeof text !== 'string') throw new Error('Writer returned no log.');
-    return text;
-  };
 }

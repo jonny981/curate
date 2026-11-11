@@ -76,11 +76,11 @@ describe('pick scaled top-k', () => {
     expect(decidedIds(baseline.calls)).toEqual(candidates.map((item) => item.id));
     expect(plain.selected.map((item) => item.id)).toEqual(candidates.map((item) => item.id));
     const absent = await pick(candidates, { ...uncutPick, task, decide: allAnswered.decide, everyRanked: undefined });
-    // With `everyRanked` unset the thoroughness lever runs at 'deep'; on
+    // With `everyRanked` unset the thoroughness lever runs at 'normal'; on
     // a history inside its depth the same parts are decided.
     expect(absent.selected).toEqual(plain.selected);
     expect(absent.record.pick).toEqual({ n: 20, sent: 20, questions: 20, kept: 20,
-      thoroughness: { level: 'deep', depth: THOROUGHNESS.deep }, ranking: 'fusion' });
+      thoroughness: { level: 'normal', depth: THOROUGHNESS.normal }, ranking: 'fusion' });
   });
 
   it.each([

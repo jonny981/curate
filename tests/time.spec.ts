@@ -169,16 +169,15 @@ describe("chat dates in the user's zone", () => {
     expect(candidates(read).map((c) => c.date)).toEqual([{ value, meaning: 'recorded' }]);
   });
 
-  it("shows the London date in the curator's evidence header", async () => {
+  it("shows the London date in the laid-out heading", async () => {
     const root = await transcripts(late);
     const read = await chat({ paths: [root], providers: ['claude-code'] })
       .read({ task: 'message', timeZone: 'Europe/London' });
     const decide: PickDecide = async ({ questions }) =>
       Object.fromEntries(questions.map((q) => [q.key, { status: 'answered', probability: 0.9 }]));
     const picked = await pick(candidates(read), { task: 'What was the late message?', decide, everyScored: true });
-    const bodies: string[] = [];
-    await curate('What was the late message?', picked, { write: async ({ body }) => { bodies.push(body); return ''; } });
-    expect(bodies.join('\n')).toContain('### E1 (2025-06-02T00:30:00.000+01:00, ');
+    const { log } = await curate('What was the late message?', picked);
+    expect(log).toContain('(said 2025-06-02)');
   });
 });
 

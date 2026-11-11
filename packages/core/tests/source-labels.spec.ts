@@ -10,7 +10,6 @@ import {
 
 const task = 'What billing constraint applies?';
 const labelKindsBySource = { notes: LABEL_KINDS };
-const log = '[2026-01-12] Preserve currency (said 2026-01-12; E1)';
 const parts: MemoryCandidate[] = ['billing', 'weak', 'unrelated'].map((id) => ({
   sourceId: 'notes', id, role: 'reference', title: id, text: `The ${id} note.`,
   signals: { keyword: 1 }, date: { value: '2026-01-12', meaning: 'recorded' },
@@ -42,7 +41,7 @@ describe('labels carried by a source', () => {
   it('cuts weak decisions and asks no labels when no source carries label kinds', async () => {
     const result = await pick(parts, { task, decide });
     expect(result.record.levers).toEqual({
-      thoroughness: 'deep', route: false, rare: false,
+      thoroughness: 'normal', route: false, rare: false,
       sources: { notes: { labels: false, rare: false, bar: 0.0146 } },
     });
     expect(result.selected.map((part) => part.id)).toEqual(['billing']);
@@ -50,7 +49,7 @@ describe('labels carried by a source', () => {
   });
 
   it('recalls without labels from a source that carries no label kinds', async () => {
-    const result = await memory({ sources: [plain], decide, write: async () => log }).recall(task);
+    const result = await memory({ sources: [plain], decide }).recall(task);
     expect(result.log).toContain('billing');
     expect(result.picked.record.levers.sources).toEqual({ notes: { labels: false, rare: false, bar: 0.0146 } });
     expect(result.result.record.levers.sources).toEqual(result.picked.record.levers.sources);
@@ -60,24 +59,22 @@ describe('labels carried by a source', () => {
   it.each(['missing', 'refused'] as const)('rejects %s task labels before treating a part as excluded', async (status) => {
     const incomplete: PickDecide = async (batch, signal) => batch.questions[0]?.sourceId === 'labels'
       ? Object.fromEntries(batch.questions.map((q) => [q.key, { status }])) : decide(batch, signal);
-    const write = vi.fn(async () => log);
-    await expect(memory({ sources: [source], decide: incomplete, write,
+    await expect(memory({ sources: [source], decide: incomplete,
       pick: { everyRanked: true, labels: { directory: cacheRoot, deciderId: 'incomplete' } },
     }).recall(task)).rejects.toMatchObject({ cause: { record: { candidates: expect.arrayContaining([
       expect.objectContaining({ id: 'unrelated', status: 'unassessed', reason: 'limits' }),
     ]) } } });
-    expect(write).not.toHaveBeenCalled();
   });
 
   it('writes labels without configuration and reuses them in a fresh memory instance', async () => {
     const calls = vi.fn(decide);
-    await memory({ sources: [source], decide: calls, write: async () => log }).recall(task);
+    await memory({ sources: [source], decide: calls }).recall(task);
     // The pool member outside the fused order is never labelled.
     expect(readdirSync(join(cacheRoot, 'curate', 'labels'))).toHaveLength(3);
     expect(calls.mock.calls.some(([batch]) => batch.questions.some((q) => q.questionKey === 'personal'))).toBe(true);
 
     calls.mockClear();
-    const second = await memory({ sources: [source], decide: calls, write: async () => log }).recall(task);
+    const second = await memory({ sources: [source], decide: calls }).recall(task);
     expect(second.picked.record.labels).toMatchObject({ asked: 0, reused: 3 });
     // Relevance is task-specific; only the seven kind labels are cached.
     expect(calls.mock.calls.flatMap(([batch]) => batch.questions).every((q) => q.questionKey === undefined)).toBe(true);

@@ -61,14 +61,11 @@ it('combines search options and source questions across real readers', async () 
     expect(result.record.candidates.filter((entry) => entry.role === 'reference').every((entry) =>
       entry.status === 'selected' && entry.probability === 0.5
       && entry.orderScore !== undefined)).toBe(true);
-    const curated = await curate(task, result, { write: async (prompt) => {
-      expect(prompt.body).toContain(`TASK:\n${task}`);
-      expect(prompt.body).toContain('Banana harvest restoration evidence.');
-      expect(prompt.body).toContain(', 0.5):');
-      expect(prompt.body).not.toContain('Keep source dates.');
-      return '[2026-01-01] Backup evidence (said 2026-01-01; E1)';
-    } });
-    expect(curated.record.items).toHaveLength(5);
+    const curated = await curate(task, result);
+    expect(curated.log).toContain('Banana harvest restoration evidence.');
+    expect(curated.log).not.toContain('Keep source dates.');
+    // An exact copy is taken once and counted in `collapsed`.
+    expect(curated.record.items.length + curated.record.collapsed).toBe(5);
     expect(curated.record.items.every((item) => item.weight === 0.5)).toBe(true);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });

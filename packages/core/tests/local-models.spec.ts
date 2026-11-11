@@ -1,7 +1,7 @@
 import { createServer, type IncomingHttpHeaders } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';
-import { chatWriter, jev, localDecisions } from '../src/models.js';
+import { jev, localDecisions } from '../src/models.js';
 import type { PickBatch } from '../src/pick.js';
 
 /** A server on 127.0.0.1 that keeps each request and answers with `reply`. */
@@ -136,20 +136,5 @@ describe('jev at another address', () => {
   it.each([undefined, ''])('still requires a key at the default address: %j', (apiKey) => {
     expect(() => jev({ apiKey })).toThrow(/API key/);
     expect(() => jev({})).toThrow(/API key/);
-  });
-});
-
-describe('chatWriter at another address', () => {
-  it('posts with no authorization header when there is no key', async () => {
-    const { requests, base } = await serve(() => ({ choices: [{ message: { content: 'A dated log.' } }] }));
-    const write = chatWriter({ url: `${base}/v1/chat/completions`, model: 'local' });
-    await expect(write({ instructions: 'Cite.', body: 'Evidence.' }, new AbortController().signal))
-      .resolves.toBe('A dated log.');
-    expect(requests[0]!.headers.authorization).toBeUndefined();
-  });
-
-  it.each([undefined, ''])('still requires a key at the default address: %j', (apiKey) => {
-    expect(() => chatWriter({ apiKey, model: 'writer-model' })).toThrow(/API key/);
-    expect(() => chatWriter({ model: 'writer-model' })).toThrow(/API key/);
   });
 });

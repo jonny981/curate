@@ -8,9 +8,9 @@ import { chatSettings } from '@curatejs/chat';
 import { GIT_HISTORY_CASCADE, gitSettings } from '@curatejs/git';
 import { markdownSettings } from '@curatejs/markdown';
 import {
-  curate, historySource, LABEL_LANE_BAR, type AnswerType, memory, pickFromSources, type CandidateSource, type CuratePrompt, type CurateWrite,
+  historySource, LABEL_LANE_BAR, pickFromSources, type CandidateSource,
   type LabelKind, type MemoryCandidate, type PickAnswer, type PickBatch, type PickCascade, type PickDecide, type PickQuestion,
-  type PickRecord, type PickResult,
+  type PickRecord,
 } from '@curatejs/core';
 import { baselineText, decide, fixtureSource, parts, task } from './fixtures/source-settings.js';
 
@@ -34,16 +34,6 @@ function recording(how: PickDecide = decide) {
   return { requests, decide: recorded };
 }
 
-/** A writer that keeps each prompt and returns one valid log line. */
-function writer() {
-  const prompts: CuratePrompt[] = [];
-  const write: CurateWrite = async (prompt) => {
-    prompts.push(prompt);
-    return '[2026-01-08] The billing deploy waits for the queue to drain (said 2026-01-08; E1)';
-  };
-  return { prompts, write };
-}
-
 const chat = (labels: boolean) =>
   historySource({ reader: fixtureSource('chat', parts('chat', 'chatword'), { rare: false }), ...chatSettings, labels });
 const git = () => historySource({ reader: fixtureSource('git', parts('git', 'gitword'), { rare: true }), ...gitSettings });
@@ -59,13 +49,11 @@ const RUNS: Readonly<Record<string, () => CandidateSource[]>> = {
   'chat labels all': () => [chat(true), git(), markdown()],
 };
 
-// The picks and curator prompts the build before answer types made on this fixture, one fresh label store per
-// run: each run's selected ids in order and the SHA-256 of its canonical `JSON.stringify([selected, record,
-// requests])`, the whole record with its effects and every decide request; and the SHA-256 of the curator's
-// prompts for `defaults all`.
+// The picks the build before answer types made on this fixture, one fresh label store per run: each run's
+// selected ids in order and the SHA-256 of its canonical `JSON.stringify([selected, record, requests])`, the
+// whole record with its effects and every decide request.
 interface Baseline {
   readonly runs: Readonly<Record<string, { readonly selected: readonly string[]; readonly sha256: string }>>;
-  readonly prompts: string;
 }
 const sha256 = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const baseline = (): Baseline => JSON.parse(readFileSync(BASELINE, 'utf8'));
@@ -95,13 +83,8 @@ const asBaseline = (record: PickRecord): PickRecord => {
   return slim as PickRecord;
 };
 
-const baselineEvidence = (picked: PickResult): PickResult => ({ ...picked,
-  selected: picked.selected.map((part) => ({ ...part, text: baselineText(part.sourceId, part.text) })),
-});
-
 async function snapshot(): Promise<Baseline> {
   const runs: Record<string, Baseline['runs'][string]> = {};
-  let prompts = '';
   for (const [name, sources] of Object.entries(RUNS)) {
     freshStore();
     const { requests, decide: how } = recording();
@@ -113,17 +96,12 @@ async function snapshot(): Promise<Baseline> {
         text: baselineText(question.sourceId, question.text) })),
     }));
     runs[name] = { selected, sha256: sha256([selected, asBaseline(picked.record), baselineRequests]) };
-    if (name === 'defaults all') {
-      const curator = writer();
-      await curate(task, baselineEvidence(picked), { write: curator.write });
-      prompts = sha256(curator.prompts);
-    }
   }
-  return { runs, prompts };
+  return { runs };
 }
 
-describe('with answerTypes and answerHint off and no typed questions', () => {
-  it('every pick and the curator prompts equal the baseline byte for byte', async () => {
+describe('with answerTypes off and no typed questions', () => {
+  it('every pick equals the baseline byte for byte', async () => {
     expect(await snapshot()).toEqual(baseline());
   });
 });
@@ -312,42 +290,6 @@ describe('a typed answer moves a part across its bar', () => {
   });
 });
 
-/** The `defaults all` pick, with an answerTypes record whose needed types are given. */
-async function allPick(needed: readonly AnswerType[]): Promise<PickResult> {
-  freshStore();
-  // The baseline evidence these runs reuse was recorded on the everyRanked feed.
-  const picked = await pickFromSources(RUNS['defaults all']!(), { task }, { task, decide, everyRanked: true });
-  return { ...baselineEvidence(picked), record: { ...picked.record, answerTypes: { bar: 0.5, answers: [], needed } } };
-}
-const HINT = 'The answer likely needs: a date, a number.';
-
-describe('answerHint adds one line to the curator\'s task', () => {
-  it('adds the needed types under the task line', async () => {
-    const curator = writer();
-    await curate(task, await allPick(['date', 'number']), { write: curator.write, answerHint: true });
-    expect(curator.prompts.length).toBeGreaterThan(0);
-    for (const prompt of curator.prompts) expect(prompt.body).toContain(`TASK:\n${task}\n${HINT}\n\nEVIDENCE:`);
-    const without = curator.prompts.map((prompt) => ({ ...prompt, body: prompt.body.replace(`\n${HINT}\n`, '\n') }));
-    expect(sha256(without), 'with the hint line taken out, the prompts differ from the baseline').toBe(baseline().prompts);
-  });
-
-  it('adds nothing when no type cleared the bar, and says so', async () => {
-    const curator = writer();
-    const result = await curate(task, await allPick([]), { write: curator.write, answerHint: true });
-    expect(sha256(curator.prompts)).toBe(baseline().prompts);
-    expect(result.record.effects.find((e) => e.setting === 'answerHint')?.summary).toBe(
-      'answerHint: no answer type cleared the bar, so the curator\'s task carried no hint and it added no line.');
-  });
-
-  it('reaches the curator through memory()', async () => {
-    freshStore();
-    const curator = writer();
-    await memory({ sources: [git()], decide: typed({ date: 0.9 }), write: curator.write,
-      pick: { answerTypes: true }, curate: { answerHint: true } }).recall(task);
-    expect(curator.prompts[0]!.body).toContain(`TASK:\n${task}\nThe answer likely needs: a date.\n\nEVIDENCE:`);
-  });
-});
-
 describe('settings that would sit unread throw', () => {
   it('typed questions with answerTypes off throw before any read', async () => {
     const read = vi.fn(datedGit().read);
@@ -368,12 +310,5 @@ describe('settings that would sit unread throw', () => {
         .toThrow('a question set\'s typed questions need keys unique across questions and typed, '
           + 'finite weights and a known answerType.');
     }
-  });
-
-  it('answerHint without the pick\'s answer types throws', async () => {
-    freshStore();
-    const picked = await pickFromSources([git()], { task }, { task, decide });
-    await expect(curate(task, picked, { write: writer().write, answerHint: true }))
-      .rejects.toThrow(/^curate: answerHint needs the answer types a pick records when it runs with answerTypes on\.$/);
   });
 });

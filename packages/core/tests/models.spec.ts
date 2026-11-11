@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { jev, openAIDecisions, chatWriter } from '../src/models.js';
+import { jev, openAIDecisions } from '../src/models.js';
 import { LABEL_KINDS, labelPartQuestion } from '../src/labels.js';
 import type { PickBatch, PickQuestion } from '../src/pick.js';
 
@@ -295,54 +295,16 @@ describe('openAIDecisions', () => {
   });
 });
 
-describe('chatWriter', () => {
-  it('sends the instructions and evidence to Chat Completions and returns the reply', async () => {
-    const fetch = reply({ choices: [{ message: { role: 'assistant', content: 'A dated log.' } }] });
-    const signal = new AbortController().signal;
-    const write = chatWriter({ apiKey: 'test-key', model: 'writer-model' });
-    await expect(write({ instructions: 'Cite each fact.', body: 'Evidence.' }, signal)).resolves.toBe('A dated log.');
-    expect(fetch).toHaveBeenCalledWith('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: { authorization: 'Bearer test-key', 'content-type': 'application/json' },
-      signal,
-      body: JSON.stringify({ model: 'writer-model', messages: [
-        { role: 'system', content: 'Cite each fact.' },
-        { role: 'user', content: 'Evidence.' },
-      ] }),
-    });
-  });
-
-  it('accepts an empty reply from a custom provider for a later curation batch', async () => {
-    const fetch = reply({ choices: [{ message: { content: '' } }] });
-    const write = chatWriter({ apiKey: 'test-key', model: 'writer-model', url: 'https://example.test/chat' });
-    await expect(write({ instructions: '', body: '' }, new AbortController().signal)).resolves.toBe('');
-    expect(fetch.mock.calls[0]![0]).toBe('https://example.test/chat');
-  });
-
-  it.each([{}, null, { choices: [] }, { choices: [{ message: { content: null } }] }])(
-    'rejects a response with no text reply: %j', async (body) => {
-      reply(body);
-      await expect(chatWriter({ apiKey: 'test-key', model: 'writer-model' })(
-        { instructions: '', body: '' }, new AbortController().signal,
-      )).rejects.toThrow('Writer returned no log.');
-    },
-  );
-});
-
 describe('model request errors', () => {
-  it.each([undefined, ''])('rejects a missing API key before either factory can make a request: %j', (apiKey) => {
+  it.each([undefined, ''])('rejects a missing API key before the factory can make a request: %j', (apiKey) => {
     const fetch = reply({});
     expect(() => jev({ apiKey })).toThrow(/API key/);
-    expect(() => chatWriter({ apiKey, model: 'writer-model' })).toThrow(/API key/);
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it('reports HTTP errors from either provider', async () => {
+  it('reports HTTP errors', async () => {
     reply({ error: 'unavailable' }, 503);
     const signal = new AbortController().signal;
     await expect(jev({ apiKey: 'test-key' })(batch, signal)).rejects.toThrow('HTTP 503');
-    await expect(chatWriter({ apiKey: 'test-key', model: 'writer-model' })(
-      { instructions: '', body: '' }, signal,
-    )).rejects.toThrow('HTTP 503');
   });
 });

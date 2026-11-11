@@ -1,4 +1,4 @@
-import type { CurateLowOptions, CurateNoneOptions, CurateOptions } from './curate.js';
+import type { CurateOptions } from './curate.js';
 import type {
   CandidateSourceKind, MemoryKind, PickCache, PickCascade, PickCriterion,
   PickLabels, PickLimits, PickOptions, PickScoreCriterion, PickTagSet, PickThresholds,
@@ -40,11 +40,7 @@ const READ_REQUEST_KEYS: readonly (keyof CandidateReadRequest)[] = [
   'maxQuestionText', 'taskDate', 'timeZone', 'asOf', 'taskPeriod', 'decayHalfLife', 'decayLimit', 'signal',
 ];
 const MEANING_KEYS: readonly (keyof MeaningSearchOptions)[] = ['embed', 'nearest', 'wholeLanes'];
-const CURATE_KEYS: readonly (keyof CurateOptions | keyof CurateLowOptions | keyof CurateNoneOptions)[] = [
-  'write', 'working', 'context', 'routeByTask', 'route', 'preferenceAdvice',
-  'preferenceChange', 'taskDate', 'answerHint', 'contextLimit', 'batchTokens', 'weightBands',
-  'compression', 'decide', 'answerTokens', 'sentenceCutoff', 'signal',
-];
+const CURATE_KEYS: readonly (keyof CurateOptions)[] = ['answerTokens', 'sentenceCutoff', 'decide', 'signal'];
 /** The fixed keys of the maps keyed by source kind — tagsByKind and
  *  the read request's kindLanes — and the values sourceKinds maps to. */
 const SOURCE_KIND_KEYS: readonly CandidateSourceKind[] = ['chat', 'git-history', 'markdown'];
@@ -345,69 +341,23 @@ export function checkReadRequest(request: CandidateReadRequest): void {
   checkKeys(request.kindLanes, SOURCE_KIND_KEYS, 'kindLanes');
 }
 
-/** And for the curator's options, before any write call. */
-export function checkCurateOptions(options: CurateOptions | CurateLowOptions | CurateNoneOptions): void {
+/** And for curate's options, before any read or call: no unknown key,
+ *  a positive integer `answerTokens`, a `sentenceCutoff` of `false` or a
+ *  number from 0 to 1, a function as `decide`, and `decide` beside a
+ *  numeric `sentenceCutoff`. */
+export function checkCurateOptions(options: CurateOptions): void {
   checkKeys(options, CURATE_KEYS, '');
-}
-
-/** And for the compression setting, before any source read or call:
- *  'high', 'low' or 'none'; `decide` only with 'low', which needs it,
- *  or with `sentenceCutoff`, which needs it too; `answerTokens` and
- *  `sentenceCutoff` only with 'none'; under 'low', none of the options
- *  only the log reads; and under 'none', no `write` and none of the
- *  options only a curator reads. */
-export function checkCompression(options: CurateOptions | CurateLowOptions | CurateNoneOptions): void {
-  const compression: unknown = options.compression;
-  if (compression !== undefined && compression !== 'high' && compression !== 'low' && compression !== 'none') {
-    throw new TypeError("curate: compression must be 'high', 'low' or 'none'.");
+  if (options.answerTokens !== undefined && (!Number.isInteger(options.answerTokens) || options.answerTokens <= 0)) {
+    throw new TypeError('curate: answerTokens must be a positive integer of estimated tokens.');
   }
-  if (options.compression === 'none') {
-    const given = options as Partial<Record<keyof CurateOptions | 'decide', unknown>>;
-    const cutoff: unknown = options.sentenceCutoff;
-    const unsupported = [
-      ...(['working', 'context', 'routeByTask', 'preferenceAdvice', 'preferenceChange', 'answerHint'] as const)
-        .filter((key) => given[key] === true),
-      ...(['write', ...(cutoff === undefined ? ['decide'] as const : []), 'route', 'contextLimit', 'batchTokens', 'weightBands', 'taskDate'] as const)
-        .filter((key) => given[key] !== undefined),
-    ];
-    if (unsupported.length) {
-      throw new TypeError(`curate: compression: 'none' only lays out the selected items, so it cannot take ${unsupported.join(', ')}.`);
-    }
-    if (options.answerTokens !== undefined && (!Number.isInteger(options.answerTokens) || options.answerTokens <= 0)) {
-      throw new TypeError('curate: answerTokens must be a positive integer of estimated tokens.');
-    }
-    if (cutoff !== undefined) {
-      if (typeof cutoff !== 'number' || !(cutoff >= 0 && cutoff <= 1)) {
-        throw new TypeError('curate: sentenceCutoff must be a number between 0 and 1.');
-      }
-      if (typeof options.decide !== 'function') {
-        throw new TypeError('curate: sentenceCutoff needs decide, the decision function that judges each sentence.');
-      }
-    }
-    return;
+  const cutoff: unknown = options.sentenceCutoff;
+  if (cutoff !== undefined && cutoff !== false && (typeof cutoff !== 'number' || !(cutoff >= 0 && cutoff <= 1))) {
+    throw new TypeError('curate: sentenceCutoff must be false or a number between 0 and 1.');
   }
-  if ((options as { readonly answerTokens?: unknown }).answerTokens !== undefined) {
-    throw new TypeError("curate: answerTokens is read only with compression: 'none'.");
+  if (options.decide !== undefined && typeof options.decide !== 'function') {
+    throw new TypeError('curate: decide must be a function.');
   }
-  if ((options as { readonly sentenceCutoff?: unknown }).sentenceCutoff !== undefined) {
-    throw new TypeError("curate: sentenceCutoff is read only with compression: 'none'.");
-  }
-  if (options.compression !== 'low') {
-    if ('decide' in options && options.decide !== undefined) {
-      throw new TypeError("curate: decide is read only with compression: 'low'.");
-    }
-    return;
-  }
-  const given = options as Partial<Record<keyof CurateOptions, unknown>>;
-  const unsupported = [
-    ...(['working', 'context', 'routeByTask', 'preferenceAdvice', 'preferenceChange'] as const)
-      .filter((key) => given[key] === true),
-    ...(['route', 'contextLimit', 'batchTokens', 'weightBands'] as const).filter((key) => given[key] !== undefined),
-  ];
-  if (unsupported.length) {
-    throw new TypeError(`curate: compression: 'low' writes no dated log, so it cannot take ${unsupported.join(', ')}.`);
-  }
-  if (typeof options.decide !== 'function') {
-    throw new TypeError("curate: compression: 'low' needs decide, the decision function that asks whether each row counts.");
+  if (typeof cutoff === 'number' && options.decide === undefined) {
+    throw new TypeError('curate: sentenceCutoff needs decide, the decision function that judges each sentence.');
   }
 }

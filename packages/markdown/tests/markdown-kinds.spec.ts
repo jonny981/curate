@@ -204,7 +204,7 @@ describe('Markdown dates, pins, and decisions', () => {
     expect(pinned.candidates[0]!.date).toEqual({ value: '2025-02-03T12:00:00+00:00', meaning: 'changed' });
   });
 
-  it('uses kind-specific questions and records kinds while retaining low-score evidence and full curator text', async () => {
+  it('uses kind-specific questions and records kinds while retaining low-score evidence and its full text', async () => {
     const directory = await tree({ 'guide.md': 'Battery facts.' });
     // markdownSettings without its question set: a source without one asks each part its kind's question.
     const picked = await pickFromSources(['knowledge', 'docs', 'rules', 'instructions'].map((kind) => historySource({
@@ -219,8 +219,11 @@ describe('Markdown dates, pins, and decisions', () => {
     });
     expect(picked.selected).toHaveLength(4);
     expect(picked.record.candidates.map((c) => c.kind).sort()).toEqual(['docs', 'instructions', 'knowledge', 'rules']);
-    const curated = await curate('battery', picked, { write: async (prompt) => `[2024-01-01] Battery facts (said 2024-01-01; ${/^### (.+?) \(/m.exec(prompt.body)![1]})` });
-    expect(curated.record.items).toHaveLength(2);
+    const curated = await curate('battery', picked);
+    // The two references hold the same text, so the layout takes it once.
+    expect(curated.record.items).toHaveLength(1);
+    expect(curated.record.collapsed).toBe(1);
+    expect(curated.log).toContain('Battery facts.');
     expect(curated.record.items.every((item) => item.candidate.kind === 'knowledge' || item.candidate.kind === 'docs')).toBe(true);
   });
 

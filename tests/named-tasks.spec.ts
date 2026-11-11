@@ -9,8 +9,7 @@ import {
   type PickCascade, type PickCriterion, type PickDecide, type PickQuestion,
 } from '@curatejs/core';
 import { phraseCount } from '@curatejs/core/internal';
-import { sha256 } from './fixtures/bars-and-batches.js';
-import { namedTask, offRuns, routedPrompt } from './fixtures/named-tasks.js';
+import { namedTask, offRuns } from './fixtures/named-tasks.js';
 import { decide, fixtureSource, parts } from './fixtures/source-settings.js';
 
 let cache: string;
@@ -152,17 +151,12 @@ describe('the name term moves a score', () => {
 
 interface Baseline {
   readonly runs: Awaited<ReturnType<typeof offRuns>>;
-  readonly routedPrompt: string;
 }
 const baseline: Baseline = JSON.parse(readFileSync(join(__dirname, 'fixtures/named-tasks-baseline.json'), 'utf8'));
 
 describe('names off changes nothing', () => {
-  it('picks, decide requests and curator prompts match the build before name lanes', async () => {
+  it('picks and decide requests match the build before name lanes', async () => {
     expect(await offRuns(Object.keys(baseline.runs))).toEqual(baseline.runs);
     expect(Object.keys(baseline.runs)).toContain(namedTask);
-  });
-
-  it('a routeByTask curator prompt on a task once tagged changed is the same', async () => {
-    expect(sha256(await routedPrompt('What is my current address?'))).toBe(baseline.routedPrompt);
   });
 });

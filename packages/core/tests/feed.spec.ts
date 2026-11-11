@@ -95,7 +95,7 @@ describe('feed', () => {
     const { decide } = stubDecide();
     const picked = await pick(PARTS, { task: 'recall the plan', decide, feed: { order: 'combsum', size: 3 } });
     expect(picked.record.pick!.feed).toEqual({ order: 'combsum', size: 3, unjudged: 1 });
-    expect(picked.record.pick!.thoroughness).toEqual({ level: 'deep', depth: 3 });
+    expect(picked.record.pick!.thoroughness).toEqual({ level: 'normal', depth: 3 });
     expect(picked.record.pick!.sent).toBe(3);
     const effect = picked.record.effects.find((entry) => entry.setting === 'thoroughness')!;
     expect(effect.summary).toContain('the feed size of 3 parts kept 3 of 4 ranked parts and left 1 undecided');

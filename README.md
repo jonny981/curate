@@ -5,7 +5,7 @@ A TypeScript library that finds what your agent needs from past chats, notes and
 93.8% on LongMemEval under its official grader, with about 121 times less context than the raw history. That run used code outside the published packages.
 
 Curate gives an agent the context it needs for a task, drawn from chat transcripts, Markdown and git history.
-It chooses evidence and turns it into a dated, cited log that the agent reads before starting work.
+It chooses the evidence a task needs and lays it out in its own words, headed by where and when it was said, for the agent to read before starting work.
 
 ## Results at a glance
 
@@ -34,7 +34,7 @@ Every result, how each run was set up and its proof files are in [benchmarks](be
 
 - **No work when history is written.** Curate reads transcripts, git history and Markdown where they already live, when a task asks. No extraction step or graph to keep in sync, and no database server or hosted vector store: local index files, made on first use.
 - **Go straight to the source.** [Mem0](https://docs.mem0.ai/core-concepts/memory-operations/add) extracts facts with a model, [Mastra](https://mastra.ai/docs/memory/observational-memory) keeps observations written by a model, and [Zep](https://help.getzep.com/v4/how-graph-creation-works) builds a knowledge graph. Curate selects from the original history for each task.
-- **Keep the task model focused.** It gets a dated, cited log chosen for its task, even when the history spans thousands of parts.
+- **Keep the task model focused.** It reads only the parts chosen for its task, within a token budget, even when the history spans thousands of parts.
 
 [LongMemEval](benchmarks/longmemeval/2026-10-22/README.md): **449 to 485 task-model tokens** from histories of about **50 sessions** and **102,580 tokens** on average (o200k, every turn's role and text): about 230 times less with GPT-5. The markup setting gives gpt-6.1-sol **844** tokens, [about 121 times less](benchmarks/longmemeval/2026-11-04/README.md#context-sizes). [DolphinBench slice](benchmarks/dolphinbench/2026-10-22/results.md): Curate turns **5,400–5,900 history parts** into a log the agent reads, with a median of **about 4,500 tokens** (o200k). The published copies of those logs use shorter part IDs, so they count about 3,200.
 
@@ -67,10 +67,10 @@ See the [changelog](CHANGELOG.md) for what each release contains.
 
 ## Use it
 
-Call Curate before a task, then give its log to your agent as text.
+Call Curate before a task, then give its text to your agent.
 Always-on files such as `CLAUDE.md` and `AGENTS.md` stay with your agent's harness, and Curate picks the rules a task needs from your rule library.
 Curate is a library: it calls the models you supply, with no database server or hosted vector store to deploy: local index files, made on first use.
-Your agent keeps its own tools and can follow the citations when it needs more detail.
+Your agent keeps its own tools and can follow each heading to its source when it needs more detail.
 
 ### Recall context for a task
 
@@ -78,15 +78,13 @@ Save this as `recall.mjs`:
 
 ```js
 import { memory } from '@curatejs/core';
-import { jev, chatWriter } from '@curatejs/core/models';
+import { jev } from '@curatejs/core/models';
 import { markdown } from '@curatejs/markdown';
 
 const decide = jev({ apiKey: process.env.TYPESAFE_API_KEY });
-const write = chatWriter({ apiKey: process.env.CHAT_API_KEY, model: 'gpt-5-mini' });
 const mem = memory({
   sources: [markdown({ paths: ['docs'], kind: 'docs' })],
   decide,
-  write,
 });
 
 const { log } = await mem.recall('What billing constraint must this change preserve?');
@@ -106,24 +104,28 @@ Invoices must preserve the currency recorded when the order was placed.
 NOTE
 ```
 
-Set the model keys and run:
+Set the model key and run:
 
 ```sh
 export TYPESAFE_API_KEY='your-typesafe-key'
-export CHAT_API_KEY='your-chat-provider-key'
 node recall.mjs
 ```
 
-The log cites the source file, for example:
+The text heads each part with its source and the date it was said, for example:
 
 ```text
-[2026-01-12] Invoices preserve the order's recorded currency (said 2026-01-12; /home/sam/docs/billing.md#1)
+### Most likely answer
+
+#### markdown:docs:["/home/sam/docs"] (said 2026-01-12)
+
+# Billing
+Invoices must preserve the currency recorded when the order was placed.
 ```
 
 > [!NOTE]
-> At their default addresses, the model helpers make paid API calls. `jev()` uses TypeSafe's `jev-latest`; `chatWriter()` uses OpenAI's Chat Completions URL. A local model server needs no hosted service. To keep every step on your machine, see [Run it on your own machine](#run-it-on-your-own-machine).
+> At its default address, `jev()` makes paid API calls to TypeSafe's `jev-latest`. A local model server needs no hosted service. To keep every step on your machine, see [Run it on your own machine](#run-it-on-your-own-machine).
 
-`recall()` returns the log, exact selected rules as joined text, and the full selection and curation records:
+`recall()` returns the laid-out text as `log`, exact selected rules as joined text, and the full selection and layout records:
 
 ```js
 const { log, rules, picked, result } = await mem.recall('What billing constraint must this change preserve?');
@@ -131,7 +133,8 @@ const { log, rules, picked, result } = await mem.recall('What billing constraint
 
 - **Source questions are automatic.** Each reader brings its own set of narrow questions.
 - **Incomplete collection throws.** An absent or incomplete read, an unanswered candidate, or interrupted decisions stop recall. Parts intentionally excluded by the label questions are allowed. Read and model errors reach the caller.
-- **Rules stay exact.** `rules` joins the selected rule text with blank lines. The writer receives reference evidence, not rules.
+- **Rules stay exact.** `rules` joins the selected rule text with blank lines. The laid-out text holds reference evidence, not rules.
+- **Weak sentences go.** After the layout, `decide` rates each sentence in one more request, and the text keeps those rated 0.1 or more. `curate: { sentenceCutoff: false }` keeps every sentence and makes no request. See [Curate](#curate).
 - **Cancellation is optional.** Pass an `AbortSignal` as `mem.recall(task, { signal })`.
 
 ### Read each source with its own settings
@@ -152,7 +155,7 @@ knowledgeBase('docs');                       // a notes folder, in one argument
 Combine them in one call:
 
 ```js
-const mem = memory({ sources: [chat(), git('.'), markdown({ paths: ['docs'], kind: 'docs' })], decide, write });
+const mem = memory({ sources: [chat(), git('.'), markdown({ paths: ['docs'], kind: 'docs' })], decide });
 ```
 
 Each source carries its own settings, tuned for that kind of history.
@@ -174,24 +177,22 @@ Sources can still affect each other. A selected commit brings in a note it chang
 - **Questions:** the yes/no questions the decision model answers about each reference part, with fitted weights that combine the answers into its score.
 
 The pick record names the settings each source ran with under `levers.sources`, such as `{ kind: 'chat', labels: true, labelBar: 0.5, rare: false, bar: 0.0146 }`, with `questions` holding the question set its parts were asked.
-Each pick and curate record's `effects` list says what each setting changed: the parts it brought in or kept out, and why when it changed nothing ([what each setting did](packages/core/README.md#what-each-setting-did)).
+Each pick record's `effects` list says what each setting changed: the parts it brought in or kept out, and why when it changed nothing ([what each setting did](packages/core/README.md#what-each-setting-did)).
 
 These levers act on the whole call:
 
 | Lever | Out of the box |
 | --- | --- |
 | `read.wholeLanes` | Off: cut each search lane |
-| `pick.thoroughness` | `'deep'`: decide the top 12,896 of the fused order; `quick` 672, `normal` 3,674 |
+| `pick.thoroughness` | `'normal'`: decide the top 3,674 of the fused order; `quick` 672, `deep` 12,896 |
 | `pick.feed` | Unset: the fused order at the level's depth. `{ order: 'combsum', size }` feeds by summed lane places, `size` parts |
 | `pick.everyRanked` | Unset: `thoroughness` bounds the feed. `true` decides every ranked part; `{ c }` a scaled top-k |
-| `pick.route` and `curate.route` | Off |
+| `pick.route` | Off |
 | `pick.everyScored` | Unset: each source's bar. When set, one bar for every source |
 | `pick.rare` | Unset: each source's setting. When set, one setting for every source |
 | `pick.taskPeriod` | On: a task that names a period lets in the parts dated inside it |
-| `curate.weightBands` | `[0.1, 0.6]`: the low and high weights the curator's instructions name |
-| `curate.batchTokens` | Unset: one call up to 150,000 estimated tokens of evidence, layered batches of 150,000 above |
-
-The default batch size acts only when neither `curate.batchTokens` nor `curate.contextLimit` is given.
+| `curate.answerTokens` | 2,000: the estimated tokens the laid-out text keeps within |
+| `curate.sentenceCutoff` | 0.1: the sentence rating the text keeps; `false` rates no sentence |
 
 `pick.thoroughness` and `pick.everyRanked: { c }` rank every source's parts in one fused list before they cut, and a stopping limit in `pick.limits` (questions, batches, time) is shared by every source.
 With any of them, one source's settings can change what Curate picks from another.
@@ -233,15 +234,14 @@ A source without `questions` asks each part one built-in question.
 Other question options: `PERSONAL_CHAT_CASCADE` for histories of a person's own life, `COUNT_MARKER` for count tasks, and `pick.writeQuestions` for questions written for each task (see [core's options](packages/core/README.md#questions-written-for-each-task)).
 `reader` can also be your own source; see [core's options](packages/core/README.md#levers-and-source-settings).
 
-Pass reader options under `read`, selection options under `pick`, and writer options under `curate`:
+Pass reader options under `read`, selection options under `pick`, and layout options under `curate`:
 
 ```js
 const mem = memory({
   sources,
   decide,
-  write,
   pick: { limits: { maxBatchChars: 50000 } },
-  curate: { batchTokens: 2000 },
+  curate: { answerTokens: 4000 },
 });
 ```
 
@@ -255,16 +255,13 @@ Use `pick.labels: { directory: 'my-labels' }` to choose a folder.
 
 The decision model can say, from the task's words alone, what kind of answer the task needs: a date, a number, a name, the order of events and so on.
 `pick.answerTypes` asks the task the ten questions in `ANSWER_TYPES`, in one request per pick.
-Two options use the types it finds:
+Typed questions use the types it finds: a source's question set can hold `typed` questions. Each is asked of the source's parts only when the task needs its answer type, and its answer counts toward the part's score like the set's other questions.
 
-- **Typed questions:** a source's question set can hold `typed` questions. Each is asked of the source's parts only when the task needs its answer type, and its answer counts toward the part's score like the set's other questions.
-- **The hint line:** `curate.answerHint` adds one line under the task the curator reads, such as "The answer likely needs: a date, a number."
-
-Both are off by default, and no preset carries a typed question.
-Turn both on:
+`pick.answerTypes` is off by default, and no preset carries a typed question.
+Turn it on:
 
 ```js
-const mem = memory({ sources, decide, write, pick: { answerTypes: true }, curate: { answerHint: true } });
+const mem = memory({ sources, decide, pick: { answerTypes: true } });
 ```
 
 Add a typed question to git's set through `historySource()`:
@@ -355,12 +352,12 @@ Older notes can rank lower with [decay](packages/markdown/README.md#decay), off 
 
 ## Bring your own models
 
-Curate accepts two plain functions.
-They can call an API, a local model or a command.
+Curate accepts one plain function, `decide`.
+It can call an API, a local model or a command.
 The built-in helpers use `fetch` and need no model SDK.
+No model writes the memory text.
 
 - **`decide` answers narrow questions.** It receives `{ task, questions }` and an `AbortSignal`. Return an answer under each question's `key`, with `status: 'answered'` and a finite `probability` from 0 to 1. See [`PickDecide`](packages/core/src/pick.ts) for question fields and unavailable answers.
-- **`write` turns evidence into log text.** It receives `{ instructions, body }` and an `AbortSignal`. Return the log without a Markdown fence, or an empty string when no evidence bears on the task; Curate asks once more and, if the second reply is empty too, returns an empty log marked `empty: true`. See [`CurateWrite`](packages/core/src/curate.ts) for the full contract.
 
 Use `openAIDecisions()` for [OpenAI's Decisions API](https://developers.openai.com/api/docs/guides/decisions) in place of `jev()`:
 
@@ -375,26 +372,9 @@ For a handwritten `decide`, set its `deciderId` property.
 An explicit `pick.labels.deciderId` overrides the function's ID.
 Without an ID it uses `'custom'`, so different handwritten decision functions must supply different IDs to keep their saved labels apart.
 
-Curate checks observation dates and cited IDs.
-It does not prove that the facts or date calculations are correct.
-A reply with invalid format goes back to the writer once with the reason.
-If repair fails, Curate keeps valid lines and malformed lines that name a supplied item ID, and drops unsupported lines.
-The record's `formatRecovery` lists malformed lines kept as written and lines dropped.
-A format error stops curation only when no usable evidence remains.
-
-To use another provider that accepts Chat Completions, give the writer its URL and model:
-
-```js
-const write = chatWriter({
-  apiKey: process.env.CHAT_API_KEY,
-  url: process.env.CHAT_URL,
-  model: process.env.CHAT_MODEL,
-});
-```
-
 ### Run it on your own machine
 
-Ranking, deciding and curating can all run against models on your own machine.
+Ranking and deciding can both run against models on your own machine, and the layout calls no model but `decide`.
 The one requirement: the decision server must return log-probabilities.
 `localDecisions()` throws when a reply has none, because a pick that cannot judge must not guess.
 
@@ -402,7 +382,7 @@ The one requirement: the decision server must return log-probabilities.
 It reads the answer from the log-probabilities of "yes" and "no" for the first reply token:
 
 ```js
-import { chatWriter, jev, localDecisions } from '@curatejs/core/models';
+import { jev, localDecisions } from '@curatejs/core/models';
 
 const decide = localDecisions({ url: 'http://127.0.0.1:8000/v1/chat/completions', model: 'my-local-model' });
 ```
@@ -414,13 +394,7 @@ Give it the address and model name your server uses:
 const decide = jev({ url: 'http://127.0.0.1:30000/v1/systemone', model: 'clef-flash' });
 ```
 
-The writer takes any OpenAI-compatible chat address:
-
-```js
-const write = chatWriter({ url: 'http://127.0.0.1:8000/v1/chat/completions', model: 'my-local-model' });
-```
-
-Away from TypeSafe's and OpenAI's addresses, an API key is optional, and the helpers send none unless you give one.
+Away from TypeSafe's address, an API key is optional, and the helpers send none unless you give one.
 
 For meaning search, use the local embedder (it needs `node-llama-cpp@3.18.1`):
 
@@ -431,7 +405,7 @@ import { createLocalEmbedder } from '@curatejs/core/local-embeddings';
 // A local MiniLM GGUF model file; the adapter downloads nothing.
 const local = await createLocalEmbedder({ modelPath });
 try {
-  const mem = memory({ sources, decide, write, read: { meaning: { embed: local.embed } } });
+  const mem = memory({ sources, decide, read: { meaning: { embed: local.embed } } });
   const { log } = await mem.recall('What billing constraint must this change preserve?');
 } finally {
   await local.dispose();
@@ -444,7 +418,7 @@ A decision cache keeps the `deciderId` you give it, so give each server its own.
 
 ### Separate selection and curation
 
-`pickFromSources()` and `curate()` remain available when you need to inspect or change the evidence before writing.
+`pickFromSources()` and `curate()` remain available when you need to inspect or change the evidence before the layout.
 With these separate calls, check the read and candidate records yourself before using the result.
 
 ```js
@@ -454,7 +428,7 @@ import { markdown } from '@curatejs/markdown';
 const task = 'What billing constraint must this change preserve?';
 const sources = [markdown({ paths: ['docs'], kind: 'docs' })];
 const picked = await pickFromSources(sources, { task }, { task, decide });
-const result = await curate(task, picked, { write });
+const result = await curate(task, picked, { decide });
 ```
 
 `pickFromSources()` asks each source its own question set, as `memory()` does.
@@ -462,8 +436,8 @@ See the [core package](packages/core/README.md) for question sets, tags, local m
 
 ### The `/curate` skill
 
-The [coding-agent skill](skills/curate/SKILL.md) reads sources and prints a log for a task.
-It needs Jev credentials and signed-in Claude and ChatGPT subscriptions.
+The [coding-agent skill](skills/curate/SKILL.md) reads sources and prints the laid-out parts for a task.
+It needs Jev credentials and a signed-in Claude subscription, which writes the search lines.
 Build the repository and save your source settings outside it:
 
 ```sh
@@ -500,13 +474,13 @@ Paths must be absolute or start with `~/`.
 Set `TYPESAFE_API_KEY` in the environment or the `KEY=VALUE` file named by `envFile`.
 Without `--sources`, the script reads `~/.curate/sources.json`.
 Supply a local embedding GGUF through `embeddingModel`. The script requires Metal on macOS and downloads no model.
-Optional `compression` sets what the skill prints: `high`, the default, prints the log, and `low` prints the marked-up memory described in [Compression](#compression).
-Optional `thoroughness` sets how many ranked history parts the decision model checks: `quick` checks the top 672, `normal` 3,674 and `deep` 12,896, the default.
+Optional `answerTokens` and `sentenceCutoff` set the layout's budget and sentence cutoff, as in [Curate](#curate).
+Optional `thoroughness` sets how many ranked history parts the decision model checks: `quick` checks the top 672, `normal` 3,674, the default, and `deep` 12,896.
 Measured on a replayed ~116,000-part history, each level cost about 1, 5 and 17 pence of questions on the largest of eight task sets; `quick` kept 24 of the 56 known answer parts, `normal` 49 and `deep` all 56.
 Each source can also set `since` (an ISO date or a duration such as `"14 days"`, counted back from the task date), `exclude` (paths that source alone refuses, resolved inside `path`), and, for `git` only, `include` (only commits that changed one of the paths).
 The skill combines keyword and meaning lanes, and disables label admission and the rare-word round.
 Saved embeddings are reused when the model file and input text match. Identical text shares matching decision answers within each pick.
-It prints the log. Curate keeps no files of its own outside its caches under `~/.cache/curate`. Set `records` to `true` in the sources file to also save the log, source reads, model usage and timings under `~/.curate/runs/`.
+It prints the laid-out parts. Curate keeps no files of its own outside its caches under `~/.cache/curate`. Set `records` to `true` in the sources file to also save the printed text, source reads, model usage and timings under `~/.curate/runs/`.
 Subscription route failures never fall back to an API.
 
 ## Rank, decide, curate
@@ -515,7 +489,7 @@ Subscription route failures never fall back to an API.
 flowchart LR
   sources["Chat, Markdown and git"] --> rank["Rank<br/>Keyword search"]
   rank --> decide["Decide<br/>Narrow questions"]
-  decide --> curate["Curate<br/>Dated, cited log"]
+  decide --> curate["Curate<br/>Own words, token budget"]
   curate --> agent["Agent<br/>Does the task"]
   agent -. "Own tools" .-> sources
 ```
@@ -536,47 +510,38 @@ Set `read.wholeLanes: true` to keep every part the readers return.
 
 The decision function answers each reader's narrow questions.
 By default, Curate combines search results from all sources into a ranked list.
-The decision model checks the top 12,896 reference parts (the `deep` thoroughness level).
+The decision model checks the top 3,674 reference parts (the `normal` thoroughness level).
 Curate keeps those that score at least their source's decision-score bar (0.0146 for every reader), highest scores first.
 Unanswered candidates and unfinished decisions stay visible in the record and stop `recall()`.
 Parts intentionally excluded by the label questions stay in the record without stopping recall.
 
-- **Feed depth:** `pick.thoroughness` sets how many ranked history parts the decision model checks: 672 for `quick`, 3,674 for `normal` and 12,896 for `deep`, the default. Parts deeper than the level stay unasked and record `thoroughness`. `pick.everyRanked: true` decides every ranked part instead, and `pick.everyRanked: { c }` keeps the top `round(c × N^0.8)` reference parts, where N is the number of reference parts. Rules pass through uncut in every mode. The skipped parts are unassessed, so use the separate selection API to inspect them. Measured on a replayed ~116,000-part history of chat transcripts, Git history and Markdown notes: each level cost about 1, 5 and 17 pence of questions on the largest of eight task sets (about 0.8, 2.3 and 6.6 decide-step minutes), and `quick` kept 24 of the 56 known answer parts, `normal` 49 of 56 and `deep` all 56.
-- **Writer inputs:** a source's `bar` sets its score cut. `pick.everyScored: { bar }` sets one cut for every source, and `pick.everyScored: true` keeps every scored reference.
+- **Feed depth:** `pick.thoroughness` sets how many ranked history parts the decision model checks: 672 for `quick`, 3,674 for `normal`, the default, and 12,896 for `deep`. Parts deeper than the level stay unasked and record `thoroughness`. `pick.everyRanked: true` decides every ranked part instead, and `pick.everyRanked: { c }` keeps the top `round(c × N^0.8)` reference parts, where N is the number of reference parts. Rules pass through uncut in every mode. The skipped parts are unassessed, so use the separate selection API to inspect them. Measured on a replayed ~116,000-part history of chat transcripts, Git history and Markdown notes: each level cost about 1, 5 and 17 pence of questions on the largest of eight task sets (about 0.8, 2.3 and 6.6 decide-step minutes), and `quick` kept 24 of the 56 known answer parts, `normal` 49 of 56 and `deep` all 56.
+- **Layout inputs:** a source's `bar` sets its score cut. `pick.everyScored: { bar }` sets one cut for every source, and `pick.everyScored: true` keeps every scored reference.
 - **More evidence:** Git and Markdown run the rare-word round through their settings, each within its own parts. `pick.rare: true` runs it on every source; `pick.rare: false` turns it off. Under a thoroughness level the round asks its pulled parts only while the depth still has room.
 - **Tags:** `pick.tags` labels selected items with their intent, importance, emphasis and whether they correct something earlier.
 
 ### Curate
 
-The writer receives reference evidence with dates, source kinds, decision scores and any tags.
-It writes observations with event dates, statement dates and source IDs.
-When a later fact replaces an earlier one, the log can carry both dates.
+`curate()` lays out the kept reference parts in their own words.
+No model writes the text.
 
-- **Space by score:** The instructions ask the writer to retain observations scored 0.6 or more, include useful facts from 0.1 to below 0.6, and give scores below 0.1 little space. `curate.weightBands` sets the two numbers.
-- **Batches:** `curate.batchTokens` writes strongest evidence first. Later batches add lines without rewording or removing earlier ones. Evidence over 150,000 estimated tokens is batched by default.
-- **Length:** There is no fixed log length cap.
+- **Strongest first:** the two parts with the highest decision score sit under `### Most likely answer`. Every other part is grouped by the date it was said and its source, oldest first and strongest first inside a group. A part with no date sits under `(said unknown)`, last. A date that is only a file's last change reads `(file changed <date>)`.
+- **Copies taken once:** a part whose text is the same as a stronger kept part's is left out, and the kept part's heading names where else it was said.
+- **Budget:** `curate.answerTokens` keeps the text within 2,000 estimated tokens by default. The strongest part is always kept whole. The record's `leftOut` counts the parts the budget stopped before.
+- **Sentence cutoff:** given `decide`, curate rates each sentence of the taken parts in one request and keeps those rated `curate.sentenceCutoff` or more, 0.1 by default. `…` marks where text was left out. `false` keeps every sentence and makes no request. When the request fails, the whole text comes back and the record says why.
 
 ## Plain files and git
 
 The sources remain readable without Curate.
 Markdown holds facts and instructions.
 Commit bodies can record why a change was made, the options considered and the constraints behind it.
-The agent can follow a cited commit with its own tools when it needs the code.
+The agent can look up a commit with its own tools when it needs the code.
 
-Dates help the writer tell an old decision from its replacement, even when they share the same words.
+Dates help the reader tell an old decision from its replacement, even when they share the same words.
 
 ## Results
 
 Every result, how each run was set up and its proof files are in [benchmarks](benchmarks/README.md).
-
-## Compression
-
-`curate.compression` sets how much Curate shortens the parts it keeps.
-
-- **`'high'`, the default:** the curator writes the dated, cited log.
-- **`'low'`:** Curate lists the events in the kept parts. The decision model says which events count. Code adds them up. The memory holds those totals and events. Then come the parts they cite, in the source's own words, with tags that mark events, amounts and tone. It is larger than the log and costs more model calls.
-
-See [the core package](packages/core/README.md#compression).
 
 ## Development
 

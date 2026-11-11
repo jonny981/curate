@@ -7,25 +7,19 @@ import { join } from 'node:path';
 import { expect, it, vi } from 'vitest';
 
 import { memory } from '@curatejs/core';
-import { chatWriter, localDecisions } from '@curatejs/core/models';
+import { localDecisions } from '@curatejs/core/models';
 import { git as gitSource } from '@curatejs/git';
 import { knowledgeBase } from '@curatejs/markdown';
 
-const LOG = '[2026-01-12] Keep the order currency (said 2026-01-12; E1)';
-
 /** A local model server: decision requests get log-probabilities that favour yes when
- *  the item names currency, and writer requests get a one-line log. */
+ *  the item names currency. */
 function modelServer() {
   return createServer((request, response) => {
     let text = '';
     request.on('data', (chunk) => { text += chunk; });
     request.on('end', () => {
-      const body = JSON.parse(text) as { logprobs?: boolean; messages: { content: string }[] };
+      const body = JSON.parse(text) as { messages: { content: string }[] };
       response.setHeader('content-type', 'application/json');
-      if (!body.logprobs) {
-        response.end(JSON.stringify({ choices: [{ message: { content: LOG } }] }));
-        return;
-      }
       const item = body.messages.at(-1)!.content.split('\nItem:\n').at(-1)!;
       const [yes, no] = /currency/i.test(item) ? [-0.01, -9] : [-9, -0.01];
       response.end(JSON.stringify({ choices: [{ message: { content: 'yes' }, logprobs: { content: [{
@@ -71,11 +65,10 @@ it('runs a whole recall against a model server on this machine', async () => {
     const { log, picked } = await memory({
       sources: [gitSource(repo), knowledgeBase(notes)],
       decide: localDecisions({ url: `${base}/v1/chat/completions`, model: 'local' }),
-      write: chatWriter({ url: `${base}/v1/chat/completions`, model: 'local' }),
       read: { meaning: { embed } },
     }).recall('What billing constraint must this change preserve?');
 
-    expect(log).toContain('Keep the order currency');
+    expect(log).toContain('Invoices keep the order currency.');
     const kept = picked.record.candidates.filter((item) => item.status === 'selected');
     expect(kept.length).toBeGreaterThan(0);
     expect(kept.some((item) => item.id === 'billing.md#1')).toBe(true);

@@ -1,7 +1,7 @@
 import { asSourceReadError } from '@curatejs/core/internal';
 import { describe, expect, it } from 'vitest';
 
-import { curate, decisionFileStore, DEFAULT_MAX_QUESTION_TEXT, historySource, LABEL_KINDS, LABEL_LANE_BAR, LABEL_QUESTION_VERSION, pick, PICK_QUESTION_VERSION, pickFromSources, SourceReadError, type CandidateSource, type CurateOptions, type CurateRecord, type CurateResult, type CurateWrite, type DecisionStore, type HistorySettings, type LeverStates, type MemoryCandidate, type PickCache, type PickLabels, type PickOptions, type PickThresholds, type SourceSettings } from '@curatejs/core';
+import { curate, decisionFileStore, DEFAULT_MAX_QUESTION_TEXT, historySource, LABEL_KINDS, LABEL_LANE_BAR, LABEL_QUESTION_VERSION, pick, PICK_QUESTION_VERSION, pickFromSources, SourceReadError, type CandidateSource, type CurateOptions, type CurateRecord, type CurateResult, type DecisionStore, type HistorySettings, type LeverStates, type MemoryCandidate, type PickCache, type PickLabels, type PickOptions, type PickThresholds, type SourceSettings } from '@curatejs/core';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -12,9 +12,8 @@ import { markdown, MARKDOWN_CASCADE, markdownSettings, knowledgeBase, rules, rul
 const uncutPick = { everyRanked: true, everyScored: true, rare: false } as const;
 
 describe('package exports', () => {
-  it('exports the curate step and its caller-supplied writer types', async () => {
-    const write: CurateWrite = async () => '[2023-05-13] Visited York (said 2023-05-20; E1)';
-    const options: CurateOptions = { write, working: false };
+  it('exports the curate step and its option, record and result types', async () => {
+    const options: CurateOptions = { answerTokens: 500, sentenceCutoff: false };
     const picked = await pick([{
       sourceId: 'notes', role: 'reference', id: 'trip', title: 'Trip',
       text: 'Visited York last Saturday.', signals: {},
@@ -26,9 +25,8 @@ describe('package exports', () => {
     });
     const result: CurateResult = await curate('Where did I go?', picked, options);
     const record: CurateRecord = result.record;
-    expect(result.log).toContain('[2023-05-13]');
-    expect(record.promptVersion).toBe('v4');
-    expect(record.weights).toBe('tiers');
+    expect(result.log).toContain('Visited York last Saturday.');
+    expect(record.answerTokens).toBe(500);
     expect(record.items[0]!.weight).toBe(0.9);
   });
 

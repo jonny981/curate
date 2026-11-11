@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  LABEL_KINDS, curate, historySource, pick, pickFromSources,
+  LABEL_KINDS, historySource, pick, pickFromSources,
   type CandidateReadRequest, type CandidateSource, type HistorySettings, type MemoryCandidate,
   type PickDecide, type PickQuestion, type PickRecord, type PickResult,
 } from '../src/index.js';
@@ -412,58 +412,5 @@ describe('the record says what each pick setting did', () => {
   it('gives no entry for a setting that was off', async () => {
     const picked = await pickFromSources([chat()], { task }, { task, decide, everyRanked: true });
     expect(picked.record.effects.map((entry) => `${entry.setting} ${entry.source}`)).toEqual(['bar chat', 'taskPeriod chat']);
-  });
-});
-
-describe('the record says what each curate option did', () => {
-  const candidate: MemoryCandidate = { sourceId: 'notes', id: 'notes#1', title: 'Plan', text: 'The plan.',
-    role: 'reference', signals: {}, date: { value: '2026-01-02', meaning: 'recorded' } };
-  const observation = '[2026-01-02] The plan was set (said 2026-01-02; E1)';
-  const writing = (log: string) => ({ write: async () => log });
-  const picked = (route = false) => pick([candidate], {
-    task: 'How many plans?', everyScored: true,
-    decide: fixed((q) => q.id === 'question' ? (q.questionKey === 'count' ? 0.9 : 0.1) : 0.9),
-    ...(route ? { route: 'jev' as const } : {}),
-  });
-  const entry = (record: { effects: readonly { setting: string }[] }, setting: string) =>
-    record.effects.find((item) => item.setting === setting);
-
-  it('working: counts the worked-notes lines', async () => {
-    const heading = "Working (the curator's; check it against the log):";
-    const notes = await curate('How many plans?', await picked(), {
-      ...writing([observation, heading, '1. one [E1]', '2. two [E1]', '3. three [E1]'].join('\n')), working: true });
-    expect(entry(notes.record, 'working')).toEqual({ setting: 'working', lines: 3,
-      summary: 'working: the curator wrote 3 lines of worked notes.' });
-    const none = await curate('How many plans?', await picked(), { ...writing(observation), working: true });
-    expect(entry(none.record, 'working')).toEqual({ setting: 'working', lines: 0,
-      summary: 'working: the curator wrote no worked notes, so it added no line.' });
-  });
-
-  it('preference lines: counts them, and each option gives the total when both are on', async () => {
-    const log = [observation, 'Advice preferences: likes plans (E1)', 'Changed preference: moved to tea (E1)'].join('\n');
-    const both = await curate('How many plans?', await picked(), { ...writing(log), preferenceAdvice: true, preferenceChange: true });
-    for (const setting of ['preferenceAdvice', 'preferenceChange']) {
-      expect(entry(both.record, setting)).toEqual({ setting, lines: 2,
-        summary: `${setting}: the curator wrote 2 preference lines; preferenceAdvice and preferenceChange both write them, so this is their total.` });
-    }
-    const none = await curate('How many plans?', await picked(), { ...writing(observation), preferenceAdvice: true });
-    expect(entry(none.record, 'preferenceAdvice')).toEqual({ setting: 'preferenceAdvice', lines: 0,
-      summary: 'preferenceAdvice: the curator wrote no preference lines, so it added no line.' });
-    expect(entry(none.record, 'preferenceChange')).toBeUndefined();
-  });
-
-  it('route: names the options it switched on', async () => {
-    const heading = "Working (the curator's; check it against the log):";
-    const routed = await curate('How many plans?', await picked(true), {
-      ...writing([observation, heading, '1. one [E1]'].join('\n')), route: 'jev' });
-    expect(entry(routed.record, 'route')).toEqual({ setting: 'route', lines: 1,
-      summary: 'route: the route answers switched on working, which wrote 1 line.' });
-    expect(entry(routed.record, 'working')).toMatchObject({ lines: 1 });
-  });
-
-  it('gives no entry for an option that was off', async () => {
-    // With no batch option the default batch size applies, so its entry is the only one.
-    const plain = await curate('How many plans?', await picked(), writing(observation));
-    expect(plain.record.effects.map((item) => item.setting)).toEqual(['batchTokens']);
   });
 });

@@ -232,15 +232,9 @@ describe('extra source searches', () => {
     await pickSource(reader, { task }, decide);
     const picked = await pickSource(reader, { task, stripSearchInstructions: true, searchLines: ['events, return JSON'] }, decide);
     expect(calls).toEqual([task, 'How many events occurred after 2025? Say which is newer.', 'events']);
-    const writerTasks: string[] = [];
-    await curate(task, picked, {
-      contextLimit: 1,
-      write: async (prompt) => {
-        writerTasks.push(prompt.body.split('\n\n')[0]!);
-        return '[2026-01-01] Event recorded (said 2026-01-01; E1)';
-      },
-    });
-    expect(writerTasks).toEqual([`TASK:\n${task}`, `TASK:\n${task}`]);
+    const sentenceTasks: string[] = [];
+    await curate(task, picked, { decide: async (batch, signal) => { sentenceTasks.push(batch.task); return yes(batch, signal); } });
+    expect(sentenceTasks).toEqual([task]);
   });
 });
 

@@ -1,4 +1,3 @@
-import type { CurateWrite } from './curate.js';
 import { LABEL_LANE_BAR } from './labels.js';
 import type { PickCriterion, PickOptions } from './pick.js';
 
@@ -100,47 +99,46 @@ export type RouteKey = (typeof ROUTE_QUESTIONS)[number]['key'];
 
 /** The kinds of answer a task can need, asked of the task itself when
  *  `answerTypes` is on: one yes/no question each, all in one decide
- *  request per pick. `phrase` names the type in the curator's hint
- *  line (`answerHint`); `question` asks it of the task, `trueCriterion`
+ *  request per pick. `question` asks it of the task, `trueCriterion`
  *  and `falseCriterion` are the answer criteria. */
 export const ANSWER_TYPES = [
-  { key: 'date', phrase: 'a date',
+  { key: 'date',
     question: 'Is the answer a point in time?',
     trueCriterion: 'The answer names when something happened or will happen: a calendar date, a day of the week, a month, a year or a time of day.',
     falseCriterion: 'The answer is not a point in time.' },
-  { key: 'duration', phrase: 'a length of time',
+  { key: 'duration',
     question: 'Is the answer a length of time?',
     trueCriterion: 'The answer is how long something lasted or took, or how much time passed between two events or since an event (days, weeks, months, years).',
     falseCriterion: 'The answer is not a length of time.' },
-  { key: 'order', phrase: 'the order of events',
+  { key: 'order',
     question: 'Does the answer depend on the order of two or more events?',
     trueCriterion: 'The question asks which happened first, last, before or after, or asks for events in sequence.',
     falseCriterion: 'The question does not ask about the order of events.' },
-  { key: 'number', phrase: 'a number',
+  { key: 'number',
     question: 'Is the answer a number?',
     trueCriterion: 'The answer is a number: a quantity, a count, an amount of money, a measurement, an age, a score or a percentage.',
     falseCriterion: 'The answer is not a number.' },
-  { key: 'entity', phrase: 'a specific name',
+  { key: 'entity',
     question: 'Is the answer a specific named thing?',
     trueCriterion: 'The answer is a particular person, place, product, brand, organisation, pet, or title of a book, film, show or song.',
     falseCriterion: 'The answer is not a particular named person, place, product or title.' },
-  { key: 'yesno', phrase: 'a yes or no',
+  { key: 'yesno',
     question: 'Can the question be answered with yes or no?',
     trueCriterion: 'The question asks whether something is true, happened or holds, so a yes or a no answers it.',
     falseCriterion: 'A yes or a no does not answer the question.' },
-  { key: 'list', phrase: 'a full count or list',
+  { key: 'list',
     question: 'Does the answer need every instance of something gathered?',
     trueCriterion: 'The answer is a count of items or events, or a complete list of them, so every instance must be found.',
     falseCriterion: 'The answer does not need instances counted or listed.' },
-  { key: 'advice', phrase: 'a recommendation',
+  { key: 'advice',
     question: 'Does the question ask for a recommendation, a suggestion or an opinion?',
     trueCriterion: 'The user asks what they should do, choose, try or think, rather than asking for a fact from their past.',
     falseCriterion: 'The user asks for a fact, not for a recommendation or an opinion.' },
-  { key: 'preference', phrase: 'the user\'s own tastes',
+  { key: 'preference',
     question: 'Does the answer depend on the user\'s own preferences?',
     trueCriterion: 'The user\'s stated likes, dislikes, tastes, wants or limits shape what a good answer is.',
     falseCriterion: 'The user\'s preferences do not shape the answer.' },
-  { key: 'latest', phrase: 'the latest value',
+  { key: 'latest',
     question: 'Does the question ask for the current or most recent value of something that can change?',
     trueCriterion: 'The answer is the most recent value or state of something that may have changed over time; an earlier value would be out of date.',
     falseCriterion: 'The question does not ask for a current or latest value.' },
@@ -166,8 +164,15 @@ export const COUNT_MARKER = {
 /** The instructions `taskQuestionWriter` sends with the task. */
 export const TASK_QUESTION_PROMPT = 'Write 2 to 4 narrow yes/no questions for a decision model reading one part of a history (a chat message, a commit or a note), with its date, for the task below. Any part holding one piece of the evidence should get true on at least one question; merely sharing a topic should get false. Name the concrete thing the task asks about. For counts ask about one instance; for time ask about dates or durations; for advice ask about the user\'s own preferences and limits; for assistant content ask about what the assistant said. Do not guess an answer. Return only a JSON array of objects with string fields instructions, true, false. Answer from the task text only. Do not run any command and do not read any file.';
 
-/** A `writeQuestions` option built from the same `write` function the
- *  curator uses: it sends `TASK_QUESTION_PROMPT` with the task, reads
+export interface CuratePrompt {
+  readonly instructions: string;
+  readonly body: string;
+}
+
+/** A model call that answers a prompt with text. */
+export type CurateWrite = (prompt: CuratePrompt, signal: AbortSignal) => Promise<string>;
+
+/** A `writeQuestions` option built from a `write` function: it sends `TASK_QUESTION_PROMPT` with the task, reads
  *  the JSON array in the reply and keys its questions `task1` onward.
  *  The pick checks the count and the fields. */
 export function taskQuestionWriter(write: CurateWrite): NonNullable<PickOptions['writeQuestions']> {

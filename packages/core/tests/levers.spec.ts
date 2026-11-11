@@ -11,7 +11,6 @@ import {
   pickFromSources,
   ROUTE_QUESTIONS,
   type CandidateSource,
-  type CuratePrompt,
   type MemoryCandidate,
   type PickAnswer,
   type PickBatch,
@@ -70,17 +69,6 @@ function laneSource(): CandidateSource {
   };
 }
 
-function writer(text = '[2023-05-13] Visited York (said 2023-05-20; E1)') {
-  const calls: CuratePrompt[] = [];
-  return {
-    calls,
-    write: async (prompt: CuratePrompt) => {
-      calls.push(prompt);
-      return text;
-    },
-  };
-}
-
 const directories: string[] = [];
 function store(): string {
   const directory = mkdtempSync(join(tmpdir(), 'curate-levers-'));
@@ -134,7 +122,7 @@ describe('levers', () => {
     // The default cut references below 0.0146.
     expect(defaults.selected.map((item) => item.id)).toEqual(['p0', 'p1']);
     expect(defaults.record.levers).toEqual({
-      thoroughness: 'deep',
+      thoroughness: 'normal',
       route: false,
       rare: false,
       sources: { notes: { labels: false, rare: false, bar: 0.0146 } },
@@ -147,12 +135,11 @@ describe('levers', () => {
     expect(read.reads[0]?.status === 'read'
       && read.reads[0].candidates.filter((c) => c.poolOnly !== true)).toHaveLength(1);
     expect(read.record.levers).toEqual({
-      wholeLanes: false, thoroughness: 'deep', route: false, rare: false, sources: { notes: { labels: false, rare: false, bar: 0.0146 } },
+      wholeLanes: false, thoroughness: 'normal', route: false, rare: false, sources: { notes: { labels: false, rare: false, bar: 0.0146 } },
     });
 
-    const plain = await curate('Recall the plan', defaults, { write: writer().write });
-    expect(plain.record.route).toBeUndefined();
-    expect(plain.record.levers.route).toEqual({ asked: false, applied: false });
+    const plain = await curate('Recall the plan', defaults);
+    expect(plain.record.levers).toEqual(defaults.record.levers);
   });
 
   it('changes only the lever a call flips', async () => {
@@ -295,27 +282,6 @@ describe('levers', () => {
       // The decide feed is unchanged: the same part is asked in both.
       expect(decidedIds(off.calls)).toEqual(decidedIds(on.calls));
       expect(routed.record.levers.route).toBe(true);
-
-      // The curate side: off writes no working section, on applies the
-      // route answers and adds the working guidance.
-      const plain = writer();
-      const applied = writer();
-      const unrouted = await curate('task', routed, { write: plain.write });
-      const routedCurate = await curate('task', routed, { write: applied.write, route: 'jev' });
-      expect(unrouted.record.working).toBe(false);
-      expect(routedCurate.record.working).toBe(true);
-      expect(applied.calls[0]!.instructions).toContain("Working (the curator's");
-      expect(plain.calls[0]!.instructions).not.toContain("Working (the curator's");
-      // The pick record kept 'asked'; the curate record keeps both
-      // route states: the questions asked and the answers applied.
-      expect(unrouted.record.levers).toEqual({
-        everyRanked: true, everyScored: true,
-        route: { asked: true, applied: false }, rare: false, sources: { notes: { labels: false, rare: false, bar: 0 } },
-      });
-      expect(routedCurate.record.levers).toEqual({
-        everyRanked: true, everyScored: true,
-        route: { asked: true, applied: true }, rare: false, sources: { notes: { labels: false, rare: false, bar: 0 } },
-      });
     });
 
     it('rare: off ends at the selection pass, on pulls rare-word parts in', async () => {
@@ -374,8 +340,8 @@ describe('levers', () => {
         { task: 'task', decide: decide() }))
         .rejects.toThrow('`wideLanes` is not an option');
       const picked = await pick([part], { ...uncutPick, task: 'task', decide: decide() });
-      await expect(curate('task', picked, { write: writer().write, batching: 4 } as never))
-        .rejects.toThrow('`batching` is not an option; allowed keys are `write`');
+      await expect(curate('task', picked, { batching: 4 } as never))
+        .rejects.toThrow('`batching` is not an option; allowed keys are `answerTokens`');
     });
 
     it('rejects an unknown key in a kind-keyed map or its settings, before any decide call', async () => {
@@ -438,12 +404,11 @@ describe('levers', () => {
         { task: 'task', limit: 5 },
         { task: 'task', decide: counter.decide });
       expect(read.reads[0]?.status).toBe('read');
-      const written = writer();
-      const result = await curate('task', picked, { write: written.write, working: true });
-      expect(result.record.working).toBe(true);
+      const result = await curate('task', picked, { answerTokens: 500 });
+      expect(result.record.answerTokens).toBe(500);
     });
 
-    it('throws before any source read, decide call or write', async () => {
+    it('throws before any source read or decide call', async () => {
       const counter = stubDecide(() => answered(0.9));
       const reads: string[] = [];
       const source: CandidateSource = {
@@ -462,12 +427,10 @@ describe('levers', () => {
         { task: 'task', decide: counter.decide, bogus: 1 } as never))
         .rejects.toThrow(TypeError);
       const picked = await pick([part], { ...uncutPick, task: 'task', decide: stubDecide(() => answered(0.9)).decide });
-      const written = writer();
-      await expect(curate('task', picked, { write: written.write, bogus: 1 } as never))
+      await expect(curate('task', picked, { decide: counter.decide, bogus: 1 } as never))
         .rejects.toThrow(TypeError);
       expect(reads).toHaveLength(0);
       expect(counter.calls).toHaveLength(0);
-      expect(written.calls).toHaveLength(0);
     });
   });
 });

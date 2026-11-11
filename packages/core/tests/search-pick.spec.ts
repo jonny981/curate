@@ -140,20 +140,14 @@ describe('rank protection', () => {
     expect(result.selected.map((candidate) => candidate.id)).toEqual(['rank-4', 'rank-3', 'rank-11', 'rank-10']);
   });
 
-  it('passes decision probabilities to the curator after rank protection changes the order', async () => {
+  it('passes decision probabilities to curate after rank protection changes the order', async () => {
     const stub = decisions((question) => answer(question.id === 'first' ? 0.600123 : 0.9));
     const picked = await pick([
       item('first', { signals: { score: 9 } }), item('second'),
     ], { ...uncutPick, task: 'Find evidence', decide: stub.decide, rankProtection: true });
-    const curated = await curate('Find evidence', picked, {
-      write: async (prompt) => {
-        expect(prompt.body).toContain('### E1 (0.600123): first');
-        expect(prompt.body).toContain('### E2 (0.9): second');
-        return '[2025-01-01] Evidence (said 2025-01-01; E1, E2)';
-      },
-    });
+    const curated = await curate('Find evidence', picked);
     expect(curated.record.items.map((entry) => [entry.id, entry.weight]))
-      .toEqual([['first', 0.600123], ['second', 0.9]]);
+      .toEqual([['second', 0.9], ['first', 0.600123]]);
   });
 
   it('uses a candidate’s best lane rank instead of its weaker keyword rank', async () => {

@@ -56,7 +56,7 @@ async function threeKinds(settings: Record<string, unknown> = {}) {
   git(['commit', '-qm', 'plant the orchard']);
   const sourcesFile = at('sources.json');
   await writeFile(sourcesFile, JSON.stringify({ sources: [{ type: 'claude-code', path: at('claude') },
-    { type: 'markdown', path: at('notes') }, { type: 'git', path: at('repo') }], compression: 'none', ...settings }));
+    { type: 'markdown', path: at('notes') }, { type: 'git', path: at('repo') }], ...settings }));
   // One fixed clock reading, so two calls date and rank alike. Timers stay real.
   vi.useFakeTimers({ toFake: ['Date'], now: Date.now() });
   vi.stubEnv('HOME', at('home'));
@@ -186,7 +186,7 @@ describe('preparing the sources while the search lines are written', () => {
         JSON.stringify({ type: 'response_item', timestamp: daysAgo(3),
           payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'The orchard needs pruning.' }] } }),
       ].join('\n'));
-      await writeFile(sourcesFile, JSON.stringify({ records: true, compression: 'none', sources: [
+      await writeFile(sourcesFile, JSON.stringify({ records: true, sources: [
         { type: 'codex', path: at('codex'), allowedCwd: at('repo') }, { type: 'markdown', path: at('notes') }] }));
       return { sourcesFile, at };
     }

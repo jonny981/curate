@@ -9,9 +9,9 @@ import type { CandidateSourceKind, PickCascade } from './pick.js';
  *  its option's presence; `rare` takes `true` or its own share and bar.
  *  Labels, the rare-word round's on state and the decision-score bars
  *  belong to each source and are recorded per source in `sources`;
- *  `everyScored` and `rare`, when given, override every source. The decision cache and the curator's short
- *  item ids are not levers: they lose no quality, so they are always
- *  available — the cache whenever the caller passes `cache`. */
+ *  `everyScored` and `rare`, when given, override every source. The decision cache
+ *  is not a lever: it loses no quality, so it is always available
+ *  whenever the caller passes `cache`. */
 export interface LeverStates {
   /** Read the whole of each search lane's ranked list, off by default:
    *  the lanes are cut where each lane's own score curve flattens.
@@ -28,11 +28,11 @@ export interface LeverStates {
    *  top `round(c × N^0.8)` reference parts of the ranking the decide
    *  step reads, where N is every reference part the pick received.
    *  Present only when the call gave it; a pick without it records
-   *  `thoroughness` instead, 'deep' when no level was named. */
+   *  `thoroughness` instead, 'normal' when no level was named. */
   readonly everyRanked?: true | { readonly c: number };
   /** The appetite for look-back the pick ran with: the level whose
    *  `THOROUGHNESS` depth cut the fused order's short list. Present
-   *  whenever `everyRanked` was not given; 'deep' unless the call
+   *  whenever `everyRanked` was not given; 'normal' unless the call
    *  chose a level. */
   readonly thoroughness?: 'quick' | 'normal' | 'deep';
   /** Present only when the call gave it, in place of every source's
@@ -44,9 +44,7 @@ export interface LeverStates {
     readonly bySize?: readonly (readonly [number, number])[];
   };
   /** The route questions: `route: 'jev'` asks the task's four route
-   *  questions once per pick and `curate`'s own `route: 'jev'` applies
-   *  the answers. A pick record holds the asked state; a curate
-   *  record keeps it as `asked` beside the curator's `applied`. */
+   *  questions once per pick. */
   readonly route: boolean;
   /** The rare-word round, with the share and bar it ran with: a second
    *  pass that pulls unselected parts sharing a rare word with a selected
@@ -95,13 +93,4 @@ export interface SourceSettings {
   /** The paths this source excluded for itself, joined onto the read
    *  request's `exclude` for its reads only. */
   readonly exclude?: readonly string[];
-}
-
-/** The lever set a curate record carries: the pick's resolved states
- *  with `route` holding its two stages apart — `asked`, whether the
- *  pick ran the task's route questions, and `applied`, whether this
- *  curate ran `route: 'jev'` and used the answers. Applied needs the
- *  pick's recorded answers, so it is never true with asked false. */
-export interface CurateLeverStates extends Omit<LeverStates, 'route'> {
-  readonly route: { readonly asked: boolean; readonly applied: boolean };
 }
