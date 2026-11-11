@@ -24,7 +24,7 @@
    "orchard.md#1"
   ],
   "memory": [
-   "### Most likely answer\n\n#### chat:claude-code:<root>/transcripts (said 2026-01-02)\n\nWhat grows in the orchard? Fruit trees grow here.\n\n#### chat:codex:<root>/sessions (said 2026-01-02)\n\nCodex orchard. Fruit trees grow here.\n\n\n### git:<root>/repo (said 2026-01-01)\n\nplant the orchard. Fruit trees grow here.\n\n### grove.md (file changed 2026-01-01)\n\n# Grove\nThe orchard grove has trees. Fruit trees grow here.\n\n### chat:claude-code:<root>/transcripts (said 2026-01-02)\n\nOrchard answer. Fruit trees grow here.\n\n### knowledge-base:<root>/notes (said unknown)\n\n# Orchard\nThe orchard has trees. Fruit trees grow here."
+   "### Most likely answer\n\n#### chat:claude-code:<root>/transcripts (said 2026-01-02)\n\nWhat grows in the orchard? Fruit trees grow here.\n\n#### chat:codex:<root>/sessions (said 2026-01-02)\n\nCodex orchard. Fruit trees grow here.\n\n\n### commit 8e303e2 in <root>/repo (said 2026-01-01)\n\nplant the orchard. Fruit trees grow here.\n\n### <root>/wiki/grove.md (file changed 2026-01-01)\n\n# Grove\nThe orchard grove has trees. Fruit trees grow here.\n\n### chat:claude-code:<root>/transcripts (said 2026-01-02)\n\nOrchard answer. Fruit trees grow here.\n\n### <root>/notes/orchard.md (said unknown)\n\n# Orchard\nThe orchard has trees. Fruit trees grow here."
   ],
   "childArgs": [
    [
@@ -370,6 +370,7 @@
    ".sessions[].snapshot",
    ".settings.readAudit",
    ".settings.records",
+   ".settings.searchModel",
    ".settings.sources[].allowedCwd",
    ".settings.sources[].path",
    ".settings.sources[].type",

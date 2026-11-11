@@ -436,24 +436,37 @@ See the [core package](packages/core/README.md) for question sets, tags, local m
 
 ### The `/curate` skill
 
-The [coding-agent skill](skills/curate/SKILL.md) reads sources and prints the laid-out parts for a task.
-It needs Jev credentials and a signed-in Claude subscription, which writes the search lines.
-Build the repository and save your source settings outside it:
+The [coding-agent skill](skills/curate/SKILL.md) reads the history of the project it runs in and prints the laid-out parts for a task; the agent turns them into a cited summary.
+Build the Curate checkout once:
 
 ```sh
 pnpm install --frozen-lockfile
 pnpm build
-node skills/curate/run.mjs --sources sources.json 'Which decisions bear on this task?'
 ```
 
-Save `sources.json` with your own paths:
+A call then needs each of the following, in this order. `node skills/curate/run.mjs --check` lists each one as ready or missing with its fix, makes no model or decision call, and exits 0 only when a call would run. A call that misses any of them stops before any work, names every one, and exits with code 3.
+
+1. **Node.js 22.20 or later.** Curate's packages support Node.js 22.20 and later. Fix: Install it, for example with `nvm install 22 && nvm alias default 22`.
+2. **The embedding engine (`node-llama-cpp`).** It runs the local embedding model that ranks the history by meaning. Fix: Run `pnpm install --frozen-lockfile` in the Curate checkout, which installs the optional `node-llama-cpp` package.
+3. **An embedding model file.** Curate downloads none, and any embedding model in GGUF form works. Stored vectors are kept per model, so a different model embeds the history again. Fix: Put EmbeddingGemma 300M in 8-bit GGUF (about 330 MB) at `~/.cache/curate/models/embeddinggemma-300M-Q8_0.gguf`: `mkdir -p ~/.cache/curate/models && curl -L -o ~/.cache/curate/models/embeddinggemma-300M-Q8_0.gguf https://huggingface.co/ggml-org/embeddinggemma-300M-GGUF/resolve/main/embeddinggemma-300M-Q8_0.gguf`. Or name the model file you chose with `embeddingModel` in `~/.curate/sources.json`.
+4. **The decision key (`TYPESAFE_API_KEY`).** It is a paid Jev key from TypeSafe. Jev decides which parts of the history answer the question, at a few pence a call. Fix: Get a key from TypeSafe (https://typesafe.ai), then set `TYPESAFE_API_KEY` in the environment, or put `TYPESAFE_API_KEY=<key>` in a private file and name that file with `envFile` in `~/.curate/sources.json`. Never put the key in `curate.json`.
+5. **A login for the search lines.** One small call on a subscription writes the search lines: Claude Haiku on the Claude login, or GPT-6 Luna through Codex on the ChatGPT login. `searchModel` picks one. Fix: Run `claude auth login` to use Claude Haiku, or `codex login` to use GPT-6 Luna.
+6. **History to read.** A call searches the git repository it runs in and the sources its settings list. Fix: Run inside a git repository, put a `curate.json` in or above the working folder, or list sources in `~/.curate/sources.json`.
+
+Then ask from a folder inside a project:
+
+```sh
+node skills/curate/run.mjs 'Which decisions bear on this task?'
+```
+
+Save `~/.curate/sources.json` with your own paths, or name another file with `--sources`:
 
 ```json
 {
   "sources": [
     {
       "type": "claude-code",
-      "path": "~/history/chat"
+      "since": "90 days"
     },
     {
       "type": "git",
@@ -471,9 +484,12 @@ Save `sources.json` with your own paths:
 ```
 
 Paths must be absolute or start with `~/`.
-Set `TYPESAFE_API_KEY` in the environment or the `KEY=VALUE` file named by `envFile`.
-Without `--sources`, the script reads `~/.curate/sources.json`.
-Supply a local embedding GGUF through `embeddingModel`. The script requires Metal on macOS and downloads no model.
+Without `--sources`, the script reads `~/.curate/sources.json`, and runs without it.
+Inside a git repository, the script reads the project's own commits, Markdown, Claude Code transcripts and Codex sessions with no settings entry; a repository at the home folder or the filesystem root does not count. A listed source with a path is read there only when it sets `"always": true` or its folder overlaps the project; standard error names the others. Outside a repository, it reads every listed source with a path.
+A `claude-code` or `codex` entry with no `path`, as in the example, reads only the transcripts of the project the call runs in, with that entry's settings, in place of the ones the script reads on its own; outside a repository it reads nothing and says so on standard error.
+Optional `related`, such as `[["~/work/obversa", "~/work/cmack"]]`, lists groups of related projects: a call in one also reads the others' Claude Code transcripts and Codex sessions, never their commits or Markdown.
+The nearest `curate.json` above the working folder adds sources for every call under it, such as a knowledge base beside a code repository; it holds no secret, and its paths may be relative to it.
+`--prepare` brings the stored index and embeddings of those sources up to date and exits, with no model call; it needs no decision key or login.
 Optional `answerTokens` and `sentenceCutoff` set the layout's budget and sentence cutoff, as in [Curate](#curate).
 Optional `thoroughness` sets how many ranked history parts the decision model checks: `quick` checks the top 672, `normal` 3,674, the default, and `deep` 12,896.
 Measured on a replayed ~116,000-part history, each level cost about 1, 5 and 17 pence of questions on the largest of eight task sets; `quick` kept 24 of the 56 known answer parts, `normal` 49 and `deep` all 56.

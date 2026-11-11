@@ -30,6 +30,11 @@ vi.mock('@curatejs/markdown', async (importOriginal) => {
     } };
   } };
 });
+// The mocked embedding model stands in for a model file, so a .gguf path counts as present.
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return { ...actual, existsSync: vi.fn((path: string) => path.endsWith('.gguf') || actual.existsSync(path)) };
+});
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>();
   return { ...actual, spawn: vi.fn(actual.spawn) };
@@ -158,6 +163,14 @@ function standInClaude(replies: readonly Reply[]) {
     child.stdout = new EventEmitter();
     child.stderr = new EventEmitter();
     child.kill = () => {};
+    // The setup's login check is answered and not kept as a call.
+    if (args[0] === 'auth') {
+      child.stdin = { on: () => {}, end: () => queueMicrotask(() => {
+        child.stdout.emit('data', JSON.stringify({ loggedIn: true }));
+        child.emit('close', 0);
+      }) };
+      return child;
+    }
     // Calls run one after another, so the prompts seen so far number this call.
     const reply = replies[prompts.length] ?? 'ok';
     child.stdin = { on: () => {}, end: (text: string) => {
@@ -181,7 +194,7 @@ function standInClaude(replies: readonly Reply[]) {
 }
 
 async function call(fixture: Fixture, settings: Settings, replies: readonly Reply[] = ['ok']) {
-  await writeFile(fixture.sourcesFile, JSON.stringify({ sources: fixture.sources, ...settings }));
+  await writeFile(fixture.sourcesFile, JSON.stringify({ sources: fixture.sources, searchModel: 'haiku', ...settings }));
   vi.stubEnv('HOME', fixture.at('home'));
   vi.stubEnv('TMPDIR', fixture.at('tmp'));
   vi.stubEnv('XDG_CACHE_HOME', fixture.at('cache'));
@@ -367,7 +380,7 @@ describe('a records-off call', () => {
     const fixture = await makeFixture();
     const done = await call(fixture, {});
     const memory = done.printed.join('\n');
-    expect(memory).toContain(`### knowledge-base:${fixture.at('notes')} (said unknown)\n\n# Orchard\nThe orchard has trees.`);
+    expect(memory).toContain(`### ${fixture.at('notes', 'orchard.md')} (said unknown)\n\n# Orchard\nThe orchard has trees.`);
     expect(memory).not.toMatch(/UNDATED|collect/);
   });
 
@@ -411,13 +424,22 @@ describe('the records setting', () => {
 });
 
 describe('a stopped command', () => {
+  // A stand-in Claude CLI answers the setup's login check at once.
+  const LOGGED_IN = 'if [ "$1" = auth ]; then echo \'{"loggedIn":true}\'; exit 0; fi\n';
+  // A real command checks for a model file before any work; this one only
+  // has to exist, since each test stops the command before the model is used.
+  const modelFile = async (fixture: Fixture) => {
+    await mkdir(fixture.at('home', '.cache', 'curate', 'models'), { recursive: true });
+    await writeFile(fixture.at('home', '.cache', 'curate', 'models', 'embeddinggemma-300M-Q8_0.gguf'), 'stand-in');
+  };
   it.each([['SIGTERM', 143], ['SIGINT', 130]] as const)('removes its temporary folder on %s', async (signal, code) => {
     const fixture = await makeFixture();
     await mkdir(fixture.at('bin'));
-    await writeFile(fixture.sourcesFile, JSON.stringify({ sources: fixture.sources }));
+    await modelFile(fixture);
+    await writeFile(fixture.sourcesFile, JSON.stringify({ sources: fixture.sources, searchModel: 'haiku' }));
     const marker = fixture.at('started');
     // Stands in for the Claude CLI, leaves a file in its working folder and ends by itself; only the command is signalled.
-    await writeFile(fixture.at('bin', 'claude'), `#!/bin/sh\n: > "$PWD/partial"\n: > "${marker}"\nsleep 5\nexit 1\n`, { mode: 0o755 });
+    await writeFile(fixture.at('bin', 'claude'), `#!/bin/sh\n${LOGGED_IN}: > "$PWD/partial"\n: > "${marker}"\nsleep 5\nexit 1\n`, { mode: 0o755 });
     const script = join(__dirname, '../skills/curate/run.mjs');
     const child = realSpawn(process.execPath, [script, '--sources', fixture.sourcesFile, 'orchard'], {
       cwd: fixture.at('cwd'), stdio: 'ignore',
@@ -438,10 +460,11 @@ describe('a stopped command', () => {
   it('stops the search-lines call and the git it started early', async () => {
     const fixture = await makeFixture();
     await mkdir(fixture.at('bin'));
-    await writeFile(fixture.sourcesFile, JSON.stringify({ sources: fixture.sources }));
+    await modelFile(fixture);
+    await writeFile(fixture.sourcesFile, JSON.stringify({ sources: fixture.sources, searchModel: 'haiku' }));
     // Each stand-in records its process id and stays alive far longer than the test.
     const standIn = (name: string) => writeFile(fixture.at('bin', name),
-      `#!/bin/sh\necho $$ >> "${fixture.at(`${name}.pids`)}"\nexec sleep 30\n`, { mode: 0o755 });
+      `#!/bin/sh\n${name === 'claude' ? LOGGED_IN : ''}echo $$ >> "${fixture.at(`${name}.pids`)}"\nexec sleep 30\n`, { mode: 0o755 });
     await standIn('claude');
     await standIn('git');
     const pids = async () => (await Promise.all(['claude', 'git'].map(async (name) =>

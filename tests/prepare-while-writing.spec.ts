@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createLocalEmbedder } from '@curatejs/core/local-embeddings';
 
@@ -17,10 +17,20 @@ const embedder = async () => ({
   dispose,
 });
 vi.mock('@curatejs/core/local-embeddings', () => ({ createLocalEmbedder: vi.fn() }));
+// The mocked embedding model stands in for a model file, so a .gguf path counts as present.
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return { ...actual, existsSync: vi.fn((path: string) => path.endsWith('.gguf') || actual.existsSync(path)) };
+});
 vi.mocked(createLocalEmbedder).mockImplementation(embedder as never);
 
 const directories: string[] = [];
+// A call reads the project its working folder sits in, and this file sits
+// in one, so each test starts outside any repository.
+const startingFolder = process.cwd();
+beforeEach(() => process.chdir(tmpdir()));
 afterEach(async () => {
+  process.chdir(startingFolder);
   vi.clearAllMocks();
   // A queued one-off failure must not reach the next test.
   vi.mocked(createLocalEmbedder).mockReset().mockImplementation(embedder as never);
