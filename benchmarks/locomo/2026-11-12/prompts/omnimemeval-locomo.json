@@ -1,0 +1,39 @@
+{
+ "DUAL_SPEAKER_TEMPLATE": "Memories for user {speaker_1}:\n\n    {speaker_1_memories}\n\n    Memories for user {speaker_2}:\n\n    {speaker_2_memories}\n",
+ "LOCOMO_ANSWER_PROMPT": "\n    You are a knowledgeable and helpful AI assistant.\n\n   # CONTEXT:\n   You have access to memories from two speakers in a conversation. These memories contain\n   timestamped information that may be relevant to answering the question.\n\n   # INSTRUCTIONS:\n   1. Carefully analyze all provided memories. Synthesize information across different entries if needed to form a complete answer.\n   2. Pay close attention to the timestamps to determine the answer. If memories contain contradictory information, the **most recent memory** is the source of truth.\n   3. If the question asks about a specific event or fact, look for direct evidence in the memories.\n   4. Your answer must be grounded in the memories. However, you may use general world knowledge to interpret or complete information found within a memory (e.g., identifying a landmark mentioned by description).\n   5. If the question involves time references (like \"last year\", \"two months ago\", etc.), you **must** calculate the actual date based on the memory's timestamp. For example, if a memory from 4 May 2022 mentions \"went to India last year,\" then the trip occurred in 2021.\n   6. Always convert relative time references to specific dates, months, or years in your final answer.\n   7. Do not confuse character names mentioned in memories with the actual users who created them.\n   8. Keep the answer concise and direct, with no extra description. For list, commonality, or multi-item questions, include all distinct supported items even if this exceeds 5-6 words.\n\n   # APPROACH (Think step by step):\n   1. First, examine all memories that contain information related to the question.\n   2. Synthesize findings from multiple memories if a single entry is insufficient.\n   3. Examine timestamps and content carefully, looking for explicit dates, times, locations, or events.\n   4. If the answer requires calculation (e.g., converting relative time references), perform the calculation.\n   5. Formulate a precise, concise answer based on the evidence from the memories (and allowed world knowledge).\n   6. Double-check that your answer directly addresses the question asked and adheres to all instructions.\n   7. Ensure your final answer is specific and avoids vague time references.\n\n   {context}\n\n   Question: {question}\n\n   Answer:\n   ",
+ "JUDGE_SYSTEM_PROMPT": "You are an expert grader that determines if answers to questions match a gold standard answer.",
+ "JUDGE_PROMPT": "\n    Your task is to label an answer to a question as 'CORRECT' or 'WRONG'. You will be given the following data:\n        (1) a question (posed by one user to another user),\n        (2) a 'gold' (ground truth) answer,\n        (3) a generated answer\n    which you will score as CORRECT/WRONG.\n\n    The point of the question is to ask about something one user should know about the other user based on their prior conversations.\n    The gold answer will usually be a concise and short answer that includes the referenced topic, for example:\n    Question: Do you remember what I got the last time I went to Hawaii?\n    Gold answer: A shell necklace\n    The generated answer might be much longer, but you should be generous with your grading - as long as it touches on the same topic as the gold answer, it should be counted as CORRECT.\n\n    For time related questions, the gold answer will be a specific date, month, year, etc. The generated answer might be much longer or use relative time references (like \"last Tuesday\" or \"next month\"), but you should be generous with your grading - as long as it refers to the same date or time period as the gold answer, it should be counted as CORRECT. Even if the format differs (e.g., \"May 7th\" vs \"7 May\"), consider it CORRECT if it's the same date.\n\n    Now it's time for the real question:\n    Question: {question}\n    Gold answer: {golden_answer}\n    Generated answer: {response}\n\n    First, provide a short (one sentence) explanation of your reasoning, then finish with CORRECT or WRONG.\n    Do NOT include both CORRECT and WRONG in your response, or it will break the evaluation script.\n\n    Just return the label CORRECT or WRONG in a json format with the key as \"label\".\n    ",
+ "source": {
+  "repository": "MemTensor/OmniMemEval",
+  "commit": "7c79d46e31dd85f3da2509b430bba9406656dd28",
+  "license": "Apache-2.0",
+  "file": "https://github.com/MemTensor/OmniMemEval/blob/7c79d46e31dd85f3da2509b430bba9406656dd28/scripts/utils/prompts.py",
+  "raw_url": "https://raw.githubusercontent.com/MemTensor/OmniMemEval/7c79d46e31dd85f3da2509b430bba9406656dd28/scripts/utils/prompts.py",
+  "sha256": "0e0eadc6a476a89f8d5f8b60e37a0139585b998e228152e66a95109bedb71bbe",
+  "lines": {
+   "DUAL_SPEAKER_TEMPLATE": [
+    14,
+    21
+   ],
+   "LOCOMO_ANSWER_PROMPT": [
+    59,
+    90
+   ],
+   "JUDGE_SYSTEM_PROMPT": [
+    211,
+    214
+   ],
+   "JUDGE_PROMPT": [
+    216,
+    240
+   ]
+  },
+  "used_by": {
+   "answer": "https://github.com/MemTensor/OmniMemEval/blob/7c79d46e31dd85f3da2509b430bba9406656dd28/scripts/locomo/locomo_responses.py (locomo_response: one user message, temperature 0, no output cap; _dedup_shared_context)",
+   "context": "https://github.com/MemTensor/OmniMemEval/blob/7c79d46e31dd85f3da2509b430bba9406656dd28/scripts/locomo/locomo_search.py (shared_conv_search: DUAL_SPEAKER_TEMPLATE with the same text for both speakers)",
+   "judge": "https://github.com/MemTensor/OmniMemEval/blob/7c79d46e31dd85f3da2509b430bba9406656dd28/scripts/locomo/locomo_eval.py (locomo_grader: system then user, temperature 0; extract_label_json in scripts/utils/nlp_metrics.py)"
+  },
+  "models": "gpt-4.1-mini-2025-04-14 answers, gpt-4o-mini-2024-07-18 grades (docs/user_memory/results.md)",
+  "note": "Prompt text preserved without changes, read from the Python source with ast.literal_eval. JSON encoding and this source block are added."
+ }
+}

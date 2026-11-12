@@ -1,0 +1,82 @@
+{
+  "curate": {
+    "answer_model": "gpt-6.1-sol",
+    "questions": 500,
+    "marked_by_sol": {
+      "marker": "gpt-6.1-sol with LongMemEval's marking prompts",
+      "correct": 471,
+      "accuracy": 94.2,
+      "six_type_average": 94.56,
+      "by_type": {
+        "knowledge-update": "77/78",
+        "multi-session": "118/133",
+        "single-session-assistant": "56/56",
+        "single-session-preference": "26/30",
+        "single-session-user": "70/70",
+        "temporal-reasoning": "124/133"
+      },
+      "abstention": "29/30"
+    },
+    "marked_by_official_grader": {
+      "marker": "LongMemEval's evaluate_qa.py, gpt-4o-2024-08-06",
+      "correct": 464,
+      "accuracy": 92.8,
+      "six_type_average": 91.96,
+      "by_type": {
+        "knowledge-update": "77/78",
+        "multi-session": "117/133",
+        "single-session-assistant": "56/56",
+        "single-session-preference": "22/30",
+        "single-session-user": "70/70",
+        "temporal-reasoning": "122/133"
+      },
+      "abstention": "29/30"
+    },
+    "answer_sets_marked_by_sol": [
+      469,
+      466,
+      471,
+      470,
+      470,
+      467
+    ],
+    "published_answer_set": 3,
+    "context_tokens_mean": 1576.6,
+    "context_tokens_median": 1691.5,
+    "context_tokens_p90": 1793,
+    "context_tokens_max": 1967,
+    "history_tokens_mean": 102580.0,
+    "times_less_than_history": 65.1
+  },
+  "mem0_platform": {
+    "answer_model": "gpt-5",
+    "questions": 500,
+    "marked_by_sol": {
+      "marker": "gpt-6.1-sol with LongMemEval's marking prompts",
+      "correct": 463,
+      "accuracy": 92.6,
+      "by_type": {
+        "knowledge-update": "75/78",
+        "multi-session": "114/133",
+        "single-session-assistant": "56/56",
+        "single-session-preference": "26/30",
+        "single-session-user": "68/70",
+        "temporal-reasoning": "124/133"
+      }
+    },
+    "marked_by_official_grader": {
+      "marker": "LongMemEval's evaluate_qa.py, gpt-4o-2024-08-06",
+      "correct": 455,
+      "accuracy": 91.0,
+      "by_type": {
+        "knowledge-update": "76/78",
+        "multi-session": "110/133",
+        "single-session-assistant": "55/56",
+        "single-session-preference": "22/30",
+        "single-session-user": "68/70",
+        "temporal-reasoning": "124/133"
+      }
+    },
+    "context_tokens_mean_reported_by_mem0": 6787
+  }
+}

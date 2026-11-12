@@ -15,7 +15,7 @@ The same markup answers, marked twice by the same grader, scored 469 and 467.
 
 These results are not an untouched held-out evaluation. The markup settings and the answering prompt were developed on questions from both halves of the 22 October split, and their results were examined across all 500.
 
-`scores.json` holds every row above by question type, with the six-type average, the memory text's mean and median o200k tokens, the history's mean, each ratio and the [adjusted score](../../README.md#adjusted-score).
+`scores.json` holds every row above by question type, with the six-type average, the memory text's mean and median o200k tokens, the history's mean, each ratio and the [adjusted score](https://github.com/jonny981/curate/blob/cb7edc3777729f322ee99d9bef87e550226e6f79/benchmarks/README.md#adjusted-score).
 
 ## Context sizes
 

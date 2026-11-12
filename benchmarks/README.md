@@ -1,160 +1,93 @@
 # Benchmarks
 
-## LongMemEval on the official grader
+On LongMemEval, Curate's answering model reads 1,577 tokens a question on average, against Mem0's 6,787, and a median of 1,692, against Zep's 4,408: fewer than every other system in the LongMemEval table that gives a figure.
+On LoCoMo, the 6,000-token setting's median is 4,921 tokens, against Zep's median of 5,760, and the 2,000-token setting sends 1,757 tokens a question, prompt included, where OmniMemEval's table runs from 1,198 to 32,532.
+Curate keeps local index files and needs no database, no server to run and no model that writes or rewrites memory in advance; each question is one Curate call, in which a paid decision model rates the history's parts.
+
+## LongMemEval
 
 LongMemEval tests whether a model can answer questions from a long chat history.
-These scores come from LongMemEval's own grader, `evaluate_qa.py` (commit `9e0b455`), with its dated GPT-4o judge, `gpt-4o-2024-08-06`.
-gpt-6.1-sol answered all 500 questions in three Curate settings:
+Curate answered all 500 questions of LongMemEval S, and two graders marked every answer.
+The same two graders marked Mem0's published answers. Mastra's and Zep's figures are as each published them:
 
-| Curate setting | Score | Context tokens a question (mean) | Less than the raw history |
-| --- | --- | --- | --- |
-| **Markup** | **93.8** (469/500) | **844** | **121x** |
-| Cited-only markup | 93.0 (465/500) | 854 | 120x |
-| Log | 92.6 (463/500) | 449 | 229x |
+| System | Answering model | Marked by gpt-6.1-sol | Marked by LongMemEval's grader | As published, with the vendor's grader | Answering context (tokens) |
+| --- | --- | --- | --- | --- | --- |
+| **Curate** | **gpt-6.1-sol** | **94.2** (471/500) | **92.8** (464/500) | | **1,577 mean, 1,692 median** |
+| [Mem0 platform](https://github.com/mem0ai/memory-benchmarks/blob/4b61c5d31b9c668a12b4f5e78064248a02c82d2b/results/platform/longmemeval_results.json) | GPT-5 | 92.6 (463/500) | 91.0 (455/500) | | [6,787 mean](https://github.com/mem0ai/mem0/blob/main/docs/core-concepts/memory-evaluation.mdx) |
+| [Mastra observational memory](https://mastra.ai/research/observational-memory)\* | gpt-5-mini | | | 94.87 (GPT-4o) | |
+| [Zep](https://www.getzep.com/research/memory-benchmarks/)\* | gpt-5.4 | | | 90.2 (gpt-5.4) | 4,408 median |
 
-- **The log and cited-only markup ran on package builds with a `compression` option.** `'high'` wrote the log and `'low'` the cited-only markup. The packages lay out the kept parts in their own words, and no model writes the memory.
-- **The markup setting ran outside the packages.** Its published results, including 93.8, came from those runs.
-- **The answers, memory texts and grader output** are in [`longmemeval/2026-11-04/`](longmemeval/2026-11-04/README.md).
+\* Score as published; these answers were not marked again here. Mem0's answers are published, and both of its figures above were marked here from that file.
 
-The same grader also scored Curate's GPT-5 and GPT-5-mini runs, which are [compared with published systems](#against-published-systems) below:
+The answers, the memory texts and the verdicts of both graders are in [`longmemeval/2026-11-11/`](longmemeval/2026-11-11/README.md).
+The memory texts and questions in the LongMemEval folders are excerpts of the LongMemEval dataset, used under its MIT licence ([`LICENSE-LongMemEval.txt`](longmemeval/LICENSE-LongMemEval.txt)).
 
-| Answering model | Overall | Average of the six types | Abstention questions |
-| --- | --- | --- | --- |
-| **GPT-5** | **91.8** (459/500) | 92.8 | 26/30 |
-| **GPT-5-mini** | **90.8** (454/500) | 89.3 | 23/30 |
+### How the LongMemEval result was run
 
-These answers are in LongMemEval's own format (`question_id`, `hypothesis`), with the grader's output for every question.
-They're in [`official-scorer/`](longmemeval/2026-10-22/official-scorer/) for the GPT-5 run and [`official-scorer/`](longmemeval/2026-10-14-gpt-5-mini/official-scorer/) for the GPT-5-mini run.
-Anyone with the dataset and an OpenAI key can score them again.
-How these runs were set up: [How each result was run](#how-each-result-was-run).
-
-## Against published systems
-
-Curate's packages answered all 500 LongMemEval S questions in two runs, one with GPT-5 and one with GPT-5-mini.
-In each run the curator wrote one log per question, and the answering model read only that log.
-The answering model does the work, so you don't want to flood its context with noise.
-
-| System | What you run | Answering model | Score | Answering context (tokens) | Answering input cost | Full pipeline cost |
-| --- | --- | --- | --- | --- | --- | --- |
-| **Curate** | A TypeScript library: local SQLite indexes, no database server | GPT-5-mini | 91.6 (458/500) | 485 | $0.0001 | **$0.12** (est.) |
-| **Curate** | A TypeScript library: local SQLite indexes, no database server | GPT-5 | 93.4 (467/500) | **449** | **$0.0006** | $0.16 (est.) |
-| [Mem0 platform](https://github.com/mem0ai/memory-benchmarks/blob/4b61c5d31b9c668a12b4f5e78064248a02c82d2b/results/platform/longmemeval_results.json) | Mem0's hosted platform | GPT-5 | 93.4 | 6,787 mean | $0.0085 | not published |
-| [Mastra observational memory](https://mastra.ai/research/observational-memory) | A TypeScript framework you run, with a storage provider | GPT-5-mini | 93.6 | ~30,000 mean | $0.0075 | ~$0.045 (est.) |
-| [Zep](https://getzep.com/research) | Zep's hosted service is its recommended setup | GPT-5.4 | 90.2 | 4,408 median | not priced | not published |
-| No memory: GPT-5 reads the whole history | Nothing | GPT-5 | not run | ~122,000 | $0.153 | $0.153 |
-
-Costs are per question, at list prices.
-
-- **On GPT-5, Curate matches Mem0's score with 15 times less context.** Both were marked by GPT-5.
-- **On GPT-5-mini, Mastra's score is higher.** It's 93.6 against Curate's 91.6 per question, and 94.87 against 90.22 as an equal average of the six question types. Mastra's answering model reads about 62 times more context.
-- **Zep scores 90.2 on GPT-5.4** and reads about 10 times more context than Curate on GPT-5.
-- **On LongMemEval's official grader, Curate is ahead of Mem0's published answers.** Marked in the same session, Curate's markup answers scored 467 (93.4) and Mem0's scored 455 (91.0). The same Curate answers scored 469 when marked the day before. In a separate marking, Mem0's answers score 90.6 (453/500). Mem0's answers come from GPT-5 and Curate's from gpt-6.1-sol.
-- **On the official grader runs, Curate's context is about 6 to 35 times smaller** than what other systems report. That's against Zep's 4,408 median (Curate's median is 685), Mem0's 6,787 mean and Mastra's mean of about 30,000.
-
-**Notes on the table**
-
-- **Answering input cost** is the answering context times the answering model's input price. It prices every system the same way.
-- **Curate's full pipeline costs are estimates from the runs' call records:**
-  - Jev, the decision model, costs $0.0097 a question.
-  - Curation ran on a ChatGPT subscription. It's priced at gpt-6.1-sol's list price of $2.00 per million input tokens and $10 per million output tokens (third-party price list, 11 October 2026).
-  - The GPT-5 row's estimate is the GPT-5-mini row's $0.12, plus the GPT-5 answer ($0.014 a question) and chat labels (about $0.025 a question).
-- **Mastra's full pipeline cost is an estimate.** Its observer reads each history once with gemini-2.5-flash, at $0.30 per million input tokens (about $0.037), plus the answer. Observer output is not counted.
-- **What you run:** Mem0's result file comes from Mem0 Platform. Zep's research page does not say which setup produced 90.2. Curate needs no server either. It calls the decision model, curator and answering model you choose.
-- **Mem0 and Zep do not publish** their ingestion models or calls.
-- **Marking models differ:** GPT-5 for Curate's GPT-5 row and for Mem0, GPT-4o for Curate's GPT-5-mini row and for Mastra, GPT-5.4 for Zep.
-- **Each context multiple compares with Curate on the same answering model:** 449 tokens with GPT-5, 485 with GPT-5-mini. Zep's GPT-5.4 compares with Curate on GPT-5.
-- **Token counting differs** too, including Zep's median in place of a mean. The rows compare roughly. They are not one controlled run.
-- **Prices:** OpenAI's list prices, checked 13 October 2026.
-
-## Adjusted score
-
-The adjusted score is a custom measure, not LongMemEval's official score.
-It rewards an answering model that reads less context:
-
-```text
-adjusted score = answer score − 5 × log10(context tokens ÷ 5,698)
-```
-
-The 5,698-token reference is the mean context of only the sessions containing the answer, over all 500 questions, counted with GPT-4o's token counter.
-This is LongMemEval's oracle setting: perfect selection of sessions, rather than the shortest possible answer.
-Halving the context adds about 1.5 points, and doubling it removes about 1.5.
-It counts only the answering model's context, not decisions, curation or ingestion work.
-
-Curate's GPT-5 run has an adjusted score of 98.9, and its GPT-5-mini run 96.9.
-That's the highest of the systems above, because Curate's answering model reads the least context.
+- **Memory text:** for each question, Curate lays out the history parts that the decision model kept, in their own words, within 2,000 estimated tokens. Then it keeps the sentences that the decision model rates 0.1 or more. These are Curate's defaults. No model writes the memory text. [How the memory text is built](longmemeval/2026-11-11/README.md#how-the-memory-text-is-built).
+- **Answering model:** gpt-6.1-sol, at medium reasoning effort, with Mem0's answering prompt from its benchmark and two additions: rules for reading the memories, and a paragraph on near matches. [The full prompt](longmemeval/2026-11-11/README.md#the-prompt).
+- **Marked by gpt-6.1-sol:** LongMemEval's own marking prompts, with gpt-6.1-sol as the judge.
+- **Marked by LongMemEval's grader:** `evaluate_qa.py` (commit `9e0b455`), unchanged, with its dated GPT-4o judge, `gpt-4o-2024-08-06`.
+- **Six answer sets over one set of memory texts:** Curate built the 500 memory texts once. gpt-6.1-sol wrote answers from them six times, and gpt-6.1-sol marked each set: 469, 466, 471, 470, 470 and 467 right. These are six repeats of the answering and the marking, not six runs from start to end. The published answers are the set with the highest score, 471. LongMemEval's grader marked that same set once: 464.
+- **Mem0's answers:** the answers in Mem0's published results, written by GPT-5, marked by the same two graders. Mem0 reports 93.4 for them, marked by GPT-5 in its own run.
+- **Mastra's and Zep's figures:** Mastra's 94.87 is what [its page](https://mastra.ai/research/observational-memory) calls overall accuracy, which the page defines as the unweighted average across the six question types, on LongMemEval S's 500 questions; gpt-5-mini answers, and GPT-4o judges with LongMemEval's question-specific prompts. [Zep's](https://www.getzep.com/research/memory-benchmarks/) 90.2 is 451 of 500, with gpt-5.4 answering and judging and a median context of 4,408 tokens a question.
+- **Context:** the memory text averages 1,577 o200k tokens a question. Each history averages 102,580 o200k tokens over about 48 sessions, so the answering model reads about 65 times less. 6,787 is the mean that [Mem0 reports](https://github.com/mem0ai/mem0/blob/main/docs/core-concepts/memory-evaluation.mdx) for its answering context.
 
 ## LoCoMo
 
-On 159 LoCoMo questions, Curate scores 93.7 (149/159) with GPT-5.
-Mem0's own published answers score 94.3 (150/159) on the same questions, and 91.6 across all 1,540.
-The answers and verdicts are in the [proof files](locomo/2026-10-22/README.md).
+LoCoMo tests whether a model can answer questions about long conversations between two people.
+Curate answered all 1,540 scored questions (categories 1 to 4) in two settings of the same layout dials, from one set of decisions:
 
-## DolphinBench: a 30-test slice\*
+| Curate setting | Answering model | Marked by gpt-6.1-sol, Mem0's prompt | Marked by gpt-4o-mini, OmniMemEval's prompt | Memory text (tokens, mean) |
+| --- | --- | --- | --- | --- |
+| **6,000 tokens, every sentence** | **gpt-6.1-sol** | **96.2** (1,481/1,540) | **94.7** (1,459/1,540) | **3,839** |
+| **2,000 tokens, sentence cutoff 0.1** | **gpt-4.1-mini** | | **91.4** (1,408/1,540) | **1,248** |
 
-[DolphinBench](https://dolphinbench.ai/) is Mem0's agent-memory benchmark.
-An agent gets a request and real app tools (email, calendar, Slack, CRM and more).
-The benchmark grades what the agent does, using facts from up to five years of one person's messages.
-Curate ran 30 of its 600 tests: the curator wrote a dated log, and the agent read only that log.
+The answers, every verdict, a list of the 6,000-token setting's misses, and a script that rebuilds each memory text from your own copy of the dataset are in [`locomo/2026-11-12/`](locomo/2026-11-12/README.md).
 
-| System | Agent | Passed, of these 30 | List cost a test |
-| --- | --- | --- | --- |
-| **Curate** | GPT-5.6 Luna, high, through the Codex CLI | **22** | $0.24 (est.) |
-| Honcho | GPT-5.6 Luna, high, in Hermes | 21 | $0.24 |
-| Mem0 | GPT-5.6 Luna, high, in Hermes | 20 | $0.16 |
-| Hindsight | GPT-5.6 Luna, high, in Hermes | 19 | $0.14 |
-| Hermes built-in memory | GPT-5.6 Luna, high, in Hermes | 17 | $0.10 |
-| No memory | GPT-5.6 Luna, high, through the Codex CLI | 0 | |
-| The test's own fact messages, given directly | GPT-5.6 Luna, high, through the Codex CLI | 29 | |
+Published results with frontier answering models, each marked by its own grader:
 
-The published systems' results are their own per-test files in the DolphinBench repository.
-Their costs per test are each published run's total cost divided by 600.
-Every Curate log, app call and verdict is in [the proof files](dolphinbench/2026-10-22/README.md).
-How this run was set up: [How each result was run](#how-each-result-was-run).
+| System | Answering model | Marker | Score | Tokens a question |
+| --- | --- | --- | --- | --- |
+| **Curate, 6,000 tokens** | **gpt-6.1-sol** | **gpt-6.1-sol** | **96.2** | **3,839 mean, 4,921 median** |
+| [Zep](https://www.getzep.com/research/memory-benchmarks/)\* | gpt-5.4 | gpt-5.4 | 94.7 | 5,760 median |
+| [Mem0 platform](https://github.com/mem0ai/memory-benchmarks/blob/edcd6f1d42400837b1fcb6997716f1769dc51a37/results/platform/locomo_results.json) | GPT-5 | GPT-5 | 91.6 | |
+| [Hindsight](https://arxiv.org/abs/2512.12818)\* | Gemini 3 Pro | GPT-OSS-120B | 89.61 | |
 
-\* **Small print**
+\* Score as published; these answers were not marked again here. Mem0's figure is Mem0's own marking of the answers in its published results file.
 
-- **Unofficial.** This is not a DolphinBench submission. The model-judged checks ran on gpt-5.6-sol through the Codex CLI, not the benchmark's own judge setup. On Mem0's published tool calls for these 30 tests, this judge agreed with Mem0's published verdicts on all 30.
-- **A slice.** The 30 tests are every 20th test for each of the three people. One test is 3.3 points, and published systems change order on slices this small.
-- **A different agent harness.** The agent ran in the Codex CLI with only the test's app tools, not in Hermes. It used the same model and reasoning setting as the published runs.
-- **One run.** Each test ran once.
-- **Cost.** The curator read about 93,000 tokens a test, priced at gpt-6.1-sol's list price. It ran on a ChatGPT plan. Jev's decisions were replayed from a saved cache of an earlier run on these tests, and deciding fresh would add about $0.009 a test. Mem0's published cost includes its one-off memory building.
+[OmniMemEval's table](https://github.com/MemTensor/OmniMemEval/blob/7c79d46e31dd85f3da2509b430bba9406656dd28/docs/user_memory/results.md#locomo)\*, with OmniMemEval's prompts. Its context tokens count everything sent to the answering model, prompt included, and Curate's row is counted the same way:
 
-## Where the cost goes
+| System | Answering model | Marker | Score | Context tokens |
+| --- | --- | --- | --- | --- |
+| **Curate, 2,000 tokens** | **gpt-4.1-mini** | **gpt-4o-mini** | **91.4** | **1,757** |
+| MemOS | gpt-4.1-mini | gpt-4o-mini | 88.83 | 5,400 |
+| Cognee | gpt-4.1-mini | gpt-4o-mini | 83.48 | 32,532 |
+| EverOS | gpt-4.1-mini | gpt-4o-mini | 82.75 | 8,559 |
+| Hindsight | gpt-4.1-mini | gpt-4o-mini | 81.99 | 24,683 |
+| LCM-X | gpt-4.1-mini | gpt-4o-mini | 78.83 | 1,659 |
+| Mem0 | gpt-4.1-mini | gpt-4o-mini | 77.68 | 17,395 |
+| Letta | gpt-4.1-mini | gpt-4o-mini | 77.12 | 14,188 |
+| MemMachine | gpt-4.1-mini | gpt-4o-mini | 73.90 | 2,577 |
+| mem9 | gpt-4.1-mini | gpt-4o-mini | 73.64 | 1,597 |
+| Supermemory | gpt-4.1-mini | gpt-4o-mini | 73.53 | 15,238 |
+| MemoryLake | gpt-4.1-mini | gpt-4o-mini | 72.49 | 5,202 |
+| Viking | gpt-4.1-mini | gpt-4o-mini | 69.33 | 5,964 |
+| Zep | gpt-4.1-mini | gpt-4o-mini | 63.83 | 1,862 |
+| Memori | gpt-4.1-mini | gpt-4o-mini | 41.34 | 8,139 |
+| Backboard.io | gpt-4.1-mini | gpt-4o-mini | 22.40 | 1,198 |
 
-A small answering context doesn't show the full cost. Preparing the memory costs money too.
-Mem0 and Zep read the whole history once, as messages arrive, and Mastra's observer reads it once.
-For LongMemEval, Jev, the decision model, scored the whole history. Its list price is $0.042 per million input tokens, with no charge for output.
-The curator reads only the parts Jev scores 0.0146 or higher.
-That keeps the curator's input to about 51,000 tokens a question in the LongMemEval GPT-5-mini run and about 34,000 in the GPT-5 run.
-The answering model is usually the most capable and costly one, and it reads only the curator's log.
+\* Score as published; these answers were not marked again here.
 
-## How each result was run
+### How the LoCoMo result was run
 
-**LongMemEval, GPT-5.** The benchmark harness gave the decision model every part of each history. Only parts it scored 0.0146 or more reached the curator: about 70 of a history's 851 parts. By default, the decision model also sorts each part into label kinds, such as preferences, habits and events. That did not change which parts the curator received. Every part was already going to the decide step, and the curator's input was the same as without them on all 500 questions ([how this was checked](longmemeval/2026-10-22/README.md#labels-changed-nothing)). Answers, verdicts and build details are in [its proof files](longmemeval/2026-10-22/README.md).
+- **One set of decisions, two settings:** one Curate call per question searched the conversation and had the decision model score its parts. Both settings lay out the same kept parts. The 6,000-token setting keeps every sentence within 6,000 estimated tokens. The 2,000-token setting is Curate's defaults: 2,000 estimated tokens, then the sentences the decision model rates 0.1 or more. No model writes the memory text. [How the memory text is built](locomo/2026-11-12/README.md#how-the-memory-text-is-built).
+- **History:** each conversation is one Markdown file per session, read by Curate's `/curate` skill. A turn that shares a photo also carries the photo's search query and caption, as Mem0's platform reads them.
+- **6,000 tokens:** gpt-6.1-sol answers with Mem0's platform answer prompt, unchanged. gpt-6.1-sol marks with Mem0's platform judge prompt, unchanged. `gpt-4o-mini-2024-07-18` marks the same answers a second time with OmniMemEval's judge prompt.
+- **What each judge prompt accepts:** Mem0's judge prompt marks a list answer right when it holds at least one item of the answer key, and accepts dates within 14 days of the key and durations within half of it. OmniMemEval's judge prompt asks for generous marking when the answer touches the same topic as the key, and accepts a date given in other words; it has no rule for list items or for a window of days.
+- **How the 6,000-token setting was chosen:** by comparing settings on 159 of the 1,540 questions. On the other 1,381 questions the scores are 95.8% marked by gpt-6.1-sol with Mem0's prompt and 94.6% marked by gpt-4o-mini with OmniMemEval's prompt, and the 2,000-token setting scores 91.2%.
+- **2,000 tokens:** `gpt-4.1-mini-2025-04-14` answers and `gpt-4o-mini-2024-07-18` marks, with OmniMemEval's prompts and request settings, unchanged. Curate's own runner sent these requests; the run did not use OmniMemEval's harness. Photo handling varies by adapter in OmniMemEval; Curate's history includes each shared photo's search query and caption.
+- **Published rows:** Zep's, Mem0's and Hindsight's scores are as each published them, with their own prompts and graders. OmniMemEval's table uses its prompts and requested setup; LCM-X's row was run by its contributor through OpenRouter.
+- **Left out:** category 5, the 446 questions the conversation cannot answer, as in Zep's, Mem0's and OmniMemEval's results.
 
-**LongMemEval, GPT-5-mini.** The GPT-5-mini run used the same settings as the GPT-5 run, at commit `aacb042`, before chat labels were added. Its answers, verdicts and logs are in [its proof files](longmemeval/2026-10-14-gpt-5-mini/README.md).
-
-**Both LongMemEval runs.** The curator received only parts that the decision model scored 0.0146 or higher. Across 249 of the 500 questions, 0.0146 was the highest score threshold that kept every message containing an answer.
-Both runs replay the same saved decisions, so no part was scored again for them.
-No answer was cut short by an output limit. Two GPT-5 answers ran into the 4,096-token cap of Mem0's client and were answered again with no cap. No other answer reached it.
-
-**LoCoMo.** The LoCoMo slice used Curate's presets as they come. The benchmark harness gave the decision model every part of each conversation, and only parts it scored 0.0146 or more reached the curator. Its chat labels changed nothing the curator received ([how this was checked](locomo/2026-10-22/README.md#labels-changed-nothing)).
-
-**DolphinBench.** The DolphinBench run used the presets as they come, with chat labels turned off. Keyword searches chose which parts of the history Jev scored. Only parts scoring 0.0146 or more went to the curator.
-Keyword searches selected about 525 of a history's 5,500 parts for Jev to score. About 330 of them scored 0.0146 or more and went to the curator.
-Replayed on the release build, Curate `8e37c76`, with the same settings and saved decisions, every test selects the same parts and gives the curator a byte-identical prompt: 30 of 30.
-
-## Dials for cost, speed and score
-
-Curate's options let each use set its own balance of cost, speed and score.
-A host can send every scored part to the curator, or choose a score cut that sends fewer parts.
-These dials were measured on 249 of the 500 questions, with gpt-6.1-sol curating unless named, GPT-5-mini answering and GPT-4o marking:
-
-| Dial | Parts the curator reads | Correct of 249 | Cost per question (list, est.) |
-| --- | --- | --- | --- |
-| Decision score 0.0146 or more | 70 | 225, then 223 in the all-500 run | $0.13 |
-| Decision score 0.05 or more | 10 | 231, then 223 on a repeat | $0.11 |
-| Scaled top-k: the top 0.68 × N^0.8 of the keyword-and-label ranking | 150 | 229 | $0.18 |
-| gpt-6-luna as the curator, at two of these inputs | 10 to 150 | 217 to 221 | $0.015 to $0.037 |
-
-N is the number of parts in the history.
+Earlier dated folders under `longmemeval/` and `dolphinbench/` hold results of earlier versions of Curate, including layouts in which a model wrote or marked up the memory text.
