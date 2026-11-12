@@ -1,0 +1,49 @@
+{
+  "name": "@curatejs/cli",
+  "version": "0.1.0",
+  "description": "The curate command: recall what was decided, tried or said before, from a project's own history.",
+  "author": "Jonny Neill <jonnyneill@hotmail.com>",
+  "type": "module",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22.20.0"
+  },
+  "bin": {
+    "curate": "src/curate.mjs"
+  },
+  "files": [
+    "src",
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "node -e \"const fs = require('node:fs'); fs.mkdirSync('dist', { recursive: true }); fs.copyFileSync('../../skills/curate/run.mjs', 'dist/run.mjs');\"",
+    "prepack": "pnpm run build"
+  },
+  "keywords": [
+    "agent",
+    "memory",
+    "workflow",
+    "curate"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jonny981/curate.git",
+    "directory": "packages/cli"
+  },
+  "homepage": "https://github.com/jonny981/curate#readme",
+  "bugs": {
+    "url": "https://github.com/jonny981/curate/issues"
+  },
+  "dependencies": {
+    "@curatejs/chat": "workspace:^",
+    "@curatejs/core": "workspace:^",
+    "@curatejs/git": "workspace:^",
+    "@curatejs/markdown": "workspace:^",
+    "node-llama-cpp": "^3.18.1"
+  }
+}

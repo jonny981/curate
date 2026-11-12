@@ -42,6 +42,24 @@ importers:
         specifier: workspace:^
         version: link:../core
 
+  packages/cli:
+    dependencies:
+      '@curatejs/chat':
+        specifier: workspace:^
+        version: link:../chat
+      '@curatejs/core':
+        specifier: workspace:^
+        version: link:../core
+      '@curatejs/git':
+        specifier: workspace:^
+        version: link:../git
+      '@curatejs/markdown':
+        specifier: workspace:^
+        version: link:../markdown
+      node-llama-cpp:
+        specifier: ^3.18.1
+        version: 3.18.1(typescript@7.0.2)
+
   packages/core:
     dependencies:
       node-llama-cpp:

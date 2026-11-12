@@ -12,16 +12,16 @@ Curate searches the history of the project you are in and prints the strongest e
 Check the setup first when the skill is new to the machine, and whenever a call stops with exit code 3:
 
 ```sh
-node <the skill's folder>/run.mjs --check
+curate check
 ```
 
-`--check` lists each need below as ready or missing, with what was found and the fix. It makes no model or decision call, and exits 0 only when a call would run. Walk the person through each line marked missing, in this order, then run it again.
+`curate check` lists each need below as ready or missing, with what was found and the fix. It makes no model or decision call, and exits 0 only when a call would run. Walk the person through each line marked missing, in this order, then run it again.
 
-The skill's folder is usually a symbolic link to `skills/curate` in a checkout of the Curate repository. Build that checkout once with `pnpm install --frozen-lockfile` and then `pnpm build`; without the build the command cannot start at all, so `--check` cannot report it.
+When the `curate` command is not found, ask the person to install it with `npm install -g @curatejs/cli` and then run `curate setup` in their own terminal: it checks the same needs and offers to download the embedding model and to create the settings file. In a built checkout of the Curate repository, `node <the skill's folder>/run.mjs` takes the same arguments, with `--check` and `--prepare` in place of `check` and `prepare`.
 
 1. **Node.js 22.20 or later.** Curate's packages support Node.js 22.20 and later. Fix: Install it, for example with `nvm install 22 && nvm alias default 22`.
-2. **The embedding engine (`node-llama-cpp`).** It runs the local embedding model that ranks the history by meaning. Fix: Run `pnpm install --frozen-lockfile` in the Curate checkout, which installs the optional `node-llama-cpp` package.
-3. **An embedding model file.** Curate downloads none, and any embedding model in GGUF form works. Stored vectors are kept per model, so a different model embeds the history again. Fix: Put EmbeddingGemma 300M in 8-bit GGUF (about 330 MB) at `~/.cache/curate/models/embeddinggemma-300M-Q8_0.gguf`: `mkdir -p ~/.cache/curate/models && curl -L -o ~/.cache/curate/models/embeddinggemma-300M-Q8_0.gguf https://huggingface.co/ggml-org/embeddinggemma-300M-GGUF/resolve/main/embeddinggemma-300M-Q8_0.gguf`. Or name the model file you chose with `embeddingModel` in `~/.curate/sources.json`.
+2. **The embedding engine (`node-llama-cpp`).** It runs the local embedding model that ranks the history by meaning. Fix: Install the command with `npm install -g @curatejs/cli`, which installs `node-llama-cpp` with it. In a Curate checkout, run `pnpm install --frozen-lockfile`.
+3. **An embedding model file.** A call downloads none, and any embedding model in GGUF form works. Stored vectors are kept per model, so a different model embeds the history again. Fix: Put EmbeddingGemma 300M in 8-bit GGUF (about 330 MB) at `~/.cache/curate/models/embeddinggemma-300M-Q8_0.gguf`, or under `$XDG_CACHE_HOME/curate/models` when `XDG_CACHE_HOME` is set: `curate setup` offers to download it, or run `mkdir -p ~/.cache/curate/models && curl -L -o ~/.cache/curate/models/embeddinggemma-300M-Q8_0.gguf https://huggingface.co/ggml-org/embeddinggemma-300M-GGUF/resolve/main/embeddinggemma-300M-Q8_0.gguf`. Or name the model file you chose with `embeddingModel` in `~/.curate/sources.json`.
 4. **The decision key (`TYPESAFE_API_KEY`).** It is a paid Jev key from TypeSafe. Jev decides which parts of the history answer the question, at a few pence a call. Fix: Get a key from TypeSafe (https://typesafe.ai), then set `TYPESAFE_API_KEY` in the environment, or put `TYPESAFE_API_KEY=<key>` in a private file and name that file with `envFile` in `~/.curate/sources.json`. Never put the key in `curate.json`.
 5. **A login for the search lines.** One small call on a subscription writes the search lines: Claude Haiku on the Claude login, or GPT-6 Luna through Codex on the ChatGPT login. `searchModel` picks one. Fix: Run `claude auth login` to use Claude Haiku, or `codex login` to use GPT-6 Luna.
 6. **History to read.** A call searches the git repository it runs in and the sources its settings list. Fix: Run inside a git repository, put a `curate.json` in or above the working folder, or list sources in `~/.curate/sources.json`.
@@ -42,13 +42,13 @@ Curate takes one question per call and widens it itself: it writes its own keywo
 Run the command from a folder inside the project the question is about. The working folder decides which history is read.
 
 ```sh
-node <the skill's folder>/run.mjs "What did we decide about retrying failed uploads, and why?"
+curate "What did we decide about retrying failed uploads, and why?"
 ```
 
-- **Expect 20 to 40 seconds and a few pence a call.** The decision step is a paid service. This cost is why the question count is capped above.
+- **Expect a few pence a call.** The decision step is a paid service. This cost is why the question count is capped above.
 - **Run calls one after another.** Each call loads the local embedding model and updates the same stored index.
 - **Read standard error as well as the printed text.** It names sources that were missing, only partly read, or skipped as outside this project, and it says when the token budget left out strong evidence. You report these to the person. It also says which model wrote the search lines; that line needs no report.
-- **Treat exit code 3 as setup, not as an answer.** The message lists every need not met, each with why Curate needs it and the fix. Run `--check`, then walk the person through the missing lines as [Setup](#setup) describes. Report any other failure plainly with its message.
+- **Treat exit code 3 as setup, not as an answer.** The message lists every need not met, each with why Curate needs it and the fix. Run `curate check`, then walk the person through the missing lines as [Setup](#setup) describes. Report any other failure plainly with its message.
 
 ## Read the evidence
 
@@ -144,7 +144,7 @@ A call from `~/work/app` then reads the app's own history, with only its last 90
 
 - **Source types:** `claude-code`, `codex`, `git` and `markdown`. Each takes a `path`, and optional `since`, `exclude` and `always`. `git` also takes `include`. Chat sources also take `questions` and `bar`. A `codex` source with a `path` needs `allowedCwd`, the folders whose sessions may be read.
 - **Chat sources with no path:** A `claude-code` or `codex` entry may leave out `path`. It then reads only the transcripts of the project the call runs in, with the entry's own `since`, `exclude`, `questions` and `bar`, in place of the ones the call reads on its own. It takes no `always` or `allowedCwd`, and outside a project it reads nothing.
-- **Related projects:** `"related": [["~/work/obversa", "~/work/cmack"]]` makes a call in either project also read the other's Claude Code transcripts and Codex sessions, never its commits or Markdown.
+- **Related projects:** `"related": [["~/work/app", "~/work/docs"]]` makes a call in either project also read the other's Claude Code transcripts and Codex sessions, never its commits or Markdown.
 - **Call settings:** `thoroughness` (`quick`, `normal` by default, or `deep`), `answerTokens` (2,000 by default), `sentenceCutoff`, `searchModel` (`haiku` or `luna`), `scope`, `threshold`, `feed`, `userFirst`, `recentFirst`, `records`, `readAudit` and `maxInFlight`.
 
 [references/settings.md](references/settings.md) explains every key and what the call does with it. Read it when you change a setting or need to explain a result.
@@ -152,7 +152,7 @@ A call from `~/work/app` then reads the app's own history, with only its last 90
 ## Keep the index current
 
 ```sh
-node <the skill's folder>/run.mjs --prepare
+curate prepare
 ```
 
-`--prepare` brings the stored index and embeddings of every source a call from this folder would read up to date, then exits. It makes no model call and needs no key or login, so a hook or a scheduled job can run it between questions to make the next call faster. It checks only the needs it uses, and exits with code 3 when one is missing. The skill installs no hook or job itself.
+`curate prepare` brings the stored index and embeddings of every source a call from this folder would read up to date, then exits. It makes no model call and needs no key or login, so a hook or a scheduled job can run it between questions to make the next call faster. It checks only the needs it uses, and exits with code 3 when one is missing. The skill installs no hook or job itself.

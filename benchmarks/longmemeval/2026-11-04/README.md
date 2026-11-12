@@ -42,7 +42,7 @@ All three start from the same parts of each history: the parts the [22 October r
 
 **Cited-only markup.** The same as the markup setting, except that step 4 marks up only the parts that some extracted row cites, instead of every kept part. The figures and rows are byte-identical to the markup setting's on all 500 questions; only the marked-up words differ, because each part is marked up beside fewer neighbours. It reads and writes far less, which makes the markup step several times faster.
 
-**Log.** The 22 October run's curated logs, byte for byte: the curator, gpt-6.1-sol at low reasoning effort, wrote one dated, cited log per question from the kept parts. This is what Curate's published packages write. Here gpt-6.1-sol answers from it in place of GPT-5.
+**Log.** The 22 October run's curated logs, byte for byte: the curator, gpt-6.1-sol at low reasoning effort, wrote one dated, cited log per question from the kept parts. Curate's packages wrote logs this way at the time of that run. Later versions have no curator: they lay out the kept parts in their own words. Here gpt-6.1-sol answers from it in place of GPT-5.
 
 ## Answering
 

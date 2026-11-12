@@ -429,8 +429,8 @@ describe('a stopped command', () => {
   // A real command checks for a model file before any work; this one only
   // has to exist, since each test stops the command before the model is used.
   const modelFile = async (fixture: Fixture) => {
-    await mkdir(fixture.at('home', '.cache', 'curate', 'models'), { recursive: true });
-    await writeFile(fixture.at('home', '.cache', 'curate', 'models', 'embeddinggemma-300M-Q8_0.gguf'), 'stand-in');
+    await mkdir(fixture.at('cache', 'curate', 'models'), { recursive: true });
+    await writeFile(fixture.at('cache', 'curate', 'models', 'embeddinggemma-300M-Q8_0.gguf'), 'stand-in');
   };
   it.each([['SIGTERM', 143], ['SIGINT', 130]] as const)('removes its temporary folder on %s', async (signal, code) => {
     const fixture = await makeFixture();

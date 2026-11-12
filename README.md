@@ -7,6 +7,9 @@ A TypeScript library that finds what your agent needs from past chats, notes and
 Curate gives an agent the context it needs for a task, drawn from chat transcripts, Markdown and git history.
 It chooses the evidence a task needs and lays it out in its own words, headed by where and when it was said, for the agent to read before starting work.
 
+**Needs a paid key.** Curate asks a decision model, TypeSafe's Jev, to rate the parts of your history. A `/curate` call costs a few pence. Get a key at [typesafe.ai](https://typesafe.ai) and set `TYPESAFE_API_KEY`.
+The library can also decide with a model on your own machine: see [Run it on your own machine](#run-it-on-your-own-machine).
+
 ## Results at a glance
 
 On LongMemEval, Curate's answering model reads 1,577 tokens a question on average, and every other token figure in the table is higher.
@@ -50,6 +53,20 @@ How each run was set up, and its proof files, are in [benchmarks](benchmarks/REA
 ## Install only what you need
 
 Use Node.js 22.20 or later.
+Tested on macOS and Linux; Windows is untested.
+
+To ask about your projects' history from the terminal, and from Claude Code and Codex through the `/curate` skill:
+
+```sh
+npm install -g @curatejs/cli
+curate setup
+npx skills add jonny981/curate -g -a claude-code -a codex -y
+```
+
+`curate setup` lists what is missing and, in a terminal, offers to download the embedding model (about 330 MB), to create the settings file that names a private file for the decision key, and to prepare the project you are in.
+Then ask from a folder inside a project: `curate "What did we decide about retries, and why?"`.
+
+To use the library in your own code:
 
 ```sh
 # Run the Markdown example below.
@@ -70,6 +87,7 @@ pnpm add @curatejs/core
 | [**@curatejs/chat**](packages/chat/README.md) | Local agent transcripts, secret scrubbing, chat ranking and questions. |
 | [**@curatejs/git**](packages/git/README.md) | Git commit history, keyword settings and questions. |
 | [**@curatejs/markdown**](packages/markdown/README.md) | Markdown notes and rules, keyword settings and questions. |
+| [**@curatejs/cli**](packages/cli/README.md) | The `curate` command, with `curate setup`, that runs the `/curate` skill. |
 
 Each source package depends only on core and exports its keyword settings, question set and wording guidance for extra searches.
 See the [changelog](CHANGELOG.md) for what each release contains.
@@ -411,7 +429,7 @@ For meaning search, use the local embedder (it needs `node-llama-cpp@3.18.1`):
 import { memory } from '@curatejs/core';
 import { createLocalEmbedder } from '@curatejs/core/local-embeddings';
 
-// A local MiniLM GGUF model file; the adapter downloads nothing.
+// A local embedding model file in GGUF form, such as EmbeddingGemma 300M; the adapter downloads nothing.
 const local = await createLocalEmbedder({ modelPath });
 try {
   const mem = memory({ sources, decide, read: { meaning: { embed: local.embed } } });
@@ -446,18 +464,14 @@ See the [core package](packages/core/README.md) for question sets, tags, local m
 ### The `/curate` skill
 
 The [coding-agent skill](skills/curate/SKILL.md) reads the history of the project it runs in and prints the laid-out parts for a task; the agent turns them into a cited summary.
-Build the Curate checkout once:
+It calls the `curate` command, installed as [above](#install-only-what-you-need).
+In a Curate checkout built with `pnpm install --frozen-lockfile` and `pnpm build`, `node skills/curate/run.mjs` takes the same arguments, with `--check` and `--prepare` in place of `check` and `prepare`.
 
-```sh
-pnpm install --frozen-lockfile
-pnpm build
-```
-
-A call then needs each of the following, in this order. `node skills/curate/run.mjs --check` lists each one as ready or missing with its fix, makes no model or decision call, and exits 0 only when a call would run. A call that misses any of them stops before any work, names every one, and exits with code 3.
+A call then needs each of the following, in this order. `curate check` lists each one as ready or missing with its fix, makes no model or decision call, and exits 0 only when a call would run. A call that misses any of them stops before any work, names every one, and exits with code 3.
 
 1. **Node.js 22.20 or later.** Curate's packages support Node.js 22.20 and later. Fix: Install it, for example with `nvm install 22 && nvm alias default 22`.
-2. **The embedding engine (`node-llama-cpp`).** It runs the local embedding model that ranks the history by meaning. Fix: Run `pnpm install --frozen-lockfile` in the Curate checkout, which installs the optional `node-llama-cpp` package.
-3. **An embedding model file.** Curate downloads none, and any embedding model in GGUF form works. Stored vectors are kept per model, so a different model embeds the history again. Fix: Put EmbeddingGemma 300M in 8-bit GGUF (about 330 MB) at `~/.cache/curate/models/embeddinggemma-300M-Q8_0.gguf`: `mkdir -p ~/.cache/curate/models && curl -L -o ~/.cache/curate/models/embeddinggemma-300M-Q8_0.gguf https://huggingface.co/ggml-org/embeddinggemma-300M-GGUF/resolve/main/embeddinggemma-300M-Q8_0.gguf`. Or name the model file you chose with `embeddingModel` in `~/.curate/sources.json`.
+2. **The embedding engine (`node-llama-cpp`).** It runs the local embedding model that ranks the history by meaning. Fix: Install the command with `npm install -g @curatejs/cli`, which installs `node-llama-cpp` with it. In a Curate checkout, run `pnpm install --frozen-lockfile`.
+3. **An embedding model file.** A call downloads none, and any embedding model in GGUF form works. Stored vectors are kept per model, so a different model embeds the history again. Fix: Put EmbeddingGemma 300M in 8-bit GGUF (about 330 MB) at `~/.cache/curate/models/embeddinggemma-300M-Q8_0.gguf`, or under `$XDG_CACHE_HOME/curate/models` when `XDG_CACHE_HOME` is set: `curate setup` offers to download it, or run `mkdir -p ~/.cache/curate/models && curl -L -o ~/.cache/curate/models/embeddinggemma-300M-Q8_0.gguf https://huggingface.co/ggml-org/embeddinggemma-300M-GGUF/resolve/main/embeddinggemma-300M-Q8_0.gguf`. Or name the model file you chose with `embeddingModel` in `~/.curate/sources.json`.
 4. **The decision key (`TYPESAFE_API_KEY`).** It is a paid Jev key from TypeSafe. Jev decides which parts of the history answer the question, at a few pence a call. Fix: Get a key from TypeSafe (https://typesafe.ai), then set `TYPESAFE_API_KEY` in the environment, or put `TYPESAFE_API_KEY=<key>` in a private file and name that file with `envFile` in `~/.curate/sources.json`. Never put the key in `curate.json`.
 5. **A login for the search lines.** One small call on a subscription writes the search lines: Claude Haiku on the Claude login, or GPT-6 Luna through Codex on the ChatGPT login. `searchModel` picks one. Fix: Run `claude auth login` to use Claude Haiku, or `codex login` to use GPT-6 Luna.
 6. **History to read.** A call searches the git repository it runs in and the sources its settings list. Fix: Run inside a git repository, put a `curate.json` in or above the working folder, or list sources in `~/.curate/sources.json`.
@@ -465,7 +479,7 @@ A call then needs each of the following, in this order. `node skills/curate/run.
 Then ask from a folder inside a project:
 
 ```sh
-node skills/curate/run.mjs 'Which decisions bear on this task?'
+curate 'Which decisions bear on this task?'
 ```
 
 Save `~/.curate/sources.json` with your own paths, or name another file with `--sources`:
@@ -496,9 +510,9 @@ Paths must be absolute or start with `~/`.
 Without `--sources`, the script reads `~/.curate/sources.json`, and runs without it.
 Inside a git repository, the script reads the project's own commits, Markdown, Claude Code transcripts and Codex sessions with no settings entry; a repository at the home folder or the filesystem root does not count. A listed source with a path is read there only when it sets `"always": true` or its folder overlaps the project; standard error names the others. Outside a repository, it reads every listed source with a path.
 A `claude-code` or `codex` entry with no `path`, as in the example, reads only the transcripts of the project the call runs in, with that entry's settings, in place of the ones the script reads on its own; outside a repository it reads nothing and says so on standard error.
-Optional `related`, such as `[["~/work/obversa", "~/work/cmack"]]`, lists groups of related projects: a call in one also reads the others' Claude Code transcripts and Codex sessions, never their commits or Markdown.
+Optional `related`, such as `[["~/work/app", "~/work/docs"]]`, lists groups of related projects: a call in one also reads the others' Claude Code transcripts and Codex sessions, never their commits or Markdown.
 The nearest `curate.json` above the working folder adds sources for every call under it, such as a knowledge base beside a code repository; it holds no secret, and its paths may be relative to it.
-`--prepare` brings the stored index and embeddings of those sources up to date and exits, with no model call; it needs no decision key or login.
+`curate prepare` brings the stored index and embeddings of those sources up to date and exits, with no model call; it needs no decision key or login.
 Optional `answerTokens` and `sentenceCutoff` set the layout's budget and sentence cutoff, as in [Curate](#curate).
 Optional `thoroughness` sets how many ranked history parts the decision model checks: `quick` checks the top 672, `normal` 3,674, the default, and `deep` 12,896.
 Measured on a replayed ~116,000-part history, each level cost about 1, 5 and 17 pence of questions on the largest of eight task sets; `quick` kept 24 of the 56 known answer parts, `normal` 49 and `deep` all 56.
@@ -507,6 +521,17 @@ The skill combines keyword and meaning lanes, and disables label admission and t
 Saved embeddings are reused when the model file and input text match. Identical text shares matching decision answers within each pick.
 It prints the laid-out parts. Curate keeps no files of its own outside its caches under `~/.cache/curate`. Set `records` to `true` in the sources file to also save the printed text, source reads, model usage and timings under `~/.curate/runs/`.
 Subscription route failures never fall back to an API.
+
+## What leaves your machine
+
+Curate reads your history on your machine. A `curate` call sends text to two services:
+
+- **The decision service, TypeSafe's Jev.** Each decision request holds the question and, for each part it is asked to rate, the part's id, date, title and text. A part's id can hold the path of the file it came from. One more request then holds the question and the sentences of the laid-out text, with each part's date on its first sentence and no id or title.
+- **The search-line model.** One call writes the search lines, through the `claude` command to Claude Haiku or through the `codex` command to GPT-6 Luna, on your own login. It receives the question, fixed wording guidance for each kind of history, and today's date. A reply that cannot be read goes back to the same model once, for repair. Codex also sends your global Codex instructions (`AGENTS.md` in `~/.codex`, or in `CODEX_HOME`) on every system other than macOS, and on macOS when Curate itself runs inside a sandbox.
+
+Chat text is scrubbed of likely secrets, such as API keys, before it is ranked or sent.
+Commit messages and Markdown are sent as written.
+Curate has no telemetry. Its only network request is the decision request; the `claude` and `codex` commands make their own. `curate setup` also downloads the embedding model from Hugging Face, when you answer yes.
 
 ## Rank, decide, curate
 
@@ -540,7 +565,7 @@ Curate keeps those that score at least their source's decision-score bar (0.0146
 Unanswered candidates and unfinished decisions stay visible in the record and stop `recall()`.
 Parts intentionally excluded by the label questions stay in the record without stopping recall.
 
-- **Feed depth:** `pick.thoroughness` sets how many ranked history parts the decision model checks: 672 for `quick`, 3,674 for `normal`, the default, and 12,896 for `deep`. Parts deeper than the level stay unasked and record `thoroughness`. `pick.everyRanked: true` decides every ranked part instead, and `pick.everyRanked: { c }` keeps the top `round(c × N^0.8)` reference parts, where N is the number of reference parts. Rules pass through uncut in every mode. The skipped parts are unassessed, so use the separate selection API to inspect them. Measured on a replayed ~116,000-part history of chat transcripts, Git history and Markdown notes: each level cost about 1, 5 and 17 pence of questions on the largest of eight task sets (about 0.8, 2.3 and 6.6 decide-step minutes), and `quick` kept 24 of the 56 known answer parts, `normal` 49 of 56 and `deep` all 56.
+- **Feed depth:** `pick.thoroughness` sets how many ranked history parts the decision model checks: 672 for `quick`, 3,674 for `normal`, the default, and 12,896 for `deep`. Parts deeper than the level stay unasked and record `thoroughness`. `pick.everyRanked: true` decides every ranked part instead, and `pick.everyRanked: { c }` keeps the top `round(c × N^0.8)` reference parts, where N is the number of reference parts. Rules pass through uncut in every mode. The skipped parts are unassessed, so use the separate selection API to inspect them. Measured on a replayed ~116,000-part history of chat transcripts, Git history and Markdown notes: each level cost about 1, 5 and 17 pence of questions on the largest of eight task sets, and `quick` kept 24 of the 56 known answer parts, `normal` 49 of 56 and `deep` all 56.
 - **Layout inputs:** a source's `bar` sets its score cut. `pick.everyScored: { bar }` sets one cut for every source, and `pick.everyScored: true` keeps every scored reference.
 - **More evidence:** Git and Markdown run the rare-word round through their settings, each within its own parts. `pick.rare: true` runs it on every source; `pick.rare: false` turns it off. Under a thoroughness level the round asks its pulled parts only while the depth still has room.
 - **Tags:** `pick.tags` labels selected items with their intent, importance, emphasis and whether they correct something earlier.

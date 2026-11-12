@@ -1,16 +1,17 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 const packed = resolve(process.argv[2] ?? 'packed');
 const packages = ['core', 'chat', 'git', 'markdown'];
-const tarballs = packages.map((name) => {
+const tarballOf = (name) => {
   const file = readdirSync(packed).find((file) => file.startsWith(`curatejs-${name}-`) && file.endsWith('.tgz'));
   assert.ok(file, `Missing ${name} tarball`);
   return join(packed, file);
-});
+};
+const tarballs = packages.map(tarballOf);
 const consumer = mkdtempSync(join(tmpdir(), 'curate-consumer-'));
 try {
   writeFileSync(join(consumer, 'package.json'), JSON.stringify({ private: true, type: 'module' }));
@@ -144,4 +145,26 @@ console.log('Clean consumer: require() loaded all four packages.');
   execFileSync(process.execPath, ['require.cjs'], { cwd: consumer, stdio: 'inherit', env: { ...process.env, XDG_CACHE_HOME: join(consumer, 'cache') } });
 } finally {
   rmSync(consumer, { recursive: true, force: true });
+}
+
+// The command as a stranger installs it: all five packages, with
+// node-llama-cpp from the registry, run in a new git repository with an
+// empty home folder and no login command on PATH.
+const command = mkdtempSync(join(tmpdir(), 'curate-command-'));
+try {
+  writeFileSync(join(command, 'package.json'), JSON.stringify({ private: true }));
+  execFileSync('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', ...tarballs, tarballOf('cli')], { cwd: command, stdio: 'pipe' });
+  const [home, project] = [join(command, 'home'), join(command, 'project')];
+  mkdirSync(home);
+  mkdirSync(project);
+  execFileSync('git', ['init', '-q'], { cwd: project });
+  const check = spawnSync(join(command, 'node_modules', '.bin', 'curate'), ['check'], { cwd: project, encoding: 'utf8',
+    env: { HOME: home, XDG_CACHE_HOME: join(home, '.cache'), PATH: dirname(process.execPath) } });
+  assert.equal(check.status, 3, `curate check exited ${check.status}:\n${check.stdout}${check.stderr}`);
+  assert.match(check.stdout, /^ready {4}Node\.js 22\.20 or later: /m);
+  assert.match(check.stdout, /^ready {4}The embedding engine \(`node-llama-cpp`\): `node-llama-cpp` is installed$/m);
+  assert.match(check.stdout, /^missing {2}An embedding model file: no file at /m);
+  console.log('Clean consumer: `curate check` from the five packed packages found Node.js and the embedding engine, named the missing model file, and exited 3.');
+} finally {
+  rmSync(command, { recursive: true, force: true });
 }

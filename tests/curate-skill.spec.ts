@@ -2473,7 +2473,7 @@ describe('a call reads the project its working folder sits in', () => {
     vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
     vi.mocked(existsSync).mockImplementation(realFs.existsSync);
     vi.mocked(createLocalEmbedder).mockRejectedValueOnce(new Error('failed to load model'));
-    const model = at('home', '.cache', 'curate', 'models', 'embeddinggemma-300M-Q8_0.gguf');
+    const model = at('cache', 'curate', 'models', 'embeddinggemma-300M-Q8_0.gguf');
     expect(missingLines(await setupFailure(['orchard']))).toEqual([`- An embedding model file: no file at ${model}. ${SETUP[2].why} Fix: ${SETUP[2].fix}`]);
     // A settings file named on the command line must exist.
     await expect(run(['--sources', at('missing.json'), 'orchard'], call)).rejects.toThrow('ENOENT');

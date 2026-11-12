@@ -21,6 +21,7 @@ export const PACKAGES = {
   '@curatejs/chat': 'packages/chat',
   '@curatejs/git': 'packages/git',
   '@curatejs/markdown': 'packages/markdown',
+  '@curatejs/cli': 'packages/cli',
 };
 
 export const EXPECTED_FILES = {
@@ -100,6 +101,14 @@ export const EXPECTED_FILES = {
     'package/dist/questions.d.ts',
     'package/dist/review.d.ts',
     'package/package.json',
+  ],
+  '@curatejs/cli': [
+    'package/LICENSE',
+    'package/README.md',
+    'package/dist/run.mjs',
+    'package/package.json',
+    'package/src/curate.mjs',
+    'package/src/setup.mjs',
   ],
 };
 

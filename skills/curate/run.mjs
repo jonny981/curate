@@ -15,7 +15,7 @@ import { knowledgeBase, markdown, MARKDOWN_CASCADE, MARKDOWN_SEARCH_LINE_REGISTE
 const homePath = (path, base = process.cwd()) => resolve(base, path.startsWith('~/') ? join(homedir(), path.slice(2)) : path);
 const kinds = ['chat', 'git-history', 'markdown'];
 
-export function parseArgs(args) {
+export function parseArgs(args, command = 'node skills/curate/run.mjs') {
   const options = { sources: join(homedir(), '.curate/sources.json') };
   const words = [];
   for (let i = 0; i < args.length; i++) {
@@ -24,7 +24,7 @@ export function parseArgs(args) {
     if (arg === '--prepare') { options.prepareOnly = true; continue; }
     if (arg === '--check') { options.checkOnly = true; continue; }
     if (arg !== '--sources' || !args[i + 1] || args[i + 1].startsWith('--')) {
-      throw new Error('Usage: node skills/curate/run.mjs [--sources file.json] "task", or node skills/curate/run.mjs [--sources file.json] --prepare | --check');
+      throw new Error(`Usage: ${command} [--sources file.json] "task", or ${command} [--sources file.json] --prepare | --check`);
     }
     options.sources = homePath(args[++i]);
     options.sourcesGiven = true;
@@ -39,7 +39,11 @@ export const NODE_FLOOR = '22.20.0';
 // The exit code of a command stopped because its setup is not complete.
 export const SETUP_EXIT = 3;
 const SCRIPT = fileURLToPath(import.meta.url);
-const MODEL_URL = 'https://huggingface.co/ggml-org/embeddinggemma-300M-GGUF/resolve/main/embeddinggemma-300M-Q8_0.gguf';
+export const MODEL_URL = 'https://huggingface.co/ggml-org/embeddinggemma-300M-GGUF/resolve/main/embeddinggemma-300M-Q8_0.gguf';
+// Where a call looks for the model when the settings name none: under the
+// same cache folder as the stored embeddings.
+export const defaultModelPath = () =>
+  join(process.env.XDG_CACHE_HOME ?? join(homedir(), '.cache'), 'curate/models/embeddinggemma-300M-Q8_0.gguf');
 
 // Everything a call needs, in the order a person sets it up: what it is, why
 // Curate needs it, and how to meet it. SKILL.md, references/settings.md and
@@ -51,10 +55,10 @@ export const SETUP = [
     fix: 'Install it, for example with `nvm install 22 && nvm alias default 22`.' },
   { id: 'engine', need: 'The embedding engine (`node-llama-cpp`)',
     why: 'It runs the local embedding model that ranks the history by meaning.',
-    fix: 'Run `pnpm install --frozen-lockfile` in the Curate checkout, which installs the optional `node-llama-cpp` package.' },
+    fix: 'Install the command with `npm install -g @curatejs/cli`, which installs `node-llama-cpp` with it. In a Curate checkout, run `pnpm install --frozen-lockfile`.' },
   { id: 'model', need: 'An embedding model file',
-    why: 'Curate downloads none, and any embedding model in GGUF form works. Stored vectors are kept per model, so a different model embeds the history again.',
-    fix: `Put EmbeddingGemma 300M in 8-bit GGUF (about 330 MB) at \`~/.cache/curate/models/embeddinggemma-300M-Q8_0.gguf\`: \`mkdir -p ~/.cache/curate/models && curl -L -o ~/.cache/curate/models/embeddinggemma-300M-Q8_0.gguf ${MODEL_URL}\`. Or name the model file you chose with \`embeddingModel\` in \`~/.curate/sources.json\`.` },
+    why: 'A call downloads none, and any embedding model in GGUF form works. Stored vectors are kept per model, so a different model embeds the history again.',
+    fix: `Put EmbeddingGemma 300M in 8-bit GGUF (about 330 MB) at \`~/.cache/curate/models/embeddinggemma-300M-Q8_0.gguf\`, or under \`$XDG_CACHE_HOME/curate/models\` when \`XDG_CACHE_HOME\` is set: \`curate setup\` offers to download it, or run \`mkdir -p ~/.cache/curate/models && curl -L -o ~/.cache/curate/models/embeddinggemma-300M-Q8_0.gguf ${MODEL_URL}\`. Or name the model file you chose with \`embeddingModel\` in \`~/.curate/sources.json\`.` },
   { id: 'key', need: 'The decision key (`TYPESAFE_API_KEY`)',
     why: 'It is a paid Jev key from TypeSafe. Jev decides which parts of the history answer the question, at a few pence a call.',
     fix: 'Get a key from TypeSafe (https://typesafe.ai), then set `TYPESAFE_API_KEY` in the environment, or put `TYPESAFE_API_KEY=<key>` in a private file and name that file with `envFile` in `~/.curate/sources.json`. Never put the key in `curate.json`.' },
@@ -74,9 +78,9 @@ const setupLine = ({ id, found }) => `${needOf(id).need}: ${found}. ${needOf(id)
 // A command stopped for its setup names every need not met, never only the
 // first, and exits with SETUP_EXIT.
 export class SetupError extends Error {
-  constructor(status) {
+  constructor(status, command = `node ${SCRIPT}`) {
     const missing = status.filter((entry) => !entry.ready);
-    super(`Curate is not set up (${missing.length} of ${status.length} needs not met). Run node ${SCRIPT} --check to list every need.\n`
+    super(`Curate is not set up (${missing.length} of ${status.length} needs not met). Run ${command} --check to list every need.\n`
       + missing.map((entry) => `- ${setupLine(entry)}`).join('\n'));
     this.exitCode = SETUP_EXIT;
     this.status = status;
@@ -998,9 +1002,10 @@ async function warmSource(source, request, embed, context, signal) {
 // `prepare: false` builds and reads every source only after the search lines
 // are back, as the call did before; the tests compare the two.
 // `callSubscription` stands in for the search-lines model; without it the
-// settings or the working logins choose Haiku or Luna.
-export async function run(args = process.argv.slice(2), callSubscription = undefined, { prepare = true } = {}) {
-  const options = parseArgs(args);
+// settings or the working logins choose Haiku or Luna. `command` names the
+// command in the usage text and the setup error.
+export async function run(args = process.argv.slice(2), callSubscription = undefined, { prepare = true, command } = {}) {
+  const options = parseArgs(args, command);
   // With no settings file at its usual place, the call reads the project alone.
   // A file `--sources` names must exist.
   const text = await readFile(options.sources, 'utf8').catch((error) => {
@@ -1121,7 +1126,7 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
         ...(entry.questions === undefined ? {} : { questions: CHAT_QUESTION_SETS[entry.questions] }),
         ...(entry.bar === undefined ? {} : { bar: entry.bar }) }) };
     };
-    const modelPath = settings.embeddingModel ?? join(homedir(), '.cache/curate/models/embeddinggemma-300M-Q8_0.gguf');
+    const modelPath = settings.embeddingModel ?? defaultModelPath();
     const cacheDirectory = join(process.env.XDG_CACHE_HOME ?? join(homedir(), '.cache'), 'curate/embeddings');
     // A load that fails names the need it shows missing: the engine or the
     // model file. The engine chooses its own backend.
@@ -1172,9 +1177,9 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
     if (options.checkOnly) {
       console.log(checkReport(status, onProcessor(await loading.catch(() => undefined)) ? [PROCESSOR_WARNING] : []));
       record.status = 'checked';
-      return { memory, record, folder: null, setup: { ready: status.every((entry) => entry.ready), status } };
+      return { memory, record, folder: null, setup: { ready: status.every((entry) => entry.ready), status, modelPath } };
     }
-    if (status.some((entry) => !entry.ready)) throw new SetupError(status);
+    if (status.some((entry) => !entry.ready)) throw new SetupError(status, command);
     // A need the load finds missing later stops the call the same way; any
     // other load failure is raised where the call uses the model.
     const loaded = () => loading.then((model) => {
@@ -1183,7 +1188,7 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
     }, (error) => {
       throw error.setup === undefined || !status.some((entry) => entry.id === error.setup) ? error
         : new SetupError(status.map((entry) => entry.id !== error.setup ? entry : { ...entry, ready: false,
-          found: error.setup === 'model' ? `no file at ${modelPath}` : `\`node-llama-cpp\` did not load (${firstLine(error)})` }));
+          found: error.setup === 'model' ? `no file at ${modelPath}` : `\`node-llama-cpp\` did not load (${firstLine(error)})` }), command);
     });
     if (facts.writer !== undefined && setting === undefined) {
       console.error(facts.writer === haikuCall ? 'Search lines: Claude Haiku, on the Claude login.'
@@ -1351,7 +1356,12 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
   return { memory, record, folder: records ? folder : null };
 }
 
-if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
+// The command as a person runs it: a signal ends what the call started and
+// removes its working folders, a failure prints its message, and the exit
+// code says how it ended. Resolves to the call's result, or undefined when
+// it failed. `command` names the command in the usage text and the setup
+// error.
+export function main(args, { command } = {}) {
   for (const [name, code] of [['SIGINT', 130], ['SIGTERM', 143], ['SIGHUP', 129]]) {
     process.once(name, () => {
       for (const stop of [...stoppers]) stop();
@@ -1359,6 +1369,12 @@ if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToP
       process.exit(code);
     });
   }
-  run().then((result) => { if (result?.setup?.ready === false) process.exitCode = SETUP_EXIT; },
-    (error) => { console.error(error.message); process.exitCode = error.exitCode ?? 1; });
+  return run(args, undefined, { command }).then((result) => {
+    if (result?.setup?.ready === false) process.exitCode = SETUP_EXIT;
+    return result;
+  }, (error) => { console.error(error.message); process.exitCode = error.exitCode ?? 1; });
+}
+
+if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
+  main(process.argv.slice(2));
 }

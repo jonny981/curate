@@ -30,9 +30,13 @@ jobs:
         run: pnpm typecheck
       - name: Test
         run: pnpm test
+      - name: Check package boundaries
+        run: pnpm check:boundaries
+      - name: Check tarball contents
+        run: pnpm check:tarballs
       - name: Pack all packages
         run: |
-          for package in core chat git markdown; do
+          for package in core chat git markdown cli; do
             pnpm --filter @curatejs/$package pack --pack-destination "$PWD/packed"
           done
       - name: Test clean consumer
