@@ -1,0 +1,27 @@
+You are answering a question about two people from what they said to each other in a long chat. The memory text below holds the parts of their chat that bear on the question, in their own words.
+
+How the memory text is laid out:
+- Under "### Most likely answer" are the two parts judged most likely to answer the question. They are a strong lead, not proof: check them against the question and against everything else.
+- Every other part sits under a heading "### conversation (said YYYY-MM-DD)", oldest first. The date in the heading is the day the words under it were said. A line starting "# session" followed by "Date: YYYY-MM-DD" marks the start of a chat on that day.
+- Each turn reads "Name: what they said". The name is the speaker.
+- "[Sharing image - query: ... The image shows: ...]" marks a photo the speaker sent. The words after "query:" say what the sender meant the photo to show: a name, title, place or thing named there is what the photo is of. The text after "The image shows:" is a short description of the picture itself. Take what a photo shows from both, together with what both speakers say about it. The search words are weaker evidence than what the speakers say in their turns: when the two disagree, go by the turns.
+- "…" marks words left out.
+
+How to answer:
+- Read every part, to the end. The answer is often far down, or spread over several parts that you must put together.
+- The right person. A question about someone asks what that person did, said, owns, likes, feels or plans. The speaker of each turn is named; a speaker can also tell what the other one did. Keep each fact with whoever it is about.
+- The right event. Match every detail the question gives: the action, the thing, the place, the time and who. A part about a similar but different event is not the answer. When the question names a time, use the event at that time. When it places the event during, before or after another event, first find when that other event happened, then look for what was said in that span.
+- Dates. Work out every relative time from the date of the heading it sits under. Said on day D, "yesterday" is the day before D, "last week" and "last weekend" point to the week or weekend just before D, "last" with a weekday is the most recent such weekday before D, and "next month" is the calendar month after D. Answer with the date, week, month or year that results, never with D itself unless the event happened on D. When someone recalls an earlier event, it happened at that earlier time, not on the day it is told. These conversations ended on {reference_date}.
+- Lists. When the question asks for things, give every distinct item the text supports, not only the first or the strongest.
+- Counting. Before giving a number, list each distinct occurrence with its date. Count one occurrence once, even when it is told in several turns or on several days; count only occurrences of the kind and person asked about, only ones that happened inside any period the question names (by when they happened, not when they were told), and only ones that happened, unless the question asks about plans. Then decide the number and give it; keep any doubt in your reasoning.
+- Changes. When two statements about the same thing differ, the one said most recently holds, unless the question asks about an earlier time.
+- Inference. When the question asks what someone would, might or could do, be, like, have or face, reason from what the text says about them, use common knowledge to connect the facts, and give the most likely answer plainly with its reason. Hints are enough: what people say about themselves (their body, habits, money, feelings, limits, wishes) points to the answer, so name what the hints point to even when nothing is stated outright or confirmed, rather than saying it is not recorded. When it asks what kind or which one, name the specific kind or thing.
+- Be specific. Answer with the exact name, title, place, date or number the text gives. A specific detail beats a general description.
+- Commit to an answer. Give the answer the evidence best supports, stated plainly, with no hedge or caveat. Never answer that something is not specified, not stated, not recorded or not confirmed when any turn bears on it; when the evidence is indirect, name what it points to. Never invent a name, title, place or date that no part holds.
+
+Memory text:
+{memories}
+
+Question: {question}
+
+Think it through step by step from the parts that bear on the question. Then give a direct final answer after "ANSWER:", with every detail the text gives for what is asked.

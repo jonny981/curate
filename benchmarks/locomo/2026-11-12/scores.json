@@ -5,6 +5,80 @@
       "sentenceCutoff": false
     },
     "answer_model": "gpt-6.1-sol",
+    "answer_prompt": "prompts/curate-answer.txt",
+    "marked_by_sol": {
+      "marker": "gpt-6.1-sol with Mem0's platform judge prompt",
+      "correct": 1486,
+      "questions": 1540,
+      "accuracy": 96.5,
+      "by_category": {
+        "multi-hop": "271/282",
+        "temporal": "310/321",
+        "open-domain": "83/96",
+        "single-hop": "822/841"
+      },
+      "outside_the_159": {
+        "correct": 1329,
+        "questions": 1381,
+        "accuracy": 96.2
+      }
+    },
+    "marked_by_gpt_4o_mini": {
+      "marker": "gpt-4o-mini-2024-07-18 with OmniMemEval's judge prompt",
+      "correct": 1457,
+      "questions": 1540,
+      "accuracy": 94.6,
+      "by_category": {
+        "multi-hop": "266/282",
+        "temporal": "296/321",
+        "open-domain": "77/96",
+        "single-hop": "818/841"
+      },
+      "outside_the_159": {
+        "correct": 1306,
+        "questions": 1381,
+        "accuracy": 94.6
+      }
+    },
+    "context_tokens": {
+      "mean": 3838.7,
+      "median": 4921.0,
+      "p90": 5128,
+      "max": 5341
+    }
+  },
+  "six_thousand_tokens_every_sentence_repeat": {
+    "settings": {
+      "answerTokens": 6000,
+      "sentenceCutoff": false
+    },
+    "answer_model": "gpt-6.1-sol",
+    "answer_prompt": "prompts/curate-answer.txt",
+    "marked_by_sol": {
+      "marker": "gpt-6.1-sol with Mem0's platform judge prompt",
+      "correct": 1486,
+      "questions": 1540,
+      "accuracy": 96.5,
+      "by_category": {
+        "multi-hop": "270/282",
+        "temporal": "311/321",
+        "open-domain": "82/96",
+        "single-hop": "823/841"
+      },
+      "outside_the_159": {
+        "correct": 1329,
+        "questions": 1381,
+        "accuracy": 96.2
+      }
+    }
+  },
+  "six_thousand_tokens_every_sentence_mem0_answer_prompt": {
+    "settings": {
+      "answerTokens": 6000,
+      "sentenceCutoff": false
+    },
+    "answer_model": "gpt-6.1-sol",
+    "answer_prompt": "prompts/mem0-platform.json ANSWER_GENERATION_PROMPT",
     "marked_by_sol": {
       "marker": "gpt-6.1-sol with Mem0's platform judge prompt",
       "correct": 1481,
@@ -38,12 +112,6 @@
         "questions": 1381,
         "accuracy": 94.6
       }
-    },
-    "context_tokens": {
-      "mean": 3838.7,
-      "median": 4921.0,
-      "p90": 5128,
-      "max": 5341
     }
   },
   "two_thousand_tokens_sentence_cutoff": {
@@ -52,6 +120,7 @@
       "sentenceCutoff": 0.1
     },
     "answer_model": "gpt-4.1-mini-2025-04-14",
+    "answer_prompt": "prompts/omnimemeval-locomo.json LOCOMO_ANSWER_PROMPT",
     "marked_by_gpt_4o_mini": {
       "marker": "gpt-4o-mini-2024-07-18 with OmniMemEval's judge prompt",
       "correct": 1408,

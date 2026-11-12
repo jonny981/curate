@@ -9,35 +9,35 @@ It chooses the evidence a task needs and lays it out in its own words, headed by
 
 ## Results at a glance
 
-On LongMemEval, Curate's task model reads 1,577 tokens a question on average, against Mem0's 6,787, and a median of 1,692, against Zep's 4,408: fewer than every other system in the table below that gives a figure.
-Curate keeps local index files and needs no database, no server to run and no model that writes or rewrites memory in advance; each question is one Curate call, in which a paid decision model rates the history's parts.
+On LongMemEval, Curate's answering model reads 1,577 tokens a question on average, and every other token figure in the table is higher.
+Curate keeps local index files and needs no database, no server to run and no model that writes or rewrites memory in advance.
 
-LongMemEval S, all 500 questions. Two graders marked Curate's answers and Mem0's published answers; Mastra's and Zep's figures are as each published them:
+LongMemEval S, all 500 questions:
 
-| System | Task model | Marked by gpt-6.1-sol | Marked by LongMemEval's grader | As published, with the vendor's grader | Task model tokens |
-| --- | --- | --- | --- | --- | --- |
-| **[Curate](benchmarks/longmemeval/2026-11-11/README.md)** | **gpt-6.1-sol** | **94.2** | **92.8** | | **1,577 mean, 1,692 median** |
-| [Mem0 platform](https://github.com/mem0ai/memory-benchmarks/blob/4b61c5d31b9c668a12b4f5e78064248a02c82d2b/results/platform/longmemeval_results.json) | GPT-5 | 92.6 | 91.0 | | 6,787 mean |
-| [Mastra observational memory](https://mastra.ai/research/observational-memory)\* | gpt-5-mini | | | 94.87 (GPT-4o) | |
-| [Zep](https://www.getzep.com/research/memory-benchmarks/)\* | gpt-5.4 | | | 90.2 (gpt-5.4) | 4,408 median |
+| System | Answering model | Marker | Score | Tokens read (mean) |
+| --- | --- | --- | --- | --- |
+| **[Curate](benchmarks/longmemeval/2026-11-11/README.md)** | **gpt-6.1-sol** | **gpt-6.1-sol** | **94.2** | **1,577** |
+| [Mastra observational memory](https://mastra.ai/research/observational-memory)\* | gpt-5-mini | GPT-4o | 93.6† | about 30,000 (estimated) |
+| **[Curate](benchmarks/longmemeval/2026-11-11/README.md)** | **gpt-6.1-sol** | **LongMemEval's grader (GPT-4o)** | **92.8** | **1,577** |
+| [Mem0 platform](https://github.com/mem0ai/memory-benchmarks/blob/4b61c5d31b9c668a12b4f5e78064248a02c82d2b/results/platform/longmemeval_results.json) | GPT-5 | gpt-6.1-sol | 92.6 | 6,787 |
+| [Zep](https://www.getzep.com/research/memory-benchmarks/)\* | gpt-5.4 | gpt-5.4 | 90.2 | 4,408 median |
 
-\* Score as published; these answers were not marked again here. Mem0's answers are published, and both of its figures above were marked here from that file.
+† Mastra publishes 94.87, the average of its six category scores; 93.6 is the same result counted per question (468 of 500), as every other row is.
 
-LoCoMo, all 1,540 scored questions, in two settings of Curate's layout:
+LoCoMo, all 1,540 scored questions:
 
-| System | Task model | Marker | Score |
-| --- | --- | --- | --- |
-| **[Curate, 6,000 tokens](benchmarks/locomo/2026-11-12/README.md)** | **gpt-6.1-sol** | **gpt-6.1-sol** | **96.2** |
-| [Zep](https://www.getzep.com/research/memory-benchmarks/)\* | gpt-5.4 | gpt-5.4 | 94.7 |
-| [Mem0 platform](https://github.com/mem0ai/memory-benchmarks/blob/edcd6f1d42400837b1fcb6997716f1769dc51a37/results/platform/locomo_results.json) | GPT-5 | GPT-5 | 91.6 |
-| **[Curate, 2,000 tokens](benchmarks/locomo/2026-11-12/README.md)** | **gpt-4.1-mini** | **gpt-4o-mini** | **91.4** |
-| [MemOS, in OmniMemEval](https://github.com/MemTensor/OmniMemEval/blob/7c79d46e31dd85f3da2509b430bba9406656dd28/docs/user_memory/results.md#locomo)\* | gpt-4.1-mini | gpt-4o-mini | 88.83 |
+| System | Answering model | Marker | Score | Tokens read (mean) |
+| --- | --- | --- | --- | --- |
+| **[Curate (full)](benchmarks/locomo/2026-11-12/README.md)** | **gpt-6.1-sol** | **gpt-6.1-sol** | **96.5** | **3,839** |
+| [Zep](https://www.getzep.com/research/memory-benchmarks/)\* | gpt-5.4 | gpt-5.4 | 94.7 | 5,760 median |
+| [Mem0 platform](https://github.com/mem0ai/memory-benchmarks/blob/edcd6f1d42400837b1fcb6997716f1769dc51a37/results/platform/locomo_results.json) | GPT-5 | GPT-5 | 91.6 | |
+| **[Curate (compact)](benchmarks/locomo/2026-11-12/README.md)** | **gpt-4.1-mini** | **gpt-4o-mini** | **91.4** | **1,248** |
+| [MemOS, in OmniMemEval](https://github.com/MemTensor/OmniMemEval/blob/7c79d46e31dd85f3da2509b430bba9406656dd28/docs/user_memory/results.md#locomo)\* | gpt-4.1-mini | gpt-4o-mini | 88.83 | 5,400 with prompt |
 
-\* Score as published; these answers were not marked again here. Mem0's figure is Mem0's own marking of the answers in its published results file.
+\* Score as published; these answers were not marked again here.
 
-The task model does the work (here, answering the question), so it should read only what the task needs.
-
-Every result, how each run was set up and its proof files are in [benchmarks](benchmarks/README.md).
+Curate (full) has an answer budget of 6,000 tokens and keeps every sentence (`answerTokens: 6000`, `sentenceCutoff: false`). Curate (compact) is the default: an answer budget of 2,000 tokens and a sentence cutoff of 0.1 (`answerTokens: 2000`, `sentenceCutoff: 0.1`).
+How each run was set up, and its proof files, are in [benchmarks](benchmarks/README.md).
 
 ## Built for memory that keeps growing
 
@@ -45,7 +45,7 @@ Every result, how each run was set up and its proof files are in [benchmarks](be
 - **Go straight to the source.** [Mem0](https://docs.mem0.ai/core-concepts/memory-operations/add) extracts facts with a model, [Mastra](https://mastra.ai/docs/memory/observational-memory) keeps observations written by a model, and [Zep](https://help.getzep.com/v4/how-graph-creation-works) builds a knowledge graph. Curate selects from the original history for each task.
 - **Keep the task model focused.** It reads only the parts chosen for its task, within a token budget, even when the history spans thousands of parts.
 
-[LongMemEval](benchmarks/longmemeval/2026-11-11/README.md#context-sizes): **1,577 task-model tokens** a question on average, from histories of about **48 sessions** and **102,580 tokens** on average (o200k, every turn's role and text): about **65 times less**. [LoCoMo](benchmarks/locomo/2026-11-12/README.md#context-sizes): **3,839** and **1,248 task-model tokens** a question in the two settings, from conversations of about **21,155 tokens**.
+[LongMemEval](benchmarks/longmemeval/2026-11-11/README.md#context-sizes): **1,577 task-model tokens** a question on average, from histories of about **48 sessions** and **102,580 tokens** on average (o200k, every turn's role and text): about **65 times less**. [LoCoMo](benchmarks/locomo/2026-11-12/README.md#context-sizes): **3,839** task-model tokens a question in the full setting and **1,248** in the compact one, from conversations of about **21,155 tokens**.
 
 ## Install only what you need
 
