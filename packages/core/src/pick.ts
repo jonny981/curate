@@ -52,13 +52,19 @@ export interface MemoryCandidate {
    *  members, with `poolOnly`, and the pick admits it to the decide step
    *  as it admits a lane member, unless `taskPeriod` is false. */
   readonly dateWindow?: 'task-period';
+  /** Who wrote the part, where its reader knows: 'person' for the
+   *  person's own words; 'unmarked' where the history does not say. */
+  readonly author?: 'person' | 'agent' | 'tool' | 'system' | 'unmarked';
+  /** Where the part sits: its container (a session, thread, note or
+   *  commit) and its position in it, compared number by number. The
+   *  conversation read reads a source's parts with one container as one
+   *  sequence; a part with no place is a container of its own. */
+  readonly place?: { readonly container: string; readonly at: readonly number[] };
   /** Transcript metadata; separate from the candidate's reference role. */
   readonly chat?: {
     readonly provider: 'claude-code' | 'codex';
     readonly sessionId: string;
     readonly role: 'user' | 'assistant' | 'tool-call' | 'tool-result';
-    /** Who wrote the part, where the transcript says; 'unmarked' where it does not. */
-    readonly author?: 'person' | 'agent' | 'tool' | 'system' | 'unmarked';
     /** The agent's name or id, when the transcript gives one. */
     readonly authorName?: string;
   };
@@ -118,8 +124,8 @@ export interface PickQuestion {
   /** Render the item as a date and its text only, keeping its id,
    *  title and other identifying fields out of the model request. */
   readonly anonymous?: boolean;
-  /** Who wrote the part, where its reader marked it: a chat part's `chat.author`. */
-  readonly author?: NonNullable<MemoryCandidate['chat']>['author'];
+  /** Who wrote the part, where its reader marked it: the part's `author`. */
+  readonly author?: MemoryCandidate['author'];
   readonly sourceId: string;
   readonly id: string;
   readonly title: string;
@@ -419,7 +425,7 @@ export interface PickCascade {
     readonly hasNames: number;
   };
   /** Added to the logit of a reference part's score when its reader
-   *  marks the person as its author (`chat.author` 'person'), inside
+   *  marks the person as its author (`author` 'person'), inside
    *  and outside the band: a boost in the order, never a filter. A part
    *  any other author wrote, or with no author mark, adds nothing. */
   readonly person?: number;
@@ -2066,7 +2072,7 @@ export async function pick(
       ...(tagSet === undefined ? {} : { tagSet }),
       ...(candidate.date === undefined ? {} : { date: candidate.date }),
       ...(candidate.kind === undefined ? {} : { kind: candidate.kind }),
-      ...(candidate.chat?.author === undefined ? {} : { author: candidate.chat.author }),
+      ...(candidate.author === undefined ? {} : { author: candidate.author }),
       role: candidate.role, question: spec.question,
       ...(spec.levels === undefined
         ? { trueCriterion: spec.trueCriterion, falseCriterion: spec.falseCriterion }
@@ -2731,7 +2737,7 @@ export async function pick(
       let answer: CheckedAnswer;
       if (candidate.role === 'reference' && cascade) {
         // The person's own words add the set's person weight to the logit.
-        const personZ = candidate.chat?.author === 'person' ? cascade.person ?? 0 : 0;
+        const personZ = candidate.author === 'person' ? cascade.person ?? 0 : 0;
         const first = cascade.first === undefined ? undefined : got.get(cascade.first);
         if (first?.status === 'answered' && 'probability' in first
           && (first.probability < cascade.band![0] || first.probability > cascade.band![1])) {
@@ -2895,7 +2901,7 @@ export async function pick(
     const answer = combined.get(candidate);
     if (answer?.status !== 'answered' || !('probability' in answer)) return undefined;
     const cascade = cascadeFor(candidate);
-    const person = candidate.chat?.author === 'person' && cascade?.model === undefined ? cascade?.person ?? 0 : 0;
+    const person = candidate.author === 'person' && cascade?.model === undefined ? cascade?.person ?? 0 : 0;
     return person === 0 ? answer.probability
       : 1 / (1 + Math.exp(person - Math.log(answer.probability / (1 - answer.probability))));
   };

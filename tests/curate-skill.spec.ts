@@ -823,7 +823,7 @@ it('orders by keyword score, then newer matching sessions at equal scores, whoev
 it('keeps the person\'s parts in score order', () => {
   const candidate = (id: string, role: 'user' | 'assistant', author: 'person' | 'agent' | 'unmarked', score: number): MemoryCandidate => ({
     sourceId: 'chat', id, role: 'reference', title: '', text: '',
-    chat: { provider: 'claude-code', role, sessionId: 'one', author }, date: { value: '2026-01-01', meaning: 'recorded' }, signals: { keyword: score },
+    author, chat: { provider: 'claude-code', role, sessionId: 'one' }, date: { value: '2026-01-01', meaning: 'recorded' }, signals: { keyword: score },
   });
   const items = [
     candidate('assistant', 'assistant', 'agent', 10),

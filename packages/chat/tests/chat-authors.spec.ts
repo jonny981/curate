@@ -25,7 +25,7 @@ async function readAll(provider: ChatProvider, files: Record<string, readonly un
 const byText = (candidates: readonly MemoryCandidate[]) =>
   Object.fromEntries(candidates.map((candidate) => [candidate.text, candidate]));
 const marks = (candidates: readonly MemoryCandidate[]) => Object.fromEntries(candidates.map((candidate) =>
-  [candidate.text, [candidate.chat?.role, candidate.chat?.author, candidate.chat?.authorName]]));
+  [candidate.text, [candidate.chat?.role, candidate.author, candidate.chat?.authorName]]));
 
 const at = (second: number) => `2026-10-06T08:16:${String(second).padStart(2, '0')}.000+00:00`;
 const user = (second: number, content: unknown, extra: Record<string, unknown> = {}) =>
@@ -50,12 +50,17 @@ describe('queued messages', () => {
       'first block\nsecond block', 'typed while idle', 'typed while the agent works',
     ]);
     for (const [text, second] of [['typed while the agent works', 2], ['first block\nsecond block', 3]] as const) {
-      expect(parts[text]!.chat).toMatchObject({ provider: 'claude-code', sessionId: 'session', role: 'user', author: 'person' });
+      expect(parts[text]!.chat).toMatchObject({ provider: 'claude-code', sessionId: 'session', role: 'user' });
+      expect(parts[text]!.author).toBe('person');
       expect(Date.parse(parts[text]!.date!.value)).toBe(Date.parse(at(second)));
     }
     expect(parts['<task-notification>a background task finished</task-notification>']!.chat)
-      .toMatchObject({ role: 'user', author: 'tool' });
-    expect(parts['typed while the agent works']!.id).toMatch(/:2:1:1$/);
+      .toMatchObject({ role: 'user' });
+    expect(parts['<task-notification>a background task finished</task-notification>']!.author).toBe('tool');
+    // Its place: the transcript its id names, and its line, block and piece there.
+    const typed = parts['typed while the agent works']!;
+    expect(typed.id).toMatch(/:2:1:1$/);
+    expect(typed.place).toEqual({ container: typed.id.slice(0, -':2:1:1'.length), at: [2, 1, 1] });
   });
 });
 

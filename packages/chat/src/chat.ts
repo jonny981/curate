@@ -57,7 +57,7 @@ export interface ChatOptions {
 
 type Json = Record<string, unknown>;
 type MessageRole = NonNullable<MemoryCandidate['chat']>['role'];
-type Author = NonNullable<NonNullable<MemoryCandidate['chat']>['author']>;
+type Author = NonNullable<MemoryCandidate['author']>;
 interface Written { author: Author; authorName?: string }
 interface Part extends Written { role: MessageRole; text: string }
 interface Decoded { sessionId?: string; date?: string; parts: Part[] }
@@ -253,9 +253,14 @@ const AUTHOR_TITLES: Record<Author, string> = { person: ' (the person)', agent: 
 const shownTitle = (part: RawPart, zone: string) =>
   `${part.provider} ${part.sessionId} ${part.role}${part.authorName === undefined ? AUTHOR_TITLES[part.author]
     : ` (${part.author} ${part.authorName})`} ${zonedIso(part.date, zone)}`;
-const chatOf = (part: RawPart): NonNullable<MemoryCandidate['chat']> => ({
-  provider: part.provider, sessionId: part.sessionId, role: part.role, author: part.author,
-  ...(part.authorName === undefined ? {} : { authorName: part.authorName }),
+/** A part's transcript fields: its chat metadata, its author, and its
+ *  place: the transcript its id names (the id less its line, block and
+ *  piece) and its line, block and piece there. */
+const chatOf = (part: RawPart, id: string): Pick<MemoryCandidate, 'chat' | 'author' | 'place'> => ({
+  chat: { provider: part.provider, sessionId: part.sessionId, role: part.role,
+    ...(part.authorName === undefined ? {} : { authorName: part.authorName }) },
+  author: part.author,
+  place: { container: id.split(':').slice(0, -3).join(':'), at: [part.line, part.block, part.piece] },
 });
 
 /** What decoding carries from one transcript line to the next: the
@@ -997,7 +1002,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
               : ` (${part.author} ${part.authorName})`} ${corpus!.iso[index]!}`,
             text: part.text,
             contentRef: `${part.provider}:${part.sessionId}:${part.line}:${part.block}:${part.piece}`,
-            chat: chatOf(part),
+            ...chatOf(part, corpus!.ids[index]!),
             date: { value: corpus!.iso[index]!, meaning: 'recorded' as const },
             ...extra,
           };
@@ -1121,7 +1126,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
               sourceId: id, role: 'reference',
               id: ids[index]!, title: shownTitle(part, zone), text: part.text,
               contentRef: `${part.provider}:${part.sessionId}:${part.line}:${part.block}:${part.piece}`,
-              chat: chatOf(part),
+              ...chatOf(part, ids[index]!),
               date: dated(part),
               signals: { similarity: similarities[index]! }, laneScore: similarities[index]!,
               ...(mark && !passes(index) ? { pastLaneCut: true as const } : {}),
@@ -1242,7 +1247,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
               sourceId: id, role: 'reference',
               id: ids[index]!, title: shownTitle(part, zone), text: part.text,
               contentRef: `${part.provider}:${part.sessionId}:${part.line}:${part.block}:${part.piece}`,
-              chat: chatOf(part),
+              ...chatOf(part, ids[index]!),
               date: dated(part),
               signals: { keyword: scores[position]!, phrase: matchOf.get(index)! },
               laneScore: base[position]!,
@@ -1288,7 +1293,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
                 sourceId: id, role: 'reference',
                 id: idOf(part), title: shownTitle(part, zone), text: part.text,
                 contentRef: `${part.provider}:${part.sessionId}:${part.line}:${part.block}:${part.piece}`,
-                chat: chatOf(part),
+                ...chatOf(part, idOf(part)),
                 date: dated(part),
                 signals: { phrase: count }, laneScore: count,
               });
@@ -1450,7 +1455,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
             sourceId: id, role: 'reference',
             id: ids[index]!, title: shownTitle(part, zone), text: part.text,
             contentRef: `${part.provider}:${part.sessionId}:${part.line}:${part.block}:${part.piece}`,
-            chat: chatOf(part),
+            ...chatOf(part, ids[index]!),
             date: dated(part),
             signals: { keyword: scores[index]! }, laneScore: base[index]!,
             ...(mark && !passes(index) ? { pastLaneCut: true as const } : {}),

@@ -869,7 +869,7 @@ question's key followed by a number.
 
 A question set's `person` weight is added to the logit of a reference
 part's score when its reader marks the person as the part's author
-(`chat.author` is `'person'`), inside the band and outside it. It moves
+(`author` is `'person'`), inside the band and outside it. It moves
 the person's own words up the order and over the bar, and never drops
 another part. A part any other author wrote, or with no author mark,
 adds nothing. A model-scored set cannot carry it.
@@ -1367,7 +1367,7 @@ every person part is warm, and a replay of the saved ratings read
 weighted score.
 
 1. **The person's own parts first.** The read takes the parts the
-   transcript marks as the person's (`chat.author: 'person'`) in the
+   transcript marks as the person's (`author: 'person'`) in the
    keyword lanes' ranking, 112 a request. A person part no keyword lane
    holds comes after them, newest first.
 2. **Rings of neighbours.** Around each warm person part it reads the
@@ -1379,7 +1379,9 @@ weighted score.
    the person's parts run out first, it reads the order's other chat
    parts the same way, so every chat part of the order stays in reach
    until the stop fires.
-4. **Topic segments.** It splits each transcript where its words change
+4. **Topic segments.** A part's `place` names its transcript and its
+   position there, which order the transcript's parts; a part with no
+   `place` stands alone. It splits each transcript where its words change
    (TextTiling over word counts, no model; a transcript under 40 parts
    stays whole) and opens the segments that hold a warm person part or
    one of each search lane's top 10 parts. A lane's top parts lead the

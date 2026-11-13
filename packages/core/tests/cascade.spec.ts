@@ -121,7 +121,7 @@ describe('fitted decision questions', () => {
 describe('the person\'s own words in the score', () => {
   const said = (id: string, author?: 'person' | 'agent'): MemoryCandidate => ({
     ...item(id, 1),
-    ...(author === undefined ? {} : { chat: { provider: 'claude-code', sessionId: 's', role: 'user', author } }),
+    ...(author === undefined ? {} : { author, chat: { provider: 'claude-code', sessionId: 's', role: 'user' } }),
   });
   const withPerson: PickCascade = { ...fitted, person: 4.5 };
   /** Each part's decision probability when `relevant` is answered per

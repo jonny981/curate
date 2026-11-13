@@ -192,7 +192,7 @@ What each part does:
   offset of `timeZone`, the system's zone by default, so a message sent
   just after midnight is dated that day.
 - **Chat parts say who wrote them.** The chat reader reads messages typed
-  while an agent works, and marks each part's `chat.author` as the person,
+  while an agent works, and marks each part's `author` as the person,
   an agent, a tool, the system or unmarked, from what the transcript records.
 - **Every Markdown file gets a date.** A file with no commit yet or with
   uncommitted changes, and an undeclared `knowledgeBase()` or `rules()`

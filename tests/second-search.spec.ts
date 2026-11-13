@@ -30,7 +30,8 @@ const idOf = (session: string, line: number) => `claude-code:/home/me/.claude/pr
 const part = (session: string, line: number, author: Author, text: string, minute: number): MemoryCandidate => ({
   sourceId: 'agents', role: 'reference', id: idOf(session, line), title: `claude-code ${session}`, text,
   date: { value: new Date(Date.UTC(2026, 9, 1, 0, minute)).toISOString(), meaning: 'recorded' },
-  chat: { provider: 'claude-code', sessionId: session, role: author === 'person' ? 'user' : 'assistant', author },
+  author, place: { container: `claude-code:/home/me/.claude/projects:app/${session}.jsonl`, at: [line, 1, 1] },
+  chat: { provider: 'claude-code', sessionId: session, role: author === 'person' ? 'user' : 'assistant' },
   signals: {},
 });
 // A set that marks its source as agent transcripts, as the agent set

@@ -459,8 +459,10 @@ export async function snapshotCodex(entry, folder) {
   return { filter, source: { ...source, async read(request, context) {
     const result = await source.read(request, context);
     return result.status !== 'read' ? result : { ...result,
-      candidates: result.candidates.map((candidate) =>
-        ({ ...candidate, id: candidate.id.replace(folder, entry.path) })),
+      candidates: result.candidates.map((candidate) => ({ ...candidate, id: candidate.id.replace(folder, entry.path),
+        // The transcript a part sits in is named by the same path.
+        ...(candidate.place === undefined ? {} : { place: { ...candidate.place,
+          container: candidate.place.container.replace(folder, entry.path) } }) })),
       // A meaning lane's id and score list names the same parts, so the
       // same remap applies; without it those ids keep the snapshot path.
       ...(result.meaningScores === undefined ? {} : { meaningScores: result.meaningScores.map((score) =>

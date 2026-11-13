@@ -76,17 +76,6 @@ export interface ChatReadResult {
   readonly ended: 'fall' | 'order' | 'stopped';
 }
 
-/** A chat part's transcript and its place in it: the chat reader's part
- *  id ends in the line, block and piece after the transcript's path. A
- *  part whose id ends otherwise is a transcript of its own. */
-function placeOf(part: MemoryCandidate): { readonly transcript: string; readonly at: readonly number[] } {
-  const fields = part.id.split(':');
-  const tail = fields.slice(-3);
-  return fields.length > 3 && tail.every((field) => /^\d+$/.test(field))
-    ? { transcript: JSON.stringify([part.sourceId, fields.slice(0, -3).join(':')]), at: tail.map(Number) }
-    : { transcript: JSON.stringify([part.sourceId, part.id]), at: [] };
-}
-
 const words = (text: string) => (text.toLowerCase().match(/[a-z][a-z0-9_-]{3,}/g) ?? [])
   .filter((word) => !TILE_STOP.has(word));
 
@@ -235,7 +224,9 @@ export async function chatRead(input: ChatReadInput): Promise<ChatReadResult> {
   // Each transcript's parts in their order, and its topic segments.
   const transcripts = new Map<string, { part: MemoryCandidate; at: readonly number[] }[]>();
   for (const part of input.parts) {
-    const { transcript, at } = placeOf(part);
+    // A part with no place is a container of its own.
+    const transcript = JSON.stringify([part.sourceId, part.place?.container ?? part.id]);
+    const at = part.place?.at ?? [];
     const list = transcripts.get(transcript);
     if (list === undefined) transcripts.set(transcript, [{ part, at }]);
     else list.push({ part, at });
@@ -279,7 +270,7 @@ export async function chatRead(input: ChatReadInput): Promise<ChatReadResult> {
     read.push(...done);
     for (const part of done) best = Math.max(best, score(part) ?? 0);
   };
-  const person = (part: MemoryCandidate) => part.chat?.author === 'person';
+  const person = (part: MemoryCandidate) => part.author === 'person';
   const rated = (part: MemoryCandidate) => seen.has(part) ? score(part) : undefined;
   // A walk decision about a part, with the facts the read has about it.
   const walkable = (part: MemoryCandidate) => {

@@ -100,7 +100,7 @@ describe('jev', () => {
     const fetch = reply({ answers: {} });
     const candidate = (id: string, author?: 'person' | 'agent'): MemoryCandidate => ({
       sourceId: 'notes', id, role: 'reference', title: id, text: `text ${id}`, signals: { keyword: 1 },
-      ...(author === undefined ? {} : { chat: { provider: 'claude-code', sessionId: 's', role: 'user', author } }),
+      ...(author === undefined ? {} : { author, chat: { provider: 'claude-code', sessionId: 's', role: 'user' } }),
     });
     await pick([candidate('mine', 'person'), candidate('relayed', 'agent'), candidate('note')], {
       task: 'What did we decide?', everyRanked: true, everyScored: true, decide: jev({ apiKey: 'test-key' }),

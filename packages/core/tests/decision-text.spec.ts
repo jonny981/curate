@@ -5,7 +5,7 @@ import { pick, type MemoryCandidate, type PickQuestion } from '../src/index.js';
 describe('identical decision text', () => {
   const said = (id: string, author: 'person' | 'agent', score: number): MemoryCandidate => ({
     sourceId: 'chat', id, title: id, text: 'Use Postgres.', role: 'reference', signals: { score },
-    chat: { provider: 'claude-code', sessionId: 's', role: author === 'person' ? 'user' : 'assistant', author },
+    author, chat: { provider: 'claude-code', sessionId: 's', role: author === 'person' ? 'user' : 'assistant' },
   });
   /** A decider that answers by the author it is shown, and the questions it was asked. */
   const byAuthor = (asked: PickQuestion[]) => async ({ questions }: { questions: readonly PickQuestion[] }) => {

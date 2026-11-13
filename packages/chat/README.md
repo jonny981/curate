@@ -49,8 +49,9 @@ const source = chat({ providers: ['claude-code', 'codex'], since: '14 days' });
   hard-cut. `maxQuestionText` and the request's text budget can tighten
   that limit. Joining the parts reproduces the scrubbed block.
 - **Metadata:** `candidate.chat` carries `provider`, `sessionId`, the
-  message `role`, the part's `author` and, when the transcript names an
-  agent, `authorName`. The title names the author after the role, for
+  message `role` and, when the transcript names an agent, `authorName`.
+  `candidate.author` holds who wrote the part, and `candidate.place`
+  its transcript and its line, block and piece there. The title names the author after the role, for
   example `claude-code <session> user (the person) <date>` or
   `user (agent team-lead)`. The candidate's own `role` stays `'reference'`. `date`
   holds the message timestamp with meaning `'recorded'`, as an ISO
