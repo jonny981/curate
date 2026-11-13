@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { phraseCount } from '../src/search.js';
+import { PHRASE_INDEX, phraseCount, phraseQuery, phraseWords } from '../src/search.js';
 import { pickFromSources, type CandidateSource, type MemoryCandidate } from '../src/index.js';
 
 const uncutPick = { everyRanked: true, everyScored: true, rare: false } as const;
@@ -75,5 +75,55 @@ describe('phrase searches', () => {
     expect({ ...empty, record: { ...empty.record, asOf: base.record.asOf } }).toEqual(base);
     expect(empty.reads[0]).toEqual({ ...read,
       lanes: [{ task: 'albums', lane: 'search', read: 1, kept: 1 }] });
+  });
+});
+
+describe('the stored phrase index', () => {
+  // An index phrase match must hold exactly where `phraseCount` counts
+  // one, whatever the script: the index keeps `phraseWords` of each text
+  // and reads it with FTS5's `ascii` tokenizer.
+  const pieces = [
+    'orchard', 'pump', 'Pump', 'ORCHARD', 'a', 'an', 'AND', 'OR', 'NOT', 'NEAR', 'the', 'café', 'CAFÉ', 'café',
+    'straße', 'STRASSE', 'İstanbul', 'istanbul', 'ıiİI', 'K', 'k', 'ΣΟΦΟΣ', 'σοφος', 'σοφοσ', 'Москва', 'москва',
+    '漢字', '汉字', 'かな', 'カナ', 'مرحبا', 'नमस्ते', 'क्ष', 'שלום', '😀', '👩‍💻', '‍', '​', 'x', 'xy',
+    '𝒜𝒷', '𐐀𐐨', '٣٤', '²', '½', 'Ⅻ', 'ⅻ', 'Ａｂ', 'ﬁle', 'ǅ', 'ǆ', 'ß', 'ẞ', 'ŉ', 'İi̇', 'é', 'ño',
+    'v2', 'id_9', "don't", 'x-ray', 'a.b', '"quoted"', '*', 'col:on', '(paren)', '{brace}', '-', '^', '\t', '\n', ' ', ' ', '　',
+    'a'.repeat(3000), `${'é'.repeat(500)}z`,
+  ];
+  let seed = 3;
+  const random = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
+  const pick = <T>(list: readonly T[]) => list[Math.floor(random() * list.length)]!;
+  const glue = () => pick([' ', ' ', ' ', '', '\n', ', ', '-', ' ', '_']);
+  const texts = Array.from({ length: 400 }, () => Array.from({ length: 1 + Math.floor(random() * 25) }, () => pick(pieces) + glue()).join(''));
+  const recase = (text: string) => text.split('').map((char) => random() < 0.3 ? char.toUpperCase() : char).join('');
+  it('matches the texts phraseCount matches, for every phrase, across scripts, marks and symbols', () => {
+    const { DatabaseSync } = process.getBuiltinModule('node:sqlite');
+    const database = new DatabaseSync(':memory:');
+    database.exec(`CREATE VIRTUAL TABLE phrases USING fts5(words, ${PHRASE_INDEX})`);
+    const put = database.prepare('INSERT INTO phrases (rowid, words) VALUES (?, ?)');
+    texts.forEach((text, at) => put.run(at, phraseWords(text)));
+    const search = database.prepare('SELECT rowid AS id FROM phrases WHERE phrases MATCH ? ORDER BY rowid');
+    // Phrases from the texts' own words, re-cased, and from the pieces.
+    const phrases = [
+      ...Array.from({ length: 300 }, () => {
+        const words = pick(texts).match(/[\p{L}\p{N}]+/gu) ?? [];
+        const start = Math.floor(random() * words.length);
+        return recase(words.slice(start, start + 1 + Math.floor(random() * 3)).join(pick([' ', '-', ', '])));
+      }),
+      ...pieces, ...pieces.map((piece) => `${piece} ${pick(pieces)}`),
+    ];
+    let compared = 0;
+    for (const phrase of phrases) {
+      const counted = texts.flatMap((text, at) => phraseCount(text, phrase) > 0 ? [at] : []);
+      const query = phraseQuery(phrase);
+      const found = query === undefined ? [] : (search.all(query) as { id: number }[]).map((row) => row.id);
+      expect(found, JSON.stringify(phrase)).toEqual(counted);
+      compared += counted.length;
+    }
+    // The comparison is not empty: phrases match many texts.
+    expect(compared).toBeGreaterThan(1000);
+    // A phrase with no word matches nowhere, as phraseCount counts nothing.
+    expect(phraseQuery('!!! 😀 ‍')).toBeUndefined();
+    database.close();
   });
 });

@@ -195,7 +195,8 @@ describe('one-pass keyword lanes on a generated history', () => {
   let seed = 7;
   const random = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
   const words = ['orchard', 'quince', 'pump', 'filter', 'S3', 'bucket', 'Alice', 'we', 'said', 'the', 'pond', 'runs', 'codex',
-    'user', 'assistant', 'noted', 'v2', 'id', 'a', 'of', 'backups', 'nightly', '2026'];
+    'user', 'assistant', 'noted', 'v2', 'id', 'a', 'of', 'backups', 'nightly', '2026', 'café', 'İstanbul', 'Москва',
+    'x\uE000y', 'ΣΟΦΟΣ', 'cafe\u0301'];
   async function generated(root: string) {
     for (let file = 0; file < 12; file += 1) {
       const provider: ChatProvider = file % 3 === 0 ? 'claude-code' : 'codex';
@@ -211,10 +212,18 @@ describe('one-pass keyword lanes on a generated history', () => {
   }
   const tasks = ['Where is the S3 bucket Alice named for nightly backups?', 'codex user assistant 2026 orchard',
     'pond pump filter', 'a v2 id of the quince', 'zzzz qqqq'];
-  const generatedLanes = tasks.flatMap((task) => [
+  const generatedLanes = tasks.flatMap((task): Omit<CandidateReadRequest, 'taskDate'>[] => [
     { task }, { task, wholeLanes: false }, { task, wholeLanes: true },
     { task, wholeLanes: false, limit: 1 }, { task, wholeLanes: false, limit: 7 }, { task, wholeLanes: true, limit: 40 },
     { task, wholeLanes: false, limit: 5_000 },
+  ]).concat([
+    // Phrase, name and kind lanes: words only titles hold, words in
+    // other scripts, and words a private-use character joins.
+    ...['S3 bucket', 'Alice', 'codex user', 'assistant 2026', 'we said', 'café', 'İstanbul', 'москва', 'x y', 'σοφος', 'cafe']
+      .map((phrase) => ({ task: phrase, phraseLane: true })),
+    { task: 'orchard', phraseLane: true, limit: 3 },
+    { task: 'we said', phraseLane: true, topic: tasks[2]!, wholeLanes: false },
+    { task: 'pond pump', phraseLane: true, topic: tasks[0]!, wholeLanes: true, speakerOnly: true },
   ]).map((lane): CandidateReadRequest => ({ ...lane, taskDate: '2026-10-28T12:00:00Z' }));
   it.each<[string, Parameters<typeof chat>[0]]>([
     ['the default settings', {}],
@@ -234,6 +243,8 @@ describe('one-pass keyword lanes on a generated history', () => {
     expect(direct[1]!.candidates.length).toBeGreaterThan(1);
     expect(direct[2]!.candidates.length).toBeGreaterThan(direct[1]!.candidates.length);
     expect(direct[29]!.candidates).toEqual([]);
+    const phrases = direct.slice(35);
+    expect(phrases.filter((result) => result.candidates.length > 0).length).toBeGreaterThan(8);
   });
 });
 
@@ -297,6 +308,24 @@ describe('one-pass chat read', () => {
     const cache = await folder();
     await history(root);
     await agree(() => chat({ paths: [root], index: { directory: cache } }), list, served);
+  });
+
+  it('keeps a phrase lane to the parts the call holds when another call indexes an edit between its lanes', { timeout: 60_000 }, async () => {
+    const root = await folder();
+    const cache = await folder();
+    const said = (text: string) => transcript('claude-code', [message('claude-code', 'user', text)], root, 'session');
+    await said('The orchard grows quince.');
+    const source = () => chat({ providers: ['claude-code'], paths: [root], index: { directory: cache } });
+    const held = source();
+    const context = { files: new Map<string, Promise<string>>(), shared: new Map<object, unknown>() };
+    await held.read({ task: 'orchard', wholeLanes: true }, context);
+    // Another call indexes an edit while this call holds the old text.
+    await said('The orchard grows apples and pears instead.');
+    await source().read({ task: 'apples' }, { files: new Map(), shared: new Map() });
+    for (const [phrase, texts] of [['quince', ['The orchard grows quince.']], ['apples', []]] as const) {
+      const read = await held.read({ task: phrase, phraseLane: true }, context);
+      expect(read.status === 'read' ? read.candidates.map((candidate) => candidate.text) : undefined, phrase).toEqual(texts);
+    }
   });
 
   it('serves a history with one part', { timeout: 60_000 }, async () => {

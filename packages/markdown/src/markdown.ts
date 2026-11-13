@@ -5,6 +5,9 @@ import {
   taskTerms,
   tokenize,
   phraseCount,
+  phraseQuery,
+  phraseWords,
+  PHRASE_INDEX,
   laneBend,
   sharedFileText,
   sharedFileStore,
@@ -19,6 +22,7 @@ import {
   checkIndexOption,
   indexDirectory,
   indexFilePath,
+  indexVersion,
   openIndexFile,
   updateIndex,
   wordBag,
@@ -1034,6 +1038,10 @@ function measurePart(part: NotePart): { readonly length: number; count(term: str
   return { length: tokens.length, count: (term) => counts.get(term) ?? 0 };
 }
 
+/** A part's row in the phrase index: its note's row in the high bits
+ *  and its place in the note in the low 32. */
+const PHRASE_ROW = 2 ** 32;
+
 /** What bringing one root's notes up to date did, and each note's
  *  modified time as its file reported it. */
 interface NotesUpdate {
@@ -1068,15 +1076,22 @@ async function syncNotes(
       CREATE TABLE IF NOT EXISTS postings (term TEXT NOT NULL, note INTEGER NOT NULL,
         ordinal INTEGER NOT NULL, count INTEGER NOT NULL, PRIMARY KEY (term, note, ordinal)) WITHOUT ROWID;
       CREATE INDEX IF NOT EXISTS postingsNote ON postings (note);
+      CREATE VIRTUAL TABLE IF NOT EXISTS phrases USING fts5(words, title, ${PHRASE_INDEX});
       CREATE TABLE IF NOT EXISTS counts (name TEXT PRIMARY KEY, n INTEGER NOT NULL) WITHOUT ROWID`);
       // The file's part total, kept beside the notes so no call sums
       // them. A file written before the count existed is summed once.
-      let total = (database.prepare("SELECT n FROM counts WHERE name = 'parts'").get() as { n: number } | undefined)?.n
-        ?? (database.prepare('SELECT COALESCE(SUM(parts), 0) AS n FROM notes').get() as { n: number }).n;
+      const counted = (database.prepare("SELECT n FROM counts WHERE name = 'parts'").get() as { n: number } | undefined)?.n;
+      let total = counted ?? (database.prepare('SELECT COALESCE(SUM(parts), 0) AS n FROM notes').get() as { n: number }).n;
       const insertPart = database.prepare(`INSERT INTO parts (note, ordinal, id, title, text, heading, content_ref, date,
         length, words, vec) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
       const insertPosting = database.prepare('INSERT OR IGNORE INTO postings (term, note, ordinal, count) VALUES (?, ?, ?, ?)');
-      const wipeParts = database.prepare('DELETE FROM parts WHERE note = ?');
+      const wipePartRows = database.prepare('DELETE FROM parts WHERE note = ?');
+      const wipePhrases = database.prepare('DELETE FROM phrases WHERE rowid >= ? AND rowid < ?');
+      const wipeParts = { run(note: number) {
+        wipePartRows.run(note);
+        wipePhrases.run(note * PHRASE_ROW, (note + 1) * PHRASE_ROW);
+      } };
+      const insertPhrase = database.prepare('INSERT INTO phrases (rowid, words, title) VALUES (?, ?, ?)');
       const wipePostings = database.prepare('DELETE FROM postings WHERE note = ?');
       // A note's posting list is its parts' stored words with their
       // counts; the same rows give a part's length and each term's
@@ -1086,6 +1101,7 @@ async function syncNotes(
           insertPart.run(note, ordinal, part.id, part.title, part.text, part.heading, part.contentRef,
             part.date === undefined ? null : JSON.stringify(part.date), part.tokens.length, part.tokens.words, part.vec);
           for (const [term, count] of bagEntries(part.tokens.words)) insertPosting.run(term, note, ordinal, count);
+          insertPhrase.run(note * PHRASE_ROW + ordinal, phraseWords(part.text), phraseWords(part.title));
         });
       };
       const rows = new Map((database.prepare('SELECT id, path, size, mtime, modified, parts FROM notes WHERE root = ?')
@@ -1151,7 +1167,10 @@ async function syncNotes(
           wipePostings.run(row.id);
         }
       }
-      database.prepare("INSERT INTO counts (name, n) VALUES ('parts', ?) ON CONFLICT (name) DO UPDATE SET n = excluded.n").run(total);
+      // Written only when it moved, so an update that changed nothing writes nothing.
+      if (total !== counted) {
+        database.prepare("INSERT INTO counts (name, n) VALUES ('parts', ?) ON CONFLICT (name) DO UPDATE SET n = excluded.n").run(total);
+      }
       return { added, removed, ms: Math.round(performance.now() - started), modified };
     });
   } finally {
@@ -1250,6 +1269,11 @@ interface Corpus {
    *  embedder keeps no store, so a later query list scores the same
    *  vectors without embedding again. */
   readonly units: Map<number, Float64Array>;
+  /** Each note's file by its row in the stored index, once a phrase lane asks. */
+  byNote?: Map<number, FileMeta>;
+  /** The index's `indexVersion` the parts were read at; unset when an
+   *  update landed while they were read. */
+  readonly version: number | undefined;
 }
 
 /** Markdown from folders, files or glob patterns, classified by the caller. */
@@ -1566,8 +1590,18 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
       const onePassRead = onePass.on && given !== undefined && indexPath !== undefined && role !== 'rule'
         && (request.paths ?? []).length === 0 && request.decayHalfLife === undefined && request.taskPeriod === undefined
         && selected.every(({ state }) => state.pinned === undefined && updates.has(state.root));
+      // How many updates have changed the index, read on a connection of its own.
+      const versionNow = async () => {
+        const database = await openIndexFile(indexPath!, indexFolder!);
+        try {
+          return indexVersion(database);
+        } finally {
+          database.close();
+        }
+      };
       const corpus = !onePassRead ? undefined
         : await once(context, JSON.stringify(['corpus', indexPath, requestExclude]), async (): Promise<Corpus> => {
+          const version = await versionNow();
           const corpusGroups: CorpusGroup[] = [];
           const corpusMetas: FileMeta[] = [];
           const stale: number[] = [];
@@ -1624,8 +1658,35 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
               ? rank[byId[place - 1]!]! : place;
           }
           return { groups: corpusGroups, metas: corpusMetas, stale, fileWords, parts: corpusParts, refs, headings,
-            totalLength: total, rank, postings: new Map(), units: new Map() };
+            totalLength: total, rank, postings: new Map(), units: new Map(),
+            version: await versionNow() === version ? version : undefined };
         });
+      /** The parts of the call's one walk whose text or title can hold
+       *  `phrase`, in walk order: the phrase index names them, and each is
+       *  counted again with `phraseCount`, so the counts are exact. Once
+       *  another update has changed the index, it no longer holds the texts
+       *  the walk holds, and every part of the walk is named. */
+      const phraseCandidates = async (phrase: string): Promise<number[]> => {
+        const query = phraseQuery(phrase);
+        if (query === undefined || corpus === undefined) return [];
+        const byNote = corpus.byNote
+          ??= new Map(corpus.metas.flatMap((meta) => meta.note === undefined ? [] : [[meta.note, meta] as const]));
+        const database = await openIndexFile(indexPath!, indexFolder!);
+        try {
+          const found: number[] = [];
+          for (const row of database.prepare('SELECT rowid AS id FROM phrases WHERE phrases MATCH ?').iterate(query) as Iterable<{ id: number }>) {
+            const meta = byNote.get(Math.floor(row.id / PHRASE_ROW));
+            const ordinal = row.id % PHRASE_ROW;
+            if (meta !== undefined && ordinal < meta.partCount) found.push(meta.partStart + ordinal);
+          }
+          // The rows of an index another update changed since the walk do
+          // not describe the texts it holds.
+          if (indexVersion(database) !== corpus.version) return corpus.parts.map((_, index) => index);
+          return found.sort((left, right) => left - right);
+        } finally {
+          database.close();
+        }
+      };
       if (corpus !== undefined) {
         onePass.served += 1;
         for (const [index, meta] of corpus.metas.entries()) {
@@ -1653,7 +1714,8 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
           }
           for (const [index, hit] of headingHits) parts[index] = { ...parts[index]!, headingHits: hit };
           if (kindLane) {
-            for (const [index, part] of corpus.refs.entries()) {
+            for (const index of await phraseCandidates(request.task)) {
+              const part = corpus.refs[index]!;
               const phrased = phraseCount(part.text, request.task) + phraseCount(part.title, request.task);
               if (phrased > 0) parts[index] = { ...parts[index]!, phrased };
             }
@@ -2064,7 +2126,16 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
       // the exact phrase; keyword statistics are skipped for it.
       if (phraseLane && !kindLane) {
         const matched: { candidate: MemoryCandidate; count: number }[] = [];
-        for (const group of groups) {
+        // With the call's one walk, the phrase index names the parts that
+        // can hold the phrase; each is counted again exactly.
+        for (const index of corpus === undefined ? [] : await phraseCandidates(request.task)) {
+          const meta = metas[corpus!.parts[index]!.file]!;
+          if (meta.scopeSkipped) continue;
+          const part = corpus!.refs[index]!;
+          const count = phraseCount(part.text, request.task) + phraseCount(part.title, request.task);
+          if (count > 0) matched.push({ candidate: emit(meta, part, { phrase: count }), count });
+        }
+        for (const group of corpus === undefined ? groups : []) {
           let cursor = 0;
           for await (const { entry } of walk(group, group.metas)) {
             const meta = group.metas[cursor++]!;

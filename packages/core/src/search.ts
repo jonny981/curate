@@ -58,11 +58,34 @@ export function sharedFileStore(
   context.files.set(key, Promise.resolve(text));
 }
 
+/** The words `phraseCount` compares: lower-cased runs of letters and digits. */
+const phraseTokens = (value: string): string[] => value.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
+
+/** What a stored phrase index keeps for a text: the words `phraseCount`
+ *  compares, one space between each. Under FTS5's `ascii` tokenizer
+ *  (`PHRASE_INDEX`) a word of letters and digits is one token whatever its
+ *  script, since every character past ASCII is a token character to it,
+ *  and spaces part them; it reads the string back as exactly these words,
+ *  so an index phrase match holds where `phraseCount` counts one. */
+export function phraseWords(text: string): string {
+  return phraseTokens(text).join(' ');
+}
+
+/** A phrase as a stored phrase index's query, or undefined when it holds
+ *  no word, which `phraseCount` counts nowhere. */
+export function phraseQuery(phrase: string): string | undefined {
+  const words = phraseTokens(phrase);
+  return words.length === 0 ? undefined : `"${words.join(' ')}"`;
+}
+
+/** The FTS5 options of a stored phrase index: the `ascii` tokenizer, no
+ *  stored text, and rows that can be deleted. */
+export const PHRASE_INDEX = "tokenize = 'ascii', content = '', contentless_delete = 1";
+
 /** Count whole-word, contiguous phrase occurrences. Punctuation and case
  *  do not matter; short words and word order do. No stemming is applied. */
 export function phraseCount(text: string, phrase: string): number {
-  const words = (value: string) => value.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
-  const wanted = words(phrase);
+  const wanted = phraseTokens(phrase);
   if (!wanted.length) return 0;
   // A word of the phrase that the text lacks even as a substring cannot
   // be one of its tokens, so the text is not split at all.

@@ -4,8 +4,8 @@ import { homedir } from 'node:os';
 import { basename, join, relative, resolve, sep } from 'node:path';
 
 import {
-  canonicalPath, phraseCount, laneBend, normalized, similarity, sinceCutoff, taskMoment, timeZoneOf,
-  zonedIso, bagEntries, checkIndexOption, eachPartVector, indexDirectory, indexFilePath, openIndexFile,
+  canonicalPath, phraseCount, phraseQuery, phraseWords, PHRASE_INDEX, laneBend, normalized, similarity, sinceCutoff, taskMoment, timeZoneOf,
+  zonedIso, bagEntries, checkIndexOption, eachPartVector, indexDirectory, indexFilePath, indexVersion, openIndexFile,
   removeEarlierFormats, textKey, updateIndex, type IndexDatabase, type StoredIndexOptions, type StoredIndexReport,
 } from '@curatejs/core/internal';
 import {
@@ -428,6 +428,9 @@ interface ChatCorpus {
   readonly titles: string[];
   /** The titles' words indexed once, when a keyword lane first asks. */
   titleIndex?: ChatTitleIndex;
+  /** The parts whose title holds each word `phraseCount` compares,
+   *  indexed once, when a phrase lane first asks. */
+  titlePhraseWords?: Map<string, number[]>;
   readonly longs: number[];
   /** Each part's place in id order; equal ids share a place. */
   readonly places: Uint32Array;
@@ -435,6 +438,9 @@ interface ChatCorpus {
   readonly byPlace: Uint32Array;
   /** Each part's index by its row in the stored index. */
   readonly indexOf: ReadonlyMap<string, number>;
+  /** The index's `indexVersion` the parts were read at; unset when an
+   *  update landed while they were read. */
+  readonly version: number | undefined;
   /** Each word's postings as part indexes, read from the index once. */
   readonly postings: Map<string, { readonly index: number[]; readonly count: number[] }>;
   readonly skips: number;
@@ -564,7 +570,12 @@ const CHAT_TABLES = `CREATE TABLE IF NOT EXISTS transcripts (id INTEGER PRIMARY 
     short TEXT NOT NULL, vec TEXT, pid TEXT NOT NULL, PRIMARY KEY (transcript, ordinal)) WITHOUT ROWID;
   CREATE TABLE IF NOT EXISTS postings (term TEXT NOT NULL, transcript INTEGER NOT NULL,
     ordinal INTEGER NOT NULL, count INTEGER NOT NULL, PRIMARY KEY (term, transcript, ordinal)) WITHOUT ROWID;
-  CREATE INDEX IF NOT EXISTS postingsTranscript ON postings (transcript);`;
+  CREATE INDEX IF NOT EXISTS postingsTranscript ON postings (transcript);
+  CREATE VIRTUAL TABLE IF NOT EXISTS phrases USING fts5(words, ${PHRASE_INDEX});`;
+
+/** A part's row in the phrase index: its transcript's row in the high
+ *  bits and its place in the transcript in the low 32. */
+const PHRASE_ROW = 2 ** 32;
 
 /** Bring a source's stored index up to date, in one write transaction.
  *  A transcript with its stored size and modification time is kept. One
@@ -589,7 +600,13 @@ async function syncChatIndex(
       database.exec(CHAT_TABLES);
       const rows = new Map<string, TranscriptRow>((database.prepare('SELECT * FROM transcripts').all() as unknown as TranscriptRow[])
         .map((row) => [`${row.provider}\0${row.root}\0${row.path}`, row]));
-      const deleteParts = database.prepare('DELETE FROM parts WHERE transcript = ?');
+      const deletePartRows = database.prepare('DELETE FROM parts WHERE transcript = ?');
+      const deletePhrases = database.prepare('DELETE FROM phrases WHERE rowid >= ? AND rowid < ?');
+      const deleteParts = { run(transcript: number) {
+        deletePartRows.run(transcript);
+        deletePhrases.run(transcript * PHRASE_ROW, (transcript + 1) * PHRASE_ROW);
+      } };
+      const insertPhrase = database.prepare('INSERT INTO phrases (rowid, words) VALUES (?, ?)');
       const deletePostings = database.prepare('DELETE FROM postings WHERE transcript = ?');
       const insertPart = database.prepare(`INSERT INTO parts (transcript, ordinal, line, block, piece, session, role,
         author, author_name, date, text, long, stems, short, vec, pid)
@@ -669,6 +686,7 @@ async function syncChatIndex(
               part.authorName ?? null, part.date, part.text, words.long, words.stems, words.short,
               vectorKey(part.text, before, ordinal), partId({ provider, root, file, ...part }));
             insertPostings(id, ordinal, words.stems, words.short);
+            insertPhrase.run(id * PHRASE_ROW + ordinal, phraseWords(part.text));
             before = part.text;
             ordinal += 1;
           }
@@ -993,6 +1011,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           const key = JSON.stringify([stored!.path, since, until, zone, exclusions]);
           if (shared.corpus === undefined) {
             const before = skips.n;
+            const version = indexVersion(database!);
             const parts: StoredPart[] = [];
             const ids: string[] = [];
             const refs: string[] = [];
@@ -1027,6 +1046,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
             shared.corpus = {
               key, parts, ids, refs, partFile, fileRanges, iso, titles, longs, places, byPlace: Uint32Array.from(byId),
               indexOf: new Map(refs.map((ref, index) => [ref, index] as const)), postings: new Map(),
+              version: indexVersion(database!) === version ? version : undefined,
               skips: skips.n - before,
             };
             // Each lane counts the skips where its own walk would have.
@@ -1037,6 +1057,37 @@ export function chat(options: ChatOptions = {}): CandidateSource {
             onePass.served += 1;
           }
         }
+        /** The parts of the call's one walk whose text or title can hold
+         *  `phrase`, in walk order: the phrase index names the texts that
+         *  hold it, and the titles holding its first word are added. Each
+         *  is counted again with `phraseCount`, so the counts are exact.
+         *  Once another update has changed the index, it no longer holds
+         *  the texts the walk holds, and every part of the walk is named. */
+        const phraseCandidates = (phrase: string): number[] => {
+          const query = phraseQuery(phrase);
+          if (query === undefined) return [];
+          const found = new Set<number>();
+          for (const row of database!.prepare('SELECT rowid AS id FROM phrases WHERE phrases MATCH ?').iterate(query) as Iterable<{ id: number }>) {
+            const index = corpus!.indexOf.get(`${Math.floor(row.id / PHRASE_ROW)}:${row.id % PHRASE_ROW}`);
+            if (index !== undefined) found.add(index);
+          }
+          // The rows of an index another update changed since the walk do
+          // not describe the texts it holds.
+          if (indexVersion(database!) !== corpus!.version) return corpus!.parts.map((_, index) => index);
+          if (corpus!.titlePhraseWords === undefined) {
+            const titles = new Map<string, number[]>();
+            corpus!.titles.forEach((title, index) => {
+              for (const word of new Set(phraseWords(title).split(' '))) {
+                const list = titles.get(word);
+                if (list === undefined) titles.set(word, [index]);
+                else list.push(index);
+              }
+            });
+            corpus!.titlePhraseWords = titles;
+          }
+          for (const index of corpus!.titlePhraseWords.get(phraseWords(phrase).split(' ')[0]!) ?? []) found.add(index);
+          return [...found].sort((left, right) => left - right);
+        };
         /** A part of the call's one walk as a lane hands it on. */
         const held = (index: number, extra: Pick<MemoryCandidate, 'signals' | 'laneScore' | 'pastLaneCut'>): MemoryCandidate => {
           const part = corpus!.parts[index]!;
@@ -1230,10 +1281,10 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           const fileRanges: { provider: ChatProvider; root: string; file: string; start: number }[] = corpus?.fileRanges ?? [];
           if (corpus !== undefined) {
             skips.n += corpus.skips;
-            for (const [index, part] of corpus.parts.entries()) {
-              const title = corpus.titles[index]!;
-              rank.observeStored(title, part.words);
-              const count = phraseCount(part.text, request.task) + phraseCount(title, request.task);
+            for (const [index, part] of corpus.parts.entries()) rank.observeStored(corpus.titles[index]!, part.words);
+            for (const index of phraseCandidates(request.task)) {
+              const part = corpus.parts[index]!;
+              const count = phraseCount(part.text, request.task) + phraseCount(corpus.titles[index]!, request.task);
               if (count > 0 && (request.speakerOnly !== true || part.role === 'user')) matchOf.set(index, count);
             }
           }
@@ -1340,8 +1391,8 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           const matched: MemoryCandidate[] = [];
           if (corpus !== undefined) {
             skips.n += corpus.skips;
-            for (const [index, part] of corpus.parts.entries()) {
-              const count = phraseCount(part.text, request.task) + phraseCount(corpus.titles[index]!, request.task);
+            for (const index of phraseCandidates(request.task)) {
+              const count = phraseCount(corpus.parts[index]!.text, request.task) + phraseCount(corpus.titles[index]!, request.task);
               if (count > 0) matched.push(held(index, { signals: { phrase: count }, laneScore: count }));
             }
           }

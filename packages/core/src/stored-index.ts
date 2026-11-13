@@ -30,7 +30,7 @@ export interface StoredIndexReport {
 
 /** The stored layout's version. A file of another version is never
  *  opened: its name differs, so the source is indexed again. */
-export const STORED_INDEX_FORMAT = 5;
+export const STORED_INDEX_FORMAT = 6;
 
 /** Checks a reader's `index` option: a settings object or false. */
 export function checkIndexOption(option: unknown): void {
@@ -138,16 +138,27 @@ export async function openIndexFile(path: string, directory: string): Promise<In
 
 const updating = new Map<string, Promise<unknown>>();
 
+/** How many updates have changed the file, as `updateIndex` counts them.
+ *  A call that holds parts read from the file uses the file's own lookups
+ *  only while the count is the one it read with those parts. */
+export function indexVersion(database: IndexDatabase): number {
+  return (database.prepare('PRAGMA user_version').get() as { user_version: number }).user_version;
+}
+
 /** Runs `work` on one file after every earlier update of that file in
  *  this process has finished, inside one write transaction: either every
  *  change lands or none does. SQLite's own lock makes other processes
- *  wait, but a wait inside one process would stop the update it waits on. */
+ *  wait, but a wait inside one process would stop the update it waits on.
+ *  An update that changed a row adds one to `indexVersion`. */
 export function updateIndex<T>(path: string, database: IndexDatabase, work: () => Promise<T>): Promise<T> {
   const before = updating.get(path) ?? Promise.resolve();
+  const changes = () => (database.prepare('SELECT total_changes() AS n').get() as { n: number }).n;
   const run = before.catch(() => undefined).then(async () => {
     database.exec('BEGIN IMMEDIATE');
     try {
+      const unchanged = changes();
       const result = await work();
+      if (changes() !== unchanged) database.exec(`PRAGMA user_version = ${indexVersion(database) + 1}`);
       database.exec('COMMIT');
       return result;
     } catch (error) {

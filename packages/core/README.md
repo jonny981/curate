@@ -164,6 +164,7 @@ Every lane of a call then reads the file instead of decoding the transcripts, fe
   Chat and Markdown store each part's [vector key](#optional-local-meaning-search), so a meaning lane finds the part's vector without hashing its text.
   Chat's key is that of the part's text with the part before it in its transcript, the text a meaning lane embeds unless a date window starts between them.
   Chat also stores each part's scrubbed id, made under the real path of the folder it was read from; a read that walks another path makes the ids again, as before.
+  Chat and Markdown also keep a phrase index (SQLite's FTS5): each part's words exactly as `phraseCount` compares them, with Markdown's titles beside them. A phrase, name or kind lane looks up the parts that hold its phrase there, adds the chat parts whose title holds its first word, and counts only those again, so it finds the same parts as a scan of every part. Each update that changes the file adds one to its update count (SQLite's `user_version`); once another call's update has moved the count since a call read its parts, that call's lookups name every part it holds, as a scan would.
 - **Ranks do not change:** each reader keeps its own scoring and reads the stored counts where it read the text.
   A lane read from the file returns the same candidates, in the same order, with the same signals, as the same read with `index: false`.
   Git's commit count, holding counts and average length depend on the call's look-back, filters and limit, so they are counted for each call over the commits the lane ranks.

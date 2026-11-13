@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, unlink, utimes, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm, unlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -112,6 +112,31 @@ const kinds: [string, (root: string, cache: string) => CandidateSource][] = [
   ['docs from two paths', (root, cache) => markdown({ paths: [join(root, 'notes'), join(root, 'log.md')], kind: 'docs', index: { directory: cache } })],
 ];
 
+describe('one-pass phrase lanes on generated notes', () => {
+  // The per-read path counts every part; the one-pass path counts only
+  // the parts the phrase index names.
+  let seed = 5;
+  const random = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
+  const words = ['battery', 'backup', 'Alice', 'retention', 'café', 'cafe\u0301', 'İstanbul', 'Москва', 'x\uE000y', 'ΣΟΦΟΣ',
+    '漢字', 'the', 'a', 'of', 'v2', 'id_9', 'runs', 'nightly'];
+  const say = (count: number) => Array.from({ length: count }, () => words[Math.floor(random() * words.length)]).join(' ');
+  const generated = Object.fromEntries(Array.from({ length: 30 }, (_, note) => [`notes/note-${note}.md`,
+    `---\ntitle: ${say(2)}\n---\n${Array.from({ length: 4 }, () => `## ${say(2)}\n\n${say(15)}\n`).join('\n')}`]));
+  const phraseLanes = ['battery backup', 'Alice', 'café', 'İstanbul', 'москва', 'x y', 'σοφος', '漢字', 'cafe', 'id 9',
+    'nightly runs', 'no such words'].map((task): CandidateReadRequest => ({ task, phraseLane: true, taskDate: '2026-10-28T12:00:00Z' }))
+    .concat([{ task: 'backup', phraseLane: true, topic: 'battery retention', wholeLanes: false, taskDate: '2026-10-28T12:00:00Z' }]);
+  it.each(kinds)('gives every phrase lane the per-read path gives, with %s', { timeout: 60_000 }, async (_name, make) => {
+    const root = await folder();
+    const cache = await folder();
+    await write(root, generated);
+    const oracle = await call(() => make(root, cache), false, false, phraseLanes);
+    const indexed = await call(() => make(root, cache), true, false, phraseLanes);
+    expect(indexed.served).toBe(phraseLanes.length);
+    indexed.results.forEach((result, index) => expect(result, JSON.stringify(phraseLanes[index])).toEqual(oracle.results[index]));
+    expect(oracle.results.filter((result) => result.candidates.length > 0).length).toBeGreaterThan(8);
+  });
+});
+
 describe('one-pass read with a vector store', () => {
   // The one-pass meaning lanes find each part's vector by the key the
   // stored note holds; the per-read path hashes the text it embeds. With
@@ -192,6 +217,38 @@ describe.each(kinds)('one-pass read of %s', (_name, make) => {
     await write(root, { 'notes/alice.md': notes['notes/alice.md'], 'notes/battery.md': notes['notes/battery.md'].replace(' See [[retention]].', '') });
     const unlinked = signalOf(await agree(source), /retention/, 'inbound-links');
     expect(unlinked ?? 0).toBeLessThan(linked!);
+  });
+
+  it('keeps a phrase lane to the parts the call holds when another call indexes an edit between its lanes', { timeout: 60_000 }, async () => {
+    const root = await folder();
+    const cache = await folder();
+    await write(root, { 'notes/note.md': 'The orchard grows quince.\n', 'log.md': 'Nothing here.\n' });
+    const source = () => make(root, cache);
+    const held = source();
+    const context = { files: new Map<string, Promise<string>>(), shared: new Map<object, unknown>() };
+    await held.read({ task: 'orchard', wholeLanes: true }, context);
+    // A call that finds nothing changed leaves the index's count of updates.
+    const { DatabaseSync } = process.getBuiltinModule('node:sqlite');
+    const count = async () => Promise.all((await readdir(cache)).filter((name) => name.endsWith('.sqlite')).map((name) => {
+      const database = new DatabaseSync(join(cache, name), { readOnly: true });
+      try {
+        return (database.prepare('PRAGMA user_version').get() as { user_version: number }).user_version;
+      } finally {
+        database.close();
+      }
+    }));
+    const before = await count();
+    await source().read({ task: 'apples' }, { files: new Map(), shared: new Map() });
+    expect(await count()).toEqual(before);
+    // Another call indexes an edit while this call holds the old text.
+    await write(root, { 'notes/note.md': 'The orchard grows apples and pears instead.\n' });
+    await source().read({ task: 'apples' }, { files: new Map(), shared: new Map() });
+    for (const [phrase, found] of [['quince', 1], ['apples', 0]] as const) {
+      const read = await held.read({ task: phrase, phraseLane: true }, context);
+      const texts = read.status === 'read' ? read.candidates.map((candidate) => candidate.text) : [];
+      expect(texts, phrase).toHaveLength(found);
+      expect(texts.every((text) => text.includes('quince')), phrase).toBe(true);
+    }
   });
 
   it('reads what the stored index holds when a file changes with its size and modified time unchanged', { timeout: 60_000 }, async () => {
