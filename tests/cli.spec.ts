@@ -1,8 +1,8 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, statSync } from 'node:fs';
-import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -27,18 +27,20 @@ const cli = join(__dirname, '../packages/cli/src/curate.mjs');
 const MODEL = join('curate', 'models', 'embeddinggemma-300M-Q8_0.gguf');
 const startingFolder = process.cwd();
 const directories: string[] = [];
-let home = '', cache = '', work = '', printed: string[] = [];
+let home = '', cache = '', work = '', bin = '', printed: string[] = [];
 
 beforeEach(async () => {
   const directory = await realpath(await mkdtemp(join(tmpdir(), 'curate-cli-')));
   directories.push(directory);
-  [home, cache, work] = [join(directory, 'home'), join(directory, 'cache'), join(directory, 'work')];
-  for (const folder of [home, cache, work]) await mkdir(folder);
-  // An empty folder outside any project, with no login CLI on PATH.
+  [home, cache, work, bin] = [join(directory, 'home'), join(directory, 'cache'), join(directory, 'work'), join(directory, 'bin')];
+  for (const folder of [home, cache, work, bin]) await mkdir(folder);
+  // An empty folder outside any project, with no login CLI on PATH: the
+  // folder that holds node can hold one, so PATH is a folder with node alone.
+  await symlink(process.execPath, join(bin, 'node'));
   process.chdir(work);
   vi.stubEnv('HOME', home);
   vi.stubEnv('XDG_CACHE_HOME', cache);
-  vi.stubEnv('PATH', dirname(process.execPath));
+  vi.stubEnv('PATH', bin);
   vi.stubEnv('TYPESAFE_API_KEY', '');
   printed = [];
   const keep = (...words: unknown[]) => { printed.push(words.map(String).join(' ')); };
@@ -154,7 +156,7 @@ describe('the curate command', () => {
 
   it('`curate check` in an empty folder exits 3 and names the missing model file', () => {
     const result = spawnSync(process.execPath, [cli, 'check'], { cwd: work, encoding: 'utf8',
-      env: { HOME: home, XDG_CACHE_HOME: cache, PATH: dirname(process.execPath) } });
+      env: { HOME: home, XDG_CACHE_HOME: cache, PATH: bin } });
     expect(result.status).toBe(3);
     expect(result.stdout).toContain(`missing  An embedding model file: no file at ${join(cache, MODEL)}.`);
     expect(result.stdout).toContain('ready    Node.js 22.20 or later:');
