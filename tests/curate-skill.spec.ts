@@ -7,8 +7,9 @@ import { delimiter, join, resolve } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { LABEL_KINDS, historySource, jevRequest, pickFromSources, type CandidateReadRequest, type CandidateSource, type MemoryCandidate } from '@curatejs/core';
+import { DEFAULT_MAX_QUESTION_TEXT, LABEL_KINDS, historySource, jevRequest, pickFromSources, type CandidateReadRequest, type CandidateSource, type MemoryCandidate } from '@curatejs/core';
 import { createLocalEmbedder } from '@curatejs/core/local-embeddings';
+import { indexFilePath, STORED_INDEX_FORMAT } from '@curatejs/core/internal';
 import { chat, CHAT_CASCADE, chatSettings } from '@curatejs/chat';
 import { git as gitSource } from '@curatejs/git';
 // @ts-expect-error The standalone JavaScript command has no type declarations.
@@ -2503,20 +2504,29 @@ describe('a call reads the project its working folder sits in', () => {
   });
 
   it('--prepare removes the files an earlier version of Curate kept and names them, where a call removes none', async () => {
-    const { at } = await project();
+    const { at, ids } = await project();
     const vectors = at('cache', 'curate', 'embeddings', 'model.vectors.flat');
     const removeEarlierFiles = vi.fn(async () => [vectors]);
     const embed = Object.assign(async (texts: readonly string[]) => texts.map(() => [1, 0]), { removeEarlierFiles });
     const model = (async () => ({ embed, dispose: vi.fn(async () => {}) })) as never;
     vi.mocked(createLocalEmbedder).mockImplementationOnce(model).mockImplementationOnce(model);
+    // The project chat's index file under an earlier format.
+    const index = at('cache', 'curate', 'index');
+    const key = { includeTools: false, size: DEFAULT_MAX_QUESTION_TEXT, exclude: [], stem: true };
+    const earlier = indexFilePath(index, ids.claude, key, STORED_INDEX_FORMAT - 1);
+    await mkdir(index, { recursive: true });
+    await writeFile(earlier, 'x');
     const { call } = subscriptionReply(searches());
     await run(['What did we plan for the orchard?'], call);
+    expect(realFs.existsSync(indexFilePath(index, ids.claude, key))).toBe(true);
+    expect(realFs.existsSync(earlier)).toBe(true);
     expect(removeEarlierFiles).not.toHaveBeenCalled();
     const printed = vi.mocked(console.log);
     printed.mockClear();
     await run(['--prepare']);
+    expect(realFs.existsSync(earlier)).toBe(false);
     expect(printed.mock.calls.map(([line]) => String(line)).slice(1))
-      .toEqual([`Removed 1 file an earlier version of Curate kept:\n  ${vectors}`]);
+      .toEqual([`Removed 2 files an earlier version of Curate kept:\n  ${earlier}\n  ${vectors}`]);
   });
 
   it('heads each commit with its hash and each document with its file', async () => {

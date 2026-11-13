@@ -152,6 +152,7 @@ Every lane of a call then reads the file instead of decoding the transcripts, fe
   The folder is created with mode `0700` and the file with mode `0600`, because the file holds the history's text.
 - **Its name:** the source id, the settings that decide which parts exist, and a format version.
   A change to any of them names a new file, so a stale file is never read.
+  A read never removes the file an earlier format wrote, since an older reader can still have it open. A run between calls removes them: a read context given a `removed` list brings the file up to date, removes the files earlier formats wrote for the same source and settings, each the name this one would have under that earlier format number, and adds each removed path to the list. The skill's `--prepare` (`curate prepare`) runs so.
   For chat those settings are `includeTools`, the part size, the source's own `exclude` and the keyword `stem` setting.
   For git they are the source's own `exclude`, `paths` and `since`.
   For Markdown they are the reader (`markdown()`, `knowledgeBase()` or `rules()`), the kind, the part size and the source's own `exclude`.
@@ -162,6 +163,7 @@ Every lane of a call then reads the file instead of decoding the transcripts, fe
   Markdown also stores each note's frontmatter, its fields, its links and whether it says it was replaced.
   Chat and Markdown store each part's [vector key](#optional-local-meaning-search), so a meaning lane finds the part's vector without hashing its text.
   Chat's key is that of the part's text with the part before it in its transcript, the text a meaning lane embeds unless a date window starts between them.
+  Chat also stores each part's scrubbed id, made under the real path of the folder it was read from; a read that walks another path makes the ids again, as before.
 - **Ranks do not change:** each reader keeps its own scoring and reads the stored counts where it read the text.
   A lane read from the file returns the same candidates, in the same order, with the same signals, as the same read with `index: false`.
   Git's commit count, holding counts and average length depend on the call's look-back, filters and limit, so they are counted for each call over the commits the lane ranks.

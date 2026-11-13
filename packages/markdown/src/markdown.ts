@@ -25,6 +25,7 @@ import {
   bagCount,
   bagEntries,
   eachPartVector,
+  removeEarlierFormats,
   textKey,
   type IndexDatabase,
   type IndexStatement,
@@ -940,6 +941,8 @@ type NotePart = EnumeratedPart & { readonly tokens?: { readonly length: number; 
 /** What the passes read from one note, from its text or from the
  *  stored index. */
 interface NoteEntry {
+  /** The note's row in the stored index, for one read from it. */
+  readonly note?: number;
   readonly fields: ReadonlyMap<string, string>;
   readonly frontmatter: string;
   /** Each link's two capture groups, as LINK matches them. */
@@ -949,15 +952,28 @@ interface NoteEntry {
   parts(): Iterable<NotePart>;
 }
 
-/** A note as the stored index holds it, with each part's tokens worked
- *  out once when it was stored. */
+/** A note as the stored index holds it: what it says about itself, kept
+ *  as one small JSON cell, and its parts, one row each, with each part's
+ *  tokens worked out once when it was stored. */
 interface StoredNote {
   readonly fields: readonly (readonly [string, string])[];
   readonly frontmatter: string;
   readonly links: readonly (readonly [string | null, string | null])[];
   readonly replaced: boolean;
-  readonly parts: readonly (EnumeratedPart & { readonly tokens: { readonly length: number; readonly words: string };
-    readonly vec: string })[];
+  readonly parts: readonly StoredPart[];
+}
+type StoredPart = EnumeratedPart & { readonly tokens: { readonly length: number; readonly words: string }; readonly vec: string };
+/** A part's row as the stored index holds it. */
+interface PartRow {
+  readonly id: string;
+  readonly title: string;
+  readonly text: string;
+  readonly heading: string;
+  readonly content_ref: string;
+  readonly date: string | null;
+  readonly length: number;
+  readonly words: string;
+  readonly vec: string;
 }
 
 /** A note read from its text: its parts are cut only when a pass asks. */
@@ -988,13 +1004,21 @@ function storeEntry(entry: NoteEntry): StoredNote {
   };
 }
 
-function storedEntry(stored: StoredNote): NoteEntry {
+/** A note read from the stored index: its row's JSON cell and its parts' rows. */
+function storedEntry(note: number, cell: string, rows: readonly PartRow[]): NoteEntry {
+  const stored = JSON.parse(cell) as Omit<StoredNote, 'parts'>;
+  const parts: StoredPart[] = rows.map((row) => ({
+    id: row.id, title: row.title, text: row.text, heading: row.heading, contentRef: row.content_ref,
+    ...(row.date === null ? {} : { date: JSON.parse(row.date) as MemoryCandidate['date'] }),
+    tokens: { length: row.length, words: row.words }, vec: row.vec,
+  }));
   return {
+    note,
     fields: new Map(stored.fields),
     frontmatter: stored.frontmatter,
     links: () => stored.links.map(([wiki, path]) => [wiki ?? undefined, path ?? undefined] as const),
     replaced: () => stored.replaced,
-    parts: () => stored.parts,
+    parts: () => parts,
   };
 }
 
@@ -1032,42 +1056,46 @@ async function syncNotes(
   try {
     return await updateIndex(path, database, async () => {
       const started = performance.now();
-      database.exec(`CREATE TABLE IF NOT EXISTS notes (path TEXT PRIMARY KEY, root TEXT NOT NULL,
-        size INTEGER NOT NULL, mtime TEXT NOT NULL, modified TEXT NOT NULL, entry TEXT NOT NULL,
-        parts INTEGER NOT NULL) WITHOUT ROWID;
-      CREATE TABLE IF NOT EXISTS postings (term TEXT NOT NULL, path TEXT NOT NULL,
-        ordinal INTEGER NOT NULL, count INTEGER NOT NULL, PRIMARY KEY (term, path, ordinal)) WITHOUT ROWID;
-      CREATE INDEX IF NOT EXISTS postingsPath ON postings (path);
+      // A note is a row with a small JSON cell of what it says about
+      // itself; each part is a row of its own; a posting names its note by
+      // the note's row number.
+      database.exec(`CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY, path TEXT NOT NULL UNIQUE,
+        root TEXT NOT NULL, size INTEGER NOT NULL, mtime TEXT NOT NULL, modified TEXT NOT NULL, note TEXT NOT NULL,
+        parts INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS parts (note INTEGER NOT NULL, ordinal INTEGER NOT NULL, id TEXT NOT NULL,
+        title TEXT NOT NULL, text TEXT NOT NULL, heading TEXT NOT NULL, content_ref TEXT NOT NULL, date TEXT,
+        length INTEGER NOT NULL, words TEXT NOT NULL, vec TEXT NOT NULL, PRIMARY KEY (note, ordinal)) WITHOUT ROWID;
+      CREATE TABLE IF NOT EXISTS postings (term TEXT NOT NULL, note INTEGER NOT NULL,
+        ordinal INTEGER NOT NULL, count INTEGER NOT NULL, PRIMARY KEY (term, note, ordinal)) WITHOUT ROWID;
+      CREATE INDEX IF NOT EXISTS postingsNote ON postings (note);
       CREATE TABLE IF NOT EXISTS counts (name TEXT PRIMARY KEY, n INTEGER NOT NULL) WITHOUT ROWID`);
-      // The file's part total, kept beside the notes so no call sums the
-      // `parts` column, which sits after each note's whole text. A file
-      // written before the count existed is summed once.
+      // The file's part total, kept beside the notes so no call sums
+      // them. A file written before the count existed is summed once.
       let total = (database.prepare("SELECT n FROM counts WHERE name = 'parts'").get() as { n: number } | undefined)?.n
         ?? (database.prepare('SELECT COALESCE(SUM(parts), 0) AS n FROM notes').get() as { n: number }).n;
-      const insertPosting = database.prepare('INSERT OR IGNORE INTO postings (term, path, ordinal, count) VALUES (?, ?, ?, ?)');
-      const wipePostings = database.prepare('DELETE FROM postings WHERE path = ?');
+      const insertPart = database.prepare(`INSERT INTO parts (note, ordinal, id, title, text, heading, content_ref, date,
+        length, words, vec) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+      const insertPosting = database.prepare('INSERT OR IGNORE INTO postings (term, note, ordinal, count) VALUES (?, ?, ?, ?)');
+      const wipeParts = database.prepare('DELETE FROM parts WHERE note = ?');
+      const wipePostings = database.prepare('DELETE FROM postings WHERE note = ?');
       // A note's posting list is its parts' stored words with their
       // counts; the same rows give a part's length and each term's
       // document frequency at score time.
-      const postParts = (file: string, stored: StoredNote) => {
+      const writeParts = (note: number, stored: StoredNote) => {
         stored.parts.forEach((part, ordinal) => {
-          const words = part.tokens?.words ?? wordBag(tokenize(part.text));
-          for (const [term, count] of bagEntries(words)) insertPosting.run(term, file, ordinal, count);
+          insertPart.run(note, ordinal, part.id, part.title, part.text, part.heading, part.contentRef,
+            part.date === undefined ? null : JSON.stringify(part.date), part.tokens.length, part.tokens.words, part.vec);
+          for (const [term, count] of bagEntries(part.tokens.words)) insertPosting.run(term, note, ordinal, count);
         });
       };
-      // `parts` is stored after the note's whole text, so reading it for
-      // every note would walk every stored text. It is read only for a
-      // note that changed or went.
-      const rows = new Map((database.prepare('SELECT path, size, mtime, modified FROM notes WHERE root = ?')
-        .all(root) as { path: string; size: number; mtime: string; modified: string }[])
+      const rows = new Map((database.prepare('SELECT id, path, size, mtime, modified, parts FROM notes WHERE root = ?')
+        .all(root) as { id: number; path: string; size: number; mtime: string; modified: string; parts: number }[])
         .map((row) => [row.path, row]));
-      // A note's stored parts, under whichever root of the file stored it:
-      // rewriting it here replaces them.
-      const partsOf = database.prepare('SELECT parts FROM notes WHERE path = ?');
-      const storedParts = (file: string) => (partsOf.get(file) as { parts: number } | undefined)?.parts ?? 0;
-      const write = database.prepare(`INSERT INTO notes (path, root, size, mtime, modified, entry, parts)
+      // A note another root of the file stored: rewriting it here replaces its parts.
+      const elsewhere = database.prepare('SELECT parts FROM notes WHERE path = ?');
+      const write = database.prepare(`INSERT INTO notes (path, root, size, mtime, modified, note, parts)
         VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (path) DO UPDATE SET root = excluded.root, size = excluded.size,
-        mtime = excluded.mtime, modified = excluded.modified, entry = excluded.entry, parts = excluded.parts`);
+        mtime = excluded.mtime, modified = excluded.modified, note = excluded.note, parts = excluded.parts RETURNING id`);
       const modified = new Map<string, string>();
       let added = 0;
       let removed = 0;
@@ -1096,26 +1124,31 @@ async function syncNotes(
           throw new SourceReadError('failed', `Could not read ${file}: ${message(error)}`);
         }
         const stored = storeEntry(build(file, text));
-        const old = storedParts(file);
-        if (row !== undefined) removed += old;
-        total -= old;
-        write.run(file, root, size, mtime, changed, JSON.stringify(stored), stored.parts.length);
-        wipePostings.run(file);
-        postParts(file, stored);
+        if (row !== undefined) {
+          removed += row.parts;
+          total -= row.parts;
+        } else {
+          total -= (elsewhere.get(file) as { parts: number } | undefined)?.parts ?? 0;
+        }
+        const { parts, ...note } = stored;
+        const id = (write.get(file, root, size, mtime, changed, JSON.stringify(note), parts.length) as { id: number }).id;
+        wipeParts.run(id);
+        wipePostings.run(id);
+        writeParts(id, stored);
         modified.set(file, changed);
         added += stored.parts.length;
         total += stored.parts.length;
       }
       if (prune) {
         const walked = new Set(files);
-        const remove = database.prepare('DELETE FROM notes WHERE path = ?');
-        for (const file of rows.keys()) {
+        const remove = database.prepare('DELETE FROM notes WHERE id = ?');
+        for (const [file, row] of rows) {
           if (walked.has(file)) continue;
-          const old = storedParts(file);
-          removed += old;
-          total -= old;
-          remove.run(file);
-          wipePostings.run(file);
+          removed += row.parts;
+          total -= row.parts;
+          remove.run(row.id);
+          wipeParts.run(row.id);
+          wipePostings.run(row.id);
         }
       }
       database.prepare("INSERT INTO counts (name, n) VALUES ('parts', ?) ON CONFLICT (name) DO UPDATE SET n = excluded.n").run(total);
@@ -1132,6 +1165,8 @@ async function syncNotes(
 interface FileMeta {
   /** Its slot in the flat file list, which a part descriptor names. */
   readonly index: number;
+  /** Its note's row in the stored index, for a file read from it. */
+  readonly note?: number;
   readonly file: string;
   readonly name: string;
   readonly directory: string;
@@ -1274,8 +1309,8 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
       const partBudget = Math.min(maxQuestionText, request.maxQuestionText ?? maxQuestionText);
       // The stored index, for every read that is not pinned to a revision.
       const indexFolder = request.revision === undefined ? indexDirectory(options.index) : undefined;
-      const indexPath = indexFolder === undefined ? undefined
-        : indexFilePath(indexFolder, id, { kind: options.kind, legacy, budget: partBudget, exclude: exclude ?? [] });
+      const indexKey = { kind: options.kind, legacy, budget: partBudget, exclude: exclude ?? [] };
+      const indexPath = indexFolder === undefined ? undefined : indexFilePath(indexFolder, id, indexKey);
       const requestExclude = JSON.stringify(request.exclude ?? []);
       const updates = new Map<string, NotesUpdate>();
       const nameOf = (state: ReadState, file: string) => relative(state.root, file).split(sep).join('/');
@@ -1289,17 +1324,20 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
           // A pass that parses a note opens its own connection and closes
           // it when it ends.
           let database: IndexDatabase | undefined;
-          let get: IndexStatement | undefined;
+          let noteOf: IndexStatement | undefined;
+          let partsOf: IndexStatement | undefined;
           try {
             for (const file of files) {
               if (request.signal?.aborted) throw new SourceReadError('cancelled', 'The read was cancelled.');
               let entry = parsed?.get(file);
               if (entry === undefined) {
                 database ??= await openIndexFile(indexPath!, indexFolder!);
-                get ??= database.prepare('SELECT entry FROM notes WHERE path = ?');
-                const row = get.get(file) as { entry: string } | undefined;
+                noteOf ??= database.prepare('SELECT id, note FROM notes WHERE path = ?');
+                partsOf ??= database.prepare(`SELECT id, title, text, heading, content_ref, date, length, words, vec
+                  FROM parts WHERE note = ? ORDER BY ordinal`);
+                const row = noteOf.get(file) as { id: number; note: string } | undefined;
                 if (row === undefined) throw new SourceReadError('failed', `The stored index is missing ${file}.`);
-                entry = storedEntry(JSON.parse(row.entry) as StoredNote);
+                entry = storedEntry(row.id, row.note, partsOf.all(row.id) as PartRow[]);
                 parsed?.set(file, entry);
               }
               yield { file, entry };
@@ -1418,6 +1456,9 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
             () => syncNotes(indexPath, indexFolder!, root, files, requestExclude === '[]',
               (file, text) => textEntry(text, file, nameOf(state, file), legacy, role === 'rule', partBudget),
               context, request.signal)));
+        }
+        if (updates.size > 0 && context.removed !== undefined) {
+          context.removed.push(...await removeEarlierFormats(indexFolder!, id, indexKey));
         }
       }
       /** The notes one note links to, by path. Links count from every
@@ -1546,6 +1587,7 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
               if (legacy !== undefined && declared === undefined) anyUndeclared = true;
               const meta: FileMeta = {
                 index: corpusMetas.length,
+                ...(entry.note === undefined ? {} : { note: entry.note }),
                 file, name, directory: dirname(file), scope: undefined, deferred: false, scopeSkipped: false,
                 replaced: entry.replaced(), fileHits: 0, declared,
                 partStart: corpusParts.length, partCount: 0, inbound: 0, location: 0,
@@ -1660,6 +1702,7 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
           const staleAfter = Date.parse(entry.fields.get('stale_after') ?? '');
           const meta: FileMeta = {
             index: metas.length,
+            ...(entry.note === undefined ? {} : { note: entry.note }),
             file, name, directory: dirname(file),
             ...(always === undefined ? {} : { alwaysOn: always }), scope, deferred,
             scopeSkipped: false,
@@ -2078,21 +2121,21 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
         else walked.push(group);
       }
       let database: IndexDatabase | undefined;
-      const byFile = new Map<string, FileMeta>();
+      const byNote = new Map<number, FileMeta>();
       try {
         if (posted.length > 0 && (corpus === undefined || terms.some((term) => !corpus.postings.has(term)))) {
           database = await openIndexFile(indexPath!, indexFolder!);
-          for (const group of posted) for (const meta of group.metas) byFile.set(meta.file, meta);
+          for (const group of posted) for (const meta of group.metas) if (meta.note !== undefined) byNote.set(meta.note, meta);
         }
         const average = count === 0 ? 0 : totalLength / count;
         if (average > 0) {
           if (posted.length > 0) {
-            const postingOf = database?.prepare('SELECT path, ordinal, count FROM postings WHERE term = ?');
+            const postingOf = database?.prepare('SELECT note, ordinal, count FROM postings WHERE term = ?');
             const postingsFor = (term: string) => {
               const held = new Set<number>();
               const hitsOf: { index: number; f: number }[] = [];
-              for (const row of postingOf!.all(term) as { path: string; ordinal: number; count: number }[]) {
-                const meta = byFile.get(row.path);
+              for (const row of postingOf!.all(term) as { note: number; ordinal: number; count: number }[]) {
+                const meta = byNote.get(row.note);
                 if (meta === undefined || row.ordinal >= meta.partCount) continue;
                 const index = meta.partStart + row.ordinal;
                 held.add(index);

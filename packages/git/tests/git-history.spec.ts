@@ -1,5 +1,5 @@
 import { execFile, execFileSync, type ChildProcess } from 'node:child_process';
-import { closeSync, openSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, openSync, writeFileSync } from 'node:fs';
 import { appendFile, chmod, mkdir, mkdtemp, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { pickFromSources, type CandidateSource } from '@curatejs/core';
 import { git as gitSource } from '../src/index.js';
-import { commitDate } from '@curatejs/core/internal';
+import { commitDate, indexFilePath, STORED_INDEX_FORMAT } from '@curatejs/core/internal';
 
 // The reader's own git invocations always carry `-c core.hooksPath=…`;
 // recording only those calls keeps the fixture's own commits out of the
@@ -1145,6 +1145,25 @@ describe('git stored index', () => {
     }
   });
 
+  it('removes the files earlier formats wrote only when a run between calls asks', async () => {
+    const directory = await history();
+    const cache = await mkdtemp(join(tmpdir(), 'curate-git-index-'));
+    temporaryDirectories.push(cache);
+    const source = gitSource(directory, { index: { directory: cache } });
+    const key = { exclude: [] };
+    const earlier = Array.from({ length: STORED_INDEX_FORMAT - 1 }, (_, at) => indexFilePath(cache, source.id, key, at + 1));
+    for (const path of earlier) await writeFile(path, 'x');
+    const request = { task: 'orchard', wholeLanes: false };
+    // An ordinary read removes nothing: an older reader can still have one open.
+    expect((await source.read(request, { files: new Map() })).status).toBe('read');
+    expect(existsSync(indexFilePath(cache, source.id, key))).toBe(true);
+    expect(earlier.every((path) => existsSync(path))).toBe(true);
+    const removed: string[] = [];
+    expect((await source.read(request, { files: new Map(), removed })).status).toBe('read');
+    expect(removed.sort()).toEqual([...earlier].sort());
+    expect(earlier.some((path) => existsSync(path))).toBe(false);
+  });
+
   it('finds a new commit, and rebuilds the file when history is rewritten', async () => {
     const directory = await history();
     const cache = await mkdtemp(join(tmpdir(), 'curate-git-index-'));
@@ -1194,6 +1213,31 @@ describe('git stored index', () => {
         .toEqual(['add the battery backup job', 'tune retention', 'unrelated tidy']);
     } finally {
       database.close();
+    }
+  });
+
+  it('gives every lane of one call that shares a read context what git gives each lane alone, on a generated history', { timeout: 60_000 }, async () => {
+    // Commit fields and term postings are read once per call and shared
+    // by its lanes; a lane that excludes a path brings a second update in.
+    const words = ['battery', 'backup', 'runs', 'nightly', 'retention', 'policy', 'snapshots', 'Alice', 'the', 'job', 'failed'];
+    let seed = 11;
+    const random = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
+    const pick = (count: number) => Array.from({ length: count }, () => words[Math.floor(random() * words.length)]).join(' ');
+    const directory = await repository(Array.from({ length: 60 }, (_, at) => ({
+      subject: at % 10 === 0 ? 'unrelated tidy' : pick(4), body: at % 7 === 0 ? '' : pick(12),
+      date: `2026-${String(8 + Math.floor(at / 20)).padStart(2, '0')}-${String(1 + (at % 20)).padStart(2, '0')}T10:00:00Z`,
+      files: { [at % 5 === 0 ? 'secret.md' : `src/file-${at % 4}.ts`]: `content ${at}` },
+    })));
+    const cache = await mkdtemp(join(tmpdir(), 'curate-git-index-'));
+    temporaryDirectories.push(cache);
+    const generatedLanes = [...lanes, { task: 'nightly job failed', wholeLanes: false, limit: 3 },
+      { task: 'nightly job failed', wholeLanes: true, limit: 25 }, { task: 'nightly', phraseLane: true, limit: 4 }]
+      .map((lane) => ({ ...lane, taskDate: '2026-10-28T12:00:00Z' }));
+    const source = gitSource(directory, { index: { directory: cache } });
+    const context = { files: new Map<string, Promise<string>>(), shared: new Map<object, unknown>() };
+    for (const lane of generatedLanes) {
+      const direct = withoutReport(await read(gitSource(directory, { index: false }), lane));
+      expect(withoutReport(await source.read(lane, context)), JSON.stringify(lane)).toEqual(direct);
     }
   });
 

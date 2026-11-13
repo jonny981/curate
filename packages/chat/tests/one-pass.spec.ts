@@ -189,6 +189,54 @@ describe.each(kinds)('one-pass chat read with %s', (_name, make) => {
   });
 });
 
+describe('one-pass keyword lanes on a generated history', () => {
+  // The direct read scores every part and sorts them all: the oracle for
+  // lanes that order only the parts a posting or title names.
+  let seed = 7;
+  const random = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
+  const words = ['orchard', 'quince', 'pump', 'filter', 'S3', 'bucket', 'Alice', 'we', 'said', 'the', 'pond', 'runs', 'codex',
+    'user', 'assistant', 'noted', 'v2', 'id', 'a', 'of', 'backups', 'nightly', '2026'];
+  async function generated(root: string) {
+    for (let file = 0; file < 12; file += 1) {
+      const provider: ChatProvider = file % 3 === 0 ? 'claude-code' : 'codex';
+      const records = Array.from({ length: 30 }, (_, turn) => {
+        // Repeated texts make ties; some parts hold no task word at all.
+        const text = turn % 9 === 0 ? 'The same line again.'
+          : Array.from({ length: 3 + Math.floor(random() * 9) }, () => words[Math.floor(random() * words.length)]).join(' ');
+        const day = `2026-${String(9 + (turn % 2)).padStart(2, '0')}-${String(1 + ((file + turn) % 27)).padStart(2, '0')}T10:00:00Z`;
+        return message(provider, turn % 2 === 0 ? 'user' : 'assistant', text, day);
+      });
+      await transcript(provider, records, root, `generated-${file}`);
+    }
+  }
+  const tasks = ['Where is the S3 bucket Alice named for nightly backups?', 'codex user assistant 2026 orchard',
+    'pond pump filter', 'a v2 id of the quince', 'zzzz qqqq'];
+  const generatedLanes = tasks.flatMap((task) => [
+    { task }, { task, wholeLanes: false }, { task, wholeLanes: true },
+    { task, wholeLanes: false, limit: 1 }, { task, wholeLanes: false, limit: 7 }, { task, wholeLanes: true, limit: 40 },
+    { task, wholeLanes: false, limit: 5_000 },
+  ]).map((lane): CandidateReadRequest => ({ ...lane, taskDate: '2026-10-28T12:00:00Z' }));
+  it.each<[string, Parameters<typeof chat>[0]]>([
+    ['the default settings', {}],
+    ['no rank merge', { keyword: { rrf: false } }],
+    ['length-weighted keywords', { keyword: { b: 0.75 } }],
+    ['a look-back', { since: '2026-09-20' }],
+  ])('gives every keyword lane the direct read gives, with %s', { timeout: 60_000 }, async (_name, settings) => {
+    const root = await folder();
+    const cache = await folder();
+    await generated(root);
+    const direct: ReturnType<typeof bare>[] = [];
+    for (const lane of generatedLanes) direct.push(bare(await chat({ paths: [root], index: false, ...settings }).read(lane)));
+    const onePassed = await call(() => chat({ paths: [root], index: { directory: cache }, ...settings }), true, false, generatedLanes);
+    expect(onePassed.served).toBe(generatedLanes.length);
+    onePassed.results.forEach((result, index) => expect(result, JSON.stringify(generatedLanes[index])).toEqual(direct[index]));
+    // The fixture exercises what it says: a cut that keeps some, a miss, and limits on both sides of the scored parts.
+    expect(direct[1]!.candidates.length).toBeGreaterThan(1);
+    expect(direct[2]!.candidates.length).toBeGreaterThan(direct[1]!.candidates.length);
+    expect(direct[29]!.candidates).toEqual([]);
+  });
+});
+
 describe('one-pass chat read with a vector store', () => {
   // The one-pass meaning lanes find each part's vector by the key its row
   // stores; the per-lane path hashes the text it embeds. With the per-lane

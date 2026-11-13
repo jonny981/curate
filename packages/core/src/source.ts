@@ -265,6 +265,12 @@ export interface CandidateReadContext {
    *  lanes of one read can reuse the first lane's enumeration and
    *  similarities. A context without it shares nothing across lanes. */
   readonly shared?: Map<object, unknown>;
+  /** Given by a run between calls, such as the skill's `--prepare`: a
+   *  reader that brings its stored index up to date there also removes
+   *  the files earlier formats of that index wrote, and adds each path it
+   *  removed here. An ordinary read never removes them, since an older
+   *  reader can still have one open. */
+  readonly removed?: string[];
 }
 
 export interface CandidateSource {

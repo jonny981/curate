@@ -17,7 +17,7 @@ import {
 } from '@curatejs/core/internal';
 import { bm25Term, tokenize, taskTerms, phraseCount, laneBend, normalized, similarity } from '@curatejs/core/internal';
 import {
-  checkIndexOption, indexDirectory, indexFilePath, openIndexFile, updateIndex, wordBag, bagEntries,
+  checkIndexOption, indexDirectory, indexFilePath, openIndexFile, removeEarlierFormats, updateIndex, wordBag, bagEntries,
   type IndexDatabase, type StoredIndexOptions, type StoredIndexReport,
 } from '@curatejs/core/internal';
 import type { MemoryCandidate } from '@curatejs/core';
@@ -265,6 +265,13 @@ interface GitIndex {
   readonly report: StoredIndexReport;
   /** The commit list of each date range this call read, listed once. */
   readonly ranges: Map<string, Promise<readonly { readonly sha: string; readonly short: string }[]>>;
+  /** What the lanes of this call read from the file, read once: each
+   *  commit's fields but its body, and each term's postings by commit. A
+   *  commit's row and postings never change once written. */
+  readonly read: {
+    readonly fields: Map<string, Omit<StoredCommit, 'body'>>;
+    readonly postings: Map<string, ReadonlyMap<string, number>>;
+  };
 }
 
 /** The non-merge commits `sha` reaches inside `range`, in `git log`
@@ -361,7 +368,7 @@ async function syncGitIndex(
           added += 1;
         }
       }
-      return { path, directory, head, held, order, ranges: new Map(),
+      return { path, directory, head, held, order, ranges: new Map(), read: { fields: new Map(), postings: new Map() },
         report: { parts: held.size, added, removed, rebuilt, ms: Math.round(performance.now() - started) } };
     });
   } finally {
@@ -436,14 +443,17 @@ export function git(
   };
   const loadIndex = async (
     directory: string, toplevel: string, head: string, range: readonly string[], requested: readonly string[],
-    signal: AbortSignal | undefined,
+    signal: AbortSignal | undefined, removed: string[] | undefined,
   ) => {
     // The source's own exclusions, path list and look-back decide which
     // commits exist: they name the file.
-    const path = indexFilePath(directory, id, { exclude: exclude ?? [],
-      ...(paths === undefined ? {} : { paths }), ...(options.since === undefined ? {} : { since: options.since }) });
-    return syncGitIndex(path, directory, toplevel, head, await resolveExcluded(exclude ?? [], toplevel),
+    const key = { exclude: exclude ?? [],
+      ...(paths === undefined ? {} : { paths }), ...(options.since === undefined ? {} : { since: options.since }) };
+    const path = indexFilePath(directory, id, key);
+    const index = await syncGitIndex(path, directory, toplevel, head, await resolveExcluded(exclude ?? [], toplevel),
       paths === undefined ? undefined : await resolveExcluded(paths, toplevel), range, requested, signal);
+    if (removed !== undefined) removed.push(...await removeEarlierFormats(directory, id, key));
+    return index;
   };
   const reader: CandidateSource = {
     id,
@@ -538,7 +548,7 @@ export function git(
           if (context !== undefined && byRead === undefined) calls.set(context, byRead = new Map());
           let loading = byRead?.get(key)?.find((update) => update.since <= since && update.until >= until)?.loading;
           if (loading === undefined && request.revision === undefined) {
-            loading = loadIndex(directory, toplevel, sha, dateRange(since, until), requested, signal);
+            loading = loadIndex(directory, toplevel, sha, dateRange(since, until), requested, signal, context?.removed);
             if (byRead !== undefined) byRead.set(key, [...byRead.get(key) ?? [], { since, until, loading }]);
           }
           const loaded = await loading;
@@ -574,31 +584,44 @@ export function git(
         const embedBox = context?.shared;
         let embedShared = embedBox?.get(reader) as { meaning?: Lite } | undefined;
         if (embedBox !== undefined && embedShared === undefined) embedBox.set(reader, embedShared = {});
-        // A stored commit's row, read once per read when a lane needs it.
-        const rowOf = database?.prepare('SELECT date, subject, body, paths, length FROM commits WHERE sha = ?');
-        const storedCommit = (commitSha: string): StoredCommit => {
-          const row = rowOf!.get(commitSha) as Record<string, unknown>;
-          return {
-            date: row.date as string, subject: row.subject as string, body: row.body as string,
-            changedPaths: JSON.parse(row.paths as string) as string[], length: row.length as number,
-          };
+        // A stored commit's fields, read once per call; its body, read
+        // only for a lane that uses it.
+        const rowOf = database?.prepare('SELECT date, subject, paths, length FROM commits WHERE sha = ?');
+        const bodyOf = database?.prepare('SELECT body FROM commits WHERE sha = ?');
+        const storedFields = (commitSha: string): Omit<StoredCommit, 'body'> => {
+          let fields = stored!.read.fields.get(commitSha);
+          if (fields === undefined) {
+            const row = rowOf!.get(commitSha) as Record<string, unknown>;
+            stored!.read.fields.set(commitSha, fields = {
+              date: row.date as string, subject: row.subject as string,
+              changedPaths: JSON.parse(row.paths as string) as string[], length: row.length as number,
+            });
+          }
+          return fields;
         };
+        const storedBody = (commitSha: string) => (bodyOf!.get(commitSha) as { body: string }).body;
         // A stored commit's task-word mentions come from its postings:
         // the same token counts `measure` counts in its text. Each task
-        // term's count is a point lookup on the postings primary key, so
-        // the rows never outlive the lane's page.
-        const postingOf = database?.prepare('SELECT count FROM postings WHERE term = ? AND sha = ?');
-        const lengthOf = database?.prepare('SELECT length FROM commits WHERE sha = ?');
+        // term's postings are read once per call, so a lane costs what its
+        // terms' postings hold rather than a lookup per commit and term.
+        const postingsOf = database?.prepare('SELECT sha, count FROM postings WHERE term = ?');
+        const termCounts = (term: string) => {
+          let counts = stored!.read.postings.get(term);
+          if (counts === undefined) {
+            counts = new Map((postingsOf!.all(term) as { sha: string; count: number }[]).map((row) => [row.sha, row.count]));
+            stored!.read.postings.set(term, counts);
+          }
+          return counts;
+        };
         const mentionsOf = (commit: { readonly sha: string; readonly subject: string }, body: string): Mentions => {
           if (stored === undefined) return measure(commit.subject, body, termIndex);
           return {
-            counts: terms.map((term) =>
-              (postingOf!.get(term, commit.sha) as { count: number } | undefined)?.count ?? 0),
-            length: (lengthOf!.get(commit.sha) as { length: number }).length,
+            counts: terms.map((term) => termCounts(term).get(commit.sha) ?? 0),
+            length: storedFields(commit.sha).length,
           };
         };
         const bodiesOf = async (shas: readonly string[]): Promise<readonly string[]> => stored === undefined
-          ? readBodies(toplevel, shas, signal) : shas.map((commitSha) => storedCommit(commitSha).body);
+          ? readBodies(toplevel, shas, signal) : shas.map(storedBody);
         const named: string[] = [];
         for (const path of request.paths ?? []) {
           const name = repoPath(
@@ -693,13 +716,17 @@ export function git(
           if (listing === undefined) stored.ranges.set(key, listing = listCommits(toplevel, stored.head, range, signal));
           listed = (await listing).filter((commit) => stored.held.has(commit.sha));
         }
+        // A cut keyword lane reads its counts from the postings, and a read
+        // with exclusions fetches the bodies it admits later: neither reads
+        // a body here.
+        const pageBodies = !filtered && (lite !== undefined || request.phraseLane === true || !cut);
         for (let offset = 0; wanted === undefined || offset < wanted;) {
           const page = wanted === undefined ? LOG_PAGE : Math.min(LOG_PAGE, wanted - offset);
           const batch = listed !== undefined
             ? listed.slice(offset, offset + page).map(({ sha: commitSha, short }): LogCommit => {
-              const held = storedCommit(commitSha);
+              const held = storedFields(commitSha);
               return { sha: commitSha, short, date: held.date, subject: held.subject,
-                body: filtered ? '' : held.body, changedPaths: held.changedPaths };
+                body: pageBodies ? storedBody(commitSha) : '', changedPaths: held.changedPaths };
             })
             : parseLog(
               await runGit(toplevel, [

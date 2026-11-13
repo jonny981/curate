@@ -1143,7 +1143,9 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
       return module.createLocalEmbedder({ modelPath, cacheDirectory })
         .catch((error) => { throw Object.assign(error, { setup: existsSync(modelPath) ? undefined : 'model' }); });
     };
-    const context = { files: new Map(), shared: new Map() };
+    // `--prepare` runs between calls, when no older reader still has the
+    // files earlier formats wrote open, so its reads remove them.
+    const context = { files: new Map(), shared: new Map(), ...(options.prepareOnly ? { removed: [] } : {}) };
     // Every need this command has, checked before any work and reported
     // together. --prepare needs no key or login, and a call given a stand-in
     // for the search-lines model needs no login. A call finds the model by its
@@ -1210,9 +1212,7 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
         return { source: source.id, ...await warmSource(source, { task: options.task || 'prepare' }, local.embed, context) };
       }));
       for (const read of reads) if (readWarning(read) !== undefined) console.error(readWarning(read));
-      // `--prepare` runs between calls, when no older process still has the
-      // files an earlier version kept open, so it removes them.
-      const removed = [...await local.embed.removeEarlierFiles?.() ?? []];
+      const removed = [...context.removed, ...await local.embed.removeEarlierFiles?.() ?? []];
       record.status = 'prepared';
       console.log(`Prepared ${reads.length} ${reads.length === 1 ? 'source' : 'sources'}${project === undefined ? '' : ` for ${project}`}.`);
       if (removed.length > 0) {

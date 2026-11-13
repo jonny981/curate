@@ -1,13 +1,13 @@
 import { execFile, execFileSync, type ChildProcess } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
+import { existsSync, writeFileSync } from 'node:fs';
 import { chmod, mkdir, mkdtemp, readdir, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { pick, pickFromSources, SourceReadError, type CandidateReadRequest, type CandidateSource, type PickAnswer, type PickBatch } from '@curatejs/core';
-import { SHARED_FILE_CACHE_BYTES } from '@curatejs/core/internal';
+import { DEFAULT_MAX_QUESTION_TEXT, pick, pickFromSources, SourceReadError, type CandidateReadRequest, type CandidateSource, type PickAnswer, type PickBatch } from '@curatejs/core';
+import { indexFilePath, SHARED_FILE_CACHE_BYTES, STORED_INDEX_FORMAT } from '@curatejs/core/internal';
 import { git as gitSource } from '@curatejs/git';
 import { knowledgeBase, markdown, rules } from '../src/index.js';
 
@@ -1507,6 +1507,24 @@ describe('markdown stored index', () => {
       }
       expect(matched, name).toBeGreaterThan(0);
     }
+  });
+
+  it('removes the files earlier formats wrote only when a run between calls asks', async () => {
+    const directory = await tree(notes);
+    const cache = await tree({});
+    const source = knowledgeBase(directory, { index: { directory: cache } });
+    const key = { kind: 'knowledge', legacy: 'knowledge', budget: DEFAULT_MAX_QUESTION_TEXT, exclude: [] };
+    const earlier = Array.from({ length: STORED_INDEX_FORMAT - 1 }, (_, at) => indexFilePath(cache, source.id, key, at + 1));
+    for (const path of earlier) await writeFile(path, 'x');
+    const request = { task: 'orchard', wholeLanes: false };
+    // An ordinary read removes nothing: an older reader can still have one open.
+    expect((await source.read(request, { files: new Map() })).status).toBe('read');
+    expect(existsSync(indexFilePath(cache, source.id, key))).toBe(true);
+    expect(earlier.every((path) => existsSync(path))).toBe(true);
+    const removed: string[] = [];
+    expect((await source.read(request, { files: new Map(), removed })).status).toBe('read');
+    expect(removed.sort()).toEqual([...earlier].sort());
+    expect(earlier.some((path) => existsSync(path))).toBe(false);
   });
 
   it('reads a changed note again and drops a deleted one', async () => {
