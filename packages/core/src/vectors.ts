@@ -1,4 +1,5 @@
-import type { EmbeddingFunction } from './meaning.js';
+import { createHash } from 'node:crypto';
+import type { EmbeddingFunction, StoredEmbeddingFunction } from './meaning.js';
 
 /** Vectors a store hands out already normalized, so a lane must not
  *  normalize them again. Internal only: nothing serializes the mark. */
@@ -77,4 +78,27 @@ export async function embedSimilarities(
     scores[index] = similarity(query, normalized(vector, query.length));
   });
   return scores;
+}
+
+/** The key a stored vector is found by: its whole text's SHA-256, as 64
+ *  hex characters. A reader that stores a part's key finds the part's
+ *  vector without hashing its text again. */
+export const textKey = (text: string): string => createHash('sha256').update(text).digest('hex');
+
+/** Each part's vector, by its index from 0 to `count`, handed to `visit`
+ *  in no set order: found by `key` when `embed` keeps a store, else
+ *  embedded from `text` 32 parts at a time. */
+export async function eachPartVector(
+  embed: EmbeddingFunction, count: number, key: (index: number) => string, text: (index: number) => string,
+  visit: (index: number, vector: ArrayLike<number>) => void, signal?: AbortSignal,
+): Promise<void> {
+  if ('eachVector' in embed) {
+    return (embed as StoredEmbeddingFunction).eachVector(Array.from({ length: count }, (_, index) => key(index)), text, visit, signal);
+  }
+  for (let start = 0; start < count; start += 32) {
+    const texts = Array.from({ length: Math.min(32, count - start) }, (_, offset) => text(start + offset));
+    const vectors = await embed(texts, signal);
+    if (vectors.length !== texts.length) throw new TypeError('embed must return one vector per input text.');
+    vectors.forEach((vector, offset) => visit(start + offset, vector));
+  }
 }

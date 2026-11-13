@@ -52,10 +52,14 @@ export interface ChatRankSession {
   /** The part at `index` in a postings read, counted once for the
    *  corpus statistics: its title's tokens (folded into the counts and
    *  document frequencies exactly as `storedBag` folds them) and its
-   *  stored word total. `words` is the title already lower-cased and
-   *  split on what is not a letter or digit, for a caller that splits
-   *  each title once for every lane; the counts are the same. */
-  observeIndexed(index: number, title: string, long: number, words?: readonly string[]): void;
+   *  stored word total. */
+  observeIndexed(index: number, title: string, long: number): void;
+  /** `observeIndexed` for every part of a postings read at once, from its
+   *  titles' words indexed once for the whole call: the parts count, each
+   *  title's words count into the totals, and each query term's title
+   *  words count for the parts that hold them, exactly as `observeIndexed`
+   *  counts them part by part. */
+  observeTitles(titles: ChatTitleIndex): void;
   /** One posting row of the read's population: the part at `index`
    *  holds `term` `count` times. A `short` row's word stems the way
    *  `storedBag` stems it before it counts. */
@@ -82,6 +86,57 @@ export interface StoredChatWords {
   readonly long: number;
   readonly stems: string;
   readonly short: string;
+}
+
+/** Each part's title words, indexed once for a whole call so that a
+ *  postings read finds the titles holding a query term without visiting
+ *  every title. A word of three characters or more is kept under its
+ *  stem, when the settings stem, and a shorter one as written. Each entry
+ *  of a list is one occurrence. */
+export interface ChatTitleIndex {
+  readonly parts: number;
+  /** Every part's title words of three characters or more and its long
+   *  text words, summed over the parts. */
+  readonly length: number;
+  /** Each part's title words of three characters or more and long text
+   *  words. */
+  readonly lengths: Uint32Array;
+  readonly stems: ReadonlyMap<string, readonly number[]>;
+  readonly shorts: ReadonlyMap<string, readonly number[]>;
+}
+
+/** The title index of parts whose titles are `titles` and whose stored
+ *  long-word totals are `longs`, under these keyword settings. */
+export function chatTitleIndex(
+  titles: readonly string[], longs: ArrayLike<number>, settings: Partial<ChatKeywordSettings> = {},
+): ChatTitleIndex {
+  const stem = ({ ...CHAT_KEYWORD_SETTINGS, ...settings }).stem;
+  const stemmed = new Map<string, string>();
+  const stems = new Map<string, number[]>();
+  const shorts = new Map<string, number[]>();
+  const lengths = new Uint32Array(titles.length);
+  let length = 0;
+  const add = (map: Map<string, number[]>, key: string, index: number) => {
+    const list = map.get(key);
+    if (list === undefined) map.set(key, [index]);
+    else list.push(index);
+  };
+  titles.forEach((title, index) => {
+    let kept = 0;
+    for (const word of title.toLowerCase().split(/[^a-z0-9]+/)) {
+      if (word.length > 2) {
+        kept += 1;
+        let value = stemmed.get(word);
+        if (value === undefined) stemmed.set(word, value = stem ? porterStem(word) : word);
+        add(stems, value, index);
+      } else if (word !== '') {
+        add(shorts, word, index);
+      }
+    }
+    lengths[index] = kept + longs[index]!;
+    length += kept + longs[index]!;
+  });
+  return { parts: titles.length, length, lengths, stems, shorts };
 }
 
 /** The stored form of a part's text under these keyword settings. */
@@ -191,6 +246,13 @@ export function startChatRank(task: string, settings: Partial<ChatKeywordSetting
   // of the parts holding each term for the document frequencies.
   const statLen = new Map<number, number>();
   const shortLen = new Map<number, number>();
+  // With a title index, a part's length before short words is its title
+  // index length plus the short title words the task names.
+  let titleIndex: ChatTitleIndex | undefined;
+  const titleShort = new Map<number, number>();
+  // The parts `scoreIndexed` scored: in a postings read, the only parts
+  // `finish` has to order.
+  let scoredIndexes: number[] | undefined;
   const termFreq = new Map<number, Map<string, number>>();
   const holders = new Map<string, Set<number>>();
   const addTerm = (index: number, term: string, count: number) => {
@@ -218,26 +280,28 @@ export function startChatRank(task: string, settings: Partial<ChatKeywordSetting
       sparse = true;
       return { stems: [...queryTerms], shorts: [...shortIds] };
     },
-    observeIndexed(index, title, long, words) {
+    observeIndexed(index, title, long) {
       sparse = true;
       docs += 1;
-      if (words !== undefined) {
-        // The same tokens `tok` keeps, counted one at a time.
-        let kept = 0;
-        for (const word of words) {
-          if (!(word.length > 2 || shortIds.has(word))) continue;
-          kept += 1;
-          const stem = stemOf(word);
-          if (queryTerms.has(stem)) addTerm(index, stem, 1);
-        }
-        statLen.set(index, kept + long);
-        length += kept + long;
-        return;
-      }
       const bag = textBag(title);
       statLen.set(index, bag.length + long);
       length += bag.length + long;
       for (const [word, count] of bag.tf) if (queryTerms.has(word)) addTerm(index, word, count);
+    },
+    observeTitles(titles) {
+      sparse = true;
+      titleIndex = titles;
+      docs += titles.parts;
+      length += titles.length;
+      for (const term of queryTerms) for (const index of titles.stems.get(term) ?? []) addTerm(index, term, 1);
+      for (const word of shortIds) {
+        const stem = stemOf(word);
+        for (const index of titles.shorts.get(word) ?? []) {
+          titleShort.set(index, (titleShort.get(index) ?? 0) + 1);
+          length += 1;
+          if (queryTerms.has(stem)) addTerm(index, stem, 1);
+        }
+      }
     },
     posting(index, term, count, short) {
       sparse = true;
@@ -252,15 +316,44 @@ export function startChatRank(task: string, settings: Partial<ChatKeywordSetting
     },
     scoreIndexed(fields) {
       for (const [term, held] of holders) df.set(term, held.size);
+      const statOf = (index: number) => statLen.get(index)
+        ?? (titleIndex === undefined ? 0 : titleIndex.lengths[index]! + (titleShort.get(index) ?? 0));
       for (const [index, tf] of termFreq) {
-        parts[index] = scoreBag(fields, {
-          tf, length: (statLen.get(index) ?? 0) + (shortLen.get(index) ?? 0),
-        });
+        parts[index] = scoreBag(fields, { tf, length: statOf(index) + (shortLen.get(index) ?? 0) });
       }
+      scoredIndexes = [...termFreq.keys()];
     },
     finish(ids, places) {
       const count = sparse ? ids.length : parts.length;
       if (!count) return { scores: [], base: [] };
+      // A postings read scored only the parts its postings named. Every
+      // other part scores zero in every list, so it gets no fused score
+      // and sorts after every scored part: ordering the scored parts alone
+      // gives them the ranks a sort of every part would.
+      if (scoredIndexes !== undefined) {
+        const scoredList = scoredIndexes;
+        let top = 1e-9;
+        for (const index of scoredList) top = Math.max(top, scored(index).raw);
+        const base = new Array<number>(count).fill(0);
+        for (const index of scoredList) base[index] = 3 * scored(index).raw / top + scored(index).extra;
+        if (config.rrf === false) return { scores: base, base };
+        const ranked = (value: (index: number) => number) => [...scoredList].sort((a, b) => value(b) - value(a)
+          || (places === undefined ? ids[a]!.localeCompare(ids[b]!) : places[a]! - places[b]!) || a - b);
+        const lists: [(index: number) => number, number][] = [[(index) => base[index]!, 2]];
+        if (queries.content !== null) lists.push([(index) => scored(index).content, 1]);
+        if (queries.names !== null) lists.push([(index) => scored(index).names, 1]);
+        const scores = new Array<number>(count).fill(0);
+        const bonus = new Map<number, number>();
+        for (const [value, weight] of lists) {
+          ranked(value).forEach((index, rank) => {
+            if (value(index) <= 0) return;
+            scores[index] = scores[index]! + weight / (60 + rank + 1);
+            bonus.set(index, Math.max(bonus.get(index) ?? 0, rank === 0 ? 0.05 : rank < 3 ? 0.02 : 0));
+          });
+        }
+        for (const [index, extra] of bonus) scores[index] = scores[index]! + extra;
+        return { scores, base };
+      }
       let top = 1e-9;
       for (let index = 0; index < count; index += 1) top = Math.max(top, scored(index).raw);
       const base = Array.from({ length: count }, (_, index) => 3 * scored(index).raw / top + scored(index).extra);

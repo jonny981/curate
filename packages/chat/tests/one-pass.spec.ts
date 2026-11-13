@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import type { CandidateReadRequest, CandidateSource } from '@curatejs/core';
+import { cachedEmbeddings, type CandidateReadRequest, type CandidateSource } from '@curatejs/core';
 import { chat, type ChatProvider } from '../src/index.js';
 import { onePass } from '../src/chat.js';
 
@@ -189,6 +189,100 @@ describe.each(kinds)('one-pass chat read with %s', (_name, make) => {
   });
 });
 
+describe('one-pass keyword lanes on a generated history', () => {
+  // The direct read scores every part and sorts them all: the oracle for
+  // lanes that order only the parts a posting or title names.
+  let seed = 7;
+  const random = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
+  const words = ['orchard', 'quince', 'pump', 'filter', 'S3', 'bucket', 'Alice', 'we', 'said', 'the', 'pond', 'runs', 'codex',
+    'user', 'assistant', 'noted', 'v2', 'id', 'a', 'of', 'backups', 'nightly', '2026', 'café', 'İstanbul', 'Москва',
+    'x\uE000y', 'ΣΟΦΟΣ', 'cafe\u0301'];
+  async function generated(root: string) {
+    for (let file = 0; file < 12; file += 1) {
+      const provider: ChatProvider = file % 3 === 0 ? 'claude-code' : 'codex';
+      const records = Array.from({ length: 30 }, (_, turn) => {
+        // Repeated texts make ties; some parts hold no task word at all.
+        const text = turn % 9 === 0 ? 'The same line again.'
+          : Array.from({ length: 3 + Math.floor(random() * 9) }, () => words[Math.floor(random() * words.length)]).join(' ');
+        const day = `2026-${String(9 + (turn % 2)).padStart(2, '0')}-${String(1 + ((file + turn) % 27)).padStart(2, '0')}T10:00:00Z`;
+        return message(provider, turn % 2 === 0 ? 'user' : 'assistant', text, day);
+      });
+      await transcript(provider, records, root, `generated-${file}`);
+    }
+  }
+  const tasks = ['Where is the S3 bucket Alice named for nightly backups?', 'codex user assistant 2026 orchard',
+    'pond pump filter', 'a v2 id of the quince', 'zzzz qqqq'];
+  const generatedLanes = tasks.flatMap((task): Omit<CandidateReadRequest, 'taskDate'>[] => [
+    { task }, { task, wholeLanes: false }, { task, wholeLanes: true },
+    { task, wholeLanes: false, limit: 1 }, { task, wholeLanes: false, limit: 7 }, { task, wholeLanes: true, limit: 40 },
+    { task, wholeLanes: false, limit: 5_000 },
+  ]).concat([
+    // Phrase, name and kind lanes: words only titles hold, words in
+    // other scripts, and words a private-use character joins.
+    ...['S3 bucket', 'Alice', 'codex user', 'assistant 2026', 'we said', 'café', 'İstanbul', 'москва', 'x y', 'σοφος', 'cafe']
+      .map((phrase) => ({ task: phrase, phraseLane: true })),
+    { task: 'orchard', phraseLane: true, limit: 3 },
+    { task: 'we said', phraseLane: true, topic: tasks[2]!, wholeLanes: false },
+    { task: 'pond pump', phraseLane: true, topic: tasks[0]!, wholeLanes: true, speakerOnly: true },
+  ]).map((lane): CandidateReadRequest => ({ ...lane, taskDate: '2026-10-28T12:00:00Z' }));
+  it.each<[string, Parameters<typeof chat>[0]]>([
+    ['the default settings', {}],
+    ['no rank merge', { keyword: { rrf: false } }],
+    ['length-weighted keywords', { keyword: { b: 0.75 } }],
+    ['a look-back', { since: '2026-09-20' }],
+  ])('gives every keyword lane the direct read gives, with %s', { timeout: 60_000 }, async (_name, settings) => {
+    const root = await folder();
+    const cache = await folder();
+    await generated(root);
+    const direct: ReturnType<typeof bare>[] = [];
+    for (const lane of generatedLanes) direct.push(bare(await chat({ paths: [root], index: false, ...settings }).read(lane)));
+    const onePassed = await call(() => chat({ paths: [root], index: { directory: cache }, ...settings }), true, false, generatedLanes);
+    expect(onePassed.served).toBe(generatedLanes.length);
+    onePassed.results.forEach((result, index) => expect(result, JSON.stringify(generatedLanes[index])).toEqual(direct[index]));
+    // The fixture exercises what it says: a cut that keeps some, a miss, and limits on both sides of the scored parts.
+    expect(direct[1]!.candidates.length).toBeGreaterThan(1);
+    expect(direct[2]!.candidates.length).toBeGreaterThan(direct[1]!.candidates.length);
+    expect(direct[29]!.candidates).toEqual([]);
+    const phrases = direct.slice(35);
+    expect(phrases.filter((result) => result.candidates.length > 0).length).toBeGreaterThan(8);
+  });
+});
+
+describe('one-pass chat read with a vector store', () => {
+  // The one-pass meaning lanes find each part's vector by the key its row
+  // stores; the per-lane path hashes the text it embeds. With the per-lane
+  // path run first, every true text's vector is stored, so a one-pass run
+  // that embeds anything used a key that is not its text's.
+  const stored = (directory: string) => {
+    const texts: string[] = [];
+    const embedder = cachedEmbeddings(async (list) => { texts.push(...list); return embed(list); }, { directory, modelId: 'test' });
+    return { texts, lanes: lanes.map((lane) => lane.meaningLane === undefined ? lane : { ...lane, meaningLane: { embed: embedder } }) };
+  };
+  it.each(kinds)('gives the lanes the per-lane path gives, and embeds nothing the store holds, with %s', { timeout: 60_000 }, async (_name, make) => {
+    const root = await folder();
+    const cache = await folder();
+    const vectors = await folder();
+    await history(root);
+    // A part with only an invisible character embeds its title.
+    await transcript('codex', [message('codex', 'user', 'Before the mark.'), message('codex', 'user', '​'),
+      message('codex', 'assistant', 'After the mark, the pond pump.')], root, 'marks');
+    const first = stored(vectors);
+    await call(() => make(root, cache), false, false, first.lanes);
+    expect(first.texts.length).toBeGreaterThan(30);
+    const second = stored(vectors);
+    const together = await agree(() => make(root, cache), second.lanes);
+    expect(second.texts).toEqual([]);
+    expect(together[14]!.candidates.length).toBeGreaterThan(1);
+    // New parts: an appended part embeds with the stored part before it.
+    await appendFile(join(root, '2026/10/02', 'orchard.jsonl'),
+      `${JSON.stringify(message('codex', 'assistant', 'The pond pump filter moved to the orchard.', LATER))}\n`);
+    await call(() => make(root, cache), false, false, stored(vectors).lanes);
+    const third = stored(vectors);
+    await agree(() => make(root, cache), third.lanes);
+    expect(third.texts).toEqual([]);
+  });
+});
+
 describe('one-pass chat read', () => {
   // The per-lane path shares a call's first keyword enumeration and its
   // meaning scores with every later lane, whatever that lane's own
@@ -214,6 +308,24 @@ describe('one-pass chat read', () => {
     const cache = await folder();
     await history(root);
     await agree(() => chat({ paths: [root], index: { directory: cache } }), list, served);
+  });
+
+  it('keeps a phrase lane to the parts the call holds when another call indexes an edit between its lanes', { timeout: 60_000 }, async () => {
+    const root = await folder();
+    const cache = await folder();
+    const said = (text: string) => transcript('claude-code', [message('claude-code', 'user', text)], root, 'session');
+    await said('The orchard grows quince.');
+    const source = () => chat({ providers: ['claude-code'], paths: [root], index: { directory: cache } });
+    const held = source();
+    const context = { files: new Map<string, Promise<string>>(), shared: new Map<object, unknown>() };
+    await held.read({ task: 'orchard', wholeLanes: true }, context);
+    // Another call indexes an edit while this call holds the old text.
+    await said('The orchard grows apples and pears instead.');
+    await source().read({ task: 'apples' }, { files: new Map(), shared: new Map() });
+    for (const [phrase, texts] of [['quince', ['The orchard grows quince.']], ['apples', []]] as const) {
+      const read = await held.read({ task: phrase, phraseLane: true }, context);
+      expect(read.status === 'read' ? read.candidates.map((candidate) => candidate.text) : undefined, phrase).toEqual(texts);
+    }
   });
 
   it('serves a history with one part', { timeout: 60_000 }, async () => {

@@ -1,11 +1,12 @@
-import { appendFile, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { historySource, LABEL_KINDS, pickFromSources, type CandidateReadRequest, type CandidateSource, type PickDecide, type PickQuestion } from '@curatejs/core';
+import { cachedEmbeddings, historySource, LABEL_KINDS, pickFromSources, type CandidateReadRequest, type CandidateSource, type PickDecide, type PickQuestion } from '@curatejs/core';
 import { chat, chatSettings, type ChatProvider } from '../src/index.js';
+import { indexFilePath, STORED_INDEX_FORMAT } from '@curatejs/core/internal';
 import { CHAT_KEYWORD_SETTINGS, rankChat } from '../src/chat-rank.js';
 import { porterStem } from '../src/porter.js';
 
@@ -132,6 +133,33 @@ describe.each(['claude-code', 'codex'] as const)('chat %s', (provider) => {
     const result = await read(provider, await transcript(provider, [user, record]));
     expect(result.candidates.map((candidate) => candidate.text).sort()).toEqual(['first part', 'plain user text', 'second part']);
     expect(new Set(result.candidates.map((candidate) => candidate.id)).size).toBe(3);
+  });
+
+  it('gives each part its own id in a folder whose name holds a credential word', async () => {
+    for (const name of ['token-service', 'secrets', 'pwd-notes']) {
+      const root = join(await folder(), name);
+      await transcript(provider, [message(provider, 'user', 'first part'), message(provider, 'assistant', 'second part')], root);
+      const result = await read(provider, root);
+      expect(result.candidates.map((candidate) => candidate.text).sort(), name).toEqual(['first part', 'second part']);
+      expect(new Set(result.candidates.map((candidate) => candidate.id)).size, name).toBe(2);
+      expect(result.candidates.every((candidate) => candidate.id.includes(`${name}:`)), name).toBe(true);
+    }
+  });
+
+  it('masks a folder that looks like a secret in each id and keeps the rest of the id', async () => {
+    for (const name of [`sk-${'Ab3'.repeat(8)}`, 'api_key=Kd7Kd7Kd7', 'api_key:Kd7Kd7Kd7', 'password:tinyFakePwd']) {
+      const root = join(await folder(), name);
+      await transcript(provider, [message(provider, 'user', 'first part'), message(provider, 'assistant', 'second part')], root);
+      // Read from the stored index and straight from the files.
+      for (const options of [{}, { index: false as const }]) {
+        const ids = (await read(provider, root, options)).candidates.map((candidate) => candidate.id);
+        expect(new Set(ids).size, name).toBe(2);
+        for (const id of ids) {
+          expect(id.includes(name), name).toBe(false);
+          expect(id, name).toMatch(new RegExp(`/\\[redacted\\]:${provider === 'codex' ? '2026/10/02' : 'project'}/session-one\\.jsonl:\\d+:\\d+:\\d+$`));
+        }
+      }
+    }
   });
 
   it('preserves message parts, roles, session ids and dates', async () => {
@@ -928,6 +956,156 @@ describe('stored index', () => {
     expect(fileReads.filter(grownFile)).toHaveLength(1);
     expect(edited.index).toMatchObject({ parts: 21, added: 21, removed: 21 });
     expect(edited.candidates.map((candidate) => candidate.text)).toContain('The orchard harvest starts on Monday.');
+  });
+
+  it('reports the part total the file holds, as a count of its parts would, through appends, edits, removals and exclusions', async () => {
+    const directory = await folder();
+    const cache = await folder();
+    await transcript('codex', Array.from({ length: 6 }, (_, index) => message('codex', 'user', `orchard ${index}`)), directory, 'one');
+    await transcript('codex', [message('codex', 'user', 'orchard two')], directory, 'two');
+    await transcript('claude-code', [message('claude-code', 'user', 'orchard three')], directory, 'three');
+    const counted = async () => {
+      const [name] = (await readdir(cache)).filter((entry) => entry.endsWith('.sqlite'));
+      const { DatabaseSync } = process.getBuiltinModule('node:sqlite');
+      const database = new DatabaseSync(join(cache, name!), { readOnly: true });
+      try {
+        return (database.prepare('SELECT COUNT(*) AS n FROM parts').get() as { n: number }).n;
+      } finally {
+        database.close();
+      }
+    };
+    const reported = async (request: CandidateReadRequest = { task: 'orchard' }) => {
+      const result = await chat({ paths: [directory], index: { directory: cache } }).read(request);
+      if (result.status !== 'read') throw new Error('Expected a read');
+      return result.index!.parts;
+    };
+    const changes: (() => Promise<unknown>)[] = [
+      async () => undefined,
+      () => appendFile(join(directory, '2026/10/02/one.jsonl'), `${JSON.stringify(message('codex', 'user', 'orchard later'))}\n`),
+      async () => writeFile(join(directory, '2026/10/02/one.jsonl'),
+        (await readFile(join(directory, '2026/10/02/one.jsonl'), 'utf8')).split('\n').slice(2).join('\n')),
+      () => rm(join(directory, '2026/10/02/two.jsonl')),
+      () => transcript('codex', [message('codex', 'user', 'orchard four'), message('codex', 'assistant', 'orchard five')], directory, 'four'),
+    ];
+    for (const change of changes) {
+      await change();
+      expect(await reported()).toBe(await counted());
+    }
+    // A request that excludes a transcript leaves its parts in the file.
+    expect(await reported({ task: 'orchard', exclude: ['2026/10/02/four.jsonl'] })).toBe(await counted());
+    expect(await counted()).toBe(9);
+  });
+
+  it('gives each part the id the direct read gives, from the stored ids, and makes them for a root they do not name', { timeout: 60_000 }, async () => {
+    // The configured folder sits under a link; renaming the folder the
+    // link names and pointing the link at it keeps every file's size and
+    // modified time, so only the root says the stored ids are stale.
+    const base = await folder();
+    await mkdir(join(base, 'a'));
+    const history = await transcript('codex', [message('codex', 'user', 'The orchard row was pruned.'),
+      message('codex', 'assistant', 'Noted the orchard.')], join(base, 'a', 'chats'), 'one');
+    await transcript('claude-code', [message('claude-code', 'user', 'The orchard pump.')], history, 'two');
+    await symlink(join(base, 'a'), join(base, 'link'));
+    const paths = [join(base, 'link', 'chats')];
+    const cache = await folder();
+    const lane: CandidateReadRequest = { task: 'orchard', wholeLanes: true };
+    const same = async () => {
+      const stored = await chat({ paths, index: { directory: cache } }).read(lane);
+      expect(withoutReport(stored)).toEqual(withoutReport(await chat({ paths, index: false }).read(lane)));
+      if (stored.status !== 'read') throw new Error('Expected a read');
+      return stored;
+    };
+    const first = await same();
+    expect(first.candidates.every((candidate) => candidate.id.includes(`${sep}a${sep}chats:`))).toBe(true);
+    expect((await same()).index).toMatchObject({ added: 0, removed: 0 });
+    await rename(join(base, 'a'), join(base, 'b'));
+    await rm(join(base, 'link'));
+    await symlink(join(base, 'b'), join(base, 'link'));
+    // The stored parts stay; their ids are made again for the new root.
+    const moved = await same();
+    expect(moved.candidates.every((candidate) => candidate.id.includes(`${sep}b${sep}chats:`))).toBe(true);
+    expect(moved.index).toMatchObject({ added: 0, removed: 0 });
+    // An append under the new root leaves ids of two roots in one
+    // transcript: the read makes them all again.
+    await appendFile(join(base, 'b', 'chats', '2026/10/02', 'one.jsonl'),
+      `${JSON.stringify(message('codex', 'assistant', 'The orchard again.'))}\n`);
+    const appended = await same();
+    expect(appended.candidates.every((candidate) => candidate.id.includes(`${sep}b${sep}chats:`))).toBe(true);
+    expect(appended.index).toMatchObject({ added: 1, removed: 0 });
+  });
+
+  it('removes the files earlier formats wrote for this source and its settings only when a run between calls asks, and no other', async () => {
+    const directory = await history();
+    const cache = await folder();
+    const key = { includeTools: false, size: 700, exclude: [], stem: true };
+    const earlier = Array.from({ length: STORED_INDEX_FORMAT - 1 }, (_, at) => indexFilePath(cache, 'chat:test', key, at + 1));
+    const others = [indexFilePath(cache, 'chat:other', key, 1), indexFilePath(cache, 'chat:test', { ...key, size: 300 }, 1)];
+    for (const path of [...earlier, ...others]) await writeFile(path, 'x');
+    await writeFile(`${earlier[0]}-wal`, 'x');
+    const source = chat({ id: 'chat:test', paths: [directory], index: { directory: cache } });
+    const names = async () => (await readdir(cache)).filter((name) => !/-(?:wal|shm)$/.test(name)).sort();
+    const current = indexFilePath(cache, 'chat:test', key);
+    // An ordinary read removes nothing.
+    expect((await source.read({ task }, { files: new Map(), shared: new Map() })).status).toBe('read');
+    expect(await names()).toEqual([current, ...earlier, ...others].map((path) => path.slice(cache.length + 1)).sort());
+    const removed: string[] = [];
+    expect((await source.read({ task }, { files: new Map(), shared: new Map(), removed })).status).toBe('read');
+    expect(await names()).toEqual([current, ...others].map((path) => path.slice(cache.length + 1)).sort());
+    expect(removed.sort()).toEqual([...earlier, `${earlier[0]}-wal`].sort());
+  });
+
+  it('leaves an older reader its file of an earlier format across a newer reader\'s reads', async () => {
+    const directory = await history();
+    const cache = await folder();
+    const key = { includeTools: false, size: 700, exclude: [], stem: true };
+    const source = () => chat({ id: 'chat:test', paths: [directory], index: { directory: cache } });
+    // An older reader in the middle of a call: its file, of an earlier
+    // format, is open, and its next lane opens it again by name.
+    const older = indexFilePath(cache, 'chat:test', key, STORED_INDEX_FORMAT - 1);
+    const sqlite = process.getBuiltinModule('node:sqlite') as unknown as {
+      DatabaseSync: new (path: string, options?: { readOnly: boolean }) => {
+        exec(sql: string): void; prepare(sql: string): { get(): unknown }; close(): void } };
+    const open = new sqlite.DatabaseSync(older);
+    open.exec('CREATE TABLE parts (text TEXT); INSERT INTO parts VALUES (\'one\'), (\'two\')');
+    const count = 'SELECT COUNT(*) AS n FROM parts';
+    const before = open.prepare(count).get();
+    expect(before).toEqual({ n: 2 });
+    const context = { files: new Map<string, Promise<string>>(), shared: new Map<object, unknown>() };
+    for (const lane of [task, 'battery storage']) expect((await source().read({ task: lane }, context)).status).toBe('read');
+    expect(open.prepare(count).get()).toEqual(before);
+    open.close();
+    const again = new sqlite.DatabaseSync(older, { readOnly: true });
+    expect(again.prepare(count).get()).toEqual(before);
+    again.close();
+  });
+
+  it('rebuilds over an index of an earlier format and embeds no part again', { timeout: 60_000 }, async () => {
+    const directory = await history();
+    const cache = await folder();
+    const vectors = await folder();
+    const lane = (embed: CandidateReadRequest['meaningLane'] & object) =>
+      ({ task, wholeLanes: true, meaningLane: embed, meaningQueries: [task, 'battery storage'] });
+    const read = async () => {
+      const texts: string[] = [];
+      const embed = cachedEmbeddings(async (list) => { texts.push(...list); return list.map((text) => [text.length % 7, 1]); },
+        { directory: vectors, modelId: 'test' });
+      const context = { files: new Map<string, Promise<string>>(), shared: new Map<object, unknown>() };
+      const result = await chat({ paths: [directory], index: { directory: cache } }).read(lane({ embed }), context);
+      return { texts, result: withoutReport(result) };
+    };
+    const first = await read();
+    expect(first.texts.length).toBeGreaterThan(5);
+    // What an earlier format leaves on disk: a file of another version.
+    const [now, before] = [`.v${STORED_INDEX_FORMAT}.`, `.v${STORED_INDEX_FORMAT - 1}.`];
+    for (const name of await readdir(cache)) {
+      if (name.endsWith(`${now}sqlite`)) await rename(join(cache, name), join(cache, name.replace(now, before)));
+    }
+    const earlier = (await readdir(cache)).filter((name) => name.endsWith(`${before}sqlite`));
+    expect(earlier).toHaveLength(1);
+    const rebuilt = await read();
+    expect(rebuilt.texts).toEqual([]);
+    expect(rebuilt.result).toEqual(first.result);
+    expect((await readdir(cache)).filter((name) => name.endsWith(`${now}sqlite`))).toHaveLength(1);
   });
 
   it('drops a removed transcript and reads a new one', async () => {

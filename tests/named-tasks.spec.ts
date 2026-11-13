@@ -62,10 +62,10 @@ describe('a name lane brings in a part the search missed', () => {
 
   it('never decides it with names off', async () => {
     const picked = await pickFromSources([source(false)], { task }, { task, decide: keepClub });
-    // Under the fused order a pool member sits in the record as
-    // unassessed: no lane ranked it, so it stayed outside the feed.
-    expect(picked.record.candidates.find((c) => c.id === club.id)).toMatchObject(
-      { status: 'unassessed', reason: 'feed' });
+    // Under the fused order a part no lane kept is only counted: it
+    // stayed outside the feed and was never decided.
+    expect(picked.record.candidates.find((c) => c.id === club.id)).toBeUndefined();
+    expect(picked.record.unheld?.chat).toBeGreaterThan(0);
     expect(picked.record).not.toHaveProperty('names');
     expect(picked.record.effects.find((e) => e.setting === 'names')).toBeUndefined();
   });

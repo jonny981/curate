@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { chmod, mkdir, open } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { chmod, mkdir, open, rm } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -29,7 +30,7 @@ export interface StoredIndexReport {
 
 /** The stored layout's version. A file of another version is never
  *  opened: its name differs, so the source is indexed again. */
-export const STORED_INDEX_FORMAT = 2;
+export const STORED_INDEX_FORMAT = 6;
 
 /** Checks a reader's `index` option: a settings object or false. */
 export function checkIndexOption(option: unknown): void {
@@ -62,15 +63,37 @@ export interface IndexStatement {
   run(...values: unknown[]): { readonly changes: number | bigint; readonly lastInsertRowid: number | bigint };
   all(...values: unknown[]): unknown[];
   get(...values: unknown[]): unknown;
+  /** The rows one at a time, never all held. */
+  iterate(...values: unknown[]): IterableIterator<unknown>;
 }
 
 /** The file for one source: its name comes from the source id, the
  *  settings that decide which parts exist (`key`) and the format
  *  version. A change to any of them names a new file. */
-export function indexFilePath(directory: string, sourceId: string, key: unknown): string {
-  const hash = createHash('sha256').update(JSON.stringify([sourceId, key, STORED_INDEX_FORMAT])).digest('hex').slice(0, 24);
+export function indexFilePath(directory: string, sourceId: string, key: unknown, format = STORED_INDEX_FORMAT): string {
+  const hash = createHash('sha256').update(JSON.stringify([sourceId, key, format])).digest('hex').slice(0, 24);
   const readable = sourceId.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48);
-  return join(directory, `${readable === '' ? 'source' : readable}-${hash}.v${STORED_INDEX_FORMAT}.sqlite`);
+  return join(directory, `${readable === '' ? 'source' : readable}-${hash}.v${format}.sqlite`);
+}
+
+/** Removes the files earlier formats wrote for the same source and
+ *  settings, and returns the paths it removed: each is the name
+ *  `indexFilePath` gives them under an earlier format number, which every
+ *  format has named the same way, and holds only what the source gives
+ *  again. A name says which files are this source's, not that no older
+ *  reader still has one open, so only a run between calls asks for it
+ *  (a read context's `removed`), never an ordinary read. */
+export async function removeEarlierFormats(directory: string, sourceId: string, key: unknown): Promise<string[]> {
+  const removed: string[] = [];
+  for (let format = 1; format < STORED_INDEX_FORMAT; format += 1) {
+    const path = indexFilePath(directory, sourceId, key, format);
+    for (const file of ['', '-wal', '-shm', '-journal'].map((end) => `${path}${end}`)) {
+      if (!existsSync(file)) continue;
+      await rm(file, { force: true });
+      removed.push(file);
+    }
+  }
+  return removed;
 }
 
 /** Opens (creating when absent) one source's index file with mode 0600,
@@ -115,16 +138,27 @@ export async function openIndexFile(path: string, directory: string): Promise<In
 
 const updating = new Map<string, Promise<unknown>>();
 
+/** How many updates have changed the file, as `updateIndex` counts them.
+ *  A call that holds parts read from the file uses the file's own lookups
+ *  only while the count is the one it read with those parts. */
+export function indexVersion(database: IndexDatabase): number {
+  return (database.prepare('PRAGMA user_version').get() as { user_version: number }).user_version;
+}
+
 /** Runs `work` on one file after every earlier update of that file in
  *  this process has finished, inside one write transaction: either every
  *  change lands or none does. SQLite's own lock makes other processes
- *  wait, but a wait inside one process would stop the update it waits on. */
+ *  wait, but a wait inside one process would stop the update it waits on.
+ *  An update that changed a row adds one to `indexVersion`. */
 export function updateIndex<T>(path: string, database: IndexDatabase, work: () => Promise<T>): Promise<T> {
   const before = updating.get(path) ?? Promise.resolve();
+  const changes = () => (database.prepare('SELECT total_changes() AS n').get() as { n: number }).n;
   const run = before.catch(() => undefined).then(async () => {
     database.exec('BEGIN IMMEDIATE');
     try {
+      const unchanged = changes();
       const result = await work();
+      if (changes() !== unchanged) database.exec(`PRAGMA user_version = ${indexVersion(database) + 1}`);
       database.exec('COMMIT');
       return result;
     } catch (error) {

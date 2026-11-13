@@ -4,13 +4,13 @@ import { homedir } from 'node:os';
 import { basename, join, relative, resolve, sep } from 'node:path';
 
 import {
-  canonicalPath, phraseCount, laneBend, normalized, similarity, sinceCutoff, taskMoment, timeZoneOf,
-  zonedIso, bagEntries, checkIndexOption, indexDirectory, indexFilePath, openIndexFile, updateIndex,
-  type IndexDatabase, type StoredIndexOptions, type StoredIndexReport,
+  canonicalPath, phraseCount, phraseQuery, phraseWords, PHRASE_INDEX, laneBend, normalized, similarity, sinceCutoff, taskMoment, timeZoneOf,
+  zonedIso, bagEntries, checkIndexOption, eachPartVector, indexDirectory, indexFilePath, indexVersion, openIndexFile,
+  removeEarlierFormats, textKey, updateIndex, type IndexDatabase, type StoredIndexOptions, type StoredIndexReport,
 } from '@curatejs/core/internal';
 import {
-  startChatRank, storedChatWords, CHAT_KEYWORD_SETTINGS, type ChatKeywordSettings, type ChatRankSession,
-  type StoredChatWords,
+  chatTitleIndex, startChatRank, storedChatWords, CHAT_KEYWORD_SETTINGS, type ChatKeywordSettings, type ChatRankSession,
+  type ChatTitleIndex, type StoredChatWords,
 } from './chat-rank.js';
 import { scrubChat } from './chat-scrub.js';
 import { DEFAULT_MAX_QUESTION_TEXT, type MemoryCandidate } from '@curatejs/core';
@@ -244,7 +244,11 @@ function split(text: string, size: number): string[] {
 
 const partIdOf = (part: RawPart) =>
   `${part.provider}:${part.root}:${relative(part.root, part.file)}:${part.line}:${part.block}:${part.piece}`;
-const partId = (part: RawPart) => scrubChat(partIdOf(part));
+// The folder read and the file's path in it are each scrubbed whole, then
+// joined: a value that looks like a secret is masked, and masking it never
+// reaches the id's other fields or the part's place, which keep it its own.
+const partId = (part: RawPart) =>
+  `${part.provider}:${scrubChat(part.root)}:${scrubChat(relative(part.root, part.file))}:${part.line}:${part.block}:${part.piece}`;
 const partTitle = (part: RawPart, zone: string) =>
   `${part.provider} ${part.sessionId} ${part.role} ${zonedIso(part.date, zone)}`;
 const AUTHOR_TITLES: Record<Author, string> = { person: ' (the person)', agent: ' (agent)', tool: ' (tool)', system: ' (system)', unmarked: '' };
@@ -352,9 +356,31 @@ async function* eachPart(
   for (const { provider, root } of walkable) yield* visit(provider, root, root);
 }
 
-/** A part read from the stored index: a transcript part and its text's
- *  stored words. Its text is empty on a pass that never reads text. */
-type StoredPart = RawPart & { readonly words: StoredChatWords; readonly at: string };
+/** A part read from the stored index: a transcript part, its text's
+ *  stored words, its row, and its vector key as stored (see `vectorKey`).
+ *  Its text is empty on a pass that never reads text. */
+type StoredPart = RawPart & {
+  readonly words: StoredChatWords; readonly at: string; readonly transcript: number; readonly ordinal: number;
+  readonly vec: string | null;
+  /** Its scrubbed id as stored, when the stored id was made under the
+   *  root this read walks; otherwise the read makes it. */
+  readonly storedId?: string;
+};
+
+/** Whether a text has anything to embed; a part without uses its title. */
+const embeddable = (text: string) => /[^\s\p{Cf}]/u.test(text);
+
+/** The vector key a part's row stores: the key of the text a meaning
+ *  lane embeds for it when the part before it in the walk is the one
+ *  before it in its transcript, as it is unless a date window cuts in.
+ *  That text is the part before's text, a line end and its own, or its
+ *  own alone for a transcript's first part. Null when either text is
+ *  empty: the lane then embeds a title, which depends on the time zone. */
+function vectorKey(text: string, before: string | undefined, ordinal: number): string | null {
+  if (!embeddable(text)) return null;
+  if (ordinal === 0) return textKey(text);
+  return before !== undefined && embeddable(before) ? textKey(`${before}\n${text}`) : null;
+}
 
 /** What one call's meaning lanes share through the read context: each
  *  part's similarity over the call's query list, and the enumeration
@@ -402,17 +428,26 @@ interface ChatCorpus {
   /** Each part's date as its titles and its candidate show it. */
   readonly iso: string[];
   readonly titles: string[];
-  /** Each title lower-cased and split once. */
-  readonly titleWords: string[][];
+  /** The titles' words indexed once, when a keyword lane first asks. */
+  titleIndex?: ChatTitleIndex;
+  /** The parts whose title holds each word `phraseCount` compares,
+   *  indexed once, when a phrase lane first asks. */
+  titlePhraseWords?: Map<string, number[]>;
   readonly longs: number[];
   /** Each part's place in id order; equal ids share a place. */
   readonly places: Uint32Array;
+  /** The parts in id order, equal ids in walk order. */
+  readonly byPlace: Uint32Array;
   /** Each part's index by its row in the stored index. */
   readonly indexOf: ReadonlyMap<string, number>;
+  /** The index's `indexVersion` the parts were read at; unset when an
+   *  update landed while they were read. */
+  readonly version: number | undefined;
   /** Each word's postings as part indexes, read from the index once. */
   readonly postings: Map<string, { readonly index: number[]; readonly count: number[] }>;
   readonly skips: number;
-  /** Each part's unit vector, once a meaning lane has embedded them. */
+  /** Each part's unit vector, once a meaning lane has embedded them with
+   *  an embedder that keeps no store. */
   units?: Float64Array[];
 }
 
@@ -433,6 +468,9 @@ interface StoredTranscript {
   readonly id: number;
   /** Records with text but no date, which the reader skips. */
   readonly undated: number;
+  /** The root its parts' stored ids were made under: '' when an append
+   *  under another root left ids of two roots in it. */
+  readonly root: string;
 }
 
 /** A source's stored index after this call's update: per provider and
@@ -493,6 +531,8 @@ interface TranscriptRow {
   readonly id: number;
   readonly provider: string;
   readonly root: number;
+  /** The root's real path when the row was written, which its parts' ids name. */
+  readonly root_path: string;
   readonly path: string;
   readonly size: number;
   readonly mtime: string;
@@ -523,16 +563,21 @@ async function readRange(file: string, position: number, length: number): Promis
 }
 
 const CHAT_TABLES = `CREATE TABLE IF NOT EXISTS transcripts (id INTEGER PRIMARY KEY, provider TEXT NOT NULL,
-    root INTEGER NOT NULL, path TEXT NOT NULL, size INTEGER NOT NULL, mtime TEXT NOT NULL, lines INTEGER NOT NULL,
-    head TEXT NOT NULL, tail TEXT NOT NULL, newline INTEGER NOT NULL, state TEXT NOT NULL, undated INTEGER NOT NULL,
+    root INTEGER NOT NULL, root_path TEXT NOT NULL, path TEXT NOT NULL, size INTEGER NOT NULL, mtime TEXT NOT NULL,
+    lines INTEGER NOT NULL, head TEXT NOT NULL, tail TEXT NOT NULL, newline INTEGER NOT NULL, state TEXT NOT NULL, undated INTEGER NOT NULL,
     parts INTEGER NOT NULL, UNIQUE (provider, root, path));
   CREATE TABLE IF NOT EXISTS parts (transcript INTEGER NOT NULL, ordinal INTEGER NOT NULL, line INTEGER NOT NULL,
     block INTEGER NOT NULL, piece INTEGER NOT NULL, session TEXT NOT NULL, role TEXT NOT NULL, author TEXT NOT NULL,
     author_name TEXT, date INTEGER NOT NULL, text TEXT NOT NULL, long INTEGER NOT NULL, stems TEXT NOT NULL,
-    short TEXT NOT NULL, PRIMARY KEY (transcript, ordinal)) WITHOUT ROWID;
+    short TEXT NOT NULL, vec TEXT, pid TEXT NOT NULL, PRIMARY KEY (transcript, ordinal)) WITHOUT ROWID;
   CREATE TABLE IF NOT EXISTS postings (term TEXT NOT NULL, transcript INTEGER NOT NULL,
     ordinal INTEGER NOT NULL, count INTEGER NOT NULL, PRIMARY KEY (term, transcript, ordinal)) WITHOUT ROWID;
-  CREATE INDEX IF NOT EXISTS postingsTranscript ON postings (transcript);`;
+  CREATE INDEX IF NOT EXISTS postingsTranscript ON postings (transcript);
+  CREATE VIRTUAL TABLE IF NOT EXISTS phrases USING fts5(words, ${PHRASE_INDEX});`;
+
+/** A part's row in the phrase index: its transcript's row in the high
+ *  bits and its place in the transcript in the low 32. */
+const PHRASE_ROW = 2 ** 32;
 
 /** Bring a source's stored index up to date, in one write transaction.
  *  A transcript with its stored size and modification time is kept. One
@@ -557,10 +602,18 @@ async function syncChatIndex(
       database.exec(CHAT_TABLES);
       const rows = new Map<string, TranscriptRow>((database.prepare('SELECT * FROM transcripts').all() as unknown as TranscriptRow[])
         .map((row) => [`${row.provider}\0${row.root}\0${row.path}`, row]));
-      const deleteParts = database.prepare('DELETE FROM parts WHERE transcript = ?');
+      const deletePartRows = database.prepare('DELETE FROM parts WHERE transcript = ?');
+      const deletePhrases = database.prepare('DELETE FROM phrases WHERE rowid >= ? AND rowid < ?');
+      const deleteParts = { run(transcript: number) {
+        deletePartRows.run(transcript);
+        deletePhrases.run(transcript * PHRASE_ROW, (transcript + 1) * PHRASE_ROW);
+      } };
+      const insertPhrase = database.prepare('INSERT INTO phrases (rowid, words) VALUES (?, ?)');
       const deletePostings = database.prepare('DELETE FROM postings WHERE transcript = ?');
       const insertPart = database.prepare(`INSERT INTO parts (transcript, ordinal, line, block, piece, session, role,
-        author, author_name, date, text, long, stems, short) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+        author, author_name, date, text, long, stems, short, vec, pid)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+      const textAt = database.prepare('SELECT text FROM parts WHERE transcript = ? AND ordinal = ?');
       const insertPosting = database.prepare('INSERT OR IGNORE INTO postings (term, transcript, ordinal, count) VALUES (?, ?, ?, ?)');
       // A part's posting list is its stored words with their counts:
       // each stem under its own term, each short word under a term no
@@ -569,10 +622,10 @@ async function syncChatIndex(
         for (const [term, count] of bagEntries(stems)) insertPosting.run(term, transcript, ordinal, count);
         for (const [word, count] of bagEntries(short)) insertPosting.run(`!${word}`, transcript, ordinal, count);
       };
-      const insertRow = database.prepare(`INSERT INTO transcripts (provider, root, path, size, mtime, lines, head, tail,
-        newline, state, undated, parts) VALUES (?, ?, ?, ?, ?, ?, '', '', 0, '', 0, 0)`);
-      const updateRow = database.prepare(`UPDATE transcripts SET size = ?, mtime = ?, lines = ?, head = ?, tail = ?,
-        newline = ?, state = ?, undated = ?, parts = ? WHERE id = ?`);
+      const insertRow = database.prepare(`INSERT INTO transcripts (provider, root, root_path, path, size, mtime, lines,
+        head, tail, newline, state, undated, parts) VALUES (?, ?, ?, ?, ?, ?, ?, '', '', 0, '', 0, 0)`);
+      const updateRow = database.prepare(`UPDATE transcripts SET root_path = ?, size = ?, mtime = ?, lines = ?, head = ?,
+        tail = ?, newline = ?, state = ?, undated = ?, parts = ? WHERE id = ?`);
       let added = 0;
       let removed = 0;
       const seen = new Set<string>();
@@ -589,7 +642,7 @@ async function syncChatIndex(
           const mtime = String(info.mtimeNs);
           const length = Number(info.size);
           if (row !== undefined && row.size === length && row.mtime === mtime) {
-            transcripts.push({ file, id: row.id, undated: row.undated });
+            transcripts.push({ file, id: row.id, undated: row.undated, root: row.root_path });
             continue;
           }
           // `bytes` are the bytes to decode; `window` holds them and, on
@@ -623,25 +676,32 @@ async function syncChatIndex(
               removed += row.parts;
             }
           }
-          const id = row?.id ?? Number(insertRow.run(provider, slot, rel, 0, '', 0).lastInsertRowid);
+          const id = row?.id ?? Number(insertRow.run(provider, slot, root, rel, 0, '', 0).lastInsertRowid);
           const text = bytes.toString('utf8');
           const lines = text.split(/\r?\n/);
           let ordinal = start;
+          // An append continues from the last part the file already holds.
+          let before = start === 0 ? undefined : (textAt.get(id, start - 1) as { text: string } | undefined)?.text;
           for (const part of decodeLines(provider, lines, firstLine, state, includeTools, size, signal, () => { undated += 1; })) {
             const words = storedChatWords(part.text, keyword);
             insertPart.run(id, ordinal, part.line, part.block, part.piece, part.sessionId, part.role, part.author,
-              part.authorName ?? null, part.date, part.text, words.long, words.stems, words.short);
+              part.authorName ?? null, part.date, part.text, words.long, words.stems, words.short,
+              vectorKey(part.text, before, ordinal), partId({ provider, root, file, ...part }));
             insertPostings(id, ordinal, words.stems, words.short);
+            insertPhrase.run(id * PHRASE_ROW + ordinal, phraseWords(part.text));
+            before = part.text;
             ordinal += 1;
           }
           added += ordinal - start;
           // The stored size counts only the bytes read: a file that grew
           // while it was read is read on from there next call.
-          updateRow.run(appending ? row!.size + bytes.length : bytes.length, mtime, firstLine + lines.length - 1,
+          // Parts appended under another root leave ids of two roots.
+          const idsRoot = !appending || row!.root_path === root ? root : '';
+          updateRow.run(idsRoot, appending ? row!.size + bytes.length : bytes.length, mtime, firstLine + lines.length - 1,
             appending ? row!.head : digest(bytes.subarray(0, Math.min(EDGE_CHECK, bytes.length))),
             digest(window!.subarray(Math.max(0, window!.length - EDGE_CHECK))), text.endsWith('\n') ? 1 : 0,
             JSON.stringify(state), undated, ordinal, id);
-          transcripts.push({ file, id, undated });
+          transcripts.push({ file, id, undated, root: idsRoot });
         }
         loaded.set(rootKey(provider, root), { transcripts, symlinks });
       }
@@ -657,7 +717,9 @@ async function syncChatIndex(
         database.prepare('DELETE FROM transcripts WHERE id = ?').run(row.id);
         removed += row.parts;
       }
-      const total = (database.prepare('SELECT COUNT(*) AS n FROM parts').get() as { n: number }).n;
+      // Each transcript row counts its own parts, so the file's total is a
+      // sum over transcripts, never a walk over every part.
+      const total = (database.prepare('SELECT COALESCE(SUM(parts), 0) AS n FROM transcripts').get() as { n: number }).n;
       return {
         path, directory, roots: loaded,
         report: { parts: total, added, removed, rebuilt: false, ms: Math.round(performance.now() - started) },
@@ -677,7 +739,7 @@ function* storedParts(
   const rows = database.prepare(`SELECT ordinal, line, block, piece, session, role,
     ${light ? "'unmarked' AS author, NULL AS author_name" : 'author, author_name'}, date,
     ${withText ? 'text' : "'' AS text"}, long,
-    ${light ? "'' AS stems, '' AS short" : 'stems, short'} FROM parts WHERE transcript = ? ORDER BY ordinal`)
+    ${light ? "'' AS stems, '' AS short, NULL AS vec" : 'stems, short, vec'}, pid FROM parts WHERE transcript = ? ORDER BY ordinal`)
     .all(transcript.id) as Record<string, unknown>[];
   for (const row of rows) yield storedPart(provider, root, transcript, row);
 }
@@ -685,7 +747,9 @@ function* storedParts(
 function storedPart(provider: ChatProvider, root: string, transcript: StoredTranscript, row: Record<string, unknown>): StoredPart {
   return {
     provider, root, file: transcript.file,
-    at: `${transcript.id}:${row.ordinal as number}`,
+    at: `${transcript.id}:${row.ordinal as number}`, transcript: transcript.id, ordinal: row.ordinal as number,
+    vec: (row.vec as string | null | undefined) ?? null,
+    ...(transcript.root === root ? { storedId: row.pid as string } : {}),
     line: row.line as number, block: row.block as number, piece: row.piece as number,
     sessionId: row.session as string, role: row.role as MessageRole, author: row.author as Author,
     ...(row.author_name === null ? {} : { authorName: row.author_name as string }),
@@ -701,7 +765,7 @@ function storedRows(
   database: IndexDatabase, provider: ChatProvider, root: string, transcript: StoredTranscript, ordinals: readonly number[],
 ): StoredPart[] {
   const rows = database.prepare(`SELECT ordinal, line, block, piece, session, role, author, author_name, date, text,
-    long, stems, short FROM parts WHERE transcript = ? AND ordinal IN (SELECT value FROM json_each(?)) ORDER BY ordinal`)
+    long, stems, short, vec, pid FROM parts WHERE transcript = ? AND ordinal IN (SELECT value FROM json_each(?)) ORDER BY ordinal`)
     .all(transcript.id, JSON.stringify(ordinals)) as Record<string, unknown>[];
   return rows.map((row) => storedPart(provider, root, transcript, row));
 }
@@ -739,7 +803,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
   // one read context share it. A read with no context walks alone.
   const walks = new WeakMap<object, Map<string, Promise<{ files: string[]; symlinks: string[] }>>>();
   const loadIndex = async (
-    directory: string, size: number, requested: readonly string[], context: object | undefined,
+    directory: string, size: number, requested: readonly string[], context: CandidateReadContext | undefined,
     signal: AbortSignal | undefined,
   ): Promise<ChatIndex> => {
     const own = await resolveExclusions(exclude ?? []);
@@ -756,9 +820,8 @@ export function chat(options: ChatOptions = {}): CandidateSource {
     }
     // The settings that decide which parts exist, or how their words are
     // stored, name the file.
-    const path = indexFilePath(directory, id, {
-      includeTools, size, exclude: exclude ?? [], stem: { ...CHAT_KEYWORD_SETTINGS, ...options.keyword }.stem,
-    });
+    const key = { includeTools, size, exclude: exclude ?? [], stem: { ...CHAT_KEYWORD_SETTINGS, ...options.keyword }.stem };
+    const path = indexFilePath(directory, id, key);
     const walk = (root: string, exclusions: readonly string[]) => {
       if (context === undefined) return walkTranscripts(root, exclusions, signal);
       let byRoot = walks.get(context);
@@ -768,10 +831,12 @@ export function chat(options: ChatOptions = {}): CandidateSource {
       if (walking === undefined) byRoot.set(key, walking = walkTranscripts(root, exclusions, signal));
       return walking;
     };
-    return syncChatIndex(path, directory, found, own, requested, includeTools, size, options.keyword, signal, walk);
+    const index = await syncChatIndex(path, directory, found, own, requested, includeTools, size, options.keyword, signal, walk);
+    if (context?.removed !== undefined) context.removed.push(...await removeEarlierFormats(directory, id, key));
+    return index;
   };
   const storedIndex = async (
-    size: number, requestExclude: readonly string[], context: object | undefined, signal: AbortSignal | undefined,
+    size: number, requestExclude: readonly string[], context: CandidateReadContext | undefined, signal: AbortSignal | undefined,
   ) => {
     const directory = indexDirectory(options.index);
     if (directory === undefined) return undefined;
@@ -928,6 +993,8 @@ export function chat(options: ChatOptions = {}): CandidateSource {
         if (box !== undefined && shared === undefined) box.set(reader, shared = {});
         const idCache = shared === undefined ? undefined : (shared.ids ??= new Map());
         const idOf = (part: RawPart) => {
+          const stored = (part as Partial<StoredPart>).storedId;
+          if (stored !== undefined) return stored;
           if (idCache === undefined) return partId(part);
           const key = partIdOf(part);
           let value = idCache.get(key);
@@ -946,6 +1013,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           const key = JSON.stringify([stored!.path, since, until, zone, exclusions]);
           if (shared.corpus === undefined) {
             const before = skips.n;
+            const version = indexVersion(database!);
             const parts: StoredPart[] = [];
             const ids: string[] = [];
             const refs: string[] = [];
@@ -953,7 +1021,6 @@ export function chat(options: ChatOptions = {}): CandidateSource {
             const fileRanges: ChatCorpus['fileRanges'] = [];
             const iso: string[] = [];
             const titles: string[] = [];
-            const titleWords: string[][] = [];
             const longs: number[] = [];
             for (const part of eachStored(true, true, false)) {
               const last = fileRanges.at(-1);
@@ -968,7 +1035,6 @@ export function chat(options: ChatOptions = {}): CandidateSource {
               const title = `${part.provider} ${part.sessionId} ${part.role} ${date}`;
               iso.push(date);
               titles.push(title);
-              titleWords.push(title.toLowerCase().split(/[^a-z0-9]+/));
               longs.push(part.words.long);
             }
             // Ties in a lane order by id; each part's place in id order
@@ -980,8 +1046,9 @@ export function chat(options: ChatOptions = {}): CandidateSource {
                 ? places[byId[place - 1]!]! : place;
             }
             shared.corpus = {
-              key, parts, ids, refs, partFile, fileRanges, iso, titles, titleWords, longs, places,
+              key, parts, ids, refs, partFile, fileRanges, iso, titles, longs, places, byPlace: Uint32Array.from(byId),
               indexOf: new Map(refs.map((ref, index) => [ref, index] as const)), postings: new Map(),
+              version: indexVersion(database!) === version ? version : undefined,
               skips: skips.n - before,
             };
             // Each lane counts the skips where its own walk would have.
@@ -992,6 +1059,37 @@ export function chat(options: ChatOptions = {}): CandidateSource {
             onePass.served += 1;
           }
         }
+        /** The parts of the call's one walk whose text or title can hold
+         *  `phrase`, in walk order: the phrase index names the texts that
+         *  hold it, and the titles holding its first word are added. Each
+         *  is counted again with `phraseCount`, so the counts are exact.
+         *  Once another update has changed the index, it no longer holds
+         *  the texts the walk holds, and every part of the walk is named. */
+        const phraseCandidates = (phrase: string): number[] => {
+          const query = phraseQuery(phrase);
+          if (query === undefined) return [];
+          const found = new Set<number>();
+          for (const row of database!.prepare('SELECT rowid AS id FROM phrases WHERE phrases MATCH ?').iterate(query) as Iterable<{ id: number }>) {
+            const index = corpus!.indexOf.get(`${Math.floor(row.id / PHRASE_ROW)}:${row.id % PHRASE_ROW}`);
+            if (index !== undefined) found.add(index);
+          }
+          // The rows of an index another update changed since the walk do
+          // not describe the texts it holds.
+          if (indexVersion(database!) !== corpus!.version) return corpus!.parts.map((_, index) => index);
+          if (corpus!.titlePhraseWords === undefined) {
+            const titles = new Map<string, number[]>();
+            corpus!.titles.forEach((title, index) => {
+              for (const word of new Set(phraseWords(title).split(' '))) {
+                const list = titles.get(word);
+                if (list === undefined) titles.set(word, [index]);
+                else list.push(index);
+              }
+            });
+            corpus!.titlePhraseWords = titles;
+          }
+          for (const index of corpus!.titlePhraseWords.get(phraseWords(phrase).split(' ')[0]!) ?? []) found.add(index);
+          return [...found].sort((left, right) => left - right);
+        };
         /** A part of the call's one walk as a lane hands it on. */
         const held = (index: number, extra: Pick<MemoryCandidate, 'signals' | 'laneScore' | 'pastLaneCut'>): MemoryCandidate => {
           const part = corpus!.parts[index]!;
@@ -1031,34 +1129,49 @@ export function chat(options: ChatOptions = {}): CandidateSource {
               : { queries: list, similarities: [], ids: corpus.ids, refs: corpus.refs, partFile: corpus.partFile, fileRanges: corpus.fileRanges };
             let pending: string[] = [];
             let previous: { file: string; text: string } | undefined;
-            // With the call's one walk, each part's unit vector is kept
-            // for the call: a later query list scores the same vectors
-            // without embedding the parts again.
-            const units: Float64Array[] | undefined = corpus === undefined ? undefined : [];
             const flush = async () => {
               if (pending.length === 0) return;
               const vectors = await embed(pending, request.signal);
               if (vectors.length !== pending.length) throw new TypeError('embed must return one vector per input text.');
               for (const vector of vectors) {
                 const unit = normalized(vector, queryVectors[0]!.length);
-                units?.push(unit);
                 lite.similarities.push(queryVectors.map((query) => similarity(unit, query)));
               }
               pending = [];
             };
             if (corpus !== undefined) {
               skips.n += corpus.skips;
-              if (corpus.units !== undefined && (corpus.units[0]?.length ?? queryVectors[0]!.length) === queryVectors[0]!.length) {
+              const { parts } = corpus;
+              // A store hands its vectors out again by key, so only an
+              // embedder with no store has each part's unit vector kept
+              // for the call, for a later query list to score.
+              const stored = 'eachVector' in embed;
+              if (!stored && corpus.units !== undefined
+                && (corpus.units[0]?.length ?? queryVectors[0]!.length) === queryVectors[0]!.length) {
                 for (const unit of corpus.units) lite.similarities.push(queryVectors.map((query) => similarity(unit, query)));
                 return lite;
               }
-              for (const [index, part] of corpus.parts.entries()) {
-                const text = /[^\s\p{Cf}]/u.test(part.text) ? part.text : corpus.titles[index]!;
-                pending.push(previous?.file === part.file ? `${previous.text}\n${text}` : text);
-                previous = { file: part.file, text };
-                if (pending.length === 32) await flush();
-              }
-              await flush();
+              const units: Float64Array[] | undefined = stored ? undefined : [];
+              // A part embeds with the part before it in the walk when
+              // both are in one file.
+              const own = (index: number) => embeddable(parts[index]!.text) ? parts[index]!.text : corpus!.titles[index]!;
+              const follows = (index: number) => index > 0 && parts[index - 1]!.file === parts[index]!.file;
+              const text = (index: number) => follows(index) ? `${own(index - 1)}\n${own(index)}` : own(index);
+              // The stored key holds when the part before it in the walk
+              // is the one before it in its transcript.
+              const key = (index: number) => {
+                const part = parts[index]!;
+                const before = follows(index) ? parts[index - 1]! : undefined;
+                const holds = before === undefined ? part.ordinal === 0
+                  : before.transcript === part.transcript && before.ordinal === part.ordinal - 1;
+                return holds && part.vec !== null ? part.vec : textKey(text(index));
+              };
+              lite.similarities = Array.from({ length: parts.length });
+              await eachPartVector(embed, parts.length, key, text, (index, vector) => {
+                const unit = normalized(vector, queryVectors[0]!.length);
+                if (units !== undefined) units[index] = unit;
+                lite.similarities[index] = queryVectors.map((query) => similarity(unit, query));
+              }, request.signal);
               corpus.units = units;
               return lite;
             }
@@ -1170,10 +1283,10 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           const fileRanges: { provider: ChatProvider; root: string; file: string; start: number }[] = corpus?.fileRanges ?? [];
           if (corpus !== undefined) {
             skips.n += corpus.skips;
-            for (const [index, part] of corpus.parts.entries()) {
-              const title = corpus.titles[index]!;
-              rank.observeStored(title, part.words);
-              const count = phraseCount(part.text, request.task) + phraseCount(title, request.task);
+            for (const [index, part] of corpus.parts.entries()) rank.observeStored(corpus.titles[index]!, part.words);
+            for (const index of phraseCandidates(request.task)) {
+              const part = corpus.parts[index]!;
+              const count = phraseCount(part.text, request.task) + phraseCount(corpus.titles[index]!, request.task);
               if (count > 0 && (request.speakerOnly !== true || part.role === 'user')) matchOf.set(index, count);
             }
           }
@@ -1280,8 +1393,8 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           const matched: MemoryCandidate[] = [];
           if (corpus !== undefined) {
             skips.n += corpus.skips;
-            for (const [index, part] of corpus.parts.entries()) {
-              const count = phraseCount(part.text, request.task) + phraseCount(corpus.titles[index]!, request.task);
+            for (const index of phraseCandidates(request.task)) {
+              const count = phraseCount(corpus.parts[index]!.text, request.task) + phraseCount(corpus.titles[index]!, request.task);
               if (count > 0) matched.push(held(index, { signals: { phrase: count }, laneScore: count }));
             }
           }
@@ -1323,6 +1436,17 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           corpus = undefined;
           onePass.served -= 1;
         }
+        // A whole read that only sizes the history answers with the ids of
+        // every part it would return: the call's whole walk.
+        if (request.poolIds === true && request.wholeLanes === true && request.limit === undefined && corpus !== undefined) {
+          skips.n += corpus.skips;
+          if (skips.n) reasons.push(`skipped ${skips.n} symbolic links or undated messages`);
+          return {
+            status: 'read', candidates: [], poolIds: corpus.ids, ...indexed,
+            complete: reasons.length === 0,
+            ...(reasons.length ? { partial: reasons.join('; ') } : {}),
+          };
+        }
         if (corpus !== undefined) {
           // The call's one walk carries the corpus: each word's postings
           // are read from the index once for every lane, each title was
@@ -1352,9 +1476,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           };
           for (const term of stems) fold(term, term, false);
           for (const word of shorts) fold(`!${word}`, word, true);
-          for (let index = 0; index < ids.length; index += 1) {
-            rank.observeIndexed(index, corpus.titles[index]!, corpus.longs[index]!, corpus.titleWords[index]!);
-          }
+          rank.observeTitles(corpus.titleIndex ??= chatTitleIndex(corpus.titles, corpus.longs, options.keyword));
           rank.scoreIndexed({ heading: '', name: '', front: '' });
         } else if (storedRoots === undefined) {
           ids = [];
@@ -1424,11 +1546,24 @@ export function chat(options: ChatOptions = {}): CandidateSource {
         }
         const places = corpus?.places;
         const { scores, base } = rank.finish(ids, places);
-        const order = ids.map((_, index) => index)
-          .filter((index) => index < scores.length)
-          .sort(places === undefined
-            ? (a, b) => scores[b]! - scores[a]! || ids[a]!.localeCompare(ids[b]!)
-            : (a, b) => scores[b]! - scores[a]! || places[a]! - places[b]!);
+        // With the call's one walk, only the parts a posting or title named
+        // can score; every other part scores zero and follows them in id
+        // order, so only the scored parts are sorted.
+        let order: number[];
+        let scoredCount = 0;
+        if (corpus !== undefined) {
+          order = [];
+          for (let index = 0; index < scores.length; index += 1) if (scores[index]! > 0) order.push(index);
+          order.sort((a, b) => scores[b]! - scores[a]! || places![a]! - places![b]! || a - b);
+          scoredCount = order.length;
+          for (const index of corpus.byPlace) if (!(scores[index]! > 0)) order.push(index);
+        } else {
+          order = ids.map((_, index) => index)
+            .filter((index) => index < scores.length)
+            .sort(places === undefined
+              ? (a, b) => scores[b]! - scores[a]! || ids[a]!.localeCompare(ids[b]!)
+              : (a, b) => scores[b]! - scores[a]! || places[a]! - places[b]!);
+        }
         const limited = request.limit === undefined ? order : order.slice(0, request.limit);
         // A bare read keeps every scored part; only a lane the pick
         // resolved with `wholeLanes: false` narrows inside the read. A
@@ -1438,7 +1573,11 @@ export function chat(options: ChatOptions = {}): CandidateSource {
         // With `wholeLanes` on the read keeps every part and marks each
         // one the cut would have dropped.
         const mark = request.wholeLanes === true;
-        const bend = cut || mark ? laneBend(limited.map((index) => base[index]!)) : undefined;
+        // The parts that score zero all hold a lane score of zero: to the
+        // bend they are one run, which one zero stands for.
+        const curve = corpus === undefined ? limited.map((index) => base[index]!)
+          : [...limited.slice(0, scoredCount).map((index) => base[index]!), ...(limited.length > scoredCount ? [0] : [])];
+        const bend = cut || mark ? laneBend(curve) : undefined;
         const matched = limited.some((index) => base[index]! > 0);
         const passes = (index: number) => bend === undefined ? matched : base[index]! > bend;
         const kept = cut ? limited.filter(passes) : limited;

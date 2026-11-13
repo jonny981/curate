@@ -152,6 +152,7 @@ Every lane of a call then reads the file instead of decoding the transcripts, fe
   The folder is created with mode `0700` and the file with mode `0600`, because the file holds the history's text.
 - **Its name:** the source id, the settings that decide which parts exist, and a format version.
   A change to any of them names a new file, so a stale file is never read.
+  A read never removes the file an earlier format wrote, since an older reader can still have it open. A run between calls removes them: a read context given a `removed` list brings the file up to date, removes the files earlier formats wrote for the same source and settings, each the name this one would have under that earlier format number, and adds each removed path to the list. The skill's `--prepare` (`curate prepare`) runs so.
   For chat those settings are `includeTools`, the part size, the source's own `exclude` and the keyword `stem` setting.
   For git they are the source's own `exclude`, `paths` and `since`.
   For Markdown they are the reader (`markdown()`, `knowledgeBase()` or `rules()`), the kind, the part size and the source's own `exclude`.
@@ -160,6 +161,10 @@ Every lane of a call then reads the file instead of decoding the transcripts, fe
   From it a keyword lane reads each term's per-part counts, each part's word total and each term's document frequency.
   Chat stores its words stemmed when its settings stem. Git stores the words of the subject and body joined.
   Markdown also stores each note's frontmatter, its fields, its links and whether it says it was replaced.
+  Chat and Markdown store each part's [vector key](#optional-local-meaning-search), so a meaning lane finds the part's vector without hashing its text.
+  Chat's key is that of the part's text with the part before it in its transcript, the text a meaning lane embeds unless a date window starts between them.
+  Chat also stores each part's scrubbed id, made under the real path of the folder it was read from; a read that walks another path makes the ids again, as before.
+  Chat and Markdown also keep a phrase index (SQLite's FTS5): each part's words exactly as `phraseCount` compares them, with Markdown's titles beside them. A phrase, name or kind lane looks up the parts that hold its phrase there, adds the chat parts whose title holds its first word, and counts only those again, so it finds the same parts as a scan of every part. Each update that changes the file adds one to its update count (SQLite's `user_version`); once another call's update has moved the count since a call read its parts, that call's lookups name every part it holds, as a scan would.
 - **Ranks do not change:** each reader keeps its own scoring and reads the stored counts where it read the text.
   A lane read from the file returns the same candidates, in the same order, with the same signals, as the same read with `index: false`.
   Git's commit count, holding counts and average length depend on the call's look-back, filters and limit, so they are counted for each call over the commits the lane ranks.
@@ -174,7 +179,9 @@ Every lane of a call then reads the file instead of decoding the transcripts, fe
   A read pinned to a revision reads the file only when this call brought the file to that commit. Any other pinned read runs git as before.
 - **Markdown:** notes that are new, or changed in size or modification time, are read again.
   A note no longer in the folder loses its parts on a read whose request excludes nothing.
-  The folder walk and the git date lookups run once per call. A read pinned to a revision reads the files as before.
+  The folder walk runs once per call. The last commit date of each file is stored with the head it was read at, and the git log runs again only when the head has moved.
+  A shallow clone, or a repository with replacement refs or grafts, can show other history without its head moving, so its dates are never stored: its log runs on every call.
+  The check for uncommitted changes runs once per call. A read pinned to a revision reads the files as before.
 - **Exclusions:** a path the source's own `exclude` names is never written to the file.
   A path the request's `exclude` names is never opened, returned or scored. Its stored parts stay for calls that do read it.
   Git records a commit the source's own `exclude` names, or one that changed none of the source's `paths`, by its name only, and never reads its subject or body.
@@ -419,14 +426,17 @@ try {
   embedding, including a commit with only a subject.
   Its original body and title remain in the returned evidence.
 - **Storage:** Set `cacheDirectory` on `createLocalEmbedder()` to persist vectors by model bytes and complete input text.
-  Each model holds one vector file of normalized 64-bit vectors, read whole into memory once per process, so a stored text costs no lookup on disk.
-  New vectors wait in a SQLite file beside it (`<model>.vectors.waiting.sqlite`) and are folded into the vector file once 4,096 wait. The file is only ever written whole and renamed into place.
-  An earlier `<model>.vectors.sqlite` store is read once, to build the vector file when there is none, and is never written: code from before the vector file keeps finding its vectors there.
-  Nothing deletes that earlier store. Delete it by hand once no older checkout shares the folder.
-  A fold leaves out a vector unused for 30 days, so the vectors of deleted or changed parts do not pile up; using such a text again embeds it again.
-  A text neither file holds is read once from the earlier per-text JSON files, which are never written.
-  A returned vector can be the stored one itself: read it, do not write to it.
-  Repeated inputs reuse these files across calls. The vector files contain hashes and vectors, not source text.
+  Each model holds its normalized 64-bit vectors in two files: `<model>.vectors.data`, one record per text appended after the last, and `<model>.vectors.keys.sqlite`, which finds a text's record by the text's SHA-256.
+  A read looks up the records it needs, or passes over the data file once, a chunk at a time, when it needs most of them; neither file is ever read whole into memory.
+  Nothing rewrites a record, and no vector expires: the vectors of deleted or changed parts stay in the files.
+  A record a stopped write left cut is never used: its text is embedded again. A vector of another length than the model's is kept in the key file.
+  The chat and Markdown [stored indexes](#stored-index) keep each part's vector key, so a call finds those parts' vectors without hashing their text.
+  When the key file is first made it takes in every vector the earlier files hold: the whole-file `<model>.vectors.flat`, the vectors waiting to join it in `<model>.vectors.waiting.sqlite`, and, when there is no `.flat` file, the store before it, `<model>.vectors.sqlite`.
+  Using the store removes nothing, since an older process can still have those files open. Between calls, `removeEarlierFiles()` removes the `.flat` file and the waiting store once every vector in them is found again in the new files, byte for byte, and returns the paths it removed; when one cannot be checked so, both stay and a line on standard error says so. The skill's `--prepare` (`curate prepare`) calls it.
+  The older `<model>.vectors.sqlite` is only read and nothing deletes it, so an older checkout sharing the folder keeps its vectors there.
+  A text the files do not hold is read once from the earlier per-text JSON files, which are never written.
+  A returned vector can be shared by other callers: read it, do not write to it.
+  Repeated inputs reuse the files across calls. They contain hashes and vectors, not source text.
   With no directory supplied, vectors exist only while a batch is scored.
   Vectors are kept apart from the [stored index](#stored-index), whose file per source does hold the history's text.
 - **GPU:** Set `gpu: 'metal'` to require the Mac GPU. An unavailable explicit backend stops the call instead of selecting CPU.
@@ -1221,7 +1231,17 @@ above its source's keep bar is kept.
 A part below the stop is never asked by the read and records
 `unassessed` with reason `'stopWhenCold'`. A part no lane placed in the order records
 `'feed'`. Pool members sit in the record the same way, so an unordered
-member is unassessed rather than absent. A lane's candidate limit, not
+member is unassessed rather than absent. When the source's mode reads
+with `rankedRead`, as a source with no mode does, the source asks no
+label kinds and the task names no period, `pickFromSources()` only
+counts them: the record's
+`unheld` holds, by source ID, how many parts of each history no lane
+kept, and neither `candidates` nor a read's candidates in `reads` lists
+them. `pick.n` still counts every part. A part only a meaning lane kept
+then follows the keyword lanes' parts in those lists, in the order the
+meaning lanes reached it. A source whose mode has a read of its own,
+such as `conversationRead()`, keeps every part, since that read walks
+each part's whole transcript. A lane's candidate limit, not
 the stop, leaves its cut parts unassessed with reason `'limits'`, and
 `memory()` still rejects that collection; it accepts `'stopWhenCold'`
 and `'feed'`.

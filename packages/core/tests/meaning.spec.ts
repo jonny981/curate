@@ -373,6 +373,30 @@ describe('local meaning search', () => {
     expect(read.candidates.find((candidate) => candidate.id === 'dup')?.text).toBe('first body');
   });
 
+  it('keeps the best similarity of two sources\' parts apart when they share an id', async () => {
+    // A lane with no score list names each part by the source its
+    // candidate carries, which need not be the reader's own.
+    const scored = (sourceId: string, id: string, similarity: number) =>
+      ({ ...item(id, `${sourceId} body`), sourceId, signals: { similarity }, laneScore: similarity });
+    const result = await pickFromSources([{
+      id: 'notes', role: 'reference',
+      read: async (request) => request.meaningLane === undefined
+        ? { status: 'read' as const, complete: true, candidates: [item('bill', 'invoice', 9)] }
+        : {
+            status: 'read' as const, complete: true, meaningLane: true as const, matched: 2,
+            candidates: request.task === 'pets'
+              ? [scored('notes', 'dup', 0.9), scored('other', 'dup', 0.3)]
+              : [scored('other', 'dup', 0.7), scored('notes', 'dup', 0.2)],
+          },
+    }], { task: 'pets', searchLines: ['felines'], meaning: { embed, wholeLanes: true } },
+    { ...uncutPick, task: 'pets', decide });
+    const read = result.reads[0]!;
+    if (read.status !== 'read') throw new Error('read failed');
+    const best = Object.fromEntries(read.candidates.filter((candidate) => candidate.id === 'dup')
+      .map((candidate) => [candidate.sourceId, candidate.meaningScore]));
+    expect(best).toEqual({ notes: 0.9, other: 0.7 });
+  });
+
   it('keeps meaning reports in query order when a lane is absent', async () => {
     const result = await pickFromSources([{
       id: 'notes', role: 'reference',

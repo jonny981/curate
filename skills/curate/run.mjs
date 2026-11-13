@@ -761,17 +761,23 @@ export async function pickFullSources(sources, call, options, context = { files:
         reads.set(key(readRequest), read);
       }
     }
-    let pool;
-    if (source.role === 'reference' && (source.labelKinds?.length
-      // The fused order is read whenever everyRanked is unset, and it
-      // positions every pool member.
-      || options.everyRanked !== true)) {
-      pool = await source.read({ ...request, task: request.task, wholeLanes: true, limit: undefined,
-        ...(revision === undefined ? {} : { revision }) }, context);
-    }
+    // The fused order is read whenever everyRanked is unset, and it
+    // positions every pool member. The pool is read once, as the pick
+    // asks for it: its parts, or only their ids when the pick only sizes
+    // the history.
+    const pooled = source.role === 'reference' && (source.labelKinds?.length
+      || options.everyRanked !== true);
+    const pools = new Map();
     return { ...source, async read(readRequest) {
       const { wholeLanes, limit } = readRequest;
-      if (readRequest.meaningLane === undefined && wholeLanes && limit === undefined && pool !== undefined) return pool;
+      if (readRequest.meaningLane === undefined && wholeLanes && limit === undefined && pooled) {
+        const ids = readRequest.poolIds === true;
+        if (!pools.has(ids)) {
+          pools.set(ids, source.read({ ...request, task: request.task, wholeLanes: true, limit: undefined,
+            ...(ids ? { poolIds: true } : {}), ...(revision === undefined ? {} : { revision }) }, context));
+        }
+        return pools.get(ids);
+      }
       const held = reads.get(key(readRequest));
       // A read the cache does not hold — a name lane, a task-period read —
       // goes to the wrapped source with the same request.
@@ -1248,7 +1254,9 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
       return module.createLocalEmbedder({ modelPath, cacheDirectory })
         .catch((error) => { throw Object.assign(error, { setup: existsSync(modelPath) ? undefined : 'model' }); });
     };
-    const context = { files: new Map(), shared: new Map() };
+    // `--prepare` runs between calls, when no older reader still has the
+    // files earlier formats wrote open, so its reads remove them.
+    const context = { files: new Map(), shared: new Map(), ...(options.prepareOnly ? { removed: [] } : {}) };
     // Every need this command has, checked before any work and reported
     // together. --prepare needs no key or login, and a call given a stand-in
     // for the search-lines model needs no login. A call finds the model by its
@@ -1315,8 +1323,13 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
         return { source: source.id, ...await warmSource(source, { task: options.task || 'prepare' }, local.embed, context) };
       }));
       for (const read of reads) if (readWarning(read) !== undefined) console.error(readWarning(read));
+      const removed = [...context.removed, ...await local.embed.removeEarlierFiles?.() ?? []];
       record.status = 'prepared';
       console.log(`Prepared ${reads.length} ${reads.length === 1 ? 'source' : 'sources'}${project === undefined ? '' : ` for ${project}`}.`);
+      if (removed.length > 0) {
+        console.log(`Removed ${removed.length} ${removed.length === 1 ? 'file' : 'files'} an earlier version of Curate kept:\n${
+          removed.map((path) => `  ${path}`).join('\n')}`);
+      }
       return { memory, record, folder: records ? folder : null };
     }
     const apiKey = process.env.TYPESAFE_API_KEY;

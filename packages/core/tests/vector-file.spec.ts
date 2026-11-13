@@ -1,18 +1,21 @@
 import { createHash } from 'node:crypto';
-import { mkdtemp, readdir, readFile, rm, truncate, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setFlagsFromString } from 'node:v8';
 import { runInNewContext } from 'node:vm';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { addMeaningRanks, cachedEmbeddings, type MemoryCandidate } from '../src/index.js';
+import { normalize } from '../src/vectors.js';
 import { openIndexFile } from '../src/stored-index.js';
-import { FOLD_AT, KEEP_DAYS, markVectorsUsed, readVectorFile, today, writeVectorFile } from '../src/vector-file.js';
 
 const directories: string[] = [];
-afterEach(async () => { await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true }))); });
+afterEach(async () => {
+  vi.restoreAllMocks();
+  await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
+});
 async function folder() {
-  const directory = await mkdtemp(join(tmpdir(), 'curate-vector-file-'));
+  const directory = await mkdtemp(join(tmpdir(), 'curate-vector-store-'));
   directories.push(directory);
   return directory;
 }
@@ -20,177 +23,214 @@ const sha = (text: string) => createHash('sha256').update(text).digest('hex');
 const bytes = (...numbers: number[]) => new Uint8Array(Float64Array.from(numbers).buffer);
 const MODEL = 'model-a';
 const names = (directory: string) => ({
+  keys: join(directory, `${sha(MODEL)}.vectors.keys.sqlite`),
+  data: join(directory, `${sha(MODEL)}.vectors.data`),
   flat: join(directory, `${sha(MODEL)}.vectors.flat`),
   waiting: join(directory, `${sha(MODEL)}.vectors.waiting.sqlite`),
   earlier: join(directory, `${sha(MODEL)}.vectors.sqlite`),
 });
 type Rows = readonly (readonly [string, Uint8Array])[];
-async function store(file: string, directory: string, rows: Rows) {
+
+/** The whole-file vector file earlier code wrote: a header, then each
+ *  text's SHA-256 and 64-bit numbers, then a last-used day per record. */
+async function vectorFile(path: string, dimensions: number, rows: Rows) {
+  const head = Buffer.alloc(32);
+  Buffer.from('CURVEC1\n').copy(head);
+  Buffer.from(Uint32Array.of(0x01020304, dimensions, rows.length).buffer).copy(head, 8);
+  const records = rows.flatMap(([text, vector]) => [Buffer.from(sha(text), 'hex'), Buffer.from(vector)]);
+  await writeFile(path, Buffer.concat([head, ...records, Buffer.from(Uint32Array.from(rows, () => 20_000).buffer)]));
+}
+/** A SQLite store earlier code kept: one row per text. */
+async function sqliteStore(file: string, directory: string, rows: Rows) {
   const database = await openIndexFile(file, directory);
   database.exec('CREATE TABLE IF NOT EXISTS vectors (key TEXT PRIMARY KEY, vector BLOB NOT NULL) WITHOUT ROWID');
   const put = database.prepare('INSERT OR REPLACE INTO vectors (key, vector) VALUES (?, ?)');
-  database.exec('BEGIN');
   for (const [text, vector] of rows) put.run(sha(text), vector);
-  database.exec('COMMIT');
   database.close();
 }
-/** The store the code before the vector file kept: one row per text. */
-const earlierStore = (directory: string, rows: Rows) => store(names(directory).earlier, directory, rows);
-/** Vectors waiting to be folded into the vector file. */
-const waitingStore = (directory: string, rows: Rows) => store(names(directory).waiting, directory, rows);
-/** A vector as the code before the vector file reads it: by key, from its own store. */
-async function earlierRead(directory: string, text: string) {
-  const database = await openIndexFile(names(directory).earlier, directory);
+async function storedRows(directory: string) {
+  const database = await openIndexFile(names(directory).keys, directory);
   try {
-    return (database.prepare('SELECT vector FROM vectors WHERE key = ?').get(sha(text)) as { vector: Uint8Array } | undefined)?.vector;
+    return database.prepare('SELECT key, record FROM keys ORDER BY record').all() as { key: string; record: number }[];
   } finally {
     database.close();
   }
 }
-async function waiting(directory: string) {
-  const database = await openIndexFile(names(directory).waiting, directory);
-  try {
-    return (database.prepare('SELECT COUNT(*) AS n FROM vectors').get() as { n: number }).n;
-  } finally {
-    database.close();
-  }
-}
-const filler = (count: number) => Array.from({ length: count }, (_, at) => [`filler ${at}`, bytes(0.6, 0.8)] as const);
 const never = async (): Promise<never> => { throw new Error('embedded a text the store already holds'); };
+const counting = (vector: number[]) => {
+  const calls: string[][] = [];
+  return { calls, embed: async (texts: readonly string[]) => { calls.push([...texts]); return texts.map(() => vector); } };
+};
+const as = (vectors: readonly ArrayLike<number>[]) => vectors.map((vector) => Array.from(vector));
 
-it('reads back exactly the keys, vectors and days it wrote', async () => {
-  const { flat } = names(await folder());
-  const third = 1 / 3;
-  writeVectorFile(flat, 3, [
-    { key: sha('one'), vector: bytes(third, -0, 5e-324), day: 20_000 },
-    { key: sha('two'), vector: bytes(1, 2, 3), day: 20_001 },
-  ]);
-  const file = readVectorFile(flat)!;
-  expect([file.dimensions, file.count, [...file.days]]).toEqual([3, 2, [20_000, 20_001]]);
-  const one = file.vector(file.index.get(sha('one'))!);
-  expect(Object.is(one[0], third) && Object.is(one[1], -0) && one[2] === 5e-324).toBe(true);
-  expect([...file.vector(file.index.get(sha('two'))!)]).toEqual([1, 2, 3]);
-  expect(file.record(1)).toEqual({ key: sha('two'), vector: Buffer.from(bytes(1, 2, 3)) });
-  expect(readVectorFile(`${flat}.absent`)).toBeUndefined();
+it('takes in every vector the earlier files kept, once and bit for bit, and removes the vector file and its waiting store only when asked', async () => {
+  const directory = await folder();
+  const { flat, waiting, earlier } = names(directory);
+  const odd = bytes(1 / 3, -0, 5e-324);
+  await vectorFile(flat, 3, [['odd', odd], ['shared', bytes(1, 0, 0)]]);
+  // The vector file's copy of a text wins over the one waiting to join it.
+  await sqliteStore(waiting, directory, [['shared', bytes(0, 1, 0)], ['waiting', bytes(0, 0, 1)]]);
+  // With a vector file present, the store before it built nothing.
+  await sqliteStore(earlier, directory, [['only earlier', bytes(0.6, 0.8, 0)]]);
+  const untouched = await readFile(earlier);
+  const written = vi.spyOn(process.stderr, 'write');
+  const [got, shared, wait] = await cachedEmbeddings(never, { directory, modelId: MODEL })(['odd', 'shared', 'waiting']);
+  expect(new Uint8Array(Float64Array.from(got!).buffer)).toEqual(odd);
+  expect(Object.is(got![1], -0)).toBe(true);
+  expect(as([shared!, wait!])).toEqual([[1, 0, 0], [0, 0, 1]]);
+  const { calls, embed } = counting([0, 3, 4]);
+  expect(as(await cachedEmbeddings(embed, { directory, modelId: MODEL })(['only earlier']))).toEqual([[0, 0.6, 0.8]]);
+  expect(calls).toEqual([['only earlier']]);
+  // Using the store removes nothing: an older process can still have the files open.
+  expect(await Promise.all([flat, waiting].map((file) => stat(file).then(() => true)))).toEqual([true, true]);
+  // Every vector was found again, so asking removes the vector file and
+  // the waiting store, and names them; the store before them is never changed.
+  const removed = await cachedEmbeddings(never, { directory, modelId: MODEL }).removeEarlierFiles();
+  expect(removed).toContain(flat);
+  expect(removed).toContain(waiting);
+  expect((await readdir(directory)).filter((name) => /\.vectors\.(?:flat|waiting)/.test(name))).toEqual([]);
+  expect(await readFile(earlier)).toEqual(untouched);
+  expect(written).not.toHaveBeenCalled();
+  expect(await cachedEmbeddings(never, { directory, modelId: MODEL }).removeEarlierFiles()).toEqual([]);
 });
 
-it('never reads a cut or foreign file, and a stopped write leaves the old file whole', async () => {
+it('keeps the waiting store an older store still writes to across a newer store\'s take-in, and then keeps it on asking', async () => {
+  const directory = await folder();
+  const { waiting } = names(directory);
+  await sqliteStore(waiting, directory, [['kept', bytes(0.6, 0.8)]]);
+  // An older process's store, open on its waiting store.
+  const older = await openIndexFile(waiting, directory);
+  expect(as(await cachedEmbeddings(never, { directory, modelId: MODEL })(['kept']))).toEqual([[0.6, 0.8]]);
+  // The older store writes on, to the file that is still there.
+  older.prepare('INSERT INTO vectors (key, vector) VALUES (?, ?)').run(sha('later'), bytes(0.8, 0.6));
+  older.close();
+  const reopened = await openIndexFile(waiting, directory);
+  expect(reopened.prepare('SELECT COUNT(*) AS n FROM vectors').get()).toEqual({ n: 2 });
+  reopened.close();
+  // Its later vector is not in the newer store, so asking keeps both files and says so.
+  const written = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+  expect(await cachedEmbeddings(never, { directory, modelId: MODEL }).removeEarlierFiles()).toEqual([]);
+  expect(String(written.mock.calls[0]![0])).toMatch(/left .*vectors\.waiting\.sqlite in place/);
+  expect((await stat(waiting)).isFile()).toBe(true);
+});
+
+it('leaves the vector file and its waiting store, and says so, when their vectors cannot all be checked', async () => {
+  const directory = await folder();
+  const { flat, waiting } = names(directory);
+  await vectorFile(flat, 2, [['kept', bytes(0.6, 0.8)], ['other', bytes(0.8, 0.6)]]);
+  // A cut vector file: it cannot be read, so its vectors cannot be checked.
+  await writeFile(flat, (await readFile(flat)).subarray(0, 50));
+  await sqliteStore(waiting, directory, [['waiting', bytes(1, 0)]]);
+  const before = await Promise.all([flat, waiting].map((file) => readFile(file)));
+  const written = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+  const store = cachedEmbeddings(never, { directory, modelId: MODEL });
+  expect(as(await store(['waiting']))).toEqual([[1, 0]]);
+  expect(written).not.toHaveBeenCalled();
+  expect(await store.removeEarlierFiles()).toEqual([]);
+  expect(await Promise.all([flat, waiting].map((file) => readFile(file)))).toEqual(before);
+  expect(written).toHaveBeenCalledTimes(1);
+  expect(String(written.mock.calls[0]![0])).toMatch(/left .*vectors\.flat and .*vectors\.waiting\.sqlite in place/);
+  // The take-in is done; a later store does not try it again.
+  await cachedEmbeddings(never, { directory, modelId: MODEL })(['waiting']);
+  expect(written).toHaveBeenCalledTimes(1);
+});
+
+it('takes in the store before the vector file where there is no vector file', async () => {
+  const directory = await folder();
+  await sqliteStore(names(directory).earlier, directory, [['old', bytes(0.6, 0.8)]]);
+  await sqliteStore(names(directory).waiting, directory, [['new', bytes(0.8, 0.6)]]);
+  expect(as(await cachedEmbeddings(never, { directory, modelId: MODEL })(['old', 'new']))).toEqual([[0.6, 0.8], [0.8, 0.6]]);
+});
+
+it('never reads a cut or foreign vector file', async () => {
   const directory = await folder();
   const { flat } = names(directory);
-  writeVectorFile(flat, 2, [{ key: sha('kept'), vector: bytes(0.6, 0.8), day: today() }]);
+  await vectorFile(flat, 2, [['kept', bytes(0.6, 0.8)]]);
   const whole = await readFile(flat);
-  // A write that stops part-way: the rows run out with an error.
-  expect(() => writeVectorFile(flat, 2, (function* rows() {
-    yield { key: sha('new'), vector: bytes(1, 0), day: today() };
-    throw new Error('stopped');
-  })())).toThrow('stopped');
-  expect(await readFile(flat)).toEqual(whole);
-  expect((await readdir(directory)).filter((name) => name.endsWith('.tmp'))).toEqual([]);
-  expect(() => writeVectorFile(flat, 2, [{ key: 'short', vector: bytes(1, 0), day: 1 }])).toThrow('SHA-256');
-  expect(() => writeVectorFile(flat, 2, [{ key: sha('long'), vector: bytes(1, 0, 0), day: 1 }])).toThrow('dimensions');
-  for (const cut of [whole.length - 1, whole.length - 4, 40, 31, 0]) {
-    await truncate(flat, cut);
-    expect(readVectorFile(flat)).toBeUndefined();
-    await writeFile(flat, whole);
+  vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+  for (const file of [whole.subarray(0, whole.length - 3), Buffer.concat([Buffer.from('NOTCURV\n'), whole.subarray(8)])]) {
+    const fresh = await folder();
+    await writeFile(names(fresh).flat, file);
+    const { calls, embed } = counting([0, 2]);
+    expect(as(await cachedEmbeddings(embed, { directory: fresh, modelId: MODEL })(['kept']))).toEqual([[0, 1]]);
+    expect(calls).toEqual([['kept']]);
   }
-  await writeFile(flat, Buffer.concat([whole, Buffer.alloc(8)]));
-  expect(readVectorFile(flat)).toBeUndefined();
-  await writeFile(flat, Buffer.concat([Buffer.from('NOTCURV\n'), whole.subarray(8)]));
-  expect(readVectorFile(flat)).toBeUndefined();
 });
 
-it('embeds again rather than read a cut vector file', async () => {
+it('takes the earlier files in once, however many stores open at once', async () => {
   const directory = await folder();
-  const { flat } = names(directory);
-  writeVectorFile(flat, 2, [{ key: sha('kept'), vector: bytes(0.6, 0.8), day: today() }]);
-  await truncate(flat, (await readFile(flat)).length - 3);
-  const calls: string[][] = [];
-  const cached = cachedEmbeddings(async (texts) => { calls.push([...texts]); return texts.map(() => [0, 2]); }, { directory, modelId: MODEL });
-  expect((await cached(['kept'])).map((vector) => Array.from(vector))).toEqual([[0, 1]]);
-  expect(calls).toEqual([['kept']]);
+  await vectorFile(names(directory).flat, 2, [['kept', bytes(0.6, 0.8)]]);
+  const stores = [0, 1, 2].map(() => cachedEmbeddings(never, { directory, modelId: MODEL }));
+  expect((await Promise.all(stores.map((store) => store(['kept'])))).map(as)).toEqual([[[0.6, 0.8]], [[0.6, 0.8]], [[0.6, 0.8]]]);
+  // Earlier code adds a vector to its own file later: the store has moved on.
+  await sqliteStore(names(directory).waiting, directory, [['added later', bytes(1, 0)]]);
+  const { calls, embed } = counting([0, 5]);
+  await cachedEmbeddings(embed, { directory, modelId: MODEL })(['added later']);
+  expect(calls).toEqual([['added later']]);
+  expect((await storedRows(directory)).map((row) => row.key).sort()).toEqual([sha('added later'), sha('kept')].sort());
 });
 
-it('builds the vector file from the earlier store once, and never changes that store', async () => {
+it('appends each new vector after the last, rewriting nothing and writing no other file', async () => {
   const directory = await folder();
-  const odd = bytes(1 / 3, 2 / 3);
-  await earlierStore(directory, [...filler(5), ['odd', odd]]);
-  const untouched = await readFile(names(directory).earlier);
-  const cached = cachedEmbeddings(never, { directory, modelId: MODEL });
-  const [vector, first] = await cached(['odd', 'filler 0']);
-  expect(new Uint8Array(Float64Array.from(vector!).buffer)).toEqual(odd);
-  expect(Array.from(first!)).toEqual([0.6, 0.8]);
-  const file = readVectorFile(names(directory).flat)!;
-  expect([file.count, file.dimensions]).toEqual([6, 2]);
-  expect([...file.days].every((day) => day === today())).toBe(true);
-  expect(await waiting(directory)).toBe(0);
-  expect(await readFile(names(directory).earlier)).toEqual(untouched);
-  // A second process reads the vector file and asks the model for nothing.
-  expect((await cachedEmbeddings(never, { directory, modelId: MODEL })(['filler 3', 'odd'])).map((v) => Array.from(v)))
-    .toEqual([[0.6, 0.8], [1 / 3, 2 / 3]]);
-  // A fold later, the earlier store is still as it was, and code that reads it by key still finds its vectors.
-  await waitingStore(directory, Array.from({ length: FOLD_AT }, (_, at) => [`later ${at}`, bytes(1, 0)] as const));
-  await cachedEmbeddings(never, { directory, modelId: MODEL })(['later 5', 'odd']);
-  expect(readVectorFile(names(directory).flat)!.count).toBe(FOLD_AT + 6);
-  expect(await waiting(directory)).toBe(0);
-  expect(await readFile(names(directory).earlier)).toEqual(untouched);
-  expect(await earlierRead(directory, 'odd')).toEqual(odd);
-  expect(await earlierRead(directory, 'later 5')).toBeUndefined();
+  const { embed } = counting([3, 4]);
+  await cachedEmbeddings(embed, { directory, modelId: MODEL })(['first', 'second']);
+  const before = await storedRows(directory);
+  const bytes = await readFile(names(directory).data);
+  const inode = (await stat(names(directory).data)).ino;
+  for (let round = 0; round < 3; round += 1) {
+    await cachedEmbeddings(embed, { directory, modelId: MODEL })(Array.from({ length: 50 }, (_, at) => `round ${round} part ${at}`));
+  }
+  const after = await storedRows(directory);
+  expect(after.slice(0, before.length)).toEqual(before);
+  expect(after.map((row) => row.record)).toEqual(Array.from({ length: 152 }, (_, at) => at));
+  expect((await readFile(names(directory).data)).subarray(0, bytes.length)).toEqual(bytes);
+  expect((await stat(names(directory).data)).ino).toBe(inode);
+  expect((await readdir(directory)).filter((name) => /\.vectors\.(?:flat|waiting\.sqlite)$/.test(name))).toEqual([]);
 });
 
-it('does not read the earlier store again once the vector file exists', async () => {
+it('never uses a record a stopped write left cut, and keeps a vector of another length apart', async () => {
   const directory = await folder();
-  await earlierStore(directory, filler(3));
-  await cachedEmbeddings(never, { directory, modelId: MODEL })(['filler 0']);
-  // Code from before the vector file adds a vector to its own store.
-  await earlierStore(directory, [['added by earlier code', bytes(1, 0)]]);
-  const calls: string[][] = [];
-  const cached = cachedEmbeddings(async (texts) => { calls.push([...texts]); return texts.map(() => [0, 5]); }, { directory, modelId: MODEL });
-  expect((await cached(['added by earlier code'])).map((v) => Array.from(v))).toEqual([[0, 1]]);
-  expect(calls).toEqual([['added by earlier code']]);
-  expect(readVectorFile(names(directory).flat)!.count).toBe(3);
+  await cachedEmbeddings(async (texts) => texts.map((text) => text === 'odd' ? [1, 1, 1, 1] : [3, 4]), { directory, modelId: MODEL })(['whole', 'cut', 'odd']);
+  const { data } = names(directory);
+  await writeFile(data, (await readFile(data)).subarray(0, (32 + 16) * 2 - 5));
+  const { calls, embed } = counting([0, 7]);
+  const vectors = await cachedEmbeddings(embed, { directory, modelId: MODEL })(['whole', 'cut', 'odd']);
+  expect(as(vectors)).toEqual([[0.6, 0.8], [0, 1], [0.5, 0.5, 0.5, 0.5]]);
+  expect(calls).toEqual([['cut']]);
+  // The cut record was written again after the last whole one.
+  expect(as(await cachedEmbeddings(never, { directory, modelId: MODEL })(['cut']))).toEqual([[0, 1]]);
 });
 
-it('keeps a new part\'s vector in the waiting file until enough wait, then folds them in', async () => {
+it('keeps a vector however long it goes unused', async () => {
   const directory = await folder();
-  await earlierStore(directory, filler(4));
-  const calls: string[][] = [];
-  const embed = async (texts: readonly string[]) => { calls.push([...texts]); return texts.map(() => [3, 4]); };
-  await cachedEmbeddings(embed, { directory, modelId: MODEL })(['filler 1', 'a new part']);
-  expect(calls).toEqual([['a new part']]);
-  expect(await waiting(directory)).toBe(1);
-  expect(readVectorFile(names(directory).flat)!.count).toBe(4);
-  expect(await earlierRead(directory, 'a new part')).toBeUndefined();
-  // The next process finds it waiting and does not embed it again.
-  expect((await cachedEmbeddings(never, { directory, modelId: MODEL })(['a new part'])).map((v) => Array.from(v))).toEqual([[0.6, 0.8]]);
-  await waitingStore(directory, Array.from({ length: FOLD_AT }, (_, at) => [`later ${at}`, bytes(1, 0)] as const));
-  await cachedEmbeddings(never, { directory, modelId: MODEL })(['a new part', 'later 5']);
-  expect(readVectorFile(names(directory).flat)!.count).toBe(FOLD_AT + 5);
-  expect(await waiting(directory)).toBe(0);
+  await cachedEmbeddings(async (texts) => texts.map(() => [3, 4]), { directory, modelId: MODEL })(['a part read once']);
+  vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 400 * 86_400_000);
+  expect(as(await cachedEmbeddings(never, { directory, modelId: MODEL })(['a part read once']))).toEqual([[0.6, 0.8]]);
 });
 
-it('drops the vector of a changed part once it has gone unused, and keeps one in use', async () => {
+it('hands out each key\'s vector by a pass over the file or a lookup per key, the same either way, and asks for the text of a missing key only', async () => {
   const directory = await folder();
-  const { flat } = names(directory);
-  const stale = today() - KEEP_DAYS - 1;
-  writeVectorFile(flat, 2, [
-    { key: sha('the part as it was'), vector: bytes(1, 0), day: stale },
-    { key: sha('a part still read'), vector: bytes(0, 1), day: stale },
-    { key: sha('a part read last week'), vector: bytes(0.6, 0.8), day: today() - 7 },
-  ]);
-  const cached = cachedEmbeddings(never, { directory, modelId: MODEL });
-  await cached(['a part still read']);
-  cached.flush();
-  expect([...readVectorFile(flat)!.days]).toEqual([stale, today(), today() - 7]);
-  // The part changed: its new text is new to the store, and enough new vectors now wait for a fold.
-  await waitingStore(directory, [...filler(FOLD_AT), ['the part as it is', bytes(0, 1)]]);
-  await cachedEmbeddings(never, { directory, modelId: MODEL })(['the part as it is']);
-  const file = readVectorFile(flat)!;
-  expect(file.count).toBe(FOLD_AT + 3);
-  expect(file.index.has(sha('the part as it was'))).toBe(false);
-  expect(['a part still read', 'a part read last week', 'the part as it is'].every((text) => file.index.has(sha(text)))).toBe(true);
+  const vectorOf = (at: number) => [Math.cos(at), Math.sin(at)];
+  const texts = Array.from({ length: 10 }, (_, at) => `part ${at}`);
+  await cachedEmbeddings(async (list) => list.map((text) => vectorOf(Number(text.split(' ')[1]))), { directory, modelId: MODEL })(texts);
+  const asked: number[] = [];
+  const read = async (keys: readonly string[]) => {
+    const handed: [number, number[]][] = [];
+    await cachedEmbeddings(async (list) => list.map(() => [1, 0]), { directory, modelId: MODEL })
+      .eachVector(keys, (index) => { asked.push(index); return `missing ${index}`; }, (index, vector) => handed.push([index, Array.from(vector)]));
+    return handed.sort((left, right) => left[0] - right[0]);
+  };
+  // Nine keys of ten: one pass over the file. Two keys: a lookup each.
+  const many = await read([...texts.slice(0, 8), texts[3]!].map(sha));
+  const few = await read([texts[3]!, sha('not stored')].map((key, at) => at === 0 ? sha(key) : key));
+  expect(many.map(([index, vector]) => [index, vector.map((value) => Number(value.toFixed(12)))]))
+    .toEqual([0, 1, 2, 3, 4, 5, 6, 7, 3].map((at, index) => [index, vectorOf(at).map((value) => Number(value.toFixed(12)))]));
+  expect(few[0]).toEqual([0, many[3]![1]]);
+  expect(few[1]).toEqual([1, [1, 0]]);
+  expect(asked).toEqual([1]);
 });
 
-it('still reads and writes waiting vectors after a garbage collection', async () => {
+it('still reads and writes vectors after a garbage collection', async () => {
   const directory = await folder();
   const cached = cachedEmbeddings(async (texts) => texts.map(() => [3, 4]), { directory, modelId: MODEL });
   await cached(['first']);
@@ -200,82 +240,28 @@ it('still reads and writes waiting vectors after a garbage collection', async ()
     collect();
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
-  expect((await cached(['second', 'first'])).map((vector) => Array.from(vector))).toEqual([[0.6, 0.8], [0.6, 0.8]]);
-  expect(await waiting(directory)).toBe(2);
+  expect(as(await cached(['second', 'first']))).toEqual([[0.6, 0.8], [0.6, 0.8]]);
+  expect(await storedRows(directory)).toHaveLength(2);
 });
 
-it('keeps both last-used days when two readers of the same file record their use', async () => {
-  const directory = await folder();
-  const { flat } = names(directory);
-  const stale = today() - KEEP_DAYS - 1;
-  writeVectorFile(flat, 2, [
-    { key: sha('A'), vector: bytes(1, 0), day: stale },
-    { key: sha('B'), vector: bytes(0, 1), day: stale },
-  ]);
-  const one = cachedEmbeddings(never, { directory, modelId: MODEL });
-  const two = cachedEmbeddings(never, { directory, modelId: MODEL });
-  await one(['A']);
-  await two(['B']);
-  one.flush();
-  two.flush();
-  expect([...readVectorFile(flat)!.days]).toEqual([today(), today()]);
-  // The next fold keeps both: neither is embedded again.
-  await waitingStore(directory, filler(FOLD_AT));
-  await cachedEmbeddings(never, { directory, modelId: MODEL })(['A', 'B']);
-  expect(readVectorFile(flat)!.count).toBe(FOLD_AT + 2);
-});
-
-it('records a use in the file a fold wrote since this reader loaded the one before it', async () => {
-  const directory = await folder();
-  const { flat } = names(directory);
-  writeVectorFile(flat, 2, [
-    { key: sha('gone'), vector: bytes(1, 0), day: today() - KEEP_DAYS - 1 },
-    { key: sha('A'), vector: bytes(0, 1), day: today() - 7 },
-    { key: sha('B'), vector: bytes(0.6, 0.8), day: today() - 3 },
-  ]);
-  const reader = cachedEmbeddings(never, { directory, modelId: MODEL });
-  await reader(['A']);
-  // Another process folds: the file is replaced, and A is now its first record.
-  await waitingStore(directory, filler(FOLD_AT));
-  await cachedEmbeddings(never, { directory, modelId: MODEL })(['B']);
-  const folded = readVectorFile(flat)!;
-  expect([folded.count, folded.index.get(sha('A')), folded.days[0]]).toEqual([FOLD_AT + 2, 0, today() - 7]);
-  reader.flush();
-  const after = readVectorFile(flat)!;
-  expect([after.days[after.index.get(sha('A'))!], after.days[after.index.get(sha('B'))!]]).toEqual([today(), today() - 3]);
-});
-
-it('only ever moves a last-used day later', async () => {
-  const { flat } = names(await folder());
-  writeVectorFile(flat, 2, [
-    { key: sha('one'), vector: bytes(1, 0), day: 9 },
-    { key: sha('two'), vector: bytes(0, 1), day: 5 },
-  ]);
-  const read = readVectorFile(flat)!;
-  markVectorsUsed(flat, read, Uint8Array.of(1, 1), 7);
-  expect([...readVectorFile(flat)!.days]).toEqual([9, 7]);
-});
-
-it('ranks the same from the vector file as from the store before it', async () => {
-  const directory = await folder();
+it('ranks the same from vectors taken in from the earlier file as from vectors embedded afresh', async () => {
   const texts = Array.from({ length: 40 }, (_, at) => `part ${at}`);
   const vectorOf = (text: string) => {
     const seed = [...sha(text)].map((character) => character.charCodeAt(0));
-    const raw = Float64Array.from({ length: 8 }, (_, at) => Math.sin(seed[at]! * (at + 1)));
-    const length = Math.hypot(...raw);
-    return raw.map((value) => value / length);
+    return Float64Array.from({ length: 8 }, (_, at) => Math.sin(seed[at]! * (at + 1)));
   };
   const candidates: MemoryCandidate[] = texts.map((text, at) => ({
     sourceId: 'notes', id: `n${at}`, title: text, text, role: 'reference', signals: {},
   }));
-  const embed = async (list: readonly string[]) => list.map(vectorOf);
-  const ranked = async () => (await addMeaningRanks(candidates, 'part 3', {
-    embed: cachedEmbeddings(embed, { directory, modelId: MODEL }), searchLines: ['part 17'], wholeLanes: true,
-  })).map((candidate) => [candidate.id, candidate.searchRanks, candidate.meaningScore]);
-  const before = await ranked();
-  expect(readVectorFile(names(directory).flat)).toBeUndefined();
-  await waitingStore(directory, Array.from({ length: FOLD_AT }, (_, at) => [`pad ${at}`, new Uint8Array(vectorOf(`pad ${at}`).buffer)] as const));
-  const after = await ranked();
-  expect(readVectorFile(names(directory).flat)!.count).toBe(FOLD_AT + texts.length);
-  expect(after).toEqual(before);
+  const ranked = async (directory: string, embed: (list: readonly string[]) => Promise<Float64Array[]>) =>
+    (await addMeaningRanks(candidates, 'part 3', {
+      embed: cachedEmbeddings(embed, { directory, modelId: MODEL }), searchLines: ['part 17'], wholeLanes: true,
+    })).map((candidate) => [candidate.id, candidate.searchRanks, candidate.meaningScore]);
+  const fresh = await ranked(await folder(), async (list) => list.map(vectorOf));
+  // The earlier file held each vector as the earlier store wrote it.
+  const moved = await folder();
+  await vectorFile(names(moved).flat, 8, ['part 3', 'part 17', ...texts]
+    .map((text) => [text, new Uint8Array(normalize(normalize(vectorOf(text))).buffer)] as const)
+    .filter(([text], at, all) => all.findIndex(([other]) => other === text) === at));
+  expect(await ranked(moved, never)).toEqual(fresh);
 });

@@ -30,13 +30,13 @@ it('persists each complete unique input across runs and separates model identiti
   const other = cachedEmbeddings(embed, { directory, modelId: 'model-b' });
   await other(['reply']);
   expect(calls).toEqual([['reply', 'previous\nreply'], ['edited reply'], ['reply']]);
-  const models = (await readdir(directory)).filter((name) => name.endsWith('.vectors.waiting.sqlite'));
+  const models = (await readdir(directory)).filter((name) => name.endsWith('.vectors.keys.sqlite'));
   expect(models).toHaveLength(2);
   const counts = [];
   for (const model of models) {
     const database = await openIndexFile(join(directory, model), directory);
     try {
-      counts.push((database.prepare('SELECT COUNT(*) AS n FROM vectors').get() as { n: number }).n);
+      counts.push((database.prepare('SELECT COUNT(*) AS n FROM keys').get() as { n: number }).n);
     } finally {
       database.close();
     }
@@ -44,7 +44,7 @@ it('persists each complete unique input across runs and separates model identiti
   expect(counts.sort()).toEqual([1, 3]);
 });
 
-it('migrates a vector left in the per-text JSON folder into the model\'s waiting file', async () => {
+it('migrates a vector left in the per-text JSON folder into the model\'s vector store', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'curate-embeddings-'));
   directories.push(directory);
   const modelHash = createHash('sha256').update('model-a').digest('hex');
@@ -60,9 +60,9 @@ it('migrates a vector left in the per-text JSON folder into the model\'s waiting
   const [vector] = await cached(['kept text']);
   expect(calls).toEqual([]);
   expect(Array.from(vector!)).toEqual([0.6, 0.8]);
-  const database = await openIndexFile(join(directory, `${modelHash}.vectors.waiting.sqlite`), directory);
+  const database = await openIndexFile(join(directory, `${modelHash}.vectors.keys.sqlite`), directory);
   try {
-    expect(database.prepare('SELECT COUNT(*) AS n FROM vectors').get()).toEqual({ n: 1 });
+    expect(database.prepare('SELECT COUNT(*) AS n FROM keys').get()).toEqual({ n: 1 });
   } finally {
     database.close();
   }
