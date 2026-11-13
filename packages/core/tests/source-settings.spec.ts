@@ -9,14 +9,14 @@ import {
 } from '../src/index.js';
 import { decide, fixtureSource, parts, task } from './fixtures/source-settings.js';
 
-// The picks the build before settings moved to the sources made on this fixture, one run per entry.
+// The picks the build before settings moved to the sources made on this fixture, one run per entry,
+// with git's and Markdown's parts kept to those their keyword lanes held.
 interface Baseline {
   readonly selected: readonly string[];
   readonly candidates: readonly unknown[][];
   readonly everyRanked: unknown;
   readonly route: boolean;
   readonly wholeLanes: unknown;
-  readonly rare: false | { readonly share: number; readonly bar: number };
   readonly labels: { readonly asked: number; readonly gate: number } | null;
 }
 const baseline: Record<string, Baseline> = JSON.parse(
@@ -24,17 +24,16 @@ const baseline: Record<string, Baseline> = JSON.parse(
 
 // The presets' settings without their question sets, as the baseline ran them: it was recorded with the
 // built-in decision question.
-const chatSettings: HistorySettings = { rare: false, labels: true, bar: 0.0146, names: false };
-const gitSettings: HistorySettings = { rare: true, labels: false, bar: 0.0146, names: false };
-const markdownSettings: HistorySettings = { rare: true, labels: false, bar: 0.0146, names: false };
+const chatSettings: HistorySettings = { labels: true, bar: 0.0146, names: false };
+const gitSettings: HistorySettings = { labels: false, bar: 0.0146, names: false };
+const markdownSettings: HistorySettings = { labels: false, bar: 0.0146, names: false };
 
-const sharedWords = (word: string) => Array.from({ length: 20 }, (_, i) => `${word}${i * 10}`).join(' ');
 const chat = (settings: Partial<HistorySettings> = {}, pool = parts('chat', 'chatword')) =>
-  historySource({ reader: fixtureSource('chat', pool, { rare: false }), ...chatSettings, ...settings });
+  historySource({ reader: fixtureSource('chat', pool), ...chatSettings, ...settings });
 const git = (settings: Partial<HistorySettings> = {}, pool = parts('git', 'gitword')) =>
-  historySource({ reader: fixtureSource('git', pool, { rare: false }), ...gitSettings, ...settings });
+  historySource({ reader: fixtureSource('git', pool), ...gitSettings, ...settings });
 const markdown = (settings: Partial<HistorySettings> = {}, pool = parts('markdown', 'noteword')) =>
-  historySource({ reader: fixtureSource('markdown', pool, { rare: false }), ...markdownSettings, ...settings });
+  historySource({ reader: fixtureSource('markdown', pool), ...markdownSettings, ...settings });
 
 let cache: string;
 beforeEach(() => { cache = mkdtempSync(join(tmpdir(), 'curate-source-settings-')); vi.stubEnv('XDG_CACHE_HOME', cache); });
@@ -54,17 +53,16 @@ async function expectBaseline(sources: readonly CandidateSource[], name: string)
   const labels = picked.record.labels;
   expect(labels === undefined ? null : { asked: labels.asked, gate: labels.gate })
     .toEqual(want.labels === null ? null : { asked: want.labels.asked, gate: want.labels.gate });
-  const { everyRanked, route, wholeLanes, rare } = picked.record.levers;
+  const { everyRanked, route, wholeLanes } = picked.record.levers;
   expect({ everyRanked, route, wholeLanes }).toEqual({ everyRanked: want.everyRanked, route: want.route, wholeLanes: want.wholeLanes });
-  expect(rare).toEqual(want.rare === false ? false : { share: want.rare.share, bar: want.rare.bar });
   expect(picked.record.levers).not.toHaveProperty('everyScored');
   return picked;
 }
 
 const presetSettings = {
-  chat: { kind: 'chat', labels: true, labelBar: 0.5, rare: false, bar: 0.0146 },
-  git: { kind: 'git-history', labels: false, rare: true, bar: 0.0146 },
-  markdown: { kind: 'markdown', labels: false, rare: true, bar: 0.0146 },
+  chat: { kind: 'chat', labels: true, labelBar: 0.5, bar: 0.0146 },
+  git: { kind: 'git-history', labels: false, bar: 0.0146 },
+  markdown: { kind: 'markdown', labels: false, bar: 0.0146 },
 } as const;
 
 describe('the presets reproduce the picks made before settings moved to the sources', () => {
@@ -84,7 +82,7 @@ describe('the presets reproduce the picks made before settings moved to the sour
     ['defaults all', () => [chat({ labels: false }), git(), markdown()]],
   ] as const)('%s, with chat read through historySource and labels off', async (name, sources) => {
     const picked = await expectBaseline(sources(), name);
-    expect(picked.record.levers.sources.chat).toEqual({ kind: 'chat', labels: false, rare: false, bar: 0.0146 });
+    expect(picked.record.levers.sources.chat).toEqual({ kind: 'chat', labels: false, bar: 0.0146 });
   });
 
   it('names the kind of a source that returns no parts', async () => {
@@ -97,7 +95,7 @@ describe('the presets reproduce the picks made before settings moved to the sour
     const scoped = { ...git({}, []), since: '14 days', paths: ['src'], exclude: ['secret.md'] };
     const picked = await run([scoped]);
     expect(picked.record.levers.sources.git).toEqual({
-      kind: 'git-history', labels: false, rare: true, bar: 0.0146,
+      kind: 'git-history', labels: false, bar: 0.0146,
       since: '14 days', paths: ['src'], exclude: ['secret.md'],
     });
   });
@@ -118,22 +116,6 @@ describe('a setting on one source never changes another source\'s pick', () => {
     const on = await run([chat(), git(), markdown()]);
     expect(view(on, 'chat')).not.toEqual(view(off, 'chat'));
     for (const id of ['git', 'markdown']) expect(view(on, id)).toEqual(view(off, id));
-  });
-
-  it('git\'s rare-word round leaves chat and Markdown unchanged when Markdown\'s rare words are common in git', async () => {
-    const pool = parts('git', 'gitword', sharedWords('noteword'));
-    const on = await run([chat(), git({}, pool), markdown()]);
-    const off = await run([chat(), git({ rare: false }, pool), markdown()]);
-    expect(view(on, 'git')).not.toEqual(view(off, 'git'));
-    for (const id of ['chat', 'markdown']) expect(view(on, id)).toEqual(view(off, id));
-  });
-
-  it('Markdown\'s rare-word round leaves chat and git unchanged when git\'s rare words are common in Markdown', async () => {
-    const pool = parts('markdown', 'noteword', sharedWords('gitword'));
-    const on = await run([chat(), git(), markdown({}, pool)]);
-    const off = await run([chat(), git(), markdown({ rare: false }, pool)]);
-    expect(view(on, 'markdown')).not.toEqual(view(off, 'markdown'));
-    for (const id of ['chat', 'git']) expect(view(on, id)).toEqual(view(off, id));
   });
 
   it.each(['chat', 'git', 'markdown'] as const)('a higher %s bar leaves the other two unchanged', async (changed) => {

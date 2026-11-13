@@ -103,7 +103,7 @@ describe('jev', () => {
       ...(author === undefined ? {} : { chat: { provider: 'claude-code', sessionId: 's', role: 'user', author } }),
     });
     await pick([candidate('mine', 'person'), candidate('relayed', 'agent'), candidate('note')], {
-      task: 'What did we decide?', everyRanked: true, everyScored: true, rare: false, decide: jev({ apiKey: 'test-key' }),
+      task: 'What did we decide?', everyRanked: true, everyScored: true, decide: jev({ apiKey: 'test-key' }),
     });
     const records = Object.values(JSON.parse(String(fetch.mock.calls[0]![1]!.body)).state.items) as Record<string, unknown>[];
     expect(Object.fromEntries(records.map((record) => [record.id, record.author]))).toEqual({ mine: 'person', relayed: 'agent', note: undefined });

@@ -1,13 +1,13 @@
 import type { HistorySettings } from '@curatejs/core';
 import { MARKDOWN_CASCADE } from './questions.js';
 
-/** The settings `markdown()` and `knowledgeBase()` read with: the
- *  rare-word round on, no label kinds, a name lane for each name the
- *  task names, the 0.0146 decision-score bar and the `MARKDOWN_CASCADE`
- *  decision questions. Change one with
- *  `historySource({ reader: knowledgeBase('docs'), ...markdownSettings, rare: false })`. */
+/** The settings `markdown()` and `knowledgeBase()` read with: no label
+ *  kinds, a name lane for each name the task names, the 0.0146
+ *  decision-score bar and the `MARKDOWN_CASCADE` decision questions.
+ *  Change one with
+ *  `historySource({ reader: knowledgeBase('docs'), ...markdownSettings, names: false })`. */
 export const markdownSettings: HistorySettings = {
-  rare: true, labels: false, names: true, bar: 0.0146, questions: MARKDOWN_CASCADE,
+  labels: false, names: true, bar: 0.0146, questions: MARKDOWN_CASCADE,
 };
 
 /** The settings `rules()` reads with: `markdownSettings` with no name

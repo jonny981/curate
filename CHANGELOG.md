@@ -97,14 +97,16 @@ What each part does:
   Live on one person's ~116,000-part history it found 51 of 56 known
   answers in 5,900 rated parts, 1.84% of the history. The record's
   `pick.chatRead` says how far it read and what ended it, and the skill's
-  chat searches keep their match order, so `userFirst` is gone.
+  chat searches keep their match order, so `userFirst` is gone. The skill
+  then searches those transcripts a second time: the rarest names, numbers
+  and words of the three best-rated parts become new search lines, a second
+  pick rates only the parts the first never rated, and the parts it keeps
+  join the first pick's.
 - **Settings by source.** Each source carries its own settings, so a setting
   chosen for one kind of history never changes what Curate picks from
-  another: `rare` (follow strong parts by their rare words to parts the first
-  pass missed, within that source), `labels` (the label kinds asked of each
-  part), `labelBar` (its label bar, 0.5 by default), `bar` (the
-  decision-score bar for its references), `ruleBar` (the bar for its rules)
-  and `questions` (the decision questions asked of its references; the
+  another: `labels` (the label kinds asked of each part), `labelBar` (its
+  label bar, 0.5 by default), `bar` (the decision-score bar for its
+  references), `ruleBar` (the bar for its rules) and `questions` (the decision questions asked of its references; the
   presets carry `CHAT_CASCADE`, `GIT_HISTORY_CASCADE` and
   `MARKDOWN_CASCADE`). The presets `chat()`, `git()`, `markdown()`,
   `knowledgeBase()` and `rules()` carry their package's tuned settings
@@ -125,8 +127,7 @@ What each part does:
   (decide every ranked part, or only the top round(c × N^0.8)) and
   `route: 'jev'` (the decision model says what kind of answer the task
   needs).
-  `everyScored` and `rare` set one value for every source in place of their
-  own. The core README lists each lever's purpose and measured impact.
+  `everyScored` sets one value for every source in place of their own. The core README lists each lever's purpose and measured impact.
 - **Records say what each setting did.** Each pick record carries `effects`:
   one entry per setting that was on, per source, with the parts it looked
   at, the kept parts it brought in or kept out, and one plain sentence that

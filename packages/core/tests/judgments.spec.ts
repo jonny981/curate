@@ -10,7 +10,7 @@ import { taskMoment } from '../src/time.js';
 
 afterEach(() => vi.unstubAllGlobals());
 
-const uncutPick = { everyRanked: true, everyScored: true, rare: false } as const;
+const uncutPick = { everyRanked: true, everyScored: true } as const;
 
 const LEVELS = ["can't be the answer", 'the kind asked, but not this one',
   'possible but uncertain or partial', 'likely, with some doubt', 'definitely the answer'] as const;

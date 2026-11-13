@@ -11,7 +11,7 @@ import { ANSWER_TYPES, taskNames } from './task.js';
  *  dotted path a caller could still pass names the option that took
  *  its place. */
 const RENAMED_OPTIONS: Readonly<Record<string, string>> = {
-  pick: '`everyRanked` or `rare`',
+  pick: '`everyRanked`',
   'thresholds.reference': '`everyScored`',
   'thresholds.referenceBySize': '`everyScored.bySize`',
   laneCut: '`wholeLanes`',
@@ -22,7 +22,7 @@ const RENAMED_OPTIONS: Readonly<Record<string, string>> = {
 const PICK_OPTION_KEYS: readonly (keyof PickOptions)[] = [
   'ranking', 'task', 'decide', 'questionsBySource', 'sourceKinds', 'labelKindsBySource', 'labelBarBySource',
   'keepTop', 'rankProtection', 'bestPartFirst', 'tags', 'tagsByKind',
-  'labels', 'cache', 'route', 'answerTypes', 'writeQuestions', 'findNames', 'everyRanked', 'everyScored', 'rare', 'rareBySource',
+  'labels', 'cache', 'route', 'answerTypes', 'writeQuestions', 'findNames', 'everyRanked', 'everyScored',
   'stopWhenCold', 'feed',
   'barBySource', 'ruleBarBySource', 'rulesEnumerationComplete', 'readsBySource', 'limits', 'thresholds',
   'taskDate', 'timeZone', 'taskPeriod', 'signal',
@@ -261,13 +261,9 @@ export function checkPickOptions(options: PickOptions): void {
     }
   }
   checkKeys(options.everyScored, ['bar', 'bySize'], 'everyScored');
-  checkKeys(options.rare, ['share', 'bar'], 'rare');
   checkKeys(options.answerTypes, ['bar'], 'answerTypes');
   if (options.taskPeriod !== undefined && typeof options.taskPeriod !== 'boolean') {
     throw new TypeError('taskPeriod must be a boolean.');
-  }
-  for (const [id, enabled] of Object.entries(options.rareBySource ?? {})) {
-    if (typeof enabled !== 'boolean') throw new TypeError(`rareBySource.${id} must be a boolean.`);
   }
   for (const [name, bars] of [['labelBarBySource', options.labelBarBySource], ['barBySource', options.barBySource],
     ['ruleBarBySource', options.ruleBarBySource]] as const) {

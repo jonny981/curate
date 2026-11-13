@@ -12,9 +12,8 @@ export function baselineText(sourceId: string, text: string): string {
   return text.startsWith(prefix) ? text.slice(prefix.length) : text;
 }
 
-/** 400 parts. Parts i and i + 200 share a word no other part of this source has (every tenth i below 200), so
- *  the rare-word round can follow a selected part in the lanes to its partner outside them. `crowd`, when given,
- *  is added to parts 100 to 111, making those words common in this source. */
+/** 400 parts. Parts i and i + 200 share a word no other part of this source has (every tenth i below 200).
+ *  `crowd`, when given, is added to parts 100 to 111, making those words common in this source. */
 export function parts(sourceId: string, rareWord: string, crowd = ''): MemoryCandidate[] {
   return Array.from({ length: 400 }, (_, i) => ({
     sourceId, id: `${sourceId}#${i}`, title: `${sourceId} part ${i}`, role: 'reference',
@@ -26,9 +25,9 @@ export function parts(sourceId: string, rareWord: string, crowd = ''): MemoryCan
 
 /** A source with the given settings; its keyword lanes return the first 60 parts, a whole-lane read all 400. */
 export function fixtureSource(id: 'chat' | 'git' | 'markdown', pool: readonly MemoryCandidate[],
-  settings: { rare: boolean; labelKinds?: readonly LabelKind[] }): CandidateSource {
+  settings: { labelKinds?: readonly LabelKind[] } = {}): CandidateSource {
   return {
-    id, kind: id === 'git' ? 'git-history' : id, role: 'reference', rare: settings.rare,
+    id, kind: id === 'git' ? 'git-history' : id, role: 'reference',
     ...(settings.labelKinds === undefined ? {} : { labelKinds: settings.labelKinds }),
     read: async (request) => ({ status: 'read', complete: true, laneCutApplied: true,
       candidates: request.wholeLanes ? pool : pool.slice(0, 60) }),

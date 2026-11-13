@@ -38,7 +38,7 @@ describe('a name lane brings in a part the search missed', () => {
   /** The fixture's chat reader, answering a phrase read with the parts that hold its phrase. */
   const source = (names: boolean): CandidateSource => {
     const pool = [...parts('chat', 'chatword'), club];
-    const reader = fixtureSource('chat', pool, { rare: false });
+    const reader = fixtureSource('chat', pool);
     return historySource({ ...chatSettings, labels: false, names, reader: { ...reader,
       read: async (request, context) => request.phraseLane === true
         ? { status: 'read', complete: true, candidates: pool.filter((c) => phraseCount(c.text, request.task) > 0) }
@@ -81,7 +81,7 @@ describe('a name lane brings in a part the search missed', () => {
 
   it('records the names when every source with name lanes on is absent', async () => {
     const absent = historySource({ ...chatSettings, labels: false, names: true, reader: {
-      ...fixtureSource('chat', [], { rare: false }), read: async () => ({ status: 'absent', reason: 'no history' }) } });
+      ...fixtureSource('chat', []), read: async () => ({ status: 'absent', reason: 'no history' }) } });
     const picked = await pickFromSources([absent], { task }, { task, decide: keepClub });
     expect(picked.reads[0]!.status).toBe('absent');
     expect(picked.record.names).toEqual({ found: ['Book Lovers Unite'], by: 'code' });
@@ -89,7 +89,7 @@ describe('a name lane brings in a part the search missed', () => {
 
   it('gives a source whose read matched nothing a names entry with zero counts', async () => {
     const empty = historySource({ ...chatSettings, labels: false, names: true, reader: {
-      ...fixtureSource('chat', [], { rare: false }), read: async () => ({ status: 'read', complete: true, candidates: [] }) } });
+      ...fixtureSource('chat', []), read: async () => ({ status: 'read', complete: true, candidates: [] }) } });
     const picked = await pickFromSources([empty], { task }, { task, decide: keepClub });
     expect(picked.record.effects.filter((e) => e.setting === 'names')).toEqual([{ setting: 'names', source: 'chat',
       actedOn: 0, added: 0, dropped: 0, summary: 'names on chat: the lanes held no part, so they added none. It added no part.' }]);
@@ -115,7 +115,7 @@ describe('the name term moves a score', () => {
   };
   const run = async (questions: PickCascade, on: string) => {
     const { requests, how } = recording(answer);
-    const source = historySource({ reader: fixtureSource('chat', pool, { rare: false }), ...chatSettings,
+    const source = historySource({ reader: fixtureSource('chat', pool), ...chatSettings,
       labels: false, names: false, questions });
     const picked = await pickFromSources([source], { task: on }, { task: on, decide: how, writeQuestions: async () => WRITTEN });
     const score = (id: string) => (picked.record.candidates.find((c) => c.id === id) as { probability: number }).probability;

@@ -67,7 +67,7 @@ const fileName = (path: string) => path.slice(path.lastIndexOf(sep) + 1);
 
 it('shares one read context across every read of one call, and makes a new one for the next call', async () => {
   const reads: { context: unknown; nameLane: boolean }[] = [];
-  const source = { id: 'notes', kind: 'markdown', role: 'reference', names: true, rare: false, labelKinds: [],
+  const source = { id: 'notes', kind: 'markdown', role: 'reference', names: true, labelKinds: [],
     async read(request: CandidateReadRequest, context?: unknown) {
       reads.push({ context, nameLane: request.phraseLane === true });
       const part: MemoryCandidate = { sourceId: 'notes', id: 'note', role: 'reference', title: 'Ada', text: 'Ada decided.',
@@ -95,7 +95,7 @@ it('probes each missing vector once per call and keeps it in the model\'s file, 
   // Two search lines with the same words: the second meaning lane asks
   // for the same query and parts as the first.
   const same = { markdown: { keywords: ['orchard trees', 'orchard trees'], answers: ['pears ripen late'] } };
-  const searched = searchSource({ ...knowledgeBase(directory), labelKinds: [], rare: false }, same, [], directory);
+  const searched = searchSource({ ...knowledgeBase(directory), labelKinds: [] }, same, [], directory);
   // Each meaning lane: the texts it asks for and the vector files read while it runs.
   const lanes: { task: string; asked: string[]; reads: string[] }[] = [];
   const source = { ...searched, async read(request: CandidateReadRequest, context: unknown) {
@@ -151,7 +151,7 @@ it('stops a call cancelled during a read and keeps nothing for the next call', a
     if (stop && texts.length > 1 && ++armed > 1) controller.abort();
     return vectors;
   };
-  const searched = searchSource({ ...knowledgeBase(directory), labelKinds: [], rare: false }, searches, [], directory);
+  const searched = searchSource({ ...knowledgeBase(directory), labelKinds: [] }, searches, [], directory);
   const source = { ...searched, read: (request: CandidateReadRequest, context: unknown) => {
     contexts.push(context);
     return searched.read(request, context);

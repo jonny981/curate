@@ -90,7 +90,7 @@ for (const row of rows) {
     return Object.fromEntries(batch.questions.map((q) => [q.key,
       { status: 'answered', probability: Math.min(1, Math.max(0, q.questionKey === asked[0].key ? score.get(q.id) ?? 0 : 0.5)) }]));
   };
-  const picked = await pick(candidates, { task: row.task, decide, rare: false, stopWhenCold: {},
+  const picked = await pick(candidates, { task: row.task, decide, stopWhenCold: {},
     questionsBySource: { history: set }, limits: { maxBatchChars } });
   const stop = picked.record.pick.stopWhenCold;
   const rated = new Set(picked.record.candidates.filter((entry) => entry.status === 'selected' || entry.status === 'rejected')

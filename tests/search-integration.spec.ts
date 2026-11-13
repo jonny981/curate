@@ -9,7 +9,7 @@ import { chat, chatSettings } from '@curatejs/chat';
 import { git as gitSource, gitSettings } from '@curatejs/git';
 import { knowledgeBase, markdownSettings, rules, rulesSettings } from '@curatejs/markdown';
 
-const uncutPick = { everyRanked: true, everyScored: true, rare: false } as const;
+const uncutPick = { everyRanked: true, everyScored: true } as const;
 
 it('combines search options and source questions across real readers', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'curate-search-integration-'));

@@ -12,7 +12,7 @@ import {
   type PickDecide,
 } from '../src/index.js';
 
-const uncutPick = { everyRanked: true, everyScored: true, rare: false } as const;
+const uncutPick = { everyRanked: true, everyScored: true } as const;
 
 function candidate(overrides: Partial<MemoryCandidate> & Pick<MemoryCandidate, 'sourceId' | 'id'>): MemoryCandidate {
   return {
@@ -64,7 +64,7 @@ describe('pick', () => {
     expect(picked.selected.map((item) => item.id)).toEqual(['applies', 'does-not-apply', 'strong', 'weak', 'zero']);
     expect(picked.record.thresholds).toEqual({ linkedPathBar: 0.4 });
     expect(picked.record.levers.sources).toEqual({
-      notes: { labels: false, rare: false, bar: 0 }, rules: { labels: false, rare: false, bar: 0, ruleBar: 0 } });
+      notes: { labels: false, bar: 0 }, rules: { labels: false, bar: 0, ruleBar: 0 } });
     const result = await curate('Recall evidence', picked);
     expect(result.log).toContain('text of notes/weak');
     expect(result.log).toContain('text of notes/zero');

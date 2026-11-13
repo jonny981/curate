@@ -11,16 +11,16 @@ import {
 import { decide, fixtureSource, parts, task } from './fixtures/source-settings.js';
 
 // Each source's settings as the settings-by-source baseline ran them, written out in full.
-const chatSettings: HistorySettings = { rare: false, labels: false, bar: 0.0146, names: false };
-const gitSettings: HistorySettings = { rare: true, labels: false, bar: 0.0146, names: false };
-const markdownSettings: HistorySettings = { rare: true, labels: false, bar: 0.0146, names: false };
+const chatSettings: HistorySettings = { labels: false, bar: 0.0146, names: false };
+const gitSettings: HistorySettings = { labels: false, bar: 0.0146, names: false };
+const markdownSettings: HistorySettings = { labels: false, bar: 0.0146, names: false };
 
 const chat = (settings: Partial<HistorySettings> = {}, pool = parts('chat', 'chatword')) =>
-  historySource({ reader: fixtureSource('chat', pool, { rare: false }), ...chatSettings, ...settings });
+  historySource({ reader: fixtureSource('chat', pool), ...chatSettings, ...settings });
 const git = (settings: Partial<HistorySettings> = {}, pool = parts('git', 'gitword')) =>
-  historySource({ reader: fixtureSource('git', pool, { rare: false }), ...gitSettings, ...settings });
+  historySource({ reader: fixtureSource('git', pool), ...gitSettings, ...settings });
 const markdown = (settings: Partial<HistorySettings> = {}, pool = parts('markdown', 'noteword')) =>
-  historySource({ reader: fixtureSource('markdown', pool, { rare: false }), ...markdownSettings, ...settings });
+  historySource({ reader: fixtureSource('markdown', pool), ...markdownSettings, ...settings });
 
 // A fresh label store for every pick.
 let cache: string;
@@ -59,38 +59,6 @@ describe('the record says what each pick setting did', () => {
       added: 56,
       dropped: 0,
       summary: 'labels on chat at the label bar 0.5: labelled 400 parts; 70 reached the decide step only through the label lane, and 56 of them were kept.',
-    });
-  });
-
-  describe('rare', () => {
-    it.each([
-      ['git', () => git(), 1],
-      ['markdown', () => markdown(), 5],
-    ] as const)('counts the parts the round added on %s', async (id, source, added) => {
-      const picked = await pickFromSources([source()], { task }, { task, decide, everyRanked: true });
-      const rare = picked.record.pick!.rare!;
-      expect(effect(picked.record, 'rare', id)).toMatchObject({
-        actedOn: rare.pulled.filter((entry) => entry.sourceId === id).length, added, dropped: 0,
-      });
-      expect(selectedFrom(picked, id).filter((c) => Number(c.id.split('#')[1]) >= 60)).toHaveLength(added);
-      expect(picked.record.effects.filter((entry) => entry.setting === 'rare')
-        .reduce((sum, entry) => sum + entry.added, 0)).toBe(rare.added);
-    });
-
-    it('says no pulled part cleared the rare bar when every part was already decided', async () => {
-      const picked = await pickFromSources([git()], { task, wholeLanes: true }, { task, decide, everyRanked: true });
-      const entry = effect(picked.record, 'rare', 'git')!;
-      expect(entry.actedOn).toBeGreaterThan(0);
-      expect(entry).toMatchObject({ added: 0, dropped: 0 });
-      expect(entry.summary).toBe(`rare on git: pulled in ${entry.actedOn} parts, but none answered at or above the rare bar 0.0146, so the round added none. It added no part.`);
-    });
-
-    it('sums each source\'s added count to the round\'s total', async () => {
-      const picked = await pickFromSources([git(), markdown()], { task }, { task, decide, everyRanked: true });
-      const entries = picked.record.effects.filter((entry) => entry.setting === 'rare');
-      expect(entries.map((entry) => entry.source)).toEqual(['git', 'markdown']);
-      expect(entries.reduce((sum, entry) => sum + entry.added, 0)).toBe(picked.record.pick!.rare!.added);
-      expect(entries.reduce((sum, entry) => sum + entry.actedOn, 0)).toBe(picked.record.pick!.rare!.pulled.length);
     });
   });
 
@@ -169,7 +137,7 @@ describe('the record says what each pick setting did', () => {
           candidates: [part('notes', 'a'), part('notes', 'b'), part('notes', 'x', request.wholeLanes ? { pastLaneCut: true } : {})] }),
       };
       const picked = await pickFromSources([reader], { task, wholeLanes: true },
-        { task, decide: fixed(() => 0.9), everyRanked: true, rare: false, limits: { maxCandidates: 2 } });
+        { task, decide: fixed(() => 0.9), everyRanked: true, limits: { maxCandidates: 2 } });
       expect(picked.selected.map((c) => c.id)).toEqual(['a', 'b']);
       expect(effect(picked.record, 'wholeLanes', 'notes')).toEqual({
         setting: 'wholeLanes', source: 'notes', actedOn: 1, added: 0, dropped: 0,
@@ -222,7 +190,7 @@ describe('the record says what each pick setting did', () => {
     const threeParts = () => [part('notes', 'a', { searchRanks: [0] }), part('notes', 'b', { searchRanks: [1] }),
       part('notes', 'p3', { searchRanks: [2] })];
     const labelPick = (everyRanked: true | { c: number }, labels = true) => pick(threeParts(), {
-      task: 'Recall the plan', decide: fixed(labelled), everyRanked, everyScored: true, rare: false,
+      task: 'Recall the plan', decide: fixed(labelled), everyRanked, everyScored: true,
       ...(labels ? { labelKindsBySource: { notes: LABEL_KINDS } } : {}),
     });
 
@@ -250,7 +218,7 @@ describe('the record says what each pick setting did', () => {
     });
     const linePick = (everyRanked: true | { c: number }, searchLines?: string[]) =>
       pickFromSources([ranked(['a', 'b', 'c'])], { task, ...(searchLines === undefined ? {} : { searchLines }) },
-        { task, decide: fixed(() => 0.9), everyRanked, rare: false });
+        { task, decide: fixed(() => 0.9), everyRanked });
 
     it('a search line: says the cut ended the feed early', async () => {
       const on = await linePick({ c: 1 }, ['line']);
@@ -300,7 +268,7 @@ describe('the record says what each pick setting did', () => {
       ['searchLines', { searchLines: ['line'] }],
       ['searchPhrases', { searchPhrases: ['extra phrase'] }],
     ] as const)('%s: counts a kept part only that lane held', async (setting, extra) => {
-      const picked = await pickFromSources([source('x')], { task, ...extra }, { task, decide: fixed(() => 0.9), rare: false });
+      const picked = await pickFromSources([source('x')], { task, ...extra }, { task, decide: fixed(() => 0.9) });
       expect(picked.selected.map((c) => c.id)).toContain('x');
       expect(effect(picked.record, setting, 'notes')).toEqual({
         setting, source: 'notes', actedOn: 1, added: 1, dropped: 0,
@@ -312,7 +280,7 @@ describe('the record says what each pick setting did', () => {
       ['searchLines', { searchLines: ['line'] }],
       ['searchPhrases', { searchPhrases: ['extra phrase'] }],
     ] as const)('%s: says every part it held was also in another lane', async (setting, extra) => {
-      const picked = await pickFromSources([source('a')], { task, ...extra }, { task, decide: fixed(() => 0.9), rare: false });
+      const picked = await pickFromSources([source('a')], { task, ...extra }, { task, decide: fixed(() => 0.9) });
       expect(effect(picked.record, setting, 'notes')).toEqual({
         setting, source: 'notes', actedOn: 1, added: 0, dropped: 0,
         summary: `${setting} on notes: the lanes held 1 part, but every part they held was also in another lane, so they added none. It added no part.`,
@@ -328,7 +296,7 @@ describe('the record says what each pick setting did', () => {
           candidates: (request.task === 'line' ? ['x', 'a'] : ['a', 'x']).map((id) => part('notes', id)) }),
       };
       const picked = await pickFromSources([crossed], { task, searchLines: ['line'] },
-        { task, decide: fixed(() => 0.9), everyRanked: true, rare: false, limits: { maxCandidates: 1 } });
+        { task, decide: fixed(() => 0.9), everyRanked: true, limits: { maxCandidates: 1 } });
       expect(picked.selected.map((c) => c.id).sort()).toEqual(['a', 'x']);
       expect(effect(picked.record, 'searchLines', 'notes')).toEqual({
         setting: 'searchLines', source: 'notes', actedOn: 2, added: 1, dropped: 0,
@@ -344,7 +312,7 @@ describe('the record says what each pick setting did', () => {
           candidates: (request.task === 'line' ? ['a', 'b', 'x'] : ['a', 'b']).map((id) => part('notes', id)) }),
       };
       const picked = await pickFromSources([past], { task, searchLines: ['line'] },
-        { task, decide: fixed(() => 0.9), everyRanked: true, rare: false, limits: { maxCandidates: 2 } });
+        { task, decide: fixed(() => 0.9), everyRanked: true, limits: { maxCandidates: 2 } });
       expect(picked.selected.map((c) => c.id)).toEqual(['a', 'b']);
       expect(effect(picked.record, 'searchLines', 'notes')).toEqual({
         setting: 'searchLines', source: 'notes', actedOn: 3, added: 0, dropped: 0,
@@ -354,7 +322,7 @@ describe('the record says what each pick setting did', () => {
 
     it('searchLines: says no extra lane opened when every line repeats the task', async () => {
       const picked = await pickFromSources([source('x')], { task, searchLines: [task] },
-        { task, decide: fixed(() => 0.9), rare: false });
+        { task, decide: fixed(() => 0.9) });
       expect(effect(picked.record, 'searchLines', 'notes')).toEqual({
         setting: 'searchLines', source: 'notes', actedOn: 0, added: 0, dropped: 0,
         summary: 'searchLines on notes: every line was blank or repeated the task or an earlier line, so no extra lane opened and they added none. It added no part.',
@@ -373,7 +341,7 @@ describe('the record says what each pick setting did', () => {
 
     it.each([['x', 1], ['a', 0]] as const)('meaning nearest %s: added %s', async (near, added) => {
       const picked = await pickFromSources([meaningSource(near)], { task, meaning: { embed: embed(near) } },
-        { task, decide: fixed(() => 0.9), rare: false });
+        { task, decide: fixed(() => 0.9) });
       const entry = effect(picked.record, 'meaning', 'notes')!;
       expect(entry).toMatchObject({ actedOn: 1, added, dropped: 0 });
       expect(entry.summary).toMatch(added ? /and 1 of them was kept\.$/ : /every part they held was also in another lane/);
@@ -385,7 +353,7 @@ describe('the record says what each pick setting did', () => {
     const periodPick = (labels: boolean, oldFeed = false) => pick([part('notes', 'a', { searchRanks: [0] }),
       part('notes', 'm', { poolOnly: true, dateWindow: 'task-period', date: { value: '2025-03-15', meaning: 'recorded' } })], {
       task: 'What did I decide in March?', taskDate: '2025-06-02', timeZone: 'Europe/London',
-      decide: fixed(() => 0.9), rare: false, ...(labels ? { labelKindsBySource: { notes: LABEL_KINDS } } : {}),
+      decide: fixed(() => 0.9), ...(labels ? { labelKindsBySource: { notes: LABEL_KINDS } } : {}),
       ...(oldFeed ? { everyRanked: true as const } : {}),
     });
     const head = 'taskPeriod on notes: 1 part dated from 2025-03-01T00:00:00.000+00:00 to 2025-03-31T23:59:59.999+01:00';

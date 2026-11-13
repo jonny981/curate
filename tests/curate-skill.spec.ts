@@ -14,7 +14,7 @@ import { git as gitSource } from '@curatejs/git';
 // @ts-expect-error The standalone JavaScript command has no type declarations.
 import { acceptScope, allowedSession, citable, decisionAnswers, haikuCall, instructionsProfile, lunaCall, NODE_FLOOR, pickFullSources, rankMatches, parseArgs, parseSearches, parseSources, run, PROCESSOR_WARNING, sandboxAvailable, scopedEntries, sourcesFor, searchLinesPrompt, searchRoute, searchSource, sessionHeader, SETUP, SetupError, setupGuide, snapshotCodex, writeLog } from '../skills/curate/run.mjs';
 
-const uncutPick = { everyRanked: true, everyScored: true, rare: false } as const;
+const uncutPick = { everyRanked: true, everyScored: true } as const;
 
 vi.mock('@curatejs/core/local-embeddings', () => ({
   createLocalEmbedder: vi.fn(async () => ({
@@ -751,7 +751,7 @@ it('recovers a part outside cut reads through the source label kinds', async () 
   expect(asked).toContain(parts[1]!.text);
   expect(reads).toContain(false);
   expect(reads).toContain(true);
-  expect(picked.record.levers.sources.notes).toEqual({ kind: 'markdown', labels: true, labelBar: 0.5, rare: false, bar: 0.0146 });
+  expect(picked.record.levers.sources.notes).toEqual({ kind: 'markdown', labels: true, labelBar: 0.5, bar: 0.0146 });
   expect(picked.record.labels.gate).toBe(2);
 });
 

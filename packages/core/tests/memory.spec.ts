@@ -129,7 +129,7 @@ describe('memory', () => {
   it('asks the questions each source carries', async () => {
     const questions: (string | undefined)[] = [];
     const recalled = await memory({
-      sources: [historySource({ reader: { ...source(), kind: 'markdown' }, rare: false, labels: false, bar: 0.0146,
+      sources: [historySource({ reader: { ...source(), kind: 'markdown' }, labels: false, bar: 0.0146,
         names: false, questions: fitted('from-source') })],
       decide: async (batch, signal) => {
         questions.push(...batch.questions.filter((question) => question.sourceId === 'notes').map((question) => question.questionKey));

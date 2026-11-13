@@ -4,7 +4,7 @@ import { pick, type MemoryCandidate, type PickBatch } from '../src/pick.js';
 
 afterEach(() => vi.unstubAllGlobals());
 
-const uncutPick = { everyRanked: true, everyScored: true, rare: false } as const;
+const uncutPick = { everyRanked: true, everyScored: true } as const;
 
 /** A plain reference part asked its one relevance question. */
 function part(index: number, text: string): MemoryCandidate {

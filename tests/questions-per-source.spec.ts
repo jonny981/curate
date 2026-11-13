@@ -16,7 +16,8 @@ import { decide, fixtureSource, parts, task } from './fixtures/source-settings.j
 // The picks the build before questions moved to the sources made on this fixture, asked with
 // `cascadesByKind` holding the three presets' sets, one run per entry: the selected ids in
 // order, and the SHA-256 of the run's canonical record,
-// `JSON.stringify([selected, candidates, labels, requests])`.
+// `JSON.stringify([selected, candidates, labels, requests])`, with git's and Markdown's parts kept to
+// those their keyword lanes held.
 interface Baseline {
   readonly selected: readonly string[];
   readonly sha256: string;
@@ -39,10 +40,10 @@ function recording() {
 }
 
 const chat = (labels: boolean) =>
-  historySource({ reader: fixtureSource('chat', parts('chat', 'chatword'), { rare: false }), ...chatSettings, labels });
-const git = () => historySource({ reader: fixtureSource('git', parts('git', 'gitword'), { rare: true }), ...gitSettings });
+  historySource({ reader: fixtureSource('chat', parts('chat', 'chatword')), ...chatSettings, labels });
+const git = () => historySource({ reader: fixtureSource('git', parts('git', 'gitword')), ...gitSettings });
 const markdown = () =>
-  historySource({ reader: fixtureSource('markdown', parts('markdown', 'noteword'), { rare: false }), ...markdownSettings });
+  historySource({ reader: fixtureSource('markdown', parts('markdown', 'noteword')), ...markdownSettings });
 
 describe('the presets reproduce the picks made with each kind\'s set passed in', () => {
   it.each([
@@ -87,7 +88,7 @@ describe('pickFromSources asks each source its own set', () => {
   it('keeps two sources of one kind on their own sets', async () => {
     const ONE: PickCascade = { bias: 0, questions: [{ key: 'only', instructions: 'Is this part about the task?',
       true: 'It is about the task', false: 'It is not', weight: 1 }] };
-    const reader = (id: string, word: string) => ({ ...fixtureSource('chat', parts(id, word), { rare: false }), id });
+    const reader = (id: string, word: string) => ({ ...fixtureSource('chat', parts(id, word)), id });
     const a = historySource({ reader: reader('chat-a', 'aword'), ...chatSettings, labels: false });
     const b = historySource({ reader: reader('chat-b', 'bword'), ...chatSettings, labels: false, questions: ONE });
     const { requests, how } = recording();
@@ -103,8 +104,8 @@ describe('pickFromSources asks each source its own set', () => {
   });
 
   it('asks a source without a set the built-in question', async () => {
-    const custom = historySource({ reader: { ...fixtureSource('markdown', parts('custom', 'cword'), { rare: false }), id: 'custom' },
-      rare: false, labels: false, names: false, bar: 0.0146 });
+    const custom = historySource({ reader: { ...fixtureSource('markdown', parts('custom', 'cword')), id: 'custom' },
+      labels: false, names: false, bar: 0.0146 });
     const { requests, how } = recording();
     const picked = await pickFromSources([custom], { task }, { task, decide: how });
     const asked = decisionQuestions(requests, 'custom');

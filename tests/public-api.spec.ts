@@ -9,7 +9,7 @@ import { chat, AGENT_CHAT_CASCADE, CHAT_CASCADE, chatSettings, type ChatOptions,
 import { git, GIT_HISTORY_CASCADE, gitSettings, type GitOptions } from '@curatejs/git';
 import { markdown, MARKDOWN_CASCADE, markdownSettings, knowledgeBase, rules, rulesSettings, type MarkdownOptions, type KnowledgeBaseOptions } from '@curatejs/markdown';
 
-const uncutPick = { everyRanked: true, everyScored: true, rare: false } as const;
+const uncutPick = { everyRanked: true, everyScored: true } as const;
 
 describe('package exports', () => {
   it('exports the curate step and its option, record and result types', async () => {
@@ -55,7 +55,6 @@ describe('package exports', () => {
     const thresholds: PickThresholds = { linkedPathBar: 0.4 };
     const pickOptions: PickOptions = {
       task: 'Recall', everyRanked: { c: 0.68 }, everyScored: { bar: 0.05 },
-      rare: { share: 0.5, bar: 0.0146 },
       decide: async (batch) => Object.fromEntries(
         batch.questions.map((q) => [q.key, { status: 'answered' as const, probability: 0.9 }])),
     };
@@ -96,8 +95,8 @@ describe('package exports', () => {
 
   it('exports the lever and source settings types', () => {
     const levers: LeverStates = {
-      everyRanked: true, everyScored: true, route: false, rare: false,
-      sources: { chat: { kind: 'chat', labels: true, rare: false, bar: 0.0146 } },
+      everyRanked: true, everyScored: true, route: false,
+      sources: { chat: { kind: 'chat', labels: true, bar: 0.0146 } },
     };
     const settings: SourceSettings = levers.sources['chat']!;
     expect(settings.labels).toBe(true);
@@ -107,19 +106,19 @@ describe('package exports', () => {
   it('exports each reader\'s settings and historySource to change them', () => {
     const settings: readonly HistorySettings[] = [chatSettings, gitSettings, markdownSettings, rulesSettings];
     expect(settings).toEqual([
-      { rare: false, labels: true, names: true, bar: 0.0146, questions: CHAT_CASCADE },
-      { rare: true, labels: false, names: true, bar: 0.0146, questions: GIT_HISTORY_CASCADE },
-      { rare: true, labels: false, names: true, bar: 0.0146, questions: MARKDOWN_CASCADE },
-      { rare: true, labels: false, names: false, bar: 0.0146, questions: MARKDOWN_CASCADE, ruleBar: 0.5 },
+      { labels: true, names: true, bar: 0.0146, questions: CHAT_CASCADE },
+      { labels: false, names: true, bar: 0.0146, questions: GIT_HISTORY_CASCADE },
+      { labels: false, names: true, bar: 0.0146, questions: MARKDOWN_CASCADE },
+      { labels: false, names: false, bar: 0.0146, questions: MARKDOWN_CASCADE, ruleBar: 0.5 },
     ]);
     const reader = chat({ providers: ['codex'], paths: ['/nonexistent'] });
-    expect(reader).toMatchObject({ kind: 'chat', rare: false, bar: 0.0146, labelKinds: LABEL_KINDS, questions: AGENT_CHAT_CASCADE });
-    expect(historySource({ reader, rare: false, labels: false, names: false, bar: 0.0146 }).questions).toBeUndefined();
+    expect(reader).toMatchObject({ kind: 'chat', bar: 0.0146, labelKinds: LABEL_KINDS, questions: AGENT_CHAT_CASCADE });
+    expect(historySource({ reader, labels: false, names: false, bar: 0.0146 }).questions).toBeUndefined();
     const unlabelled = historySource({ reader, ...chatSettings, labels: false });
-    expect(unlabelled).toMatchObject({ id: reader.id, kind: 'chat', rare: false, bar: 0.0146 });
+    expect(unlabelled).toMatchObject({ id: reader.id, kind: 'chat', bar: 0.0146 });
     expect(unlabelled.labelKinds).toBeUndefined();
     expect(historySource({ reader: unlabelled, ...chatSettings }).labelKinds).toEqual(LABEL_KINDS);
-    expect(rules('/nonexistent')).toMatchObject({ rare: true, names: false, bar: 0.0146, ruleBar: 0.5 });
+    expect(rules('/nonexistent')).toMatchObject({ names: false, bar: 0.0146, ruleBar: 0.5 });
     expect(historySource({ reader: rules('/nonexistent'), ...markdownSettings }).ruleBar).toBeUndefined();
   });
 

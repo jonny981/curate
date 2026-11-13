@@ -75,18 +75,17 @@ const picked = await pickFromSources(sources, { task }, { task, decide });
 
 ## Defaults and overrides
 
-`git()` reads with `gitSettings`, `{ rare: true, labels: false, names: true, bar: 0.0146 }`: a name lane for each name the task names, references kept when scored 0.0146 or more,
+`git()` reads with `gitSettings`, `{ labels: false, names: true, bar: 0.0146 }`: a name lane for each name the task names, references kept when scored 0.0146 or more,
 ordered and weighted by decision probability, and no label kinds.
 Set `everyScored: true` on the pick to keep every scored reference from every source.
 Core's `curate()` lays out the kept parts by their exact scores, strongest first.
-The rare-word round finds unselected commits that share rare words with selected commits, counting words over this history only.
 To change a setting, build the source with core's `historySource()`:
 
 ```ts
 import { historySource } from '@curatejs/core';
 import { git, gitSettings } from '@curatejs/git';
 
-const source = historySource({ reader: git('.'), ...gitSettings, rare: false });
+const source = historySource({ reader: git('.'), ...gitSettings, bar: 0.05 });
 ```
 
 See [core's measured reason](https://github.com/jonny981/curate/blob/main/packages/core/README.md#defaults-and-evidence) for the saved-decision sweep's answer-turn losses.

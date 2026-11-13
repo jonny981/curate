@@ -41,7 +41,7 @@ vi.mock('node:fs/promises', async (importOriginal) => {
   };
 });
 
-const uncutPick = { everyRanked: true, everyScored: true, rare: false } as const;
+const uncutPick = { everyRanked: true, everyScored: true } as const;
 
 const directories: string[] = [];
 // Chat asks label questions by default; keep their saved answers out of the real cache.

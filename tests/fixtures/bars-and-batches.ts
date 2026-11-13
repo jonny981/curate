@@ -15,11 +15,11 @@ export const sha256 = (value: unknown) => createHash('sha256').update(JSON.strin
 
 /** A chat source on the fixture; `id` renames it, `extra` adds settings such as `labelBar`. */
 export const chatSource = (id = 'chat', extra: Partial<HistorySettings> = {}): CandidateSource =>
-  historySource({ reader: { ...fixtureSource('chat', parts(id, `${id}word`), { rare: false }), id },
+  historySource({ reader: { ...fixtureSource('chat', parts(id, `${id}word`)), id },
     ...chatSettings, labels: true, ...extra });
-const git = () => historySource({ reader: fixtureSource('git', parts('git', 'gitword'), { rare: true }), ...gitSettings });
+const git = () => historySource({ reader: fixtureSource('git', parts('git', 'gitword')), ...gitSettings });
 const markdown = () =>
-  historySource({ reader: fixtureSource('markdown', parts('markdown', 'noteword'), { rare: false }), ...markdownSettings });
+  historySource({ reader: fixtureSource('markdown', parts('markdown', 'noteword')), ...markdownSettings });
 
 export const PICK_RUNS: Record<string, () => CandidateSource[]> = {
   'chat labels': () => [chatSource()],

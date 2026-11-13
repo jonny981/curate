@@ -41,8 +41,8 @@ describe('labels carried by a source', () => {
   it('cuts weak decisions and asks no labels when no source carries label kinds', async () => {
     const result = await pick(parts, { task, decide });
     expect(result.record.levers).toEqual({
-      stopWhenCold: false, route: false, rare: false,
-      sources: { notes: { labels: false, rare: false, bar: 0.0146 } },
+      stopWhenCold: false, route: false,
+      sources: { notes: { labels: false, bar: 0.0146 } },
     });
     expect(result.selected.map((part) => part.id)).toEqual(['billing']);
     expect(result.record.labels).toBeUndefined();
@@ -51,7 +51,7 @@ describe('labels carried by a source', () => {
   it('recalls without labels from a source that carries no label kinds', async () => {
     const result = await memory({ sources: [plain], decide }).recall(task);
     expect(result.log).toContain('billing');
-    expect(result.picked.record.levers.sources).toEqual({ notes: { labels: false, rare: false, bar: 0.0146 } });
+    expect(result.picked.record.levers.sources).toEqual({ notes: { labels: false, bar: 0.0146 } });
     expect(result.result.record.levers.sources).toEqual(result.picked.record.levers.sources);
     expect(result.picked.selected.map((part) => part.id)).toEqual(['billing']);
   });

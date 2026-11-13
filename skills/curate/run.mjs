@@ -759,8 +759,7 @@ export async function pickFullSources(sources, call, options, context = { files:
     if (source.role === 'reference' && (source.labelKinds?.length
       // The fused order is read whenever everyRanked is unset, and it
       // positions every pool member.
-      || options.everyRanked !== true
-      || (options.rare ?? source.rare ?? false) !== false)) {
+      || options.everyRanked !== true)) {
       pool = await source.read({ ...request, task: request.task, wholeLanes: true, limit: undefined,
         ...(revision === undefined ? {} : { revision }) }, context);
     }
@@ -774,6 +773,87 @@ export async function pickFullSources(sources, call, options, context = { files:
     } };
   }));
   return pickFromSources(cached, request, options);
+}
+
+// The second search on coding-agent transcripts, in the sequence it was
+// measured in. Round one runs to its end. The rarest names, numbers and
+// words of its warmest rated parts become a second search's lines, and a
+// second pick reads that search's order with the same stop and round
+// one's decisions, so only parts round one never rated are rated. The
+// parts round two keeps join round one's. Measured with the plain read
+// of the ranked list: on long chats with an assistant (BEAM, 40
+// questions, read as Markdown) round two's new parts held 99 evidence
+// units where reading round one on by as many parts held 96; on
+// coding-agent transcripts (the DolphinBench check) it reached all 4
+// messages no lane of round one held, and the ratings kept them.
+
+/** Round one's warmest rated parts that give round two its lines: three,
+ *  as in both measurements. */
+const SECOND_SEARCH_SEEDS = 3;
+/** The words each of those parts gives its line, rarest first: eight, as
+ *  in both measurements. */
+const SECOND_SEARCH_WORDS = 8;
+/** A word is rare when at least RARE_LEAST of the history's parts hold
+ *  it and at most RARE_SHARE of them do (never fewer than RARE_LEAST):
+ *  the bounds both measurements used. */
+const RARE_LEAST = 2;
+const RARE_SHARE = 0.005;
+// A name or word of three or more characters, or a number of two or more.
+const searchTokens = (text) => new Set((text.match(/[A-Za-z][A-Za-z'’-]{2,}|\d[\d,.:/-]*\d/g) ?? [])
+  .map((token) => token.toLowerCase()));
+
+/** Round two's lines: for each seed text, its rarest words in `parts`
+ *  (the history's parts) that the task does not use, of five or more
+ *  characters or a number, rarest first and then alphabetical. A seed
+ *  with no such word gives no line. */
+export function rareLines(task, seeds, parts) {
+  const counts = new Map();
+  for (const part of parts) for (const token of searchTokens(part.text)) counts.set(token, (counts.get(token) ?? 0) + 1);
+  const most = Math.max(RARE_LEAST, Math.floor(RARE_SHARE * parts.length));
+  const asked = searchTokens(task);
+  return seeds.map((text) => [...searchTokens(text)]
+    .filter((token) => counts.get(token) >= RARE_LEAST && counts.get(token) <= most && !asked.has(token)
+      && (token.length >= 5 || /^\d/.test(token)))
+    .sort((left, right) => counts.get(left) - counts.get(right) || (left < right ? -1 : left > right ? 1 : 0))
+    .slice(0, SECOND_SEARCH_WORDS).join(' ')).filter((line) => line !== '');
+}
+
+/** Search the coding-agent sources `agentIds` again from round one's
+ *  pick `first`. `pickAgain(lines)` runs the second pick over those
+ *  sources with `lines` (two keyword and four answer lines) and round
+ *  one's decisions. Resolves to round one's pick with the parts round
+ *  two kept added, and, when round two ran, its seeds, lines and record.
+ *  Round two is a pick of its own, so on a source the chat read reads,
+ *  the chat read starts again on round two's order: round one's stop
+ *  does not carry over. */
+export async function searchAgain(task, first, agentIds, pickAgain) {
+  const key = (part) => JSON.stringify([part.sourceId, part.id]);
+  // Every part of the agent sources: the pool round one read.
+  const parts = [...new Map(first.reads.flatMap((read) => read.status === 'read' ? read.candidates : [])
+    .filter((part) => agentIds.has(part.sourceId)).map((part) => [key(part), part])).values()];
+  const texts = new Map(parts.map((part) => [key(part), part.text]));
+  const seeds = first.record.candidates
+    .filter((entry) => agentIds.has(entry.sourceId) && ['selected', 'rejected'].includes(entry.status)
+      && entry.probability > 0 && texts.has(key(entry)))
+    .sort((left, right) => right.probability - left.probability).slice(0, SECOND_SEARCH_SEEDS);
+  const found = rareLines(task, seeds.map((seed) => texts.get(key(seed))), parts);
+  if (!found.length) return { picked: first };
+  // The lines fill the two keyword and four answer lines, the task
+  // filling any line left over.
+  const filled = [...found, task, task].slice(0, Math.max(2, found.length));
+  const lines = { keywords: filled.slice(0, 2), answers: [...filled, task, task].slice(0, 4) };
+  const second = await pickAgain(lines);
+  const had = new Set(first.selected.map(key));
+  const added = second.selected.filter((part) => !had.has(key(part)));
+  const addedKeys = new Set(added.map(key));
+  return {
+    picked: { ...first, selected: [...first.selected, ...added], record: { ...first.record, candidates: [
+      ...first.record.candidates.filter((entry) => !addedKeys.has(key(entry))),
+      ...second.record.candidates.filter((entry) => addedKeys.has(key(entry))),
+    ] } },
+    seeds: seeds.map(({ sourceId, id, probability }) => ({ sourceId, id, probability })),
+    lines, added: added.length, record: second.record,
+  };
 }
 
 // No model writes the memory: curate lays out the kept parts in their own
@@ -1308,21 +1388,30 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
     ]);
     const count = Math.max(...searchKinds.map((kind) => record.searches[kind].keywords.length + record.searches[kind].answers.length));
     const pickStart = Date.now();
-    const request = { task: options.task, searchLines: Array.from({ length: count }, (_, i) => `curate-search:${i}`),
-      meaning: { embed: local.embed } };
+    const lineNames = (length) => Array.from({ length }, (_, i) => `curate-search:${i}`);
+    const request = { task: options.task, searchLines: lineNames(count), meaning: { embed: local.embed } };
+    // The coding-agent transcripts: the sources scored with the agent
+    // question set, the one set that carries a `person` weight.
+    const agentIds = new Set(sources.filter((source) => source.questions?.person !== undefined).map((source) => source.id));
+    // Their second search reuses round one's decisions, from a store
+    // that lasts this call only.
+    const decisions = new Map();
     const pickOptions = { task: options.task, decide,
       limits: { maxBatchChars,
         ...(settings.maxInFlight === undefined ? {} : { maxInFlight: settings.maxInFlight }) },
       ...(settings.stopWhenCold === undefined ? {} : { stopWhenCold: settings.stopWhenCold }),
       ...(settings.feed === undefined ? {} : { feed: settings.feed }),
-      ...(settings.threshold === undefined ? {} : { everyScored: { bar: settings.threshold } }) };
-    const picked = await pickFullSources(sources.map((source) => {
+      ...(settings.threshold === undefined ? {} : { everyScored: { bar: settings.threshold } }),
+      ...(agentIds.size === 0 ? {} : { cache: { deciderId: decide.deciderId, store: {
+        get: async (key) => decisions.get(key), set: async (key, value) => { decisions.set(key, value); } } } }) };
+    const searched = (source, searches) => {
       // A read's full result can be very large, so with records off it is
       // never written, even to the temporary folder.
-      const searched = searchSource({ ...source, labelKinds: [], rare: false }, record.searches, record.reads, folder,
+      const wrapped = searchSource({ ...source, labelKinds: [] }, searches, record.reads, folder,
         records ? settings : { ...settings, readAudit: false });
-      return { ...searched, read: (readRequest, context_) => reading.track(() => searched.read(readRequest, context_)) };
-    }), request, pickOptions, context);
+      return { ...wrapped, read: (readRequest, context_) => reading.track(() => wrapped.read(readRequest, context_)) };
+    };
+    const picked = await pickFullSources(sources.map((source) => searched(source, record.searches)), request, pickOptions, context);
     record.pick = picked.record;
     record.sourcesRead = picked.reads.map((read, i) => ({ source: sources[i].id, status: read.status,
       parts: read.candidates?.length ?? 0, complete: read.complete, partial: read.partial, reason: read.reason,
@@ -1341,8 +1430,21 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
       record.timings.sourceReadMs[read.source] = (record.timings.sourceReadMs[read.source] ?? 0) + read.ms;
     }
     await save();
-    await writeFile(join(folder, 'selection.json'), JSON.stringify({ selected: picked.selected, record: { ...picked.record, candidates: picked.record.candidates.filter((entry) => entry.status === 'selected') } }), { mode: 0o600 });
-    const cited = { ...picked, selected: picked.selected.map((candidate) => citable(candidate, project)) };
+    let final = picked;
+    if (agentIds.size > 0) {
+      const againStart = Date.now();
+      const again = await searchAgain(options.task, picked, agentIds, (lines) => pickFullSources(
+        sources.filter((source) => agentIds.has(source.id)).map((source) => searched(source, { ...record.searches, chat: lines })),
+        { ...request, searchLines: lineNames(lines.keywords.length + lines.answers.length) }, pickOptions, context));
+      final = again.picked;
+      if (again.record !== undefined) {
+        record.secondSearch = { seeds: again.seeds, lines: again.lines, added: again.added, pick: again.record,
+          ms: Date.now() - againStart };
+        await save();
+      }
+    }
+    await writeFile(join(folder, 'selection.json'), JSON.stringify({ selected: final.selected, record: { ...final.record, candidates: final.record.candidates.filter((entry) => entry.status === 'selected') } }), { mode: 0o600 });
+    const cited = { ...final, selected: final.selected.map((candidate) => citable(candidate, project)) };
     memory = (await writeLog(options.task, cited, folder, record, layout)).log;
   } catch (error) {
     // A PickError carries the pick's record: the failed batch's ids, the

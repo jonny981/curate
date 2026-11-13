@@ -69,7 +69,7 @@ describe('labelBar on a source', () => {
   });
 
   it.each([1.5, Number.NaN, -0.1])('historySource refuses labelBar %s', (labelBar) => {
-    expect(() => historySource({ reader: fixtureSource('chat', parts('chat', 'chatword'), { rare: false }),
+    expect(() => historySource({ reader: fixtureSource('chat', parts('chat', 'chatword')),
       ...chatSettings, labelBar })).toThrow(TypeError);
   });
 });

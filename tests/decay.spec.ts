@@ -33,7 +33,7 @@ function candidates(read: CandidateReadResult | undefined): readonly MemoryCandi
   if (read?.status !== 'read') throw new Error('Expected a read.');
   return read.candidates;
 }
-/** The parts the read's lane kept, without the uncut pool the rare-word round counts. */
+/** The parts the read's lane kept, without the uncut pool the fused order counts. */
 const laneKept = (read: CandidateReadResult | undefined) => candidates(read).filter((c) => c.poolOnly !== true).map((c) => c.id);
 
 const same = 'The deploy freeze holds for the billing service.';

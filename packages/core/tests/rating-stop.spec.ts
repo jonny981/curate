@@ -334,35 +334,6 @@ describe('the rating stop', () => {
     expect(reasons).toEqual([...Array(6).fill('stopWhenCold'), ...Array(10).fill('feed')]);
   });
 
-  it('lets the rare-word round reach a part below the stop', async () => {
-    const parts = ranked(20, (i) => (i === 0 || i === 15 ? `text of p${i} zebra` : `text of p${i}`));
-    const { decide, calls } = rated((id) => (id === 'p0' ? 0.9 : id === 'p15' ? 0.5 : 0.001));
-    const picked = await pick(parts, { task: 'recall the plan', decide, ...on, limits: twoABatch, rare: { share: 0.2 } });
-    // The read stopped at batch 2; the round pulled p15 on the shared word.
-    expect(picked.record.pick!.stopWhenCold).toMatchObject({ cold: { batch: 2 } });
-    expect(asked(calls)).toContain('p15');
-    expect(picked.record.pick!.rare).toMatchObject({ asked: 1, added: 1 });
-    expect(picked.record.candidates.find((entry) => entry.id === 'p15')).toMatchObject({ status: 'selected' });
-  });
-
-  it('reads the rare-word round\'s pulled parts under a stop of their own', async () => {
-    // p0 and the ten parts p10 to p19 share a rare word. The read stops
-    // at batch 2; the round pulls the ten, reads them in waves, and
-    // stops at its own first batch, where every answer is cold.
-    const parts = ranked(20, (i) => (i === 0 || i >= 10 ? `text of p${i} zebra` : `text of p${i}`));
-    const { decide, calls } = rated((id) => (id === 'p0' ? 0.9 : 0.001));
-    const picked = await pick(parts, { task: 'recall the plan', decide, ...on, limits: twoABatch, rare: { share: 0.6 } });
-    expect(picked.record.pick!.stopWhenCold).toMatchObject({ rated: 4, cold: { batch: 2 } });
-    expect(asked(calls)).toEqual(['p0', 'p1', 'p2', 'p3', 'p10', 'p11', 'p12', 'p13']);
-    expect(picked.record.pick!.rare).toMatchObject({ asked: 4, added: 0 });
-    expect(picked.record.pick!.rare!.pulled).toHaveLength(10);
-    expect(picked.record.candidates.filter((entry) => index(entry.id) >= 14)
-      .every((entry) => entry.status === 'unassessed' && entry.reason === 'stopWhenCold')).toBe(true);
-    expect(picked.record.effects.find((entry) => entry.setting === 'rare')!.summary)
-      .toBe('rare on notes: pulled in 10 parts, but none answered at or above the rare bar 0.0146; '
-        + 'its ratings went cold with 6 of them unasked, so the round added none. It added no part.');
-  });
-
   it('keeps working when the service rejects an oversized request inside a wave', async () => {
     // Each part's text names its rating; the service rejects any state
     // over 7,000 characters, so every four-part batch is split in two.

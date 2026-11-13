@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { pick, type MemoryCandidate, type PickAnswer, type PickBatch } from '../src/pick.js';
 
-const uncutPick = { everyRanked: true, everyScored: true, rare: false } as const;
+const uncutPick = { everyRanked: true, everyScored: true } as const;
 
 function part(index: number, text: string): MemoryCandidate {
   return {

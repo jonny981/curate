@@ -8,7 +8,7 @@ import { chat, chatSettings } from '@curatejs/chat';
 import { git as gitSource, gitSettings } from '@curatejs/git';
 import { knowledgeBase, markdownSettings, rules, rulesSettings } from '@curatejs/markdown';
 
-const uncutPick = { everyRanked: true, everyScored: true, rare: false } as const;
+const uncutPick = { everyRanked: true, everyScored: true } as const;
 
 const criterion = (key: string): PickCriterion => ({
   key, instructions: `Check ${key}?`, true: `${key} applies.`, false: `${key} does not apply.`,

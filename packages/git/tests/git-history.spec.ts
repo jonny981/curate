@@ -483,7 +483,6 @@ describe('git', () => {
         task: 'work',
         everyRanked: true,
         everyScored: true,
-        rare: false,
         decide: async (batch) => Object.fromEntries(
           batch.questions.map((question) => [question.key, { status: 'answered' as const, probability: 0.9 }])),
       },

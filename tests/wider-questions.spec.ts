@@ -32,7 +32,7 @@ describe('the count marker keeps a part below the bar', () => {
   // With relevant at 0.5, own and needed at this answer leave CHAT_CASCADE's score near 0.005.
   const low = sigmoid((Math.log(0.005 / 0.995) - CHAT_CASCADE.bias!) / (0.8588 + 0.5134));
   const run = async (list: number, instance: number) => {
-    const source = historySource({ reader: fixtureSource('chat', pool(1), { rare: false }), ...chatSettings,
+    const source = historySource({ reader: fixtureSource('chat', pool(1)), ...chatSettings,
       labels: false, questions: { ...CHAT_CASCADE, typed: [COUNT_MARKER] } });
     const { requests, decide } = recording((q) => isTask(q) ? (q.questionKey === 'list' ? list : 0.1)
       : q.questionKey === 'relevant' ? 0.5 : q.questionKey === 'instance' ? instance : low);
@@ -67,7 +67,7 @@ const WRITTEN: readonly PickCriterion[] = [
   { key: 'a', instructions: 'Does this part name the billing deploy?', true: 'It names it', false: 'It does not' },
   { key: 'b', instructions: 'Does this part give a deploy constraint?', true: 'It gives one', false: 'It gives none' },
 ];
-const written = () => historySource({ reader: fixtureSource('chat', pool(12), { rare: false }), ...chatSettings,
+const written = () => historySource({ reader: fixtureSource('chat', pool(12)), ...chatSettings,
   labels: false, questions: PERSONAL_CHAT_WRITTEN_CASCADE });
 
 describe('written questions are asked and weighed', () => {
@@ -116,7 +116,7 @@ describe('written questions are asked and weighed', () => {
 describe('written questions beside the count marker', () => {
   // Every set question at 0.5 scores about 0.083; both written answers at 0.99 lift it to about 0.597, over the bar 0.5.
   const run = async (instance: number) => {
-    const source = historySource({ reader: fixtureSource('chat', pool(1), { rare: false }), ...chatSettings,
+    const source = historySource({ reader: fixtureSource('chat', pool(1)), ...chatSettings,
       labels: false, bar: 0.5, questions: { ...PERSONAL_CHAT_WRITTEN_CASCADE, typed: [COUNT_MARKER] } });
     const { decide } = recording((q) => isTask(q) ? (q.questionKey === 'list' ? 0.9 : 0.1)
       : q.questionKey === 'instance' ? instance : q.questionKey?.startsWith('task') === true ? 0.99 : 0.5);
@@ -140,7 +140,7 @@ describe('written questions beside the count marker', () => {
 describe('written questions fail loudly', () => {
   it('writeQuestions with no source carrying written throws before any request', async () => {
     const { requests, decide } = recording(() => 0.5);
-    const source = historySource({ reader: fixtureSource('chat', pool(3), { rare: false }), ...chatSettings, labels: false });
+    const source = historySource({ reader: fixtureSource('chat', pool(3)), ...chatSettings, labels: false });
     await expect(pickFromSources([source], { task }, { task, decide, writeQuestions: async () => WRITTEN }))
       .rejects.toThrow(new TypeError('writeQuestions is set, but no source\'s question set has written weights.'));
     expect(requests).toEqual([]);

@@ -39,8 +39,8 @@ const { log, rules, picked, result } = await mem.recall('What billing constraint
 - **Incomplete collection:** Absent or incomplete reads, unanswered candidates and interrupted decisions throw before the layout. Parts intentionally excluded by the label questions are allowed. The error's `cause` holds `picked` for inspection. Source read errors propagate. A limit that leaves candidates unassessed also throws; use `pickFromSources()` directly if you need to accept a partial selection.
 - **Cancellation:** `mem.recall(task, { signal })` passes the signal to the readers and every `decide` call.
 
-Each source carries its own settings: whether the rare-word round runs on it, which label kinds its parts are asked, and the decision-score bars its parts are cut at.
-Git and Markdown run the rare-word round and chat leaves it off; chat asks the seven label kinds and git and Markdown ask none; every reader keeps references scored 0.0146 or more.
+Each source carries its own settings: which label kinds its parts are asked, and the decision-score bars its parts are cut at.
+Chat asks the seven label kinds and git and Markdown ask none; every reader keeps references scored 0.0146 or more.
 Out of the box the call rates every part of the fused order, with the rating stop (`stopWhenCold`) and routing off.
 Explicit `read`, `pick` and `curate` options apply to the whole call:
 
@@ -1141,8 +1141,8 @@ reads every ranked part, the earlier feed. N is the number
 of reference parts the pick received: the history's size, not the
 ranking's. Through `pickFromSources` the read carries the source's
 full uncut pool, so lane cuts and read limits do not shrink it; a pool
-member only counts toward N, and with the label gate off it reaches
-the feed or the record only when the rare-word round pulls it in. The
+member only counts toward N, and with the label gate off it never
+reaches the feed or the record. The
 ranking is the gate's fused order
 when the gate fused its lane into the keyword order, the keyword
 order otherwise. Rules pass through uncounted and are never cut. A
@@ -1207,8 +1207,7 @@ one batch. A stop never drops a part it rated: every rated part at or
 above its source's keep bar is kept.
 
 A part below the stop is never asked by the read and records
-`unassessed` with reason `'stopWhenCold'`; the rare-word round can
-still pull one in. A part no lane placed in the order records
+`unassessed` with reason `'stopWhenCold'`. A part no lane placed in the order records
 `'feed'`. Pool members sit in the record the same way, so an unordered
 member is unassessed rather than absent. A lane's candidate limit, not
 the stop, leaves its cut parts unassessed with reason `'limits'`, and
@@ -1232,7 +1231,7 @@ went cold; or the stopping dial that ended it first (`'limits'`,
 from 1 down the order, its `best` score, the best score before it
 (`bestBefore`) and the test it failed (`under`). Under
 `everyRanked: { c }` the `pick` field keeps `n`, `sent`, `questions`,
-`c`, `kept` and `ranking`, and a rare-word round adds `rare`.
+`c`, `kept` and `ranking`.
 
 ```ts
 const picked = await pick(candidates, { task, decide, stopWhenCold: { share: 0.1 } });
@@ -1346,8 +1345,7 @@ A shorter feed asks fewer decision questions and judges fewer parts: a
 part the default order would have fed and scored can go unjudged. It
 records `unassessed` with reason `'feed'`, and the record's
 `pick.feed` keeps the order, the size and how many ranked parts the size
-left unjudged. With a size, the rare-word round asks the parts it
-pulls only while the size still has room. Rules are never cut. `feed`
+left unjudged. Rules are never cut. `feed`
 with `everyRanked` throws a `TypeError` before any read, because
 `everyRanked` has no fused feed to order.
 
@@ -1423,47 +1421,6 @@ a row are the crawl's requests and rings, one round of starts, and the
 longest single walk: the replay of those eight tasks made 14 to 37
 rating rounds a task, where walking one segment at a time made 55 to
 301, with the same parts rated.
-
-### Optional rare-word round
-
-A second, narrow round after selection, run within each source on its own.
-Git and Markdown turn it on through their `rare` setting; chat leaves it off.
-To turn it off for one source, build that source with `rare: false`:
-
-```ts
-const source = historySource({ reader: git('.'), ...gitSettings, rare: false });
-```
-
-`memory()` and `pickFromSources()` use each source's setting.
-For direct `pick()` calls, pass `rareBySource`, keyed by each candidate's `sourceId`.
-An omitted or false entry leaves that source's round off.
-Explicit `rare: true`, `rare: false` or `rare: { share, bar }` overrides every source's setting for the whole pick.
-The round only adds reference evidence. Rules keep their exact text and separate applicability check.
-`rare: true` uses the round's default settings; `{ share, bar }` tunes them.
-Each source's round reads only that source: its reference parts supply the seed words, count toward word frequency, and are the only parts it pulls in.
-So one source's setting never changes another source's pick.
-The parts that cleared their source's bar supply the seed words.
-A seed word is rare when it appears in at most `share × N` of its source's reference parts, where N is that source's reference count.
-N includes the source's pool members that the search lanes left out.
-It can differ from `pick.n`, which counts references across every source for the top-k limit.
-`share` defaults to `5/850`, the count of 5 fitted on an 850-part LongMemEval history.
-On a source with fewer than 340 reference parts, the default share can pull nothing:
-a shared word appears in at least 2 parts, and `5/850 × N` stays below 2.
-Every unselected reference of the source that shares one of its rare words is pulled in, pool members included.
-One the first pass never asked goes through the decide step; one already decided reuses its score.
-With a rating stop set, the round reads the parts it asks in fused order, two batches at a time, under the same stop with a best score of its own, so a round whose answers go cold ends; a part it never reached keeps its reason.
-No part is asked twice. A pulled part joins the selection at or
-above `bar`, a separate bar defaulting to `0.0146`; the seeds keep
-their source's own bar. `share` must be a positive finite number and `bar` between 0 and 1, both checked before
-any decide call. The record's `pick.rare` keeps the share and bar
-used, each source's N and rare words under `sources`, the parts pulled
-in, and how many were asked and added.
-The outer `pick.n` still counts references across every source.
-
-Measured on the tuning half's saved decisions (249 questions): holding
-the selection bar at 0.05 loses 15 answer messages, and the round at
-its defaults recovers 6 of them while adding 12.9 parts a question,
-matching the fixed-count study's 6 of 15 at about 15.
 
 ### Markdown candidate kinds
 
@@ -1598,12 +1555,11 @@ record holds `levers.wholeLanes: { keyword, meaning }`.
 | Lever | What "on" does | Cost when on | Measured impact | Where measured |
 | --- | --- | --- | --- | --- |
 | Read `wholeLanes` | Keeps every candidate each keyword and meaning lane returned. Off, each lane cuts where its own score curve flattens (chat: the pre-merge keyword score; `searchPhrases` lanes are never cut, and kind lanes are never cut on phrase counts). | The decide feed grows by the parts the curves would have cut; kept counts vary with each lane's scores, and deciding is the expensive stage. | The cut the off state applies missed 6 of 445 answer messages on the tuning half: three shared no words with the question, three ranked below the cut. Its score and cost impact, and the loss under the label gate, are not yet measured. | Saved tuning-half lanes, 249 questions. |
-| Pick `stopWhenCold` | Off unless set; off, the decide step rates every part of the fused order, so a call's cost grows with the parts the search lanes keep. Set (`{}` takes the defaults), it reads the order two batches at a time and stops at the first batch whose best decision score is under `floor` (0.1), or under `share` (0.2) times the best score before it, never before the read has kept a part. Parts below the stop record `unassessed` with reason `'stopWhenCold'`; the rare-word round can still pull one in. A chat source on the agent question set keeps [the chat read](#the-chat-read)'s own stop. | The parts read before the scores go cold, and at most one batch past them; a question the history holds nothing for reads the whole order. A higher `floor` or `share` reads less; a lower one reads more. Saved $0.0012 a LoCoMo question and $0.0067 a LongMemEval question; about half the parts of a 5,800-part DolphinBench transcript. | On the replay's held-back halves the defaults rated 64%, 55% and 83% of the parts the runs rated on LoCoMo, DolphinBench and BEAM, and kept 98.5%, 95.2% and 100% of their evidence. On the published runs they cost about 5 to 12 of LoCoMo's 1,540 right answers and stayed inside the noise on LongMemEval. | Saved decision scores of three finished benchmark runs, replayed with no decision call, and the published LoCoMo and LongMemEval texts rebuilt and answered twice ([Stop when the ratings go cold](#stop-when-the-ratings-go-cold)). |
+| Pick `stopWhenCold` | Off unless set; off, the decide step rates every part of the fused order, so a call's cost grows with the parts the search lanes keep. Set (`{}` takes the defaults), it reads the order two batches at a time and stops at the first batch whose best decision score is under `floor` (0.1), or under `share` (0.2) times the best score before it, never before the read has kept a part. Parts below the stop record `unassessed` with reason `'stopWhenCold'`. A chat source on the agent question set keeps [the chat read](#the-chat-read)'s own stop. | The parts read before the scores go cold, and at most one batch past them; a question the history holds nothing for reads the whole order. A higher `floor` or `share` reads less; a lower one reads more. Saved $0.0012 a LoCoMo question and $0.0067 a LongMemEval question; about half the parts of a 5,800-part DolphinBench transcript. | On the replay's held-back halves the defaults rated 64%, 55% and 83% of the parts the runs rated on LoCoMo, DolphinBench and BEAM, and kept 98.5%, 95.2% and 100% of their evidence. On the published runs they cost about 5 to 12 of LoCoMo's 1,540 right answers and stayed inside the noise on LongMemEval. | Saved decision scores of three finished benchmark runs, replayed with no decision call, and the published LoCoMo and LongMemEval texts rebuilt and answered twice ([Stop when the ratings go cold](#stop-when-the-ratings-go-cold)). |
 | Pick `everyRanked` | Unset by default: the decide step reads the whole fused order instead. `true` gives the earlier feed: every ranked reference part reaches the decide step. `{ c }` reads only the top `round(c × N^0.8)`, where N is the number of reference parts the pick received; rules pass through uncut and dropped parts record `unassessed` with reason `'pick'`. | With `true`, the decide step reads every ranked part, the whole ranking: all 850 of 850 parts at one measured size and all 8,475 of 8,475 at the largest. The off dial at c = 0.68 read 150 of the 850 and 944 of the 8,475. | On the keyword-and-label ranking the off dial at c = 0.68 kept 437–442 of 445 answer messages (98–99%) at every size from 127 to 8,475 parts (on keeps the whole ranking) and scored 229 of 249 at $0.18 a question; the on state's score and cost under the label gate are not yet measured. | Saved tuning-half rankings replayed, label gate on and `wholeLanes` on; the tuning dials in the root README. |
 | Source `bar`, pick `everyScored` | Off by default: each source cuts its references below its own `bar`, 0.0146 for every reader. `everyScored` sets one cut for every source in place of their bars: `true` keeps every part with a valid decision probability, including zero; `{ bar }` cuts below a flat bar; `{ bySize }` cuts below a bar that rises with the decided count. | `curate` receives every scored part. At the 0.0146 bar it receives about 70 of a LongMemEval history's 850 parts. | At the 0.0146 bar: 225 of the 249 tuning questions at $0.13 a question (223 on the all-500 replay), and 458 of 500. A saved 0.6 bar removed every fed fragment of 183 labelled answer turns; a 0.05 bar lost 8 of 438 answer messages. 0.0146 is the highest cut that lost no answer message on the tuning questions. | Saved-decision sweep and the LongMemEval runs in the root README. |
 | Source `labels` | Per source: a source that carries label kinds has its reference parts labelled with those kind questions, and the task is asked once per distinct kind set. Sources with no kinds receive no label questions. Stores each set under `directory` and adds a label lane so parts the keyword lanes dropped can reach decide on the `everyRanked` feed; under the fused order the lane reorders the order the decide step reads and admits none. Uses a default cache directory and decision-function ID; `pick.labels` overrides both. | One question per kind for each part and task, once per text, kind set and `deciderId`; later picks reuse the store. | Keyword alone reached 439 of the tuning half's 445 answer messages; with each part labelled, all 445 were reached at 38% of each history. Its score and cost impact is not yet measured. | Saved label run on the tuning half, in the root README. |
 | Pick `route` | `route: 'jev'` on the pick asks the task the four route questions once and records the answers. | Four questions asked of the task once a pick, sharing the task's label request when that runs and asked in one separate request otherwise. | Not yet measured. | Not yet measured. |
-| Source `rare`, pick `rare` | Per source: after the selection pass, pulls in the source's unselected references sharing a rare word with one of its selected references. Each source turns it on with its own `rare` setting; `pick.rare` sets it for every source. Each source's round counts word frequency over its own references only and pulls only its own parts, pool members included; parts at or above `rare.bar` (default `0.0146`) join the selection. A word is rare at a document frequency of at most `rare.share × N` (default `5/850`), where N is that source's reference count. | The parts it pulls are asked or their scores reused: 12.9 parts a question at the defaults on the tuning half. On a history under 340 parts the default share can pull nothing. | Holding the selection bar at 0.05 lost 15 answer messages and the round recovered 6 of them. Its score impact is not yet measured. | Saved tuning-half decisions, 249 questions. |
 
 The decision cache is not a lever: it loses no quality, so it stays
 available whenever the caller asks for it. It is on whenever the caller
@@ -1613,7 +1569,6 @@ passes one.
 
 Each source carries seven settings, tuned for its kind of history:
 
-- **`rare`:** run the rare-word round on this source's parts.
 - **`labels`:** the label kinds asked of each part: `true` for `LABEL_KINDS`, a list for those kinds, `false` for none.
 - **`labelBar`:** the label bar, from 0 to 1, for which kinds the task needs and which of this source's parts join the label lane; absent means 0.5.
 - **`names`:** open one exact-phrase lane per name the task names ([names in the task](#names-in-the-task)). The reason is recall.
@@ -1631,16 +1586,16 @@ Each reader package exports its settings as one plain object:
 
 | Settings object | Value | Carried by |
 | --- | --- | --- |
-| `chatSettings` (`@curatejs/chat`) | `{ rare: false, labels: true, names: true, bar: 0.0146, questions: CHAT_CASCADE }` | `chat()` overrides questions with `AGENT_CHAT_CASCADE` |
-| `gitSettings` (`@curatejs/git`) | `{ rare: true, labels: false, names: true, bar: 0.0146, questions: GIT_HISTORY_CASCADE }` | `git()` |
-| `markdownSettings` (`@curatejs/markdown`) | `{ rare: true, labels: false, names: true, bar: 0.0146, questions: MARKDOWN_CASCADE }` | `markdown()`, `knowledgeBase()` |
+| `chatSettings` (`@curatejs/chat`) | `{ labels: true, names: true, bar: 0.0146, questions: CHAT_CASCADE }` | `chat()` overrides questions with `AGENT_CHAT_CASCADE` |
+| `gitSettings` (`@curatejs/git`) | `{ labels: false, names: true, bar: 0.0146, questions: GIT_HISTORY_CASCADE }` | `git()` |
+| `markdownSettings` (`@curatejs/markdown`) | `{ labels: false, names: true, bar: 0.0146, questions: MARKDOWN_CASCADE }` | `markdown()`, `knowledgeBase()` |
 | `rulesSettings` (`@curatejs/markdown`) | `{ ...markdownSettings, names: false, ruleBar: 0.5 }`; 0.5 is a starting value, not yet tuned; it will be fitted on the 160-task rules test | `rules()` |
 
 Rules have no name lanes because they are chosen by where they apply, not by search.
 
 The 0.0146 bar is the highest cut that lost no answer message on the tuning questions.
 The levers for the whole call start at: `stopWhenCold` off, `wholeLanes` off, and `route` off; `everyRanked` is unset.
-`everyScored` and `rare` are unset, so each source's own `bar` and `rare` apply.
+`everyScored` is unset, so each source's own `bar` applies.
 
 A source's settings change only that source's pick, with one exception: a selected commit brings in a note it changed, through the changed-path link.
 That holds only under `everyRanked: true` with no stopping limit set.
@@ -1651,18 +1606,17 @@ The record's `levers.sources` maps each source id to the settings it ran with, a
 - **`kind`:** the source's kind, when it declares one.
 - **`labels`:** whether the label gate ran on its parts.
 - **`labelBar`:** the label bar its needs and label lane used, present when the source carries label kinds.
-- **`rare`:** whether the rare-word round was on for its parts.
 - **`bar`:** the bar its references were cut at, 0 when every scored part was kept.
 - **`ruleBar`:** the bar its rules were cut at, present when the source produced rules.
 - **`questions`:** the question set its reference parts were asked, present when the source carries one; absent, they were asked the built-in question.
 - **`decay`:** the half-life its parts ranked with, present when the source has `decay` on. Only a record `pickFromSources()` produced carries it.
 
-So a run reads as, for example, `{ kind: 'chat', labels: true, labelBar: 0.5, rare: false, bar: 0.0146 }`: a chat source with labels on.
-`levers.rare` is `false` or `{ share, bar }`, and `levers.everyScored` is present only when the call gave it.
+So a run reads as, for example, `{ kind: 'chat', labels: true, labelBar: 0.5, bar: 0.0146 }`: a chat source with labels on.
+`levers.everyScored` is present only when the call gave it.
 `levers.stopWhenCold` holds the stop's floor and share, or `false` when off, the default, whenever `everyRanked` is unset; `levers.everyRanked` is present only when the call gave it, and the two never appear together.
 
 Set your own with `historySource()`.
-`reader` is any source, a reader's or your own, and `rare`, `labels`, `names` and `bar` are required, so spread a settings object to start from its values:
+`reader` is any source, a reader's or your own, and `labels`, `names` and `bar` are required, so spread a settings object to start from its values:
 
 ```ts
 import { historySource, pickFromSources } from '@curatejs/core';
@@ -1671,12 +1625,12 @@ import { markdown, markdownSettings } from '@curatejs/markdown';
 
 const sources = [
   historySource({ reader: chat(), ...chatSettings, labels: false, questions: AGENT_CHAT_CASCADE }),
-  historySource({ reader: markdown({ paths: ['docs'], kind: 'docs' }), ...markdownSettings, rare: false, bar: 0.05 }),
+  historySource({ reader: markdown({ paths: ['docs'], kind: 'docs' }), ...markdownSettings, bar: 0.05 }),
 ];
 const picked = await pickFromSources(sources, { task }, { task, decide });
 ```
 
-A direct `pick()` takes the same settings by source id: `labelKindsBySource`, `labelBarBySource`, `rareBySource`, `barBySource`, `ruleBarBySource` and `questionsBySource`.
+A direct `pick()` takes the same settings by source id: `labelKindsBySource`, `labelBarBySource`, `barBySource`, `ruleBarBySource` and `questionsBySource`.
 
 ## What each setting did
 
@@ -1687,8 +1641,8 @@ It counts the parts the setting looked at and the kept parts it brought in or ke
 When the setting brought in nothing and kept out nothing, its sentence says why.
 A setting that was off has no entry, and every count comes from the one pick that ran.
 
-A part reaches the decide step by one or more ways in: the task's own keyword lane, an extra lane (a search line, a phrase, a name or a meaning query), the label lane, a whole-lane read past the lane cut, the task's period, the rare-word round, or the commit-to-note link.
-A setting that opens a way in counts a kept part as `added` only when that was the part's only way in and neither the link nor the rare-word round kept it.
+A part reaches the decide step by one or more ways in: the task's own keyword lane, an extra lane (a search line, a phrase, a name or a meaning query), the label lane, a whole-lane read past the lane cut, the task's period, or the commit-to-note link.
+A setting that opens a way in counts a kept part as `added` only when that was the part's only way in and the link did not keep it.
 A part two ways brought in counts for neither.
 A lane is a way in only for the parts inside its candidate limit (`maxCandidates`).
 A search line that repeats the task opens no lane, and its entry says so.
@@ -1696,13 +1650,12 @@ A search line that repeats the task opens no lane, and its entry says so.
 | Setting | Entry when | `actedOn` | `added` | `dropped` |
 | --- | --- | --- | --- | --- |
 | `labels` | The source carries label kinds; the summary names the source's label bar | The source's parts labelled this pick, asked or reused from the store | Kept parts whose only way in was the label lane | 0. The gate never removes a part a lane holds. `null` when a feed cut or a stop ended the feed early |
-| `rare` | The round ran on the source | Parts the round pulled in | Pulled parts that joined the selection | 0 |
 | `searchLines`, `searchPhrases`, `meaning` | The read request gave that option | Parts those lanes held | Kept parts whose only way in was those lanes | 0, or `null` when a feed cut or a stop ended the feed early |
 | `names` | The source's `names` setting is on | Parts the name lanes held | Kept parts whose only way in was a name lane | 0, or `null` when a feed cut or a stop ended the feed early |
 | `wholeLanes` | `read.wholeLanes` is on | Parts read past the lane cut | Kept parts whose only way in was the whole-lane read | 0, or `null` when a feed cut or a stop ended the feed early |
 | `taskPeriod` | `taskPeriod` is on, the default | Reference parts dated inside the period; 0 when the task names none | Kept parts whose only way in was the period | 0, or `null` when the task named a period and a feed cut or a stop ended the feed early. When it added none, the summary says the task names no period, that none of the parts only the period brought in were kept, that every part from the period was already in a search lane, or that each part from the period also had another way in |
 | `linkedPathBar` | The pick holds a reference part with a `path` and a `repository` | Reference parts rejected below their bar but at or above the link bar, with a `path` and a `repository` | Parts kept through the link | 0 |
-| `bar` | Always, for a source with reference parts | The source's scored reference parts | 0 | Scored parts below the bar that no later pass kept. The changed-path link, the rare-word round and a typed question's `keepAt` can still keep a part below the bar |
+| `bar` | Always, for a source with reference parts | The source's scored reference parts | 0 | Scored parts below the bar that no later pass kept. The changed-path link and a typed question's `keepAt` can still keep a part below the bar |
 | `ruleBar` | The source has rule parts and a bar above 0; the summary says how many rules were asked, picked and dropped | The source's rules asked | 0 | Rules below the bar |
 | `decay` | The source has `decay` on | The dated parts the source's read ranked | Parts the source's search lanes, taken together, kept only because decay ranked others lower | Parts every search lane of the source left out only because decay ranked them lower. Both are counted in the read, before the decide step, from one set of scores |
 | `alwaysOnSkipped` | The source's read skipped files the agent's harness loads every session; the summary names each file and why | The files skipped | 0 | `null`. A skipped file is never split into parts |
@@ -1764,7 +1717,7 @@ To prove that two arms gave `curate` the same input, compare their kept parts in
 - **`PickRecord.answerTypes`:** present when `answerTypes` was on: `bar`, `answers` with one answer per type, and `needed`, the types at or above the bar.
 - **`PickRecord.writtenQuestions`:** present when `writeQuestions` ran: `questions`, the questions it wrote, keyed `task1` to `task4`.
 - **`PickRecord.names`:** present when the pick looked for names: `found`, the names, and `by`, `'code'` when `taskNames` found them or `'caller'` when `findNames` did.
-- **`PickRecord.pick`:** present on every pick. `n` is the history's size in reference parts; `sent` the reference parts the decide port was asked at least one task question about, where an answer the decision cache supplied does not count; `questions` the task question slots actually sent, where label questions keep their own count on `labels`; `stopWhenCold` what the rating stop read and what ended the read, present when the call set the stop; `feed` the `feed` option's order, size and unjudged count; `c` a scaled top-k cut's coefficient; `kept` the reference parts the feed sent to the decide step; `ranking` the order the feed read; and `rare` the rare-word round's numbers when it ran.
+- **`PickRecord.pick`:** present on every pick. `n` is the history's size in reference parts; `sent` the reference parts the decide port was asked at least one task question about, where an answer the decision cache supplied does not count; `questions` the task question slots actually sent, where label questions keep their own count on `labels`; `stopWhenCold` what the rating stop read and what ended the read, present when the call set the stop; `feed` the `feed` option's order, size and unjudged count; `c` a scaled top-k cut's coefficient; `kept` the reference parts the feed sent to the decide step; and `ranking` the order the feed read.
 - **`keptBy`:** on a selected `PickRecordEntry`, the key of the typed question whose `keepAt` kept the part below its bar.
 - **`pastLaneCut`:** on a part and its `PickRecordEntry`, true when a read with `wholeLanes` on returned the part although the lane cut would have dropped it.
 - **`PickRecord.asOf`, `PickRecord.timeZone`, `PickRecord.taskPeriod`:** the moment and zone the pick read dates in, and the period the task named ([Time](#time)).

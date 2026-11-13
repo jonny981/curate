@@ -481,13 +481,11 @@
   },
   "route": false,
   "wholeLanes": false,
-  "rare": false,
   "labels": null
  },
  "defaults git": {
   "selected": [
    "git#50",
-   "git#200",
    "git#39",
    "git#25",
    "git#28",
@@ -954,27 +952,6 @@
     "rejected",
     0.0025045352967934115,
     null
-   ],
-   [
-    "git",
-    "git#200",
-    "selected",
-    0.8927626298386276,
-    null
-   ],
-   [
-    "git",
-    "git#210",
-    "rejected",
-    2.671073256023216e-7,
-    null
-   ],
-   [
-    "git",
-    "git#250",
-    "rejected",
-    0.000001537038908420172,
-    null
    ]
   ],
   "everyRanked": true,
@@ -983,13 +960,6 @@
   },
   "route": false,
   "wholeLanes": false,
-  "rare": {
-   "share": 0.0058823529411764705,
-   "bar": 0.0146,
-   "sources": [
-    "git"
-   ]
-  },
   "labels": null
  },
  "defaults markdown": {
@@ -1010,12 +980,10 @@
    "markdown#12",
    "markdown#39",
    "markdown#42",
-   "markdown#250",
    "markdown#19",
    "markdown#46",
    "markdown#28",
    "markdown#48",
-   "markdown#240",
    "markdown#0",
    "markdown#36",
    "markdown#47",
@@ -1023,17 +991,14 @@
    "markdown#22",
    "markdown#55",
    "markdown#38",
-   "markdown#230",
    "markdown#51",
    "markdown#15",
    "markdown#9",
    "markdown#40",
-   "markdown#210",
    "markdown#59",
    "markdown#13",
    "markdown#2",
    "markdown#58",
-   "markdown#200",
    "markdown#41",
    "markdown#5",
    "markdown#21",
@@ -1465,48 +1430,6 @@
     "selected",
     0.1082810092486462,
     null
-   ],
-   [
-    "markdown",
-    "markdown#200",
-    "selected",
-    0.09385980977940198,
-    null
-   ],
-   [
-    "markdown",
-    "markdown#210",
-    "selected",
-    0.11408168798674097,
-    null
-   ],
-   [
-    "markdown",
-    "markdown#220",
-    "rejected",
-    0.000010844225990836769,
-    null
-   ],
-   [
-    "markdown",
-    "markdown#230",
-    "selected",
-    0.14062663912688547,
-    null
-   ],
-   [
-    "markdown",
-    "markdown#240",
-    "selected",
-    0.24662228276512446,
-    null
-   ],
-   [
-    "markdown",
-    "markdown#250",
-    "selected",
-    0.29515329153805353,
-    null
    ]
   ],
   "everyRanked": true,
@@ -1515,13 +1438,6 @@
   },
   "route": false,
   "wholeLanes": false,
-  "rare": {
-   "share": 0.0058823529411764705,
-   "bar": 0.0146,
-   "sources": [
-    "markdown"
-   ]
-  },
   "labels": null
  },
  "defaults all": {
@@ -1534,7 +1450,6 @@
    "chat#22",
    "chat#46",
    "chat#11",
-   "git#200",
    "markdown#35",
    "chat#4",
    "markdown#37",
@@ -1594,7 +1509,6 @@
    "chat#28",
    "chat#30",
    "git#10",
-   "markdown#250",
    "markdown#19",
    "git#15",
    "git#6",
@@ -1604,7 +1518,6 @@
    "markdown#48",
    "git#31",
    "git#44",
-   "markdown#240",
    "git#54",
    "markdown#0",
    "markdown#36",
@@ -1625,19 +1538,16 @@
    "chat#59",
    "git#35",
    "chat#38",
-   "markdown#230",
    "markdown#51",
    "markdown#15",
    "markdown#9",
    "chat#13",
    "markdown#40",
-   "markdown#210",
    "chat#26",
    "markdown#59",
    "markdown#13",
    "markdown#2",
    "markdown#58",
-   "markdown#200",
    "git#3",
    "markdown#41",
    "chat#14",
@@ -2517,27 +2427,6 @@
     null
    ],
    [
-    "git",
-    "git#200",
-    "selected",
-    0.8927626298386276,
-    null
-   ],
-   [
-    "git",
-    "git#210",
-    "rejected",
-    2.671073256023216e-7,
-    null
-   ],
-   [
-    "git",
-    "git#250",
-    "rejected",
-    0.000001537038908420172,
-    null
-   ],
-   [
     "markdown",
     "markdown#0",
     "selected",
@@ -2956,48 +2845,6 @@
     "selected",
     0.1082810092486462,
     null
-   ],
-   [
-    "markdown",
-    "markdown#200",
-    "selected",
-    0.09385980977940198,
-    null
-   ],
-   [
-    "markdown",
-    "markdown#210",
-    "selected",
-    0.11408168798674097,
-    null
-   ],
-   [
-    "markdown",
-    "markdown#220",
-    "rejected",
-    0.000010844225990836769,
-    null
-   ],
-   [
-    "markdown",
-    "markdown#230",
-    "selected",
-    0.14062663912688547,
-    null
-   ],
-   [
-    "markdown",
-    "markdown#240",
-    "selected",
-    0.24662228276512446,
-    null
-   ],
-   [
-    "markdown",
-    "markdown#250",
-    "selected",
-    0.29515329153805353,
-    null
    ]
   ],
   "everyRanked": true,
@@ -3006,14 +2853,6 @@
   },
   "route": false,
   "wholeLanes": false,
-  "rare": {
-   "share": 0.0058823529411764705,
-   "bar": 0.0146,
-   "sources": [
-    "git",
-    "markdown"
-   ]
-  },
   "labels": null
  },
  "chat labels": {
@@ -5934,7 +5773,6 @@
   },
   "route": false,
   "wholeLanes": false,
-  "rare": false,
   "labels": {
    "questionVersion": "memory-kind-labels-1",
    "deciderId": "fixture",
@@ -5959,7 +5797,6 @@
    "chat#22",
    "chat#46",
    "chat#11",
-   "git#200",
    "chat#174",
    "markdown#35",
    "chat#4",
@@ -6040,7 +5877,6 @@
    "chat#30",
    "git#10",
    "chat#111",
-   "markdown#250",
    "markdown#19",
    "git#15",
    "chat#171",
@@ -6052,7 +5888,6 @@
    "markdown#48",
    "git#31",
    "git#44",
-   "markdown#240",
    "chat#122",
    "git#54",
    "markdown#0",
@@ -6084,21 +5919,18 @@
    "chat#59",
    "git#35",
    "chat#38",
-   "markdown#230",
    "chat#127",
    "markdown#51",
    "markdown#15",
    "markdown#9",
    "chat#13",
    "markdown#40",
-   "markdown#210",
    "chat#26",
    "markdown#59",
    "chat#213",
    "markdown#13",
    "markdown#2",
    "markdown#58",
-   "markdown#200",
    "chat#333",
    "git#3",
    "chat#206",
@@ -9373,27 +9205,6 @@
     null
    ],
    [
-    "git",
-    "git#200",
-    "selected",
-    0.8927626298386276,
-    null
-   ],
-   [
-    "git",
-    "git#210",
-    "rejected",
-    2.671073256023216e-7,
-    null
-   ],
-   [
-    "git",
-    "git#250",
-    "rejected",
-    0.000001537038908420172,
-    null
-   ],
-   [
     "markdown",
     "markdown#0",
     "selected",
@@ -9812,48 +9623,6 @@
     "selected",
     0.1082810092486462,
     null
-   ],
-   [
-    "markdown",
-    "markdown#200",
-    "selected",
-    0.09385980977940198,
-    null
-   ],
-   [
-    "markdown",
-    "markdown#210",
-    "selected",
-    0.11408168798674097,
-    null
-   ],
-   [
-    "markdown",
-    "markdown#220",
-    "rejected",
-    0.000010844225990836769,
-    null
-   ],
-   [
-    "markdown",
-    "markdown#230",
-    "selected",
-    0.14062663912688547,
-    null
-   ],
-   [
-    "markdown",
-    "markdown#240",
-    "selected",
-    0.24662228276512446,
-    null
-   ],
-   [
-    "markdown",
-    "markdown#250",
-    "selected",
-    0.29515329153805353,
-    null
    ]
   ],
   "everyRanked": true,
@@ -9862,14 +9631,6 @@
   },
   "route": false,
   "wholeLanes": false,
-  "rare": {
-   "share": 0.0058823529411764705,
-   "bar": 0.0146,
-   "sources": [
-    "git",
-    "markdown"
-   ]
-  },
   "labels": {
    "questionVersion": "memory-kind-labels-1",
    "deciderId": "fixture",

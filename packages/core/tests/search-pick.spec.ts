@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { curate, pick, type MemoryCandidate, type PickAnswer, type PickCascade, type PickCriterion, type PickDecide, type PickError, type PickQuestion } from '../src/index.js';
 
-const uncutPick = { everyRanked: true, everyScored: true, rare: false } as const;
+const uncutPick = { everyRanked: true, everyScored: true } as const;
 
 const item = (id: string, overrides: Partial<MemoryCandidate> = {}): MemoryCandidate => ({
   sourceId: 'notes', id, role: 'reference', title: id, text: `Evidence ${id}`,

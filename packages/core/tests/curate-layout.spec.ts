@@ -17,7 +17,7 @@ function picked(items: readonly (readonly [MemoryCandidate, number, number])[]):
     record: {
       questionVersion: 'test', limits: {},
       thresholds: { linkedPathBar: 0 }, rulesCoverage: 'complete',
-      levers: { everyRanked: true, everyScored: true, route: false, rare: false, sources: {} },
+      levers: { everyRanked: true, everyScored: true, route: false, sources: {} },
       effects: [],
       candidates: items.map(([item, probability, priority]) => ({
         sourceId: item.sourceId, id: item.id, role: item.role, priority,

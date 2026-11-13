@@ -141,7 +141,7 @@ read the title without it. The decision score does read it: see
 
 ## Defaults and overrides
 
-`chat()` reads with `chatSettings` and the `AGENT_CHAT_CASCADE` question set: no rare-word round, core's seven label kinds, a name lane for each name the task names, and references kept when scored 0.0146 or more,
+`chat()` reads with `chatSettings` and the `AGENT_CHAT_CASCADE` question set: core's seven label kinds, a name lane for each name the task names, and references kept when scored 0.0146 or more,
 ordered and weighted by decision probability.
 Set `everyScored: true` on the pick to keep every scored reference from every source.
 Core's `curate()` lays out the kept parts by their exact scores, strongest first.

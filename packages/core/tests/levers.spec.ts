@@ -17,7 +17,7 @@ import {
   type PickDecide,
 } from '../src/index.js';
 
-const uncutPick = { everyRanked: true, everyScored: true, rare: false } as const;
+const uncutPick = { everyRanked: true, everyScored: true } as const;
 
 function candidate(overrides: Partial<MemoryCandidate> & Pick<MemoryCandidate, 'sourceId' | 'id'>): MemoryCandidate {
   return {
@@ -94,8 +94,7 @@ describe('levers', () => {
       everyRanked: true,
       everyScored: true,
       route: false,
-      rare: false,
-      sources: { notes: { labels: false, rare: false, bar: 0 } },
+      sources: { notes: { labels: false, bar: 0 } },
     });
 
     const readPlain = await pickFromSources([laneSource()], { task: 'task' },
@@ -104,7 +103,7 @@ describe('levers', () => {
       { task: 'task', decide, ...uncutPick });
     expect({ ...readUncut.record, asOf: readPlain.record.asOf }).toEqual(readPlain.record);
     expect(readPlain.record.levers).toEqual({
-      wholeLanes: false, everyRanked: true, everyScored: true, route: false, rare: false, sources: { notes: { labels: false, rare: false, bar: 0 } },
+      wholeLanes: false, everyRanked: true, everyScored: true, route: false, sources: { notes: { labels: false, bar: 0 } },
     });
   });
 
@@ -124,8 +123,7 @@ describe('levers', () => {
     expect(defaults.record.levers).toEqual({
       stopWhenCold: false,
       route: false,
-      rare: false,
-      sources: { notes: { labels: false, rare: false, bar: 0.0146 } },
+      sources: { notes: { labels: false, bar: 0.0146 } },
     });
     expect(literal.record.levers.everyScored).toEqual({ bar: 0.0146 });
 
@@ -135,7 +133,7 @@ describe('levers', () => {
     expect(read.reads[0]?.status === 'read'
       && read.reads[0].candidates.filter((c) => c.poolOnly !== true)).toHaveLength(1);
     expect(read.record.levers).toEqual({
-      wholeLanes: false, stopWhenCold: false, route: false, rare: false, sources: { notes: { labels: false, rare: false, bar: 0.0146 } },
+      wholeLanes: false, stopWhenCold: false, route: false, sources: { notes: { labels: false, bar: 0.0146 } },
     });
 
     const plain = await curate('Recall the plan', defaults);
@@ -157,8 +155,7 @@ describe('levers', () => {
     expect(result.record.levers).toEqual({
       everyRanked: { c: 0.68 },
       route: false,
-      rare: false,
-      sources: { notes: { labels: false, rare: false, bar: 0.0146 } },
+      sources: { notes: { labels: false, bar: 0.0146 } },
     });
 
     const read = await pickFromSources([laneSource()],
@@ -166,7 +163,7 @@ describe('levers', () => {
       { task: 'task', decide: stubDecide(() => answered(0.9)).decide, ...uncutPick });
     expect(read.reads[0]?.status === 'read' && read.reads[0].candidates).toHaveLength(6);
     expect(read.record.levers).toEqual({
-      wholeLanes: true, everyRanked: true, everyScored: true, route: false, rare: false, sources: { notes: { labels: false, rare: false, bar: 0 } },
+      wholeLanes: true, everyRanked: true, everyScored: true, route: false, sources: { notes: { labels: false, bar: 0 } },
     });
   });
 
@@ -179,7 +176,7 @@ describe('levers', () => {
       { task: 'task', meaning: { embed } },
       { task: 'task', decide, ...uncutPick });
     expect(followed.record.levers).toEqual({
-      wholeLanes: false, everyRanked: true, everyScored: true, route: false, rare: false, sources: { notes: { labels: false, rare: false, bar: 0 } },
+      wholeLanes: false, everyRanked: true, everyScored: true, route: false, sources: { notes: { labels: false, bar: 0 } },
     });
 
     // A meaning override that disagrees with the keyword lanes records
@@ -212,8 +209,7 @@ describe('levers', () => {
       everyRanked: true,
       everyScored: true,
       route: false,
-      rare: false,
-      sources: { notes: { labels: true, labelBar: 0.5, rare: false, bar: 0 } },
+      sources: { notes: { labels: true, labelBar: 0.5, bar: 0 } },
     });
   });
 
@@ -282,27 +278,6 @@ describe('levers', () => {
       // The decide feed is unchanged: the same part is asked in both.
       expect(decidedIds(off.calls)).toEqual(decidedIds(on.calls));
       expect(routed.record.levers.route).toBe(true);
-    });
-
-    it('rare: off ends at the selection pass, on pulls rare-word parts in', async () => {
-      // 'zephyr' is rare at share 0.5: p0 selects, p7 sits below the
-      // top-k keep count and shares it.
-      const parts = Array.from({ length: 10 }, (_, index) => candidate({
-        sourceId: 'notes', id: `p${index}`, searchRanks: [index], signals: { score: 1 },
-        text: `plain ${index}${index === 0 || index === 7 ? ' zephyr' : ''}`,
-      }));
-      const probabilities = (question: PickBatch['questions'][number]) =>
-        answered(question.id === 'p3' ? 0.1 : 0.9);
-      const off = stubDecide(probabilities);
-      const on = stubDecide(probabilities);
-      await pick(parts, { ...uncutPick, task: 'task', decide: off.decide, everyRanked: { c: 0.68 } });
-      const result = await pick(parts, {
-        ...uncutPick, task: 'task', decide: on.decide, everyRanked: { c: 0.68 }, rare: { share: 0.5 },
-      });
-      expect(decidedIds(off.calls)).toEqual(['p0', 'p1', 'p2', 'p3']);
-      expect(decidedIds(on.calls)).toEqual(['p0', 'p1', 'p2', 'p3', 'p7']);
-      expect(result.record.pick?.rare?.pulled).toEqual([{ sourceId: 'notes', id: 'p7' }]);
-      expect(result.record.levers.rare).toEqual({ share: 0.5, bar: 0.0146 });
     });
   });
 
@@ -380,7 +355,7 @@ describe('levers', () => {
       await expect(pick([part], { task: 'task', decide: counter.decide,
         questionsBySource: { notes: { ...fitted, first: 'q', band: [0.4, 0.6], firstOnly: { bias: 0, wieght: 1 } } } } as never))
         .rejects.toThrow('`questionsBySource.notes.firstOnly.wieght` is not an option; allowed keys are `bias`, `weight`');
-      const settings = { rare: false, labels: false, bar: 0.0146, names: false } as const;
+      const settings = { labels: false, bar: 0.0146, names: false } as const;
       expect(() => historySource({ reader: source, ...settings,
         questions: { ...fitted, questions: [{ ...fitted.questions[0]!, wieght: 2 }] } as never }))
         .toThrow('`questions.questions[0].wieght` is not an option');

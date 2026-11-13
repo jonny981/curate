@@ -1,5 +1,6 @@
 // Picks on a task that names people and things, compared with named-tasks-baseline.json:
-// what the build before name lanes made with every source's name lanes off and no `named` question.
+// what the build before name lanes made with every source's name lanes off and no `named` question, with git's
+// and Markdown's parts kept to those their keyword lanes held.
 import { chatSettings } from '@curatejs/chat';
 import { gitSettings } from '@curatejs/git';
 import { markdownSettings } from '@curatejs/markdown';
@@ -22,9 +23,9 @@ export function namedParts(sourceId: string, rareWord: string): MemoryCandidate[
 
 /** The three presets with name lanes off. */
 export const offSources = (): CandidateSource[] => [
-  historySource({ reader: fixtureSource('chat', namedParts('chat', 'chatword'), { rare: false }), ...chatSettings, names: false }),
-  historySource({ reader: fixtureSource('git', namedParts('git', 'gitword'), { rare: true }), ...gitSettings, names: false }),
-  historySource({ reader: fixtureSource('markdown', namedParts('markdown', 'noteword'), { rare: false }),
+  historySource({ reader: fixtureSource('chat', namedParts('chat', 'chatword')), ...chatSettings, names: false }),
+  historySource({ reader: fixtureSource('git', namedParts('git', 'gitword')), ...gitSettings, names: false }),
+  historySource({ reader: fixtureSource('markdown', namedParts('markdown', 'noteword')),
     ...markdownSettings, names: false }),
 ];
 
@@ -41,7 +42,7 @@ const asBaseline = (record: PickRecord): PickRecord => {
   delete slim.timeZone;
   if (record.pick !== undefined) {
     const { sent: _sent, questions: _questions, ...pick } = record.pick;
-    if (pick.rare === undefined && pick.c === undefined) delete slim.pick;
+    if (pick.c === undefined) delete slim.pick;
     else slim.pick = pick;
   }
   return slim as PickRecord;

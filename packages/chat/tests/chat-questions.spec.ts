@@ -20,7 +20,7 @@ describe('source decision questions', () => {
     ];
     const asked: PickQuestion[] = [];
     const result = await pickFromSources(sources, { task: 'Recall evidence' }, {
-      task: 'Recall evidence', everyScored: true, rare: false,
+      task: 'Recall evidence', everyScored: true,
       decide: async ({ questions }) => {
         asked.push(...questions);
         return Object.fromEntries(questions.map((question) => [question.key,

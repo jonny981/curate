@@ -11,7 +11,7 @@ import { SHARED_FILE_CACHE_BYTES } from '@curatejs/core/internal';
 import { git as gitSource } from '@curatejs/git';
 import { knowledgeBase, markdown, rules } from '../src/index.js';
 
-const uncutPick = { everyRanked: true, everyScored: true, rare: false } as const;
+const uncutPick = { everyRanked: true, everyScored: true } as const;
 
 // knowledgeBase's own git invocations carry `-c core.hooksPath=…`; only
 // those calls have their child environment recorded, so the fixture's own
@@ -614,7 +614,6 @@ describe('knowledgeBase', () => {
         task: 'body',
         everyRanked: true,
         everyScored: true,
-        rare: false,
         decide: async (batch) => Object.fromEntries(
           batch.questions.map((question) => [question.key, { status: 'answered' as const, probability: 0.9 }])),
       },
