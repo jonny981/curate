@@ -239,14 +239,22 @@ export async function curate(task: string, picked: PickResult, options: CurateOp
     const key = JSON.stringify([item.sourceId, item.id]);
     if (!entries.has(key)) entries.set(key, item);
   }
+  // The ids two different references share, found in one pass: such a
+  // reference is named by its source and id together.
+  const firstOf = new Map<string, MemoryCandidate>();
+  const shared = new Set<string>();
+  for (const candidate of references) {
+    const first = firstOf.get(candidate.id);
+    if (first === undefined) firstOf.set(candidate.id, candidate);
+    else if (first !== candidate) shared.add(candidate.id);
+  }
   const items = references.map((candidate) => {
     const entry = entries.get(JSON.stringify([candidate.sourceId, candidate.id]));
     if (entry?.status !== 'selected' || entry.probability === undefined
       || !Number.isFinite(entry.probability) || entry.probability < 0 || entry.probability > 1) {
       throw new TypeError('curate: each reference needs a selected record entry with a weight between 0 and 1.');
     }
-    const id = references.some((other) => other !== candidate && other.id === candidate.id)
-      ? JSON.stringify([candidate.sourceId, candidate.id]) : candidate.id;
+    const id = shared.has(candidate.id) ? JSON.stringify([candidate.sourceId, candidate.id]) : candidate.id;
     return { id, candidate, weight: entry.probability };
   });
   if (!items.length) throw new Error('curate: no selected reference items to curate.');

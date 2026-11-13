@@ -307,6 +307,30 @@ describe('curate', () => {
     }
   });
 
+  it('names an item by its source and id exactly when another selected reference shares its id, over many kept parts', async () => {
+    // Ids shared across sources, one part selected twice, equal weights,
+    // parts with no text, and a budget that takes every item.
+    let seed = 11;
+    const random = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
+    const items = Array.from({ length: 1_500 }, (_, index) => part(`source-${Math.floor(random() * 4)}`,
+      `id-${Math.floor(random() * 1_000)}`, '2024-03-05', random() < 0.1 ? '' : `Item ${index} said ${Math.floor(random() * 50)}.`));
+    // A part selected twice is one reference, so its id stands alone.
+    const twice = part('source-0', 'selected-twice', '2024-03-05', 'Selected twice.');
+    items.push(twice);
+    const selected = [...items, twice];
+    const base = picked(selected.map((item, index) => [item, Math.floor(random() * 10) / 10 + 0.05, index] as const));
+    // The rule as a scan of every other reference for each item.
+    const oracle = (item: MemoryCandidate) => base.selected.some((other) => other !== item && other.id === item.id)
+      ? JSON.stringify([item.sourceId, item.id]) : item.id;
+    const { record } = await curate(TASK, base, { answerTokens: 10_000_000 });
+    // A copy of a taken item's text joins that item rather than being taken.
+    expect(record.items.length + record.collapsed).toBe(selected.length);
+    expect(record.items.some((item) => item.id.startsWith('['))).toBe(true);
+    expect(record.items.some((item) => !item.id.startsWith('['))).toBe(true);
+    for (const item of record.items) expect(item.id, `${item.candidate.sourceId} ${item.candidate.id}`).toBe(oracle(item.candidate));
+    expect(record.items.find((item) => item.candidate === twice)?.id).toBe('selected-twice');
+  });
+
   it('fails when no reference was selected', async () => {
     await expect(curate(TASK, picked([[RULE, 1, 0]]))).rejects.toThrow('no selected reference items');
   });
