@@ -98,12 +98,12 @@ const replayed = picked.candidates.map((entry, index) => {
 const sources = Object.entries(picked.levers.sources);
 const options = {
   everyRanked: true,
-  rare: false,
-  barBySource: Object.fromEntries(sources.map(([id, settings]) => [id, settings.bar])),
   ruleBarBySource: Object.fromEntries(sources.flatMap(([id, settings]) =>
     settings.ruleBar === undefined ? [] : [[id, settings.ruleBar]])),
-  questionsBySource: Object.fromEntries(sources.flatMap(([id, settings]) =>
-    settings.questions === undefined ? [] : [[id, settings.questions]])),
+  // Each source's mode as the record names it, with the bar it ran at;
+  // the proof gives each the ranked read, which everyRanked reads with.
+  modesBySource: Object.fromEntries(sources.map(([id, settings]) => [id, { name: settings.mode ?? id,
+    bar: settings.bar, ...(settings.questions === undefined ? {} : { questions: settings.questions }) }])),
   ...(picked.sourceKinds === undefined ? {} : { sourceKinds: picked.sourceKinds }),
   ...(picked.ranking === undefined ? {} : { ranking: picked.ranking }),
   ...(picked.thresholds === undefined ? {} : {

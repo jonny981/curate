@@ -13,7 +13,8 @@
 //   built from the saved record of a real pick and its full candidate
 //   list by tools/build-decision-cache-replay.mjs — see that tool's
 //   header. task and candidates are the pick's input, options its
-//   remaining options (questionsBySource, keepTop, thresholds, tags, limits),
+//   remaining options (modesBySource without each mode's read, keepTop,
+//   thresholds, tags, limits),
 //   and answers maps each part — keyed by its [sourceId, id] pair — to
 //   each question's spec key (the questionKey on a fitted or tag
 //   question, the role on a plain one) to the saved answer
@@ -34,10 +35,13 @@ if (!replayFile) {
   process.exit(2);
 }
 const root = dirname(fileURLToPath(import.meta.url));
-const { pick, decisionFileStore } = await import(
+const { pick, decisionFileStore, rankedRead } = await import(
   pathToFileURL(join(root, '../packages/core/dist/index.js')).href);
-const uncutPick = { everyRanked: true, rare: false };
-const { task, options = {}, candidates, answers } = JSON.parse(readFileSync(replayFile, 'utf8'));
+const uncutPick = { everyRanked: true };
+const { task, options: saved = {}, candidates, answers } = JSON.parse(readFileSync(replayFile, 'utf8'));
+// A saved mode has no read; under everyRanked every part takes the ranked read.
+const options = saved.modesBySource === undefined ? saved : { ...saved, modesBySource: Object.fromEntries(
+  Object.entries(saved.modesBySource).map(([id, mode]) => [id, { ...mode, read: rankedRead }])) };
 
 let calls = 0;
 const decide = async (batch) => {

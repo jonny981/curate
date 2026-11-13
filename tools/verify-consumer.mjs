@@ -54,15 +54,15 @@ const defaults = await pick(candidates, {
   decide: async (batch) => batch.questions.some(q => q.questionKey !== undefined) ? decide(batch) : weighted(batch),
 });
 assert.deepEqual(defaults.selected.map(candidate => candidate.id), ['host-item-0', 'host-item-1']);
-assert.deepEqual(defaults.record.levers.sources, { host: { labels: false, rare: false, bar: 0.0146 } });
+assert.deepEqual(defaults.record.levers.sources, { host: { labels: false, bar: 0.0146 } });
 assert.equal(defaults.record.labels, undefined);
 assert.deepEqual(defaults.record.labelKindsBySource.host, []);
-const uncutPick = { everyRanked: true, everyScored: true, rare: false };
+const uncutPick = { everyRanked: true, everyScored: true };
 const picked = await pick(candidates, { ...uncutPick, task: 'Recall backups', decide: weighted });
 assert.deepEqual(picked.selected.map(candidate => candidate.id), ['host-item-0', 'host-item-1', 'host-item-2']);
-assert.deepEqual(picked.record.levers.sources, { host: { labels: false, rare: false, bar: 0 } });
+assert.deepEqual(picked.record.levers.sources, { host: { labels: false, bar: 0 } });
 const labelled = await pick(candidates, { task: 'Recall backups', decide, labelKindsBySource: { host: LABEL_KINDS } });
-assert.deepEqual(labelled.record.levers.sources, { host: { labels: true, labelBar: 0.5, rare: false, bar: 0.0146 } });
+assert.deepEqual(labelled.record.levers.sources, { host: { labels: true, labelBar: 0.5, bar: 0.0146 } });
 assert.equal(labelled.record.labels.deciderId, 'custom');
 assert.ok(labelled.record.labels.asked > 0);
 const meaning = await addMeaningRanks(candidates, 'Recall backups', {
@@ -82,7 +82,7 @@ writeFileSync('transcripts/session.jsonl', JSON.stringify({ type: 'user', sessio
 mkdirSync('queued');
 writeFileSync('queued/session.jsonl', JSON.stringify({ type: 'attachment', sessionId: 'example', timestamp: '2025-01-01T12:00:00Z', attachment: { type: 'queued_command', prompt: 'Keep backups encrypted.', origin: { kind: 'human' } } }) + '\\n');
 const queued = await chat({ providers: ['claude-code'], paths: ['queued'] }).read({ task: 'backups' });
-assert.deepEqual(queued.candidates.map(c => [c.text, c.chat.role, c.chat.author]), [['Keep backups encrypted.', 'user', 'person']]);
+assert.deepEqual(queued.candidates.map(c => [c.text, c.chat.role, c.author]), [['Keep backups encrypted.', 'user', 'person']]);
 mkdirSync('notes'); writeFileSync('notes/backup.md', '## Backup\\nBackups are encrypted.\\n');
 mkdirSync('policy'); writeFileSync('policy/backup.md', 'Encrypt backups.\\n');
 execFileSync('git', ['init', '-q']);
@@ -110,10 +110,11 @@ const effects = await pickFromSources(effectSources, { task: 'Recall encrypted b
 assert.ok(Array.isArray(effects.record.effects));
 assert.deepEqual(effectSources.map(source => effects.record.effects
   .filter(entry => entry.setting === 'bar' && entry.source === source.id).length), effectSources.map(() => 1));
-assert.deepEqual([chatSettings, gitSettings, markdownSettings, rulesSettings].map(s => [s.rare, s.labels, s.bar, s.ruleBar]),
-  [[false, true, 0.0146, undefined], [true, false, 0.0146, undefined], [true, false, 0.0146, undefined], [true, false, 0.0146, 0.5]]);
+assert.deepEqual([chatSettings, gitSettings, markdownSettings, rulesSettings].map(s => [s.labels, s.mode.name, s.mode.bar, s.ruleBar]),
+  [[true, 'assistant-chat-history', 0.0146, undefined], [false, 'commits', 0.0146, undefined], [false, 'notes', 0.0146, undefined], [false, 'notes', 0.0146, 0.5]]);
+assert.equal(chat({ paths: ['transcripts'] }).mode.name, 'agent-transcripts');
 assert.deepEqual(chat({ paths: ['transcripts'] }).labelKinds, LABEL_KINDS);
-assert.deepEqual(chatSettings.questions, CHAT_CASCADE);
+assert.deepEqual(chatSettings.mode.questions, CHAT_CASCADE);
 assert.equal(historySource({ reader: chat({ paths: ['transcripts'] }), ...chatSettings, labels: false }).labelKinds, undefined);
 assert.equal(CHAT_KEYWORD_SETTINGS.k1, 0.6);
 assert.equal(GIT_KEYWORD_SETTINGS.recencyDays, 60);
