@@ -21,7 +21,7 @@ const RENAMED_OPTIONS: Readonly<Record<string, string>> = {
 };
 
 const PICK_OPTION_KEYS: readonly (keyof PickOptions)[] = [
-  'ranking', 'task', 'decide', 'modesBySource', 'sourceKinds', 'labelKindsBySource', 'labelBarBySource',
+  'ranking', 'task', 'decide', 'modesBySource', 'needed', 'sourceKinds', 'labelKindsBySource', 'labelBarBySource',
   'keepTop', 'rankProtection', 'bestPartFirst', 'tags', 'tagsByKind',
   'labels', 'cache', 'route', 'answerTypes', 'writeQuestions', 'findNames', 'everyRanked', 'everyScored',
   'stopWhenCold', 'feed',
@@ -258,6 +258,10 @@ export function checkPickOptions(options: PickOptions): void {
     }
   }
   checkKeys(options.everyScored, ['bar', 'bySize'], 'everyScored');
+  if (options.needed !== undefined && (!Array.isArray(options.needed)
+    || options.needed.some((fact) => typeof fact !== 'string' || !fact.trim()))) {
+    throw new TypeError('needed must be a list of facts, each a nonempty string.');
+  }
   checkKeys(options.answerTypes, ['bar'], 'answerTypes');
   if (options.taskPeriod !== undefined && typeof options.taskPeriod !== 'boolean') {
     throw new TypeError('taskPeriod must be a boolean.');
@@ -311,7 +315,8 @@ export function checkPickOptions(options: PickOptions): void {
  *  bar from 0 to 1 and a read. */
 export function checkMode(mode: Mode, at: string): void {
   if (typeof mode !== 'object' || mode === null) throw new TypeError(`${at} must be a mode.`);
-  checkKeys(mode, ['name', 'questions', 'bar', 'read'], at);
+  checkKeys(mode, ['name', 'questions', 'bar', 'read', 'needed'], at);
+  if (mode.needed !== undefined && typeof mode.needed !== 'boolean') throw new TypeError(`${at}.needed must be a boolean.`);
   if (typeof mode.name !== 'string' || !mode.name.trim()) throw new TypeError(`${at}.name must be a nonempty string.`);
   checkCascadeKeys(mode.questions, `${at}.questions`);
   if (mode.bar !== undefined && (typeof mode.bar !== 'number' || !Number.isFinite(mode.bar) || mode.bar < 0 || mode.bar > 1)) {

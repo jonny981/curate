@@ -14,6 +14,9 @@ export interface Mode {
   /** A reference part is kept when scored at or above this. Absent:
    *  the question set's fitted bar, or else 0.0146. */
   readonly bar?: number;
+  /** The decision state of a request of this mode's parts lists the
+   *  facts the answer needs, when the call gives them (`needed`). */
+  readonly needed?: boolean;
   /** How the decide step reads the mode's parts on the fused order:
    *  `rankedRead` or a `conversationRead()`. Parts of modes that share
    *  a read are read together. */

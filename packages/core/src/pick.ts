@@ -135,6 +135,9 @@ export interface PickQuestion {
 export interface PickBatch {
   readonly task: string;
   readonly questions: readonly PickQuestion[];
+  /** The facts the answer needs (`PickOptions.needed`), present on a
+   *  request whose parts' mode lists them. */
+  readonly needed?: readonly string[];
 }
 
 export type PickAnswer =
@@ -721,6 +724,12 @@ export interface PickOptions {
    *  question and the ranked read. pickFromSources fills these from
    *  each source's `mode`. */
   readonly modesBySource?: Readonly<Record<string, Mode>>;
+  /** The facts a complete answer needs, as the caller's writer split the
+   *  task. A request of parts whose mode sets `needed` carries them in
+   *  its decision state beside the task; parts of every other mode go in
+   *  requests of their own, without them. Empty or absent: no request
+   *  carries them. */
+  readonly needed?: readonly string[];
   /** Source identities mapped to kinds; pickFromSources fills these from source.kind. */
   readonly sourceKinds?: Readonly<Record<string, CandidateSourceKind>>;
   /** Put these top ranked hits first if they pass the threshold. */
@@ -1642,6 +1651,9 @@ export async function pick(
     Object.entries(modes).flatMap(([id, mode]) => mode.bar === undefined ? [] : [[id, mode.bar]]));
   for (const set of Object.values(questionsBySource)) checkCascade(set);
   const modeFor = (sourceId: string) => Object.hasOwn(modes, sourceId) ? modes[sourceId] : undefined;
+  // The facts the answer needs, for the requests of parts whose mode lists them.
+  const needed = options.needed !== undefined && options.needed.length > 0 ? options.needed : undefined;
+  const carriesNeeded = (candidate: MemoryCandidate) => needed !== undefined && modeFor(candidate.sourceId)?.needed === true;
   checkWriteQuestions(options);
   if (options.route !== undefined && options.route !== 'jev') {
     throw new TypeError(`route must be 'jev'.`);
@@ -2164,7 +2176,10 @@ export async function pick(
         if (limits.maxElapsedMs - (Date.now() - started) <= 0) { stop = 'time'; break; }
         const group = await Promise.all(asks.slice(index, index + LABEL_STORE_READ_GROUP)
           .map(async (item) => {
-            const key = decisionKey(task, cacheVersion, cache.deciderId,
+            // A request that carries the needed facts asks with them, so
+            // its answers are stored under them.
+            const key = decisionKey(sink === answered && carriesNeeded(item.candidate) ? JSON.stringify([task, needed]) : task,
+              cacheVersion, cache.deciderId,
               limits.maxQuestionText, item.question, item.candidate.text);
             let stored: ReturnType<typeof storedDecision>;
             try {
@@ -2197,7 +2212,13 @@ export async function pick(
     // still waits for this round's answers. Results apply in dispatch
     // order whatever order the replies land in, so answer order never
     // depends on completion order.
-    const slices = pack(fresh, task, whole, limits.maxBatches - batches);
+    // Requests of parts whose mode lists the facts the answer needs go
+    // apart from the rest, so no other part's request carries them.
+    const listed = sink === answered && needed !== undefined ? fresh.filter((item) => carriesNeeded(item.candidate)) : [];
+    const listedSlices = pack(listed, task, whole, limits.maxBatches - batches);
+    const slices = listed.length === 0 ? pack(fresh, task, whole, limits.maxBatches - batches) : [...listedSlices,
+      ...pack(fresh.filter((item) => !carriesNeeded(item.candidate)), task, whole, limits.maxBatches - batches - listedSlices.length)];
+    const withNeeded = new Set(listedSlices);
     interface BatchOutcome {
       readonly slice: Pending[];
       readonly sent: boolean;
@@ -2220,7 +2241,8 @@ export async function pick(
         for (const item of slice) sentParts.add(item.candidate);
       }
       try {
-        const sent: Promise<Record<string, PickAnswer>> = options.decide({ task, questions }, decideSignal);
+        const sent: Promise<Record<string, PickAnswer>> = options.decide(
+          { task, questions, ...(withNeeded.has(slice) ? { needed: needed! } : {}) }, decideSignal);
         const returned: unknown = await Promise.race([
           sent,
           new Promise<typeof TIMED_OUT>((resolve) => {

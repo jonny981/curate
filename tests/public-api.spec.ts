@@ -112,7 +112,7 @@ describe('package exports', () => {
       { labels: false, names: false, mode: notes, ruleBar: 0.5 },
     ]);
     expect([agentTranscripts, assistantChatHistory, commits, notes]).toEqual([
-      { name: 'agent-transcripts', questions: AGENT_CHAT_CASCADE, bar: 0.0146, read: expect.any(Function) },
+      { name: 'agent-transcripts', questions: AGENT_CHAT_CASCADE, bar: 0.0146, read: expect.any(Function), needed: true },
       { name: 'assistant-chat-history', questions: CHAT_CASCADE, bar: 0.0146, read: rankedRead },
       { name: 'commits', questions: GIT_HISTORY_CASCADE, bar: 0.0146, read: rankedRead },
       { name: 'notes', questions: MARKDOWN_CASCADE, bar: 0.0146, read: rankedRead },

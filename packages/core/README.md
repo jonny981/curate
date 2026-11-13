@@ -72,7 +72,7 @@ const decide = jev({ apiKey: process.env.TYPESAFE_API_KEY });
 
 - **Jev:** `jev({ apiKey?, model?, url? })` returns a `PickDecide` function for TypeSafe's System One endpoint, with `deciderId: typesafe:${model}:item-records`. The model defaults to `'jev-latest'`. Missing or invalid probabilities become missing answers.
 - **Jev at another address:** set `url` for any server that speaks Jev's format, such as a Clef server. The key is then optional, and no `authorization` header is sent without one. The `deciderId` is `jev:${host}${path}:${model}:item-records`, read from `url`.
-- **What a Jev request holds:** the request's state is a JSON object: the batch's task, and each item once, as a record under its number in `items`, with its id, date, title and text, and its `author` where its reader marked one. Each question's instructions are an object holding its wording and the path of its item's record, such as `items.3`, so an item asked seven questions is sent once. `jevRequest(batch, model?)`, exported from `@curatejs/core`, builds that body.
+- **What a Jev request holds:** the request's state is a JSON object: the batch's task, the facts the answer needs when the batch carries them (`needed`), and each item once, as a record under its number in `items`, with its id, date, title and text, and its `author` where its reader marked one. Each question's instructions are an object holding its wording and the path of its item's record, such as `items.3`, so an item asked seven questions is sent once. `jevRequest(batch, model?)`, exported from `@curatejs/core`, builds that body.
 - **Jev request size:** Jev documents its limits in tokens: 32,000 for the state plus the longest question, and 64,000 for the whole request. At an estimate of three characters a token, `jev()` splits a batch into several requests so that in each one the state plus its longest question's instructions and criteria is at most 96,000 characters, and the whole request body at most 192,000. An item's questions always go in its item's request, and an item larger than those bounds goes alone. The answers come back as one map for the batch.
 - **A request rejected as too large is sent again, smaller:** an HTTP 400 or 413 reply splits a multi-item request in two, each item keeping all its questions, and a rejected half splits again. A lone item is resent with its evidence text halved, and its answers are marked `truncated`. `jev()` remembers the largest whole body the service accepted; after a rejection, later batches are planned inside it. A request rejected at no more than that size — or a lone item whose text was cut to nothing — did not fail for size, so its reply is thrown as sent and the batch still fails. The error of a failed request carries the reply's whole body.
 - **Every request reported:** `jev({ apiKey, onCall })` calls `onCall` once per request, planned, split and resent ones alike, with a `JevCall`: when it was sent, the questions count, the whole-body size, the reply's status, the milliseconds it took, the usage and answers the reply held, and `splits`, the extra requests its rejection produced — 2 for a split, 1 for a resent item, 0 otherwise. A request that never got a reply, through a network failure or a cancellation, is reported with status 0 and the failure's message in `error`; the error still fails the pick.
@@ -875,6 +875,19 @@ answers were the person's own, did not hold on held-out tasks: the
 ranking fell from 0.960 to 0.829, and for answers an agent wrote from
 0.975 to 0.650.
 
+### The facts the answer needs
+
+`needed` on the pick is a list of the separate facts a complete answer
+needs, as the caller's writer split the task. A request of parts whose
+mode sets `needed: true` carries the list in its decision state beside
+the task, `{ task, needed, items }`; parts of every other mode go in
+requests of their own and never see it. `agentTranscripts` sets it.
+Measured on eight tasks of one person's coding-agent history with the
+JSON state, with lists a separate model call wrote: non-answers rated
+0.1 or more fell from 10.8% to 3.8%, and the share of the history let
+through to keep 98% of the answers from 14.3% to 3.8%. Not confirmed on
+held-out tasks.
+
 ### Decision tags
 
 `tags` asks extra yes/no questions of each reference that passes
@@ -1591,12 +1604,12 @@ Rules have no name lanes because they are chosen by where they apply, not by sea
 
 Each reader package exports its modes:
 
-| Mode | Name | Questions | Bar | Read |
-| --- | --- | --- | --- | --- |
-| `agentTranscripts` (`@curatejs/chat`) | `agent-transcripts` | `AGENT_CHAT_CASCADE` | 0.0146 | `conversationRead()` |
-| `assistantChatHistory` (`@curatejs/chat`) | `assistant-chat-history` | `CHAT_CASCADE` | 0.0146 | `rankedRead` |
-| `commits` (`@curatejs/git`) | `commits` | `GIT_HISTORY_CASCADE` | 0.0146 | `rankedRead` |
-| `notes` (`@curatejs/markdown`) | `notes` | `MARKDOWN_CASCADE` | 0.0146 | `rankedRead` |
+| Mode | Name | Questions | Bar | Read | Needed facts |
+| --- | --- | --- | --- | --- | --- |
+| `agentTranscripts` (`@curatejs/chat`) | `agent-transcripts` | `AGENT_CHAT_CASCADE` | 0.0146 | `conversationRead()` | in the state |
+| `assistantChatHistory` (`@curatejs/chat`) | `assistant-chat-history` | `CHAT_CASCADE` | 0.0146 | `rankedRead` | |
+| `commits` (`@curatejs/git`) | `commits` | `GIT_HISTORY_CASCADE` | 0.0146 | `rankedRead` | |
+| `notes` (`@curatejs/markdown`) | `notes` | `MARKDOWN_CASCADE` | 0.0146 | `rankedRead` | |
 
 Parts of modes that share a read are read together: every `rankedRead` mode's parts and every rule part in one read of the fused order, and the parts of every mode on one `conversationRead()` in one chat read. Each `conversationRead()` call makes a read of its own, so a mode makes it once, and modes that should be read together share it.
 

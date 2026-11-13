@@ -1000,12 +1000,17 @@ export function scopedEntries(entries, scope, now = Date.now()) {
 
 const scopeAsk = (today) => `\nThe JSON also holds a key "scope": {"kinds": [...], "since": "..."}, set only from the task's own words. "kinds" lists the source kinds the task says to look in: "chat" for a chat, conversation or session, "git-history" for a commit or the Git history, "markdown" for a note or document. Use ["all"] when the task does not say where to look; a source that is only the task's subject does not count. "since" is how far back to search, as "N days" counted back from today, or "none" when the task names no time. When the task names a time, pad it generously: at least twice the span it names and never under 14 days, because a window that is too tight loses the answer. Never guess. Today's date is ${today}.`;
 
-export function searchLinesPrompt(task, searchKinds, scopeDate = undefined) {
+// The facts the answer needs, asked in the same call as the search lines
+// when the call reads a mode that lists them in its decision state. The
+// wording is the separate facts prompt the measurement used.
+const NEEDED_ASK = '\nAlso split the task into the separate facts that a complete answer needs, where each fact may be stated in a different message. Give one to five facts; give one fact when a single message can answer the task. Answer from the task text only. Return them as one more JSON key, "needed": a list of short strings.';
+
+export function searchLinesPrompt(task, searchKinds, scopeDate = undefined, askNeeded = false) {
   const registers = { chat: CHAT_SEARCH_LINE_REGISTER, 'git-history': GIT_SEARCH_LINE_REGISTER, markdown: MARKDOWN_SEARCH_LINE_REGISTER };
   return `TASK: ${task}\nWrite search expansions, not a factual answer. For each source kind, give two keyword lines (one naming the subject, one without it) and four plausible hypothetical-answer lines (two naming the subject, two without it). Use varied wording for directions, constraints, tried ideas, rejected ideas and unfinished experiments where the task asks for them. Do not invent evidence.\nRegisters:\n${searchKinds.map((kind) => `${kind}: ${registers[kind]}`).join('\n')}\n${searchKinds.length === kinds.length
     ? 'Return only JSON with these three keys, each containing {"keywords":[...],"answers":[...]}.'
     : `Return only JSON for ${searchKinds.map((kind) => `"${kind}"`).join(', ')}, each containing {"keywords":[...],"answers":[...]}.`}
-Write exactly two keyword lines and exactly four answer lines for each source kind. No other text.${scopeDate === undefined ? '' : scopeAsk(scopeDate)}`;
+Write exactly two keyword lines and exactly four answer lines for each source kind. No other text.${scopeDate === undefined ? '' : scopeAsk(scopeDate)}${askNeeded ? NEEDED_ASK : ''}`;
 }
 
 // Haiku sometimes names a group after the task's words ("chat" for "our
@@ -1037,6 +1042,15 @@ function asAsked(value, required, record) {
   }
   if (renamed) record.renamedSearchKinds = renamed;
   return out;
+}
+
+// The reply's facts the answer needs: one to five nonempty strings, or
+// why there are none.
+export function neededFrom(value) {
+  return Array.isArray(value) && value.length >= 1 && value.length <= 5
+    && value.every((fact) => typeof fact === 'string' && fact.trim())
+    ? { facts: value.map((fact) => fact.trim()) }
+    : { missing: value === undefined ? 'the reply gave no facts' : 'the reply\'s facts were not one to five strings' };
 }
 
 // The search reply gets one repair round: a reply that fails JSON parsing
@@ -1184,7 +1198,10 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
     // decides which sources are searched.
     const searchKinds = kinds.filter((kind) => callSources.some((entry) => sourceKind(entry.type) === kind));
     const scoped = settings.scope !== false;
-    const searchPrompt = searchLinesPrompt(options.task, searchKinds, scoped ? today : undefined);
+    // A mode that lists the facts the answer needs gets them from the
+    // same call as the search lines.
+    const askNeeded = callSources.some((entry) => sourceKind(entry.type) === 'chat' && chatMode(entry).needed === true);
+    const searchPrompt = searchLinesPrompt(options.task, searchKinds, scoped ? today : undefined, askNeeded);
     const searchStart = Date.now();
     // One entry's source. A Codex entry's sessions are copied to `snapshot`.
     const build = async (entry, snapshot) => {
@@ -1327,8 +1344,12 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
       preparing = Promise.all([...held.values()].map((entry) => entry.warmed));
     }
     const writeLines = callSubscription ?? facts.writer;
-    const { scope: proposedScope, ...searchedLines } = await searchLines(searchPrompt, folder, record, save, writeLines, searchKinds);
+    const { scope: proposedScope, needed: neededReply, ...searchedLines } = await searchLines(searchPrompt, folder, record, save, writeLines, searchKinds);
     record.searches = searchedLines;
+    // With no usable list the decision state goes without it, and the
+    // record says why.
+    const needed = askNeeded ? neededFrom(neededReply) : undefined;
+    if (needed !== undefined) record.needed = needed;
     record.timings.searchesMs = Date.now() - searchStart;
     let entries = callSources;
     if (scoped) {
@@ -1406,6 +1427,7 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
       ...(settings.stopWhenCold === undefined ? {} : { stopWhenCold: settings.stopWhenCold }),
       ...(settings.feed === undefined ? {} : { feed: settings.feed }),
       ...(settings.threshold === undefined ? {} : { everyScored: { bar: settings.threshold } }),
+      ...(agentIds.size === 0 || needed?.facts === undefined ? {} : { needed: needed.facts }),
       ...(agentIds.size === 0 ? {} : { cache: { deciderId: decide.deciderId, store: {
         get: async (key) => decisions.get(key), set: async (key, value) => { decisions.set(key, value); } } } }) };
     const searched = (source, searches) => {

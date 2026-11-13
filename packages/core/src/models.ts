@@ -197,6 +197,7 @@ export function jevRequest(batch: PickBatch, model = 'jev-latest') {
     model,
     state: {
       task: batch.task,
+      ...(batch.needed === undefined ? {} : { needed: batch.needed }),
       items: Object.fromEntries([...items.values()].map((question, index) => [String(index + 1), itemRecord(question)])),
     },
     questions: Object.fromEntries(batch.questions.map((question, index) => [`q${index}`,

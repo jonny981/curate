@@ -102,6 +102,11 @@ What each part does:
   and words of the three best-rated parts become new search lines, a second
   pick rates only the parts the first never rated, and the parts it keeps
   join the first pick's.
+- **The facts the answer needs, in the decision state.** The `/curate`
+  skill's search-line call also splits the task into the facts a
+  complete answer needs, and the decision requests of coding-agent
+  transcripts carry that list beside the task (`needed`; a mode opts in
+  with `needed: true`). Requests of other sources never carry it.
 - **Settings by source.** Each source carries its own settings, so a setting
   chosen for one kind of history never changes what Curate picks from
   another: `labels` (the label kinds asked of each part), `labelBar` (its
