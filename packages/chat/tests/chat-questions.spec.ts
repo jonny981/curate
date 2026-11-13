@@ -37,10 +37,9 @@ describe('source decision questions', () => {
     expect(chatSettings.mode?.questions).toBe(CHAT_CASCADE);
   });
 
-  it('weighs the person\'s own words only in the agent set, the one weight fitted on agent transcripts', () => {
-    expect(AGENT_CHAT_CASCADE.person).toBe(4.5);
-    for (const set of [CHAT_CASCADE, PERSONAL_CHAT_CASCADE, PERSONAL_CHAT_WRITTEN_CASCADE, JUDGMENT_CHAT_CASCADE]) {
-      expect(set.person).toBeUndefined();
+  it('weighs no set by who wrote a part', () => {
+    for (const set of [AGENT_CHAT_CASCADE, CHAT_CASCADE, PERSONAL_CHAT_CASCADE, PERSONAL_CHAT_WRITTEN_CASCADE, JUDGMENT_CHAT_CASCADE]) {
+      expect(set).not.toHaveProperty('person');
     }
   });
 });

@@ -33,14 +33,10 @@ export const CHAT_CASCADE: PickCascade = {
 };
 
 /** Coding-agent transcripts use relevance and needed evidence without
- *  treating a person's own situation as a selection signal. A part the
- *  reader marks as the person's own words adds `person` to its score's
- *  logit: 4.5, fitted with this set's answers on coding-agent
- *  transcripts, the same on each held-out half of the tasks. */
+ *  treating a person's own situation as a selection signal. */
 export const AGENT_CHAT_CASCADE: PickCascade = {
   ...CHAT_CASCADE,
   questions: CHAT_CASCADE.questions.filter((question) => question.key !== 'own'),
-  person: 4.5,
 };
 
 /** Questions and fitted weights for histories of a person's own life:

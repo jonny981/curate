@@ -867,17 +867,13 @@ question's key followed by a number.
 
 ### The person's own words
 
-A question set's `person` weight is added to the logit of a reference
-part's score when its reader marks the person as the part's author
-(`author` is `'person'`), inside the band and outside it. It moves
-the person's own words up the order and over the bar, and never drops
-another part. A part any other author wrote, or with no author mark,
-adds nothing. A model-scored set cannot carry it.
-
-`AGENT_CHAT_CASCADE` carries `person` 4.5, fitted with that set's
-answers on coding-agent transcripts, the same on each held-out half of
-the tasks. No other shipped set carries `person`, because no weight was
-fitted for one.
+No question set weighs a part by who wrote it. A part's `author` goes
+into its record in the decision state, so a question can read it, and
+the chat read starts from the person's own parts; neither changes a
+part's score. A weight on the person's parts, fitted on tasks whose
+answers were the person's own, did not hold on held-out tasks: the
+ranking fell from 0.960 to 0.829, and for answers an agent wrote from
+0.975 to 0.650.
 
 ### Decision tags
 
@@ -1359,12 +1355,7 @@ a `rankedRead` mode keeps the read above, a chat source on
 `assistantChatHistory`, a personal set or the judgment set included:
 replayed on long chats with an assistant and on two-person chats, the
 same stop lost evidence. A part is warm when it
-is rated at least 0.1 times the best rating this read has seen. The
-read judges a part on its rating without the question set's `person`
-weight, the rating its levels were measured on: with the weight nearly
-every person part is warm, and a replay of the saved ratings read
-27,683 parts in place of 5,900. Selection still keeps a part on its
-weighted score.
+is rated at least 0.1 times the best rating this read has seen.
 
 1. **The person's own parts first.** The read takes the parts the
    transcript marks as the person's (`author: 'person'`) in the
@@ -1416,7 +1407,7 @@ at the size.
 Every number above is the measured one. On about 116,000 parts of one
 person's history (Claude Code and Codex transcripts, notes and
 commits; eight tasks with 56 known answer parts), rated live with
-`AGENT_CHAT_CASCADE` without its `person` weight, the read found 51
+`AGENT_CHAT_CASCADE`, the read found 51
 answers and kept 54 in 5,900 rated parts, 1.84% of the history. A
 read of the ranked list in requests of 112 to a stop on each request's
 best rating, replayed on saved ratings, rated 15,792 parts for 42. The

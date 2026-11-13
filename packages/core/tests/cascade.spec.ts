@@ -108,7 +108,6 @@ describe('fitted decision questions', () => {
     { ...fitted, bias: NaN }, { ...fitted, first: 'unknown' },
     { ...fitted, band: [0.9, 0.1] }, { ...fitted, firstOnly: undefined },
     { ...fitted, questions: [fitted.questions[0], fitted.questions[0]] },
-    { ...fitted, person: NaN }, { ...fitted, person: '4.5' },
   ])('rejects invalid fitted configuration before calling decide', async (invalid) => {
     let calls = 0;
     await expect(pick([item('a')], { ...uncutPick,
@@ -119,56 +118,20 @@ describe('fitted decision questions', () => {
 });
 
 describe('the person\'s own words in the score', () => {
-  const said = (id: string, author?: 'person' | 'agent'): MemoryCandidate => ({
-    ...item(id, 1),
-    ...(author === undefined ? {} : { author, chat: { provider: 'claude-code', sessionId: 's', role: 'user' } }),
-  });
-  const withPerson: PickCascade = { ...fitted, person: 4.5 };
-  /** Each part's decision probability when `relevant` is answered per
-   *  part and every other question 0.8. */
-  const scored = async (cascade: PickCascade, relevant: Record<string, number>, bar = 0) => {
+  it('scores a part the person wrote as any other part: no question set carries a person weight', async () => {
+    const said = (id: string, author?: 'person' | 'agent'): MemoryCandidate => ({
+      ...item(id, 1),
+      ...(author === undefined ? {} : { author, chat: { provider: 'claude-code', sessionId: 's', role: 'user' } }),
+    });
     const decide: PickDecide = async ({ questions }) => Object.fromEntries(questions.map((q) =>
-      [q.key, { status: 'answered', probability: q.questionKey === 'relevant' ? relevant[q.id]! : 0.8 }]));
+      [q.key, { status: 'answered', probability: 0.5 }]));
     const result = await pick([said('mine', 'person'), said('relayed', 'agent'), said('unmarked')], { ...uncutPick,
-      task: 'Recall', modesBySource: modesOf({ chat: cascade }), decide, everyScored: { bar } });
-    const probability = Object.fromEntries(result.record.candidates.map((entry) =>
-      [entry.id, 'probability' in entry ? entry.probability : undefined]));
-    return { result, probability };
-  };
-
-  it('adds the set\'s person weight to the logit of a part the person wrote, outside the band and inside it', async () => {
-    const outside = (await scored(withPerson, { mine: 0.05, relayed: 0.05, unmarked: 0.05 })).probability;
-    expect(outside.mine).toBeCloseTo(sigmoid(-0.6674 + 1.2882 * logit(0.05) + 4.5), 12);
-    expect(outside.relayed).toBeCloseTo(sigmoid(-0.6674 + 1.2882 * logit(0.05)), 12);
-    expect(outside.unmarked).toBe(outside.relayed);
-    const inside = (await scored(withPerson, { mine: 0.5, relayed: 0.5, unmarked: 0.5 })).probability;
-    const z = -1.7305 + 0.7031 * logit(0.5) + 0.8588 * logit(0.8) + 0.5134 * logit(0.8);
-    expect(inside.mine).toBeCloseTo(sigmoid(z + 4.5), 12);
-    expect(inside.relayed).toBeCloseTo(sigmoid(z), 12);
-    expect(inside.unmarked).toBe(inside.relayed);
-  });
-
-  it('adds nothing in a set without a person weight', async () => {
-    const { probability } = await scored(fitted, { mine: 0.5, relayed: 0.5, unmarked: 0.5 });
-    expect(probability.mine).toBe(probability.relayed);
-  });
-
-  it('raises the person\'s part in the order and filters out no other part', async () => {
-    // The agent's part rated 0.95 still leads; the person's part rated
-    // 0.05 clears the bar that the unmarked part rated 0.05 does not.
-    const { result } = await scored(withPerson, { mine: 0.05, relayed: 0.95, unmarked: 0.05 }, 0.0146);
-    expect(result.selected.map((candidate) => candidate.id)).toEqual(['relayed', 'mine']);
-    expect(result.record.candidates.find((entry) => entry.id === 'unmarked')).toMatchObject({ status: 'rejected' });
-    const without = await scored(fitted, { mine: 0.05, relayed: 0.95, unmarked: 0.05 }, 0.0146);
-    expect(without.result.selected.map((candidate) => candidate.id)).toEqual(['relayed']);
-  });
-
-  it('rejects a person weight on a model-scored set', () => {
-    expect(() => checkCascade({
-      model: { keys: ['a'], mu: [0], sd: [1], w: [1], b: 0, bar: 0.5 },
-      questions: [{ key: 'a', instructions: 'i', true: 't', false: 'f' }],
-      person: 1,
-    })).toThrowError(/question set/);
+      task: 'Recall', modesBySource: modesOf({ chat: fitted }), decide, everyScored: { bar: 0 } });
+    const probability = result.record.candidates.map((entry) => 'probability' in entry ? entry.probability : undefined);
+    expect(new Set(probability).size).toBe(1);
+    await expect(pick([said('mine', 'person')], { ...uncutPick, task: 'Recall', decide,
+      modesBySource: modesOf({ chat: { ...fitted, person: 4.5 } as PickCascade }) }))
+      .rejects.toThrow('`modesBySource.chat.questions.person` is not an option');
   });
 });
 

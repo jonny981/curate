@@ -49,7 +49,7 @@ const SOURCE_KIND_KEYS: readonly CandidateSourceKind[] = ['chat', 'git-history',
 /** The fixed keys of `ranking`, keyed by candidate kind. */
 const MEMORY_KIND_KEYS: readonly MemoryKind[] = ['knowledge', 'docs', 'rules', 'instructions'];
 const CASCADE_KEYS: readonly (keyof PickCascade)[] = [
-  'bias', 'questions', 'typed', 'first', 'band', 'firstOnly', 'written', 'named', 'person', 'model', 'anonymousItems',
+  'bias', 'questions', 'typed', 'first', 'band', 'firstOnly', 'written', 'named', 'model', 'anonymousItems',
 ];
 const TAG_SET_KEYS: readonly (keyof PickTagSet)[] = ['key', 'questions'];
 const CRITERION_KEYS: readonly (keyof PickCriterion)[] = ['key', 'instructions', 'true', 'false'];
@@ -109,19 +109,15 @@ export function checkCascadeKeys(set: PickCascade | undefined, path: string): vo
  *  between 0 and 1, first, band and firstOnly together or not at all,
  *  finite written weights beside keys that leave `task1` to `task4`
  *  free, a complete name question with finite weights whose key,
- *  followed by a number, is no other question's key, and a finite
- *  person weight. A model-scored
+ *  followed by a number, is no other question's key. A model-scored
  *  set follows a different shape: a complete fitted model, questions
  *  that each carry true and false or at least two ordered levels, no
  *  per-question weights needed, and none of the first, band, firstOnly,
- *  typed, written, named or person machinery. */
+ *  typed, written or named machinery. */
 export function checkCascade(set: PickCascade | undefined): void {
   if (set === undefined) return;
   if (set.anonymousItems !== undefined && typeof set.anonymousItems !== 'boolean') {
     throw new TypeError('a question set\'s anonymousItems must be a boolean.');
-  }
-  if (set.person !== undefined && (typeof set.person !== 'number' || !Number.isFinite(set.person))) {
-    throw new TypeError('a question set\'s person weight must be a finite number.');
   }
   const keys = set.questions.map((q) => q.key);
   const levelled = (q: PickCascade['questions'][number]): q is PickScoreCriterion & { readonly weight?: number } =>
@@ -140,9 +136,9 @@ export function checkCascade(set: PickCascade | undefined): void {
         + 'of the same nonzero length, a finite b, and a bar from 0 to 1.');
     }
     if (set.first !== undefined || set.band !== undefined || set.firstOnly !== undefined
-      || set.typed !== undefined || set.written !== undefined || set.named !== undefined || set.person !== undefined) {
+      || set.typed !== undefined || set.written !== undefined || set.named !== undefined) {
       throw new TypeError('a model question set selects through its weights alone: '
-        + 'it cannot carry first, band, firstOnly, typed, written, named or person.');
+        + 'it cannot carry first, band, firstOnly, typed, written or named.');
     }
     const nouled = (q: PickCascade['questions'][number]) =>
       'true' in q && 'false' in q && q.true !== undefined && q.false !== undefined;

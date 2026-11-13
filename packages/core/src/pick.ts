@@ -424,11 +424,6 @@ export interface PickCascade {
     /** Added when the task has at least one name. */
     readonly hasNames: number;
   };
-  /** Added to the logit of a reference part's score when its reader
-   *  marks the person as its author (`author` 'person'), inside
-   *  and outside the band: a boost in the order, never a filter. A part
-   *  any other author wrote, or with no author mark, adds nothing. */
-  readonly person?: number;
   /** A fitted combining model: the answers and the code facts Curate
    *  computes per part score through its weights instead of the
    *  per-question weights. A set carrying one selects no first, band,
@@ -657,9 +652,8 @@ export interface PickRecord {
     };
     readonly ranking: 'keyword' | 'fusion';
     /** Present when the chat read ran: on the fused order, when it held
-     *  parts of a chat source (`kind` 'chat') scored with the agent
-     *  question set, the one set with a `person` weight (coding-agent
-     *  transcripts). The read rates the person's own parts in the
+     *  parts of a source whose mode reads with a `conversationRead()`
+     *  (coding-agent transcripts). The read rates the person's own parts in the
      *  keyword lanes' ranking, 112 a request, with rings of neighbours
      *  around each warm one, then the rest of the order the same way. It stops after a request that adds at most
      *  0.3 times the most new warm parts an earlier request added, then
@@ -667,8 +661,7 @@ export interface PickRecord {
      *  each search lane's top 10 parts and walks out from their warm
      *  parts, the walks of every segment advancing a ring a round
      *  together. Warm means rated at least 0.1 times the best rating the
-     *  read has seen, each rating taken without the question set's
-     *  `person` weight. `requests` counts the requests read before the
+     *  read has seen. `requests` counts the requests read before the
      *  stop, `segments` the segments opened, `rated` the parts it
      *  rated, `unread` the chat parts of the order it never reached,
      *  and `ended` what ended it: 'fall', 'order' when the order ran out
@@ -2736,12 +2729,10 @@ export async function pick(
       if (!got) continue;
       let answer: CheckedAnswer;
       if (candidate.role === 'reference' && cascade) {
-        // The person's own words add the set's person weight to the logit.
-        const personZ = candidate.author === 'person' ? cascade.person ?? 0 : 0;
         const first = cascade.first === undefined ? undefined : got.get(cascade.first);
         if (first?.status === 'answered' && 'probability' in first
           && (first.probability < cascade.band![0] || first.probability > cascade.band![1])) {
-          answer = { status: 'answered', probability: 1 / (1 + Math.exp(-(cascade.firstOnly!.bias + cascade.firstOnly!.weight * logit(first.probability) + personZ))),
+          answer = { status: 'answered', probability: 1 / (1 + Math.exp(-(cascade.firstOnly!.bias + cascade.firstOnly!.weight * logit(first.probability)))),
             ...(first.reused === true ? { reused: true } : {}) };
         } else {
           // A returned missing answer contributes nothing, as in the prototype.
@@ -2800,16 +2791,16 @@ export async function pick(
             }).reduce<number | undefined>((top, p) => top === undefined || p > top ? p : top, undefined);
             const namedZ = named.length === 0 ? 0
               : cascade.named!.hasNames + (best === undefined ? 0 : cascade.named!.highest * writtenLogit(best));
-            if (typed.length > 0) untyped.set(candidate, 1 / (1 + Math.exp(-(z + writtenZ + namedZ + personZ))));
-            if (written.length > 0) unwritten.set(candidate, 1 / (1 + Math.exp(-(z + typedZ + namedZ + personZ))));
-            if (named.length > 0) unnamed.set(candidate, 1 / (1 + Math.exp(-(z + typedZ + writtenZ + personZ))));
+            if (typed.length > 0) untyped.set(candidate, 1 / (1 + Math.exp(-(z + writtenZ + namedZ))));
+            if (written.length > 0) unwritten.set(candidate, 1 / (1 + Math.exp(-(z + typedZ + namedZ))));
+            if (named.length > 0) unnamed.set(candidate, 1 / (1 + Math.exp(-(z + typedZ + writtenZ))));
             const keeper = typed.find((q) => {
               const reply = got.get(q.key);
               return q.keepAt !== undefined && reply?.status === 'answered'
                 && 'probability' in reply && reply.probability >= q.keepAt;
             });
             if (keeper !== undefined) keptBy.set(candidate, keeper.key);
-            answer = { status: 'answered', probability: 1 / (1 + Math.exp(-(z + typedZ + writtenZ + namedZ + personZ))),
+            answer = { status: 'answered', probability: 1 / (1 + Math.exp(-(z + typedZ + writtenZ + namedZ))),
               // The verdict reused the store only when every answer
               // behind it did: a question this pick asked — even one
               // that came back unanswered — keeps it fresh.
@@ -2893,20 +2884,8 @@ export async function pick(
   const ownRead = (candidate: MemoryCandidate) => readOf(candidate) !== rankedRead;
   const chatOrder = feed.filter(ownRead);
   if (chatOrder.length > 0) feed = feed.filter((candidate) => !ownRead(candidate));
-  // A part's rating without its set's `person` weight. The conversation
-  // read's levels were measured on ratings without it, since it lifts
-  // nearly every person part over them; selection still keeps a part on
-  // the weighted score.
-  const ratingOf = (candidate: MemoryCandidate) => {
-    const answer = combined.get(candidate);
-    if (answer?.status !== 'answered' || !('probability' in answer)) return undefined;
-    const cascade = cascadeFor(candidate);
-    const person = candidate.author === 'person' && cascade?.model === undefined ? cascade?.person ?? 0 : 0;
-    return person === 0 ? answer.probability
-      : 1 / (1 + Math.exp(person - Math.log(answer.probability / (1 - answer.probability))));
-  };
   const shared = { rate: evaluate, waves: nextWave, copied: (candidate: MemoryCandidate) => copied.has(candidate),
-    score: scoreOf, rating: ratingOf, stopped: () => stop !== undefined,
+    score: scoreOf, stopped: () => stop !== undefined,
     ...(stopRule === undefined ? {} : { stop: stopRule }) };
   // The ranked read of the rest of the feed. It holds its stop until
   // selection keeps a part it rated, on the bar the selection pass will

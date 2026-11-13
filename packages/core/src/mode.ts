@@ -26,7 +26,7 @@ export type ModeRead = (input: ModeReadInput) => Promise<ModeReadResult>;
 /** What a read is given. The ranked read takes `order`, `then`,
  *  `between`, `waves`, `copied`, `score`, `kept`, `stopped` and `stop`;
  *  the conversation read takes `parts`, `order`, `byKeyword`, `lanes`,
- *  `rating`, `kept` and `stopped`. Both rate through `rate`. */
+ *  `score`, `kept` and `stopped`. Both rate through `rate`. */
 export interface ModeReadInput {
   /** The modes' reference parts: every part the read may reach. */
   readonly parts: readonly MemoryCandidate[];
@@ -51,9 +51,6 @@ export interface ModeReadInput {
   readonly copied: (part: MemoryCandidate) => boolean;
   /** A part's decision score as selection reads it, or undefined. */
   readonly score: (part: MemoryCandidate) => number | undefined;
-  /** A part's rating without its question set's `person` term, or
-   *  undefined. */
-  readonly rating: (part: MemoryCandidate) => number | undefined;
   /** True when selection would keep one of these parts. */
   readonly kept: (parts: readonly MemoryCandidate[]) => boolean;
   /** True once a stopping dial has ended the call. */
@@ -154,7 +151,7 @@ export const rankedRead: ModeRead = async (input) => {
 export function conversationRead(rules: ConversationRules = {}): ModeRead {
   return async (input) => {
     const result = await chatRead({ parts: input.parts, order: input.order, byKeyword: input.byKeyword,
-      lanes: input.lanes, rate: input.rate, score: input.rating, kept: input.kept, stopped: input.stopped, rules });
+      lanes: input.lanes, rate: input.rate, score: input.score, kept: input.kept, stopped: input.stopped, rules });
     const reached = new Set(result.read);
     return { read: result.read, unread: input.order.filter((part) => !reached.has(part)), reason: 'chatRead',
       ended: result.ended, requests: result.requests, segments: result.segments };

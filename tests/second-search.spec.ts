@@ -34,9 +34,8 @@ const part = (session: string, line: number, author: Author, text: string, minut
   chat: { provider: 'claude-code', sessionId: session, role: author === 'person' ? 'user' : 'assistant' },
   signals: {},
 });
-// A set that marks its source as agent transcripts, as the agent set
-// does, with a `person` weight.
-const agentSet: PickCascade = { bias: 0, person: 4.5,
+// A question set whose one answer is the part's rating.
+const agentSet: PickCascade = { bias: 0,
   questions: [{ key: 'relevant', instructions: 'relevant?', true: 'Yes', false: 'No', weight: 1 }] };
 
 describe('the second search on coding-agent transcripts', () => {
