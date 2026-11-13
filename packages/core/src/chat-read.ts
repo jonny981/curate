@@ -145,6 +145,75 @@ const dateMs = (part: MemoryCandidate) => {
   return Number.isFinite(ms) ? ms : 0;
 };
 
+/** A rating at least `WARM` times the best rating the read has seen:
+ *  the measured test each decision below reads today. */
+const warmAt = (rating: number | undefined, best: number) =>
+  rating !== undefined && rating > 0 && rating >= WARM * best;
+
+const bestOf = (ratings: Iterable<number | undefined>) => {
+  let top: number | undefined;
+  for (const rating of ratings) if (rating !== undefined && (top === undefined || rating > top)) top = rating;
+  return top;
+};
+
+/** What the read knows when it decides whether a walk goes on from a
+ *  part: the part's rating, the best rating the read has seen, and the
+ *  best ratings among the parts it has rated two either side of the part
+ *  in its session and in the rest of its topic segment. */
+export interface WalkFacts {
+  readonly rating: number | undefined;
+  readonly best: number;
+  readonly neighbours: number | undefined;
+  readonly segment: number | undefined;
+}
+
+/** What the read knows when it decides whether a topic segment opens:
+ *  the best ratings of its rated person parts and of all its rated parts,
+ *  the best rating the read has seen, and whether one of each search
+ *  lane's top parts sits in it. */
+export interface OpenFacts {
+  readonly person: number | undefined;
+  readonly rating: number | undefined;
+  readonly best: number;
+  readonly laneHead: boolean;
+}
+
+/** What the read knows after a request: each request's new parts'
+ *  ratings and the best rating the read had seen when it ended (so the
+ *  read's depth is their count), and whether selection keeps one of the
+ *  parts read so far. */
+export interface StopFacts {
+  readonly requests: readonly { readonly ratings: readonly (number | undefined)[]; readonly best: number }[];
+  readonly kept: boolean;
+}
+
+/** Whether a walk goes on from a part: rings around a warm person part,
+ *  the next ring of a walk, and where a segment's walks start. Measured
+ *  form: the part's own rating is warm. A part's neighbours and its
+ *  segment predicted this better on held-out tasks, from fits on four
+ *  tasks, so they are read here and not yet used. */
+export function walksOn(facts: WalkFacts): boolean {
+  return warmAt(facts.rating, facts.best);
+}
+
+/** Whether a topic segment opens. Measured form: it holds a warm person
+ *  part, or one of each search lane's top parts. */
+export function opens(facts: OpenFacts): boolean {
+  return facts.laneHead || warmAt(facts.person, facts.best);
+}
+
+/** Whether the read stops after its last request. Measured form: the
+ *  request added at most `FALL` times the most warm parts any earlier
+ *  request added, each request's warm parts counted against the best
+ *  rating when it ended; never before a warm part, and never before
+ *  selection keeps a part (`kept`). Keeping itself is selection's
+ *  decision: its bar, which pick hands the read as `kept`. */
+export function stops(facts: StopFacts): boolean {
+  const added = facts.requests.map(({ ratings, best }) => ratings.filter((rating) => warmAt(rating, best)).length);
+  return added.some((count) => count > 0) && added.length > 1
+    && added.at(-1)! <= FALL * Math.max(...added.slice(0, -1)) && facts.kept;
+}
+
 /** The read for coding-agent transcripts: the parts of chat sources
  *  scored with the agent question set. It reads the person's own parts
  *  in the keyword lanes' ranking, a request at a time, and rings of
@@ -206,16 +275,19 @@ export async function chatRead(input: ChatReadInput): Promise<ChatReadResult> {
     await input.rate(fresh);
     for (const part of fresh) best = Math.max(best, score(part) ?? 0);
   };
-  const warm = (part: MemoryCandidate) => {
-    const value = score(part);
-    return value !== undefined && value > 0 && value >= WARM * best;
-  };
   const person = (part: MemoryCandidate) => part.chat?.author === 'person';
+  const rated = (part: MemoryCandidate) => seen.has(part) ? score(part) : undefined;
+  // A walk decision about a part, with the facts the read has about it.
+  const walkable = (part: MemoryCandidate) => {
+    const { session, at } = where.get(part)!;
+    return walksOn({ rating: score(part), best,
+      neighbours: bestOf([session[at - 2], session[at - 1], session[at + 1], session[at + 2]]
+        .map((next) => next === undefined ? undefined : rated(next))),
+      segment: bestOf(segmentOf.get(part)!.map((next) => next === part ? undefined : rated(next))) });
+  };
 
-  // New warm parts per request; the stop compares the last with the most before it.
-  const added: number[] = [];
-  const fell = () => added.some((count) => count > 0) && added.length > 1
-    && added.at(-1)! <= FALL * Math.max(...added.slice(0, -1)) && input.kept(read);
+  // Each request's new parts' ratings and the best rating when it ended.
+  const log: { ratings: (number | undefined)[]; best: number }[] = [];
   const request = async (batch: readonly MemoryCandidate[], rings: boolean) => {
     const before = read.length;
     await rate(batch);
@@ -224,11 +296,11 @@ export async function chatRead(input: ChatReadInput): Promise<ChatReadResult> {
         const { session, at } = where.get(part)!;
         return session[at + 1];
       };
-      const warmPeople = batch.filter(warm);
+      const warmPeople = batch.filter(walkable);
       await rate(warmPeople.flatMap((part) => reply(part) ?? []));
       let hot = warmPeople.filter((part) => {
         const next = reply(part);
-        return next !== undefined && warm(next);
+        return next !== undefined && walkable(next);
       });
       for (let width = 2; hot.length > 0 && !stopped(); width += 1) {
         const ring = hot.map((part) => {
@@ -237,10 +309,10 @@ export async function chatRead(input: ChatReadInput): Promise<ChatReadResult> {
             .filter((next): next is MemoryCandidate => next !== undefined && !seen.has(next));
         });
         await rate(ring.flat());
-        hot = hot.filter((_, index) => ring[index]!.some(warm));
+        hot = hot.filter((_, index) => ring[index]!.some(walkable));
       }
     }
-    added.push(read.slice(before).filter(warm).length);
+    log.push({ ratings: read.slice(before).map(score), best });
   };
 
   let ended: ChatReadResult['ended'] = 'order';
@@ -250,21 +322,23 @@ export async function chatRead(input: ChatReadInput): Promise<ChatReadResult> {
     for (let at = 0; at < parts.length && ended === 'order'; at += STEP) {
       await request(parts.slice(at, at + STEP), rings);
       if (stopped()) ended = 'stopped';
-      else if (fell()) ended = 'fall';
+      else if (stops({ requests: log, kept: input.kept(read) })) ended = 'fall';
     }
   }
-  const requests = added.length;
+  const requests = log.length;
   if (ended === 'stopped') return { read, requests, segments: 0, ended };
 
   // The segments to open, in the order's ranking of their best part.
-  const opened = new Set<readonly MemoryCandidate[]>();
-  for (const part of read) if (person(part) && warm(part)) opened.add(segmentOf.get(part)!);
+  const heads = new Set<readonly MemoryCandidate[]>();
   for (const lane of input.lanes) {
-    for (const part of lane.slice(0, HEADS)) if (members.has(part)) opened.add(segmentOf.get(part)!);
+    for (const part of lane.slice(0, HEADS)) if (members.has(part)) heads.add(segmentOf.get(part)!);
   }
+  const opened = [...new Set([...read.map((part) => segmentOf.get(part)!), ...heads])].filter((segment) => opens({
+    person: bestOf(segment.map((part) => person(part) ? rated(part) : undefined)),
+    rating: bestOf(segment.map(rated)), best, laneHead: heads.has(segment) }));
   const first = (segment: readonly MemoryCandidate[]) =>
     segment.reduce((lowest, part) => Math.min(lowest, place.get(part)!), Number.POSITIVE_INFINITY);
-  const segments = [...opened].sort((left, right) => first(left) - first(right));
+  const segments = opened.sort((left, right) => first(left) - first(right));
   await rate(segments.flatMap((segment) =>
     [...segment].sort((left, right) => place.get(left)! - place.get(right)!).slice(0, STARTS)));
   // A walk from every warm part of every opened segment. The walks
@@ -273,13 +347,13 @@ export async function chatRead(input: ChatReadInput): Promise<ChatReadResult> {
   // sum. A walk ends at the segment's edges or after a ring with no warm
   // part.
   let walks = segments.flatMap((segment) => segment.flatMap((part, at) =>
-    seen.has(part) && warm(part) ? [{ segment, at, width: 1 }] : []));
+    seen.has(part) && walkable(part) ? [{ segment, at, width: 1 }] : []));
   while (walks.length > 0 && !stopped()) {
     const rings = walks.map(({ segment, at, width }) =>
       [segment[at - width], segment[at + width]].filter((part) => part !== undefined));
     await rate(rings.flat());
     walks = walks.flatMap((walk, index) =>
-      rings[index]!.some(warm) ? [{ ...walk, width: walk.width + 1 }] : []);
+      rings[index]!.some(walkable) ? [{ ...walk, width: walk.width + 1 }] : []);
   }
   return { read, requests, segments: segments.length, ended: stopped() ? 'stopped' : ended };
 }
