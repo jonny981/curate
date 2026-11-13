@@ -271,9 +271,13 @@ export async function chatRead(input: ChatReadInput): Promise<ChatReadResult> {
     if (stopped()) return;
     const fresh = [...new Set(parts)].filter((part) => !seen.has(part));
     if (fresh.length === 0) return;
-    for (const part of fresh) { seen.add(part); read.push(part); }
+    for (const part of fresh) seen.add(part);
     await input.rate(fresh);
-    for (const part of fresh) best = Math.max(best, score(part) ?? 0);
+    // A stopping dial (a batch or time limit, a cancellation) that ended
+    // the call during the request leaves the parts it never rated unread.
+    const done = stopped() ? fresh.filter((part) => score(part) !== undefined) : fresh;
+    read.push(...done);
+    for (const part of done) best = Math.max(best, score(part) ?? 0);
   };
   const person = (part: MemoryCandidate) => part.chat?.author === 'person';
   const rated = (part: MemoryCandidate) => seen.has(part) ? score(part) : undefined;

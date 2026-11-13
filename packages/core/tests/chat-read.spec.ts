@@ -313,3 +313,44 @@ describe('the topic split', () => {
     expect(topicShifts(texts.slice(0, 19))).toEqual([]);
   });
 });
+
+describe('the chat read under a caller\'s limits', () => {
+  // One person part per session, each ranked in the one lane, and every
+  // part warm: only a limit can end the read early.
+  const parts = Array.from({ length: 336 }, (_, index) => part(`s${index}`, 1, 'person', { ranks: [index] }));
+  const warm = Object.fromEntries(parts.map((item) => [item.id, 0.9]));
+
+  it('reaches only the parts a candidate limit admits', async () => {
+    const limited = { maxCandidates: 1 };
+    const own = rater(warm);
+    const read = await pick(parts, { task, decide: own.decide, ...agentRead, limits: limited });
+    const plain = rater(warm);
+    await pick(parts, { task, decide: plain.decide, sourceKinds: chatKind, modesBySource: modesOf({ chat: agentSet }),
+      limits: limited });
+    expect(own.asked.flat()).toEqual(plain.asked.flat());
+    expect(own.asked.flat()).toHaveLength(1);
+    expect(read.selected).toHaveLength(1);
+    expect(read.record.candidates.filter((entry) => entry.status === 'unassessed')
+      .every((entry) => entry.status === 'unassessed' && entry.reason === 'limits')).toBe(true);
+  });
+
+  it.each([
+    ['a batch limit', { maxPerBatch: 2, maxBatches: 1 }, undefined, 2, 'limits'],
+    ['a cancellation', { maxPerBatch: 2, maxInFlight: 1 }, idOf('s2', 1), 4, 'cancelled'],
+    ['a time limit', { maxPerBatch: 2, maxElapsedMs: 20 }, undefined, 0, 'time'],
+  ] as const)('counts only the parts it rated when %s ends a request', async (_name, limits, cancelAt, rated, ended) => {
+    const controller = new AbortController();
+    const asked: string[] = [];
+    const decide: PickDecide = async ({ questions }) => {
+      if (questions.some((question) => question.id === cancelAt)) controller.abort();
+      if (ended === 'time') await new Promise((resolve) => setTimeout(resolve, 200));
+      asked.push(...questions.map((question) => question.id));
+      return Object.fromEntries(questions.map((question) => [question.key, { status: 'answered', probability: 0.9 }]));
+    };
+    const read = await pick(parts, { task, decide, ...agentRead, limits, signal: controller.signal });
+    expect(read.record.pick?.chatRead).toEqual({ requests: 1, segments: 0, rated, unread: 336 - rated, ended });
+    expect(read.record.candidates.filter((entry) => entry.status === 'selected')).toHaveLength(rated);
+    expect(read.record.candidates.filter((entry) => entry.status === 'unassessed')
+      .every((entry) => entry.status === 'unassessed' && entry.reason === ended)).toBe(true);
+  });
+});

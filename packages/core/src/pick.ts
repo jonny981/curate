@@ -1860,6 +1860,10 @@ export async function pick(
   // order: the decide feed follows it.
   const insideDepth = new Set<MemoryCandidate>();
   const insideOrder: MemoryCandidate[] = [];
+  // With a caller's candidate limit, the parts some lane's slice
+  // admitted: a mode's own read reaches no other part, so the limit
+  // holds for it as it holds for the ranked read.
+  let limitAdmits: ((candidate: MemoryCandidate) => boolean) | undefined;
   // Each fused-order member's place score, for the label lane's reorder.
   const fusedScore = new Map<MemoryCandidate, number>();
   if (fused) {
@@ -1913,6 +1917,7 @@ export async function pick(
     });
     const permitted = (candidate: MemoryCandidate) =>
       heldByLane.some((held) => held.has(candidate)) || windowed(candidate);
+    if (Number.isFinite(limits.maxCandidates)) limitAdmits = permitted;
     for (const candidate of queue) {
       if (candidate.role !== 'reference' || !permitted(candidate)) continue;
       let score = meaningPlace.get(candidate) ?? 0;
@@ -2969,7 +2974,8 @@ export async function pick(
       candidate.poolOnly !== true && (candidate.searchRanks === undefined || candidate.searchRanks[lane] != null)),
     new Map(), lane, options.ranking));
     for (const read of ownReads) {
-      const parts = queue.filter((candidate) => candidate.role === 'reference' && readOf(candidate) === read);
+      const parts = queue.filter((candidate) => candidate.role === 'reference' && readOf(candidate) === read
+        && (limitAdmits === undefined || limitAdmits(candidate)));
       const share = new Map(parts.map((candidate) => [candidate, (candidate.searchRanks ?? [])
         .reduce<number>((best, rank, index) => rank === null || !keyword(candidate, index) ? best
           : Math.max(best, (laneLength.get(index)! - rank) / laneLength.get(index)!), 0)] as const));
