@@ -30,6 +30,7 @@ export const EXPECTED_FILES = {
     'package/README.md',
     'package/dist/chunk-*.js',
     'package/dist/chunk-*.js.map',
+    'package/dist/chat-read.d.ts',
     'package/dist/curate.d.ts',
     'package/dist/decisions.d.ts',
     'package/dist/git.d.ts',

@@ -143,7 +143,12 @@ describe('curate command input', () => {
     expect(() => parseSources({ sources: [{ type: 'markdown', path: 'documents' }], [key]: 150 })).toThrow('no count limit');
   });
 
-  it.each(['userFirst', 'recentFirst'])('requires a boolean for %s', (key) => {
+  it('rejects the removed userFirst', () => {
+    expect(() => parseSources({ sources: [{ type: 'markdown', path: 'documents' }], userFirst: false }))
+      .toThrow("a chat source's read starts from the person's own parts itself");
+  });
+
+  it.each(['recentFirst'])('requires a boolean for %s', (key) => {
     expect(() => parseSources({ sources: [{ type: 'markdown', path: 'documents' }], [key]: 'true' })).toThrow();
     expect(parseSources({ sources: [{ type: 'markdown', path: 'documents' }], [key]: false })[key]).toBe(false);
   });
@@ -565,8 +570,6 @@ it('sends every part when whole lanes are requested, including short-word correc
   expect(asked).toHaveLength(302 * CHAT_CASCADE.questions.length);
   expect(picked.record.levers.sources[source.id].questions).toEqual(CHAT_CASCADE);
   expect(asked).toContain('We need to keep everything.');
-  expect((await searchSource(source, searches, [], directory).read({ task: 'We need orchard evidence', wholeLanes: true })).candidates[0].text)
-    .toBe('We need to keep everything.');
   expect(asked).toContain('Breakfast pancakes.');
   expect(new Set(asked).size).toBe(302);
   expect(picked.selected).toHaveLength(302);
@@ -797,7 +800,7 @@ it('does not admit unrelated items just because recency or inbound links are pos
   expect((await searchSource(source, searches, [], directory).read({ task: 'orchard' })).candidates).toEqual([]);
 });
 
-it('orders user messages first, then keyword score, then newer matching sessions at equal scores', () => {
+it('orders by keyword score, then newer matching sessions at equal scores, whoever wrote the part', () => {
   const candidate = (id: string, role: 'user' | 'assistant', sessionId: string, date: string, score: number): MemoryCandidate => ({
     sourceId: 'chat', id, role: 'reference', title: '', text: '',
     chat: { provider: 'claude-code', role, sessionId }, date: { value: date, meaning: 'recorded' }, signals: { keyword: score },
@@ -809,18 +812,15 @@ it('orders user messages first, then keyword score, then newer matching sessions
     candidate('strong-user', 'user', 'old', '2026-01-01', 1),
   ];
   expect(rankMatches(items).map((item: MemoryCandidate) => item.id)).toEqual([
-    'strong-user', 'z-new-user', 'a-old-user', 'assistant',
+    'assistant', 'strong-user', 'z-new-user', 'a-old-user',
   ]);
   expect(rankMatches(items, { recentFirst: false }).map((item: MemoryCandidate) => item.id)).toEqual([
-    'strong-user', 'a-old-user', 'z-new-user', 'assistant',
-  ]);
-  expect(rankMatches(items, { userFirst: false }).map((item: MemoryCandidate) => item.id)).toEqual([
-    'assistant', 'strong-user', 'z-new-user', 'a-old-user',
+    'assistant', 'strong-user', 'a-old-user', 'z-new-user',
   ]);
   expect(items.every((item) => !('rankOrder' in item.signals))).toBe(true);
 });
 
-it('orders the person\'s parts before other user-role parts', () => {
+it('keeps the person\'s parts in score order', () => {
   const candidate = (id: string, role: 'user' | 'assistant', author: 'person' | 'agent' | 'unmarked', score: number): MemoryCandidate => ({
     sourceId: 'chat', id, role: 'reference', title: '', text: '',
     chat: { provider: 'claude-code', role, sessionId: 'one', author }, date: { value: '2026-01-01', meaning: 'recorded' }, signals: { keyword: score },
@@ -831,8 +831,7 @@ it('orders the person\'s parts before other user-role parts', () => {
     candidate('unmarked', 'user', 'unmarked', 4),
     candidate('person', 'user', 'person', 0),
   ];
-  expect(rankMatches(items).map((item: MemoryCandidate) => item.id)).toEqual(['person', 'agent-brief', 'unmarked', 'assistant']);
-  expect(rankMatches(items, { userFirst: false }).map((item: MemoryCandidate) => item.id)).toEqual(['assistant', 'agent-brief', 'unmarked', 'person']);
+  expect(rankMatches(items).map((item: MemoryCandidate) => item.id)).toEqual(['assistant', 'agent-brief', 'unmarked', 'person']);
 });
 
 describe('decision answers', () => {

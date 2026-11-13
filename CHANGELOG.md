@@ -85,6 +85,19 @@ What each part does:
   waves, and what ended the read and why. `pick.feed: { order: 'combsum' }`
   orders the feed by summed lane places, with an optional `size` that bounds
   the read.
+- **Coding-agent transcripts are read from the person's own messages
+  outward.** A chat source scored with the agent question set, `chat()`'s
+  default, gets its own read: the person's parts in the keyword lanes'
+  ranking, 112 a request, with rings of neighbours around those rated
+  warm; a stop when a request adds at most 0.3 times the most new warm
+  parts an earlier request added, never before the read has kept a part;
+  then the topic segments that hold a warm person part or one of each
+  search lane's top 10 parts, walked out from their warm parts, every
+  walk a ring a round together. `stopWhenCold` acts on every other source.
+  Live on one person's ~116,000-part history it found 51 of 56 known
+  answers in 5,900 rated parts, 1.84% of the history. The record's
+  `pick.chatRead` says how far it read and what ended it, and the skill's
+  chat searches keep their match order, so `userFirst` is gone.
 - **Settings by source.** Each source carries its own settings, so a setting
   chosen for one kind of history never changes what Curate picks from
   another: `rare` (follow strong parts by their rare words to parts the first

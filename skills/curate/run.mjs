@@ -205,7 +205,10 @@ export function parseSources(value, base = process.cwd()) {
   if (value.maxCandidates !== undefined || value.userMaxCandidates !== undefined) {
     throw new Error('Remove maxCandidates and userMaxCandidates; the decision feed has no count limit.');
   }
-  for (const key of ['userFirst', 'recentFirst', 'records', 'scope']) {
+  if (value.userFirst !== undefined) {
+    throw new Error("Remove userFirst; a chat source's read starts from the person's own parts itself.");
+  }
+  for (const key of ['recentFirst', 'records', 'scope']) {
     if (value[key] !== undefined && typeof value[key] !== 'boolean') throw new Error(`${key} must be a boolean.`);
   }
   if (value.embeddingModel !== undefined && (typeof value.embeddingModel !== 'string' || !value.embeddingModel.trim())) {
@@ -655,10 +658,10 @@ export function rankMatches(candidates, settings = {}) {
     const date = Date.parse(candidate.date?.value ?? '') || 0;
     sessions.set(candidate.chat.sessionId, Math.max(sessions.get(candidate.chat.sessionId) ?? 0, date));
   }
-  const userRank = (candidate) => candidate.chat?.author === 'person' ? 2 : Number(candidate.chat?.role === 'user');
+  // A chat source's read starts from the person's own parts itself, so
+  // a lane keeps its match order: its top parts lead the read elsewhere.
   const sorted = [...candidates].sort((a, b) =>
-    (settings.userFirst === false ? 0 : userRank(b) - userRank(a))
-    || score(b) - score(a)
+    score(b) - score(a)
     || (settings.recentFirst === false || !a.chat || !b.chat ? 0
       : sessions.get(b.chat.sessionId) - sessions.get(a.chat.sessionId)
         || (Date.parse(b.date?.value ?? '') || 0) - (Date.parse(a.date?.value ?? '') || 0))

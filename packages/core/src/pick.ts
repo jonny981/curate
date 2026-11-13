@@ -13,6 +13,7 @@ import { judgmentFacts, judgmentPopulation, modelScore, type JudgmentPopulation 
 import {
   ANSWER_TYPES, classifyTask, ROUTE_QUESTIONS, routeOptions, type AnswerType, type RouteKey, type RouteOption,
 } from './task.js';
+import { chatRead } from './chat-read.js';
 import type { LeverStates } from './levers.js';
 import type { StoredIndexReport } from './stored-index.js';
 import { WRITTEN_QUESTION_KEYS, checkCascade, checkPickOptions, checkWriteQuestions, findTaskNames } from './options.js';
@@ -278,8 +279,11 @@ export type PickEntryStatus =
        *  label gate on, a reference part the
        *  keyword lanes never held whose stored or answered labels
        *  cleared no needed kind. A part a lane limit cut or a stop
-       *  left unlabelled keeps that reason instead. */
-      readonly reason: 'limits' | 'time' | 'cancelled' | 'document' | 'error' | 'gate' | 'pick' | 'stopWhenCold' | 'feed' };
+       *  left unlabelled keeps that reason instead. 'chatRead': a chat
+       *  part of the order that the chat read stopped before reaching
+       *  (see `pick.chatRead`). */
+      readonly reason: 'limits' | 'time' | 'cancelled' | 'document' | 'error' | 'gate' | 'pick' | 'stopWhenCold' | 'feed'
+        | 'chatRead' };
 
 export type PickRecordEntry = {
   readonly sourceId: string;
@@ -663,6 +667,30 @@ export interface PickRecord {
       readonly asked: number;
       readonly added: number;
     };
+    /** Present when the chat read ran: on the fused order, when it held
+     *  parts of a chat source (`kind` 'chat') scored with the agent
+     *  question set, the one set with a `person` weight (coding-agent
+     *  transcripts). The read rates the person's own parts in the
+     *  keyword lanes' ranking, 112 a request, with rings of neighbours
+     *  around each warm one, then the rest of the order the same way. It stops after a request that adds at most
+     *  0.3 times the most new warm parts an earlier request added, then
+     *  opens the topic segments that hold a warm person part or one of
+     *  each search lane's top 10 parts and walks out from their warm
+     *  parts, the walks of every segment advancing a ring a round
+     *  together. Warm means rated at least 0.1 times the best rating the
+     *  read has seen, each rating taken without the question set's
+     *  `person` weight. `requests` counts the requests read before the
+     *  stop, `segments` the segments opened, `rated` the parts it
+     *  rated, `unread` the chat parts of the order it never reached,
+     *  and `ended` what ended it: 'fall', 'order' when the order ran out
+     *  first, or the stopping dial. */
+    readonly chatRead?: {
+      readonly requests: number;
+      readonly segments: number;
+      readonly rated: number;
+      readonly unread: number;
+      readonly ended: 'fall' | 'order' | 'limits' | 'time' | 'cancelled' | 'error';
+    };
   };
   /** The tag sets every kept reference answered, when supplied. */
   readonly tags?: readonly PickTagSet[];
@@ -841,7 +869,10 @@ export interface PickOptions {
    *  kept 98.5%, 95.2% and 100% of the evidence they found. On the
    *  published LoCoMo and LongMemEval runs they cost about 5 to 12 of
    *  LoCoMo's 1,540 right answers and stayed inside the noise on
-   *  LongMemEval, for $0.0012 and $0.0067 saved a question. */
+   *  LongMemEval, for $0.0012 and $0.0067 saved a question. A chat
+   *  source scored with the agent question set is not read this way:
+   *  the chat read reads it (see `pick.chatRead`), and that read's own
+   *  stop decides, with the same wait for a kept part. */
   readonly stopWhenCold?: false | {
     /** Stop when a batch's best decision score is under this. */
     readonly floor?: number;
@@ -1265,6 +1296,8 @@ interface EffectInput {
     readonly kept: number;
     readonly orderBySource: ReadonlyMap<string, number>;
     readonly ratedBySource: ReadonlyMap<string, number>;
+    /** The sources the chat read read, whose own stop decided. */
+    readonly chatSources: ReadonlySet<string>;
   } | undefined;
   readonly reads: Readonly<Record<string, PickSourceRead>>;
   /** `taskPeriod` was on, the period the task named, and which parts it brought in. */
@@ -1589,7 +1622,10 @@ function settingEffects(input: EffectInput): PickSettingEffect[] {
           : `feed on ${id}: ${cut} kept every one of ${count(ranked, 'ranked part')}, so it left 0 undecided.` });
     }
 
-    if (input.stopWhenCold !== undefined) {
+    if (input.stopWhenCold?.chatSources.has(id) === true) {
+      effects.push({ setting: 'stopWhenCold', source: id, actedOn: 0, added: 0, dropped: null,
+        summary: `stopWhenCold on ${id}: the chat read read this source's parts, and its own stop decided how far.` });
+    } else if (input.stopWhenCold !== undefined) {
       const { floor, share, cold, ended, kept } = input.stopWhenCold;
       const order = input.stopWhenCold.orderBySource.get(id) ?? 0;
       const read = input.stopWhenCold.ratedBySource.get(id) ?? 0;
@@ -3000,6 +3036,17 @@ export async function pick(
   };
 
   const representatives = new Map<MemoryCandidate, MemoryCandidate>();
+  // Under the fused order (`everyRanked` unset) the parts of a chat
+  // source scored with the agent question set leave the feed for the
+  // chat read below; every other part keeps the read that follows. The
+  // agent set is the one question set that carries a `person` weight:
+  // the read was measured on coding-agent transcripts with it, and lost
+  // on other chat histories. `everyRanked` decides every ranked part,
+  // so it keeps the chat parts too.
+  const chatPart = (candidate: MemoryCandidate) => candidate.role === 'reference' && kindFor(candidate) === 'chat'
+    && cascadeFor(candidate)?.person !== undefined;
+  const chatOrder = !fused ? [] : feed.filter(chatPart);
+  if (chatOrder.length > 0) feed = feed.filter((candidate) => !chatPart(candidate));
   if (!stop && options.bestPartFirst) {
     const terms = [...new Set(options.task.toLowerCase().split(/[^a-z0-9]+/).filter((word) => word.length > 2))];
     const matches = (candidate: MemoryCandidate) => {
@@ -3037,6 +3084,60 @@ export async function pick(
   if (main.unread.size > 0) {
     feed = feed.filter((candidate) => !main.unread.has(candidate));
     for (const candidate of main.unread) statuses.set(candidate, { status: 'unassessed', reason: 'stopWhenCold' });
+  }
+
+  // The chat read starts from the chat parts of the feed's order and can
+  // reach any chat part the pick holds; its own stop decides how far it
+  // reads. The parts it rated join the feed, and a chat part of the
+  // order it never reached records why.
+  let chatRecord: NonNullable<PickRecord['pick']>['chatRead'];
+  if (chatOrder.length > 0) {
+    // The keyword lanes' ranking: a part's best share of a keyword lane
+    // it holds, as the fused order places it without its meaning place.
+    const keyword = (candidate: MemoryCandidate, index: number) =>
+      options.readsBySource?.[candidate.sourceId]?.lanes[index] !== 'meaning';
+    const laneLength = new Map<number, number>();
+    for (const candidate of queue) {
+      candidate.searchRanks?.forEach((rank, index) => {
+        if (rank !== null && keyword(candidate, index)) laneLength.set(index, (laneLength.get(index) ?? 0) + 1);
+      });
+    }
+    const parts = queue.filter(chatPart);
+    const share = new Map(parts.map((candidate) => [candidate, (candidate.searchRanks ?? [])
+      .reduce<number>((best, rank, index) => rank === null || !keyword(candidate, index) ? best
+        : Math.max(best, (laneLength.get(index)! - rank) / laneLength.get(index)!), 0)] as const));
+    const chat = await chatRead({
+      parts, order: chatOrder,
+      byKeyword: [...share.keys()].filter((candidate) => share.get(candidate)! > 0)
+        .sort((left, right) => share.get(right)! - share.get(left)!),
+      // Each search lane's parts in lane order across the sources.
+      lanes: Array.from({ length: lanes }, (_, lane) => rankAndInterleave(references.filter((candidate) =>
+        candidate.poolOnly !== true && (candidate.searchRanks === undefined || candidate.searchRanks[lane] != null)),
+      new Map(), lane, options.ranking)),
+      rate: evaluate,
+      // The read's levels were measured on ratings without the set's
+      // `person` weight, which lifts nearly every person part over them,
+      // so the read judges a part on its rating without that weight;
+      // selection still keeps it on the weighted score.
+      score: (candidate) => {
+        const answer = combined.get(candidate);
+        if (answer?.status !== 'answered' || !('probability' in answer)) return undefined;
+        const cascade = cascadeFor(candidate);
+        const person = candidate.chat?.author === 'person' && cascade?.model === undefined ? cascade?.person ?? 0 : 0;
+        return person === 0 ? answer.probability
+          : 1 / (1 + Math.exp(person - Math.log(answer.probability / (1 - answer.probability))));
+      },
+      // Kept on the bar the selection pass keeps a part at, with the
+      // feed's answered count so far, as the rating stop waits for one.
+      kept: (some) => some.some(keepsAt(answeredReferences([...feed, ...some]))),
+      stopped: () => stop !== undefined,
+    });
+    feed = feed.concat(chat.read);
+    const reached = new Set(chat.read);
+    const unread = chatOrder.filter((candidate) => !reached.has(candidate));
+    for (const candidate of unread) statuses.set(candidate, { status: 'unassessed', reason: stop ?? 'chatRead' });
+    chatRecord = { requests: chat.requests, segments: chat.segments, rated: chat.read.length, unread: unread.length,
+      ended: chat.ended === 'stopped' ? stop! : chat.ended };
   }
 
   // The reference bar may rise with the decided set's size, so the
@@ -3298,11 +3399,12 @@ export async function pick(
     } }),
     ...(stopRule === undefined ? {} : { stopWhenCold: {
       ...stopRule, waves: main.waves, batches: main.batches, rated: main.rated.size,
-      unread: insideOrder.length - main.rated.size, kept: readKept, ended: readEnded!,
+      unread: insideOrder.length - chatOrder.length - main.rated.size, kept: readKept, ended: readEnded!,
       ...(main.cold === undefined ? {} : { cold: main.cold }),
     } }),
     ranking: feedFused || fused ? 'fusion' : 'keyword',
     ...(rareResult === undefined ? {} : { rare: rareResult }),
+    ...(chatRecord === undefined ? {} : { chatRead: chatRecord }),
   };
 
   const bySource = (parts: Iterable<MemoryCandidate>) => {
@@ -3324,12 +3426,15 @@ export async function pick(
         : []),
       ...(main.unread.size > 0 ? ['a stop when the ratings went cold (stopWhenCold)'] : []),
       ...(feedStop === undefined ? [] : [`a stop (${feedStop})`]),
+      ...(chatRecord?.ended === 'fall' && chatRecord.unread > 0
+        ? ["a stop when the chat read's new warm parts fell (chatRead)"] : []),
     ],
     fused,
     feedOption: options.feed,
     stopWhenCold: stopRule === undefined ? undefined : {
-      ...stopRule, cold: main.cold, ended: readEnded!, kept: readKept, orderBySource: bySource(insideOrder),
-      ratedBySource: bySource(main.rated) },
+      ...stopRule, cold: main.cold, ended: readEnded!, kept: readKept,
+      orderBySource: bySource(insideOrder.filter((candidate) => !chatPart(candidate))),
+      ratedBySource: bySource(main.rated), chatSources: new Set(chatOrder.map((candidate) => candidate.sourceId)) },
     rareHeld,
     typedSources: new Map(Object.entries(options.questionsBySource ?? {}).flatMap(([id, set]) =>
       (set.typed?.length ?? 0) > 0 ? [[id, set.typed!.some((q) => neededTypes.has(q.answerType))] as const] : [])),

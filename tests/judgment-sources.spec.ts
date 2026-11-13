@@ -105,8 +105,10 @@ describe('decision request bodies for a judgment set', () => {
       read: async () => ({ status: 'read' as const, complete: true,
         candidates: [{ ...item, sourceId: id }] }),
     });
+    // Every ranked part is decided, so both items can share a request: on
+    // the fused order the agent set's part has the chat read's own requests.
     await pickFromSources([readers(FITTED, 'anon'), readers(AGENT_CHAT_CASCADE, 'named')], { task: 'the task' },
-      { task: 'the task', decide: jev({ apiKey: 'test' }) });
+      { task: 'the task', decide: jev({ apiKey: 'test' }), everyRanked: true });
 
     // The first body holds both items: the judgment set's anonymous
     // item renders as text alone, the default set's identified item as
