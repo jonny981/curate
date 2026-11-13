@@ -221,7 +221,7 @@ const DATED: PickCascade = {
     true: 'It gives the date or time of the decision', false: 'It gives no date for the decision', weight: 1 }],
 };
 const datedGit = () =>
-  historySource({ reader: fixtureSource('git', parts('git', 'gitword')), ...gitSettings, questions: DATED });
+  historySource({ reader: fixtureSource('git', parts('git', 'gitword')), ...gitSettings, mode: { ...gitSettings.mode!, questions: DATED } });
 
 describe('a typed question is asked only when the task needs its type', () => {
   const run = async (date: number) => {
@@ -251,7 +251,7 @@ describe('a typed question is asked only when the task needs its type', () => {
 
   it('records the typed entry for a source that returned no part', async () => {
     const empty = () =>
-      historySource({ reader: fixtureSource('git', []), ...gitSettings, questions: DATED });
+      historySource({ reader: fixtureSource('git', []), ...gitSettings, mode: { ...gitSettings.mode!, questions: DATED } });
     const effect = async (date: number) => {
       freshStore();
       const picked = await pickFromSources([empty(), chat(false)], { task }, { task, decide: typed({ date }), answerTypes: true });
@@ -270,7 +270,7 @@ describe('a typed answer moves a part across its bar', () => {
   it('keeps a part just below the bar and drops one just above it', async () => {
     // One question at bias logit(bar): a part's answer of sigmoid(-0.1) leaves it just below the bar, sigmoid(0.1)
     // just above; the typed answer then adds about +2.94 (0.95) or -2.94 (0.05).
-    const bar = gitSettings.bar;
+    const bar = gitSettings.mode!.bar!;
     const sigmoid = (z: number) => 1 / (1 + Math.exp(-z));
     const ONE: PickCascade = {
       bias: Math.log(bar / (1 - bar)),
@@ -279,7 +279,7 @@ describe('a typed answer moves a part across its bar', () => {
     };
     const pool: MemoryCandidate[] = ['below', 'above'].map((name, i) => ({ sourceId: 'git', id: `git#${name}`,
       title: name, role: 'reference', text: `deploy billing ${name}`, signals: { keyword: 1 - i / 10 } }));
-    const source = historySource({ reader: fixtureSource('git', pool), ...gitSettings, questions: ONE });
+    const source = historySource({ reader: fixtureSource('git', pool), ...gitSettings, mode: { ...gitSettings.mode!, questions: ONE } });
     const answer = (q: PickQuestion) => q.questionKey === 'about' ? sigmoid(q.id === 'git#below' ? -0.1 : 0.1)
       : q.questionKey === 'when-decided' ? (q.id === 'git#below' ? 0.95 : 0.05) : undefined;
     freshStore();
@@ -307,7 +307,7 @@ describe('settings that would sit unread throw', () => {
     for (const typed of [[{ ...question!, key: 'current' }], [{ ...question!, weight: Number.NaN }],
       [{ ...question!, answerType: 'colour' }]]) {
       expect(() => historySource({ reader: fixtureSource('git', []), ...gitSettings,
-        questions: { ...GIT_HISTORY_CASCADE, typed } as PickCascade }))
+        mode: { ...gitSettings.mode!, questions: { ...GIT_HISTORY_CASCADE, typed } as PickCascade } }))
         .toThrow('a question set\'s typed questions need keys unique across questions and typed, '
           + 'finite weights and a known answerType.');
     }

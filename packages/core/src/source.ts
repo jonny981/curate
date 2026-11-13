@@ -1,13 +1,14 @@
 import type {
-  CandidateSourceKind, MemoryCandidate, PickCascade, PickOptions, PickResult, PickSourceRead, SearchLaneOrigin,
+  CandidateSourceKind, MemoryCandidate, PickOptions, PickResult, PickSourceRead, SearchLaneOrigin,
 } from './pick.js';
 import { DEFAULT_MAX_QUESTION_TEXT, pick } from './pick.js';
 import { phraseCount, stripSearchInstructions } from './search.js';
 import { addMeaningRanks, type MeaningSearchOptions } from './meaning.js';
 import { cutLane, laneBend, laneScoreOf, type SearchLaneReport } from './lanes.js';
 import {
-  checkCascade, checkCascadeKeys, checkPickOptions, checkReadRequest, checkWriteQuestions, findTaskNames,
+  checkCascade, checkMode, checkPickOptions, checkReadRequest, checkWriteQuestions, findTaskNames,
 } from './options.js';
+import type { Mode } from './mode.js';
 import { LABEL_KINDS, type LabelKind } from './labels.js';
 import { datedIn, durationMs, taskMoment, taskPeriod, timeZoneOf, zonedIso, type TaskPeriod } from './time.js';
 import type { StoredIndexReport } from './stored-index.js';
@@ -270,10 +271,14 @@ export interface CandidateReadContext {
 export interface CandidateSource {
   /** Stable identity, recorded on every candidate and in PickRecord. */
   readonly id: string;
-  /** Optional content kind, recorded per source and used by tag sets keyed by kind. */
+  /** Optional content kind, recorded per source and used by tag sets
+   *  and kind lanes keyed by kind. */
   readonly kind?: CandidateSourceKind;
-  /** The decision questions asked of this source's reference parts; set by `historySource()`. */
-  readonly questions?: PickCascade;
+  /** How this source's parts are judged and read: the decision
+   *  questions asked of its reference parts, their keep bar and their
+   *  read; set by `historySource()`. Omitted: the built-in question for
+   *  each part's kind, the 0.0146 bar and the ranked read. */
+  readonly mode?: Mode;
   /** Kinds this source can add through the label lane. Omitted means none. */
   readonly labelKinds?: readonly LabelKind[];
   /** The label bar for this source's parts; set by `historySource()`.
@@ -281,9 +286,6 @@ export interface CandidateSource {
   readonly labelBar?: number;
   /** Open one exact-phrase lane per name the task names; set by `historySource()`. */
   readonly names?: boolean;
-  /** The decision-score bar for this source's reference parts: a part
-   *  scored at or above it is kept. Omitted means 0.0146. */
-  readonly bar?: number;
   /** The bar for this source's rule parts. Omitted means 0. */
   readonly ruleBar?: number;
   /** The decay half-life this source's Markdown parts rank with; set by `historySource()`. */
@@ -320,13 +322,13 @@ export interface HistorySettings {
    *  or more on that kind in the label lane. Absent means
    *  LABEL_LANE_BAR, 0.5. */
   readonly labelBar?: number;
-  /** The decision-score bar for this source's reference parts. */
-  readonly bar: number;
   /** The bar for this source's rule parts; absent means 0. */
   readonly ruleBar?: number;
-  /** The decision questions asked of this source's reference parts.
-   *  Absent: the built-in question for the part's kind. */
-  readonly questions?: PickCascade;
+  /** How this source's parts are judged and read: the decision
+   *  questions asked of its reference parts, the bar they are kept at,
+   *  and their read. Absent: the built-in question for each part's
+   *  kind, the 0.0146 bar and the ranked read. */
+  readonly mode?: Mode;
   /** Rank older notes lower, by their age at the task date. A duration
    *  such as '365 days': the age at which a note has lost half of the
    *  full decay. Absent or false: off. Markdown sources only. */
@@ -346,9 +348,11 @@ export interface HistorySettings {
  *  what `chat()`, `git()` or `markdown()` return, or your own. Spread a
  *  reader package's settings object to start from its tuned values. */
 export function historySource(config: { readonly reader: CandidateSource } & HistorySettings): CandidateSource {
-  const { reader, labels, labelBar, bar, ruleBar, questions, names, decay } = config;
-  checkCascadeKeys(questions, 'questions');
-  checkCascade(questions);
+  const { reader, labels, labelBar, ruleBar, mode, names, decay } = config;
+  if (mode !== undefined) {
+    checkMode(mode, 'mode');
+    checkCascade(mode.questions);
+  }
   if (labelBar !== undefined && (typeof labelBar !== 'number' || !Number.isFinite(labelBar) || labelBar < 0 || labelBar > 1)) {
     throw new TypeError('labelBar must be a number from 0 to 1.');
   }
@@ -356,13 +360,13 @@ export function historySource(config: { readonly reader: CandidateSource } & His
     if (reader.kind !== 'markdown') throw new TypeError('decay applies to Markdown sources only.');
     durationMs(decay?.halfLife, 'decay.halfLife');
   }
-  const { labelKinds: _labelKinds, labelBar: _labelBar, ruleBar: _ruleBar, questions: _questions, names: _names, decay: _decay,
+  const { labelKinds: _labelKinds, labelBar: _labelBar, ruleBar: _ruleBar, mode: _mode, names: _names, decay: _decay,
     ...rest } = reader;
   const labelKinds = labels === true ? LABEL_KINDS : labels === false ? [] : labels;
-  return { ...rest, bar, names,
+  return { ...rest, names,
     ...(labelKinds.length ? { labelKinds } : {}), ...(labelBar === undefined ? {} : { labelBar }),
     ...(ruleBar === undefined ? {} : { ruleBar }),
-    ...(questions === undefined ? {} : { questions }),
+    ...(mode === undefined ? {} : { mode }),
     ...(decay === undefined || decay === false ? {} : { decay: { halfLife: decay.halfLife } }) };
 }
 
@@ -1032,19 +1036,15 @@ export async function pickFromSources(
   const labelBarBySource: Record<string, number> = Object.fromEntries(
     sources.flatMap((source) => source.labelBar === undefined ? [] : [[source.id, source.labelBar]]),
   );
-  const barBySource: Record<string, number> = Object.fromEntries(
-    sources.flatMap((source) => source.bar === undefined ? [] : [[source.id, source.bar]]),
-  );
   const ruleBarBySource: Record<string, number> = Object.fromEntries(
     sources.flatMap((source) => source.ruleBar === undefined ? [] : [[source.id, source.ruleBar]]),
   );
   // No prototype, so a candidate's source id such as `__proto__` is stored as its own key.
-  const questionsBySource: Record<string, PickCascade> = Object.assign(Object.create(null), Object.fromEntries(
-    sources.flatMap((source) => source.questions === undefined ? [] : [[source.id, source.questions]]),
+  const modesBySource: Record<string, Mode> = Object.assign(Object.create(null), Object.fromEntries(
+    sources.flatMap((source) => source.mode === undefined ? [] : [[source.id, source.mode]]),
   ));
-  checkPickOptions({ ...options, labelKindsBySource, labelBarBySource, barBySource, ruleBarBySource,
-    questionsBySource });
-  checkWriteQuestions({ ...options, questionsBySource });
+  checkPickOptions({ ...options, labelKindsBySource, labelBarBySource, ruleBarBySource, modesBySource });
+  checkWriteQuestions({ ...options, modesBySource });
   // The task's names, found once for every source with name lanes on.
   const found = sources.some((source) => source.names === true) ? await findTaskNames(options) : undefined;
   const namesFor = (source: CandidateSource) => source.names === true ? found!.found : [];
@@ -1083,11 +1083,10 @@ export async function pickFromSources(
     if (sources[index]!.role !== 'reference' && !read.complete) rulesEnumerationComplete = false;
     for (const candidate of read.candidates) {
       labelKindsBySource[candidate.sourceId] = sources[index]!.labelKinds ?? [];
-      const { labelBar, bar, ruleBar, questions } = sources[index]!;
+      const { labelBar, ruleBar, mode } = sources[index]!;
       if (labelBar !== undefined) labelBarBySource[candidate.sourceId] = labelBar;
-      if (bar !== undefined) barBySource[candidate.sourceId] = bar;
       if (ruleBar !== undefined) ruleBarBySource[candidate.sourceId] = ruleBar;
-      if (questions !== undefined) questionsBySource[candidate.sourceId] = questions;
+      if (mode !== undefined) modesBySource[candidate.sourceId] = mode;
       const kind = sources[index]!.kind;
       if (kind !== undefined) sourceKinds[candidate.sourceId] = kind;
       candidates.push(
@@ -1150,8 +1149,8 @@ export async function pickFromSources(
   const result = await pick(combined, {
     ...options, taskDate: asOf, timeZone,
     ...(options.findNames === undefined || found === undefined ? {} : { findNames: async () => found.found }),
-    rulesEnumerationComplete, sourceKinds, labelKindsBySource, labelBarBySource, barBySource,
-    ruleBarBySource, questionsBySource, readsBySource,
+    rulesEnumerationComplete, sourceKinds, labelKindsBySource, labelBarBySource,
+    ruleBarBySource, modesBySource, readsBySource,
   });
   // The read request's lever joins the pick's resolved set.
   // `meaning.wholeLanes` resolves the

@@ -132,7 +132,7 @@ const JUDGMENT_CHAT_WEIGHTS: Partial<PickCascadeModel> = (() => {
  *  fitted weights in `judgment-chat-weights.json`. Items render as a
  *  date and their text only: the model never sees a part's id, title
  *  or session. Opt-in — `chat()` keeps `AGENT_CHAT_CASCADE` unless its
- *  `questions` option names this set — and unfitted until the weights
+ *  `mode` option carries this set — and unfitted until the weights
  *  file holds real constants, so selecting it before then throws. */
 export const JUDGMENT_CHAT_CASCADE: PickCascade = {
   anonymousItems: true,

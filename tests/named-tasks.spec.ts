@@ -116,7 +116,7 @@ describe('the name term moves a score', () => {
   const run = async (questions: PickCascade, on: string) => {
     const { requests, how } = recording(answer);
     const source = historySource({ reader: fixtureSource('chat', pool), ...chatSettings,
-      labels: false, names: false, questions });
+      labels: false, names: false, mode: { ...chatSettings.mode!, questions } });
     const picked = await pickFromSources([source], { task: on }, { task: on, decide: how, writeQuestions: async () => WRITTEN });
     const score = (id: string) => (picked.record.candidates.find((c) => c.id === id) as { probability: number }).probability;
     return { picked, requests, score };

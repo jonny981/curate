@@ -4,6 +4,7 @@ import type {
   PickLabels, PickLimits, PickOptions, PickScoreCriterion, PickTagSet, PickThresholds,
 } from './pick.js';
 import type { CandidateReadRequest } from './source.js';
+import type { Mode } from './mode.js';
 import type { MeaningSearchOptions } from './meaning.js';
 import { ANSWER_TYPES, taskNames } from './task.js';
 
@@ -20,11 +21,11 @@ const RENAMED_OPTIONS: Readonly<Record<string, string>> = {
 };
 
 const PICK_OPTION_KEYS: readonly (keyof PickOptions)[] = [
-  'ranking', 'task', 'decide', 'questionsBySource', 'sourceKinds', 'labelKindsBySource', 'labelBarBySource',
+  'ranking', 'task', 'decide', 'modesBySource', 'sourceKinds', 'labelKindsBySource', 'labelBarBySource',
   'keepTop', 'rankProtection', 'bestPartFirst', 'tags', 'tagsByKind',
   'labels', 'cache', 'route', 'answerTypes', 'writeQuestions', 'findNames', 'everyRanked', 'everyScored',
   'stopWhenCold', 'feed',
-  'barBySource', 'ruleBarBySource', 'rulesEnumerationComplete', 'readsBySource', 'limits', 'thresholds',
+  'ruleBarBySource', 'rulesEnumerationComplete', 'readsBySource', 'limits', 'thresholds',
   'taskDate', 'timeZone', 'taskPeriod', 'signal',
 ];
 const THRESHOLD_KEYS: readonly (keyof PickThresholds)[] = ['linkedPathBar'];
@@ -265,7 +266,7 @@ export function checkPickOptions(options: PickOptions): void {
   if (options.taskPeriod !== undefined && typeof options.taskPeriod !== 'boolean') {
     throw new TypeError('taskPeriod must be a boolean.');
   }
-  for (const [name, bars] of [['labelBarBySource', options.labelBarBySource], ['barBySource', options.barBySource],
+  for (const [name, bars] of [['labelBarBySource', options.labelBarBySource],
     ['ruleBarBySource', options.ruleBarBySource]] as const) {
     for (const [id, bar] of Object.entries(bars ?? {})) {
       if (typeof bar !== 'number' || !Number.isFinite(bar) || bar < 0 || bar > 1) {
@@ -275,8 +276,9 @@ export function checkPickOptions(options: PickOptions): void {
   }
   checkKeys(options.ranking, MEMORY_KIND_KEYS, 'ranking');
   checkKeys(options.tagsByKind, SOURCE_KIND_KEYS, 'tagsByKind');
-  for (const [id, set] of Object.entries(options.questionsBySource ?? {})) {
-    checkCascadeKeys(set, `questionsBySource.${id}`);
+  for (const [id, mode] of Object.entries(options.modesBySource ?? {})) {
+    checkMode(mode, `modesBySource.${id}`);
+    const set = mode.questions;
     // A typed question is asked only when the task needs its answer
     // type, so with answerTypes off it would sit unread.
     if ((set?.typed?.length ?? 0) > 0 && (options.answerTypes === undefined || options.answerTypes === false)) {
@@ -309,11 +311,24 @@ export function checkPickOptions(options: PickOptions): void {
   }
 }
 
+/** A mode's own fields: a name, an optional question set, an optional
+ *  bar from 0 to 1 and a read. */
+export function checkMode(mode: Mode, at: string): void {
+  if (typeof mode !== 'object' || mode === null) throw new TypeError(`${at} must be a mode.`);
+  checkKeys(mode, ['name', 'questions', 'bar', 'read'], at);
+  if (typeof mode.name !== 'string' || !mode.name.trim()) throw new TypeError(`${at}.name must be a nonempty string.`);
+  checkCascadeKeys(mode.questions, `${at}.questions`);
+  if (mode.bar !== undefined && (typeof mode.bar !== 'number' || !Number.isFinite(mode.bar) || mode.bar < 0 || mode.bar > 1)) {
+    throw new TypeError(`${at}.bar must be a number between 0 and 1.`);
+  }
+  if (typeof mode.read !== 'function') throw new TypeError(`${at}.read must be a read, such as rankedRead or conversationRead.`);
+}
+
 /** A writer no source's set weighs would be paid for and never read.
  *  Run once every source's set is known. */
 export function checkWriteQuestions(options: PickOptions): void {
   if (options.writeQuestions !== undefined
-    && !Object.values(options.questionsBySource ?? {}).some((set) => set?.written !== undefined)) {
+    && !Object.values(options.modesBySource ?? {}).some((mode) => mode.questions?.written !== undefined)) {
     throw new TypeError('writeQuestions is set, but no source\'s question set has written weights.');
   }
 }

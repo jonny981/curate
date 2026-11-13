@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  memory, pick,
+  memory, pick, rankedRead,
   type CandidateSource, type MemoryCandidate, type PickAnswer, type PickBatch, type PickDecide,
 } from '../src/index.js';
 import { jev, type JevCall } from '../src/models.js';
+import { modesOf } from './fixtures/modes.js';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -144,7 +145,7 @@ describe('the rating stop', () => {
       ] } };
     const { decide, calls } = rated(() => 0.95);
     const picked = await pick(ranked(10), { task: 'recall the plan', decide, ...on, limits: twoABatch,
-      questionsBySource: questions, everyScored: true });
+      modesBySource: modesOf(questions), everyScored: true });
     expect(calls).toHaveLength(2);
     expect(picked.record.pick!.stopWhenCold!.cold).toMatchObject({ batch: 1, under: 'floor' });
     expect(picked.record.pick!.stopWhenCold!.cold!.best).toBeCloseTo(0.045, 3);
@@ -160,7 +161,7 @@ describe('the rating stop', () => {
         { key: 'needed', instructions: 'Is it needed?', true: 'yes', false: 'no', weight: 1 },
       ] } };
     const { decide, calls } = rated(() => 0.5);
-    await pick(ranked(8), { task: 'recall the plan', decide, ...on, limits: twoABatch, questionsBySource: questions });
+    await pick(ranked(8), { task: 'recall the plan', decide, ...on, limits: twoABatch, modesBySource: modesOf(questions) });
     const keys = calls.map((batch) => batch.questions.map((q) => `${q.id}:${q.questionKey}`));
     // Wave 1: two first-round batches, then the second round for their
     // four parts; only then wave 2.
@@ -212,11 +213,12 @@ describe('the rating stop', () => {
   it.each([
     ['the default bar', {}, 4],
     ['everyScored: true', { everyScored: true }, 4],
-    ['a source bar', { barBySource: { notes: 0.5 } }, 1],
+    ['a source bar', { modesBySource: { notes: { name: 'notes', bar: 0.5, read: rankedRead } } }, 1],
     ['a flat everyScored bar', { everyScored: { bar: 0.8 } }, 1],
     ['an everyScored size curve', { everyScored: { bySize: [[0, 0.8], [100, 0.8]] } }, 1],
     ['a size curve that rises with the parts decided', { everyScored: { bySize: [[0, 0.01], [4, 0.01], [5, 0.8]] } }, 4],
-    ['a rule kept at its own bar', { barBySource: { notes: 0.5 }, ruleBarBySource: { notes: 0.5 }, rule: true }, 1],
+    ['a rule kept at its own bar', { modesBySource: { notes: { name: 'notes', bar: 0.5, read: rankedRead } },
+      ruleBarBySource: { notes: 0.5 }, rule: true }, 1],
   ] as const)('keeps the guard and selection on one bar: %s', async (_name, setting, kept) => {
     // p8 scores 0.9, a rule 0.9, every other part 0.05.
     const { rule, ...options } = { rule: false, ...setting };

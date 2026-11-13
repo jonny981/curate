@@ -75,7 +75,7 @@ const picked = await pickFromSources(sources, { task }, { task, decide });
 
 ## Defaults and overrides
 
-`git()` reads with `gitSettings`, `{ labels: false, names: true, bar: 0.0146 }`: a name lane for each name the task names, references kept when scored 0.0146 or more,
+`git()` reads with `gitSettings`, `{ labels: false, names: true, mode: commits }`: a name lane for each name the task names, references kept when scored 0.0146 or more,
 ordered and weighted by decision probability, and no label kinds.
 Set `everyScored: true` on the pick to keep every scored reference from every source.
 Core's `curate()` lays out the kept parts by their exact scores, strongest first.
@@ -83,16 +83,16 @@ To change a setting, build the source with core's `historySource()`:
 
 ```ts
 import { historySource } from '@curatejs/core';
-import { git, gitSettings } from '@curatejs/git';
+import { commits, git, gitSettings } from '@curatejs/git';
 
-const source = historySource({ reader: git('.'), ...gitSettings, bar: 0.05 });
+const source = historySource({ reader: git('.'), ...gitSettings, mode: { ...commits, bar: 0.05 } });
 ```
 
 See [core's measured reason](https://github.com/jonny981/curate/blob/main/packages/core/README.md#defaults-and-evidence) for the saved-decision sweep's answer-turn losses.
 
 - **Keyword settings:** `GIT_KEYWORD_SETTINGS` exports the ranking defaults. Pass a partial `keyword` object to the reader to override them.
 - **Task date:** the `recency` signal is measured from the read request's `taskDate`, else its `asOf`, else now, so a replay with the same task date scores the same. With `taskDate`, a commit dated after it is not read. Commit dates keep the committer's own offset.
-- **Questions:** `gitSettings` carries `GIT_HISTORY_CASCADE`, the fitted question set `git()` asks of each commit. Core's `memory()` and `pickFromSources()` ask it. Change it with `historySource({ reader: git('.'), ...gitSettings, questions: mySet })`. The git and Markdown sets were fitted on saved answers about commits and notes. No end-to-end score has measured them.
+- **Questions:** `gitSettings` carries the `commits` mode and its `GIT_HISTORY_CASCADE`, the fitted question set `git()` asks of each commit. Core's `memory()` and `pickFromSources()` ask it. Change it with `historySource({ reader: git('.'), ...gitSettings, mode: { ...commits, questions: mySet } })`. The git and Markdown sets were fitted on saved answers about commits and notes. No end-to-end score has measured them.
 - **Search wording:** `GIT_SEARCH_LINE_REGISTER` describes the wording for host-written extra search lines. Copy or replace this text in your host; the package generates no lines.
 - **Kind phrases:** `GIT_HISTORY_KIND_PHRASES` exports phrases in the commit register for `directions`, `decisions` and `corrections`. Pass one list to core's `kindLanes` option, for example `{ 'git-history': GIT_HISTORY_KIND_PHRASES.decisions }`; kind lanes stay off by default.
 - **Look-back and paths:** `git(repo, { since: '14 days' })` accepts an ISO date or a duration counted back from the task date (the read request's `taskDate`, else its `asOf`, else now); the bound reaches `git log`, so an older commit is never enumerated. `paths: ['src']` reads only the commits that changed one of them. This `paths` is a filter, unlike the read request's `paths`, which only hints at ranking. `exclude: ['secret.md']` drops any commit that touched one before its body is fetched, even when it also touched an allowed path. Entries resolve like the request's `exclude`, repository-relative or absolute inside the work tree; both join that `exclude` for this source's reads only, so another source over the same repository still reads them. All three are recorded in the pick's levers.

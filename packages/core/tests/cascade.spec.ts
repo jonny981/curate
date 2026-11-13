@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { pick, type MemoryCandidate, type PickCascade, type PickDecide } from '../src/index.js';
 import { checkCascade } from '../src/options.js';
+import { modesOf } from './fixtures/modes.js';
 
 const uncutPick = { everyRanked: true, everyScored: true } as const;
 
@@ -32,7 +33,7 @@ describe('fitted decision questions', () => {
       }]));
     };
     const result = await pick(['low', 'high', 'middle', 'edge'].map((id, i) => item(id, 4 - i)), { ...uncutPick,
-      task: 'Recall', questionsBySource: { chat: fitted }, decide, everyScored: { bar: 0 }, limits: { maxPerBatch: 2 },
+      task: 'Recall', modesBySource: modesOf({ chat: fitted }), decide, everyScored: { bar: 0 }, limits: { maxPerBatch: 2 },
     });
     expect(calls).toEqual([
       ['low:relevant', 'high:relevant'], ['middle:relevant', 'edge:relevant'],
@@ -51,9 +52,9 @@ describe('fitted decision questions', () => {
     const decide: PickDecide = async ({ questions }) => Object.fromEntries(questions
       .filter((q) => q.questionKey !== 'needed')
       .map((q) => [q.key, { status: 'answered', probability: q.questionKey === 'own' ? 0.8 : 0.5 }]));
-    const result = await pick([item('a')], { ...uncutPick, task: 'Recall', questionsBySource: { chat: fitted }, decide, everyScored: { bar: 0 } });
+    const result = await pick([item('a')], { ...uncutPick, task: 'Recall', modesBySource: modesOf({ chat: fitted }), decide, everyScored: { bar: 0 } });
     expect(result.record.candidates[0]).toMatchObject({ probability: sigmoid(-1.7305 + 0.8588 * logit(0.8)) });
-    const missing = await pick([item('a')], { ...uncutPick, task: 'Recall', questionsBySource: { chat: fitted }, decide: async () => ({}) });
+    const missing = await pick([item('a')], { ...uncutPick, task: 'Recall', modesBySource: modesOf({ chat: fitted }), decide: async () => ({}) });
     expect(missing.record.candidates[0]).toMatchObject({ status: 'unanswered', answer: 'missing' });
   });
 
@@ -67,7 +68,7 @@ describe('fitted decision questions', () => {
       return Object.fromEntries(questions.map((q) => [q.key, { status: 'answered', probability: 0.8 }]));
     };
     await pick([item('same'), { ...item('same'), sourceId: 'other' }, { ...item('r'), role: 'rule' }], { ...uncutPick,
-      task: 'Recall', questionsBySource: { chat: fitted, other: fitted }, decide,
+      task: 'Recall', modesBySource: modesOf({ chat: fitted, other: fitted }), decide,
     });
     expect(new Set(keys).size).toBe(4);
     expect(keys).toContain(JSON.stringify(['chat', 'same', 'needed']));
@@ -80,7 +81,7 @@ describe('fitted decision questions', () => {
       return Object.fromEntries(questions.map((q) => [q.key, { status: 'answered', probability: 0.5 }]));
     };
     const result = await pick([item('a', 3), item('b', 2), item('c', 1)], { ...uncutPick,
-      task: 'Recall', questionsBySource: { chat: fitted }, decide, limits: { maxPerBatch: 2, maxCandidates: 2 },
+      task: 'Recall', modesBySource: modesOf({ chat: fitted }), decide, limits: { maxPerBatch: 2, maxCandidates: 2 },
     });
     expect(sizes).toEqual([2, 2, 2]);
     expect(result.record.candidates[2]).toMatchObject({ status: 'unassessed', reason: 'limits' });
@@ -90,14 +91,14 @@ describe('fitted decision questions', () => {
     const decide: PickDecide = async ({ questions }) => Object.fromEntries(questions.map((q) =>
       [q.key, { status: 'answered', probability: q.id === 'outside' ? 1 : 0.8 }]));
     const result = await pick([item('inside', 2), item('outside', 1)], { ...uncutPick,
-      task: 'Recall', questionsBySource: { chat: fitted }, decide, limits: { maxPerBatch: 2, maxBatches: 1 },
+      task: 'Recall', modesBySource: modesOf({ chat: fitted }), decide, limits: { maxPerBatch: 2, maxBatches: 1 },
     });
     expect(result.record.candidates[0]).toMatchObject({ status: 'unassessed', reason: 'limits' });
     expect(result.record.candidates[1]).toMatchObject({ status: 'selected' });
-    const full = await pick([item('inside')], { ...uncutPick, task: 'Recall', questionsBySource: { chat: fitted }, decide });
+    const full = await pick([item('inside')], { ...uncutPick, task: 'Recall', modesBySource: modesOf({ chat: fitted }), decide });
     expect(full.record.candidates[0]).toMatchObject({ status: 'selected' });
     const unstaged = await pick([item('inside')], { ...uncutPick,
-      task: 'Recall', questionsBySource: { chat: { bias: fitted.bias, questions: fitted.questions } }, decide,
+      task: 'Recall', modesBySource: modesOf({ chat: { bias: fitted.bias, questions: fitted.questions } }), decide,
       limits: { maxPerBatch: 1, maxBatches: 1 },
     });
     expect(unstaged.record.candidates[0]).toMatchObject({ status: 'unassessed', reason: 'limits' });
@@ -111,7 +112,7 @@ describe('fitted decision questions', () => {
   ])('rejects invalid fitted configuration before calling decide', async (invalid) => {
     let calls = 0;
     await expect(pick([item('a')], { ...uncutPick,
-      task: 'Recall', questionsBySource: { chat: invalid as PickCascade }, decide: async () => { calls++; return {}; },
+      task: 'Recall', modesBySource: modesOf({ chat: invalid as PickCascade }), decide: async () => { calls++; return {}; },
     })).rejects.toThrow('question set');
     expect(calls).toBe(0);
   });
@@ -129,7 +130,7 @@ describe('the person\'s own words in the score', () => {
     const decide: PickDecide = async ({ questions }) => Object.fromEntries(questions.map((q) =>
       [q.key, { status: 'answered', probability: q.questionKey === 'relevant' ? relevant[q.id]! : 0.8 }]));
     const result = await pick([said('mine', 'person'), said('relayed', 'agent'), said('unmarked')], { ...uncutPick,
-      task: 'Recall', questionsBySource: { chat: cascade }, decide, everyScored: { bar } });
+      task: 'Recall', modesBySource: modesOf({ chat: cascade }), decide, everyScored: { bar } });
     const probability = Object.fromEntries(result.record.candidates.map((entry) =>
       [entry.id, 'probability' in entry ? entry.probability : undefined]));
     return { result, probability };

@@ -5,3 +5,4 @@ export type { ChatPart, ChatKeywordSettings } from './chat-rank.js';
 export { scrubChat } from './chat-scrub.js';
 export * from './questions.js';
 export * from './defaults.js';
+export * from './mode.js';

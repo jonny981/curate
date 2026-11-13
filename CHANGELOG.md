@@ -86,8 +86,8 @@ What each part does:
   orders the feed by summed lane places, with an optional `size` that bounds
   the read.
 - **Coding-agent transcripts are read from the person's own messages
-  outward.** A chat source scored with the agent question set, `chat()`'s
-  default, gets its own read: the person's parts in the keyword lanes'
+  outward.** A source in the `agentTranscripts` mode, `chat()`'s default,
+  gets its own read: the person's parts in the keyword lanes'
   ranking, 112 a request, with rings of neighbours around those rated
   warm; a stop when a request adds at most 0.3 times the most new warm
   parts an earlier request added, never before the read has kept a part;
@@ -105,15 +105,17 @@ What each part does:
 - **Settings by source.** Each source carries its own settings, so a setting
   chosen for one kind of history never changes what Curate picks from
   another: `labels` (the label kinds asked of each part), `labelBar` (its
-  label bar, 0.5 by default), `bar` (the decision-score bar for its
-  references), `ruleBar` (the bar for its rules) and `questions` (the decision questions asked of its references; the
-  presets carry `CHAT_CASCADE`, `GIT_HISTORY_CASCADE` and
-  `MARKDOWN_CASCADE`). The presets `chat()`, `git()`, `markdown()`,
+  label bar, 0.5 by default), `ruleBar` (the bar for its rules) and `mode`.
+  A mode holds the decision questions asked of its references, the
+  decision-score bar they are kept at and how the decide step reads them:
+  `rankedRead` down the fused order, or `conversationRead`, the chat read.
+  Each reader package exports its modes (`agentTranscripts` and
+  `assistantChatHistory`, `commits`, `notes`), and core holds none. The presets `chat()`, `git()`, `markdown()`,
   `knowledgeBase()` and `rules()` carry their package's tuned settings
   objects, `chatSettings`, `gitSettings`, `markdownSettings` and
   `rulesSettings`. `historySource({ reader, ...settings })` builds a source
   with any settings, for example a chat source with labels off:
-  `historySource({ reader: chat(), ...chatSettings, labels: false, questions: AGENT_CHAT_CASCADE })`.
+  `historySource({ reader: chat(), ...chatSettings, labels: false, mode: agentTranscripts })`.
   Pick records name each source's settings under `levers.sources`.
 - **A rule library.** `rules(dir)` reads `.md`, Cursor `.mdc` and Copilot
   `*.instructions.md` rule files, one candidate per rule, with `globs` and

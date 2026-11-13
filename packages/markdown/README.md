@@ -197,7 +197,7 @@ const picked = await pickFromSources(sources, { task }, { task, decide });
 
 ## Defaults and overrides
 
-`markdown()` and `knowledgeBase()` read with `markdownSettings`, `{ labels: false, names: true, bar: 0.0146 }`: a name lane for each name the task names, references kept when scored 0.0146 or more,
+`markdown()` and `knowledgeBase()` read with `markdownSettings`, `{ labels: false, names: true, mode: notes }`: a name lane for each name the task names, references kept when scored 0.0146 or more,
 ordered and weighted by decision probability, and no label kinds.
 Set `everyScored: true` on the pick to keep every scored reference from every source.
 `rules()` reads with `rulesSettings`, `{ ...markdownSettings, names: false, ruleBar: 0.5 }`, so it keeps a rule scored 0.5 or more and opens no name lane: rules are chosen by where they apply, not by search.
@@ -217,7 +217,7 @@ const source = historySource({ reader: rules('rules'), ...rulesSettings, ruleBar
 See [core's measured reason](https://github.com/jonny981/curate/blob/main/packages/core/README.md#defaults-and-evidence) for the saved-decision sweep's answer-turn losses.
 
 - **Keyword settings:** `MARKDOWN_KEYWORD_SETTINGS` exports the ranking defaults. Pass a partial `keyword` object to the reader to override them.
-- **Questions:** `markdownSettings` carries `MARKDOWN_CASCADE`, the fitted question set `markdown()`, `knowledgeBase()` and `rules()` ask of each reference part. Core's `memory()` and `pickFromSources()` ask it. Change it with `historySource({ reader: knowledgeBase('docs'), ...markdownSettings, questions: mySet })`. Rule candidates keep their separate applicability question. The git and Markdown sets were fitted on saved answers about commits and notes. No end-to-end score has measured them.
+- **Questions:** `markdownSettings` carries the `notes` mode and its `MARKDOWN_CASCADE`, the fitted question set `markdown()`, `knowledgeBase()` and `rules()` ask of each reference part. Core's `memory()` and `pickFromSources()` ask it. Change it with `historySource({ reader: knowledgeBase('docs'), ...markdownSettings, mode: { ...notes, questions: mySet } })`. Rule candidates keep their separate applicability question. The git and Markdown sets were fitted on saved answers about commits and notes. No end-to-end score has measured them.
 - **Search wording:** `MARKDOWN_SEARCH_LINE_REGISTER` describes the wording for host-written extra search lines. Copy or replace this text in your host; the package generates no lines.
 - **Kind phrases:** `MARKDOWN_KIND_PHRASES` exports phrases in the note register for `directions`, `decisions` and `corrections`. Pass one list to core's `kindLanes` option, for example `{ markdown: MARKDOWN_KIND_PHRASES.corrections }`; kind lanes stay off by default.
 

@@ -16,10 +16,10 @@ import { scrubChat } from './chat-scrub.js';
 import { DEFAULT_MAX_QUESTION_TEXT, type MemoryCandidate } from '@curatejs/core';
 import {
   historySource, SourceReadError, type CandidateReadContext, type CandidateReadRequest, type CandidateSource,
-  type PickCascade,
+  type Mode,
 } from '@curatejs/core';
 import { chatSettings } from './defaults.js';
-import { AGENT_CHAT_CASCADE } from './questions.js';
+import { agentTranscripts } from './mode.js';
 
 export type ChatProvider = 'claude-code' | 'codex';
 
@@ -48,14 +48,11 @@ export interface ChatOptions {
    *  lane then reads the file instead of the transcripts. `false` reads
    *  the transcripts directly on every read. */
   readonly index?: StoredIndexOptions | false;
-  /** The question set the decision step asks of this source's parts.
-   *  Defaults to AGENT_CHAT_CASCADE. A model-scored set such as
+  /** How the decision step judges and reads this source's parts: its
+   *  question set, its bar and its read. Defaults to `agentTranscripts`.
+   *  A mode whose questions are a model-scored set such as
    *  JUDGMENT_CHAT_CASCADE throws while its weights file is unfitted. */
-  readonly questions?: PickCascade;
-  /** The decision-score bar for this source's parts: a part keeps when
-   *  its combined score reaches it. Defaults to the selected set's
-   *  fitted bar when it carries one, else 0.0146. */
-  readonly bar?: number;
+  readonly mode?: Mode;
 }
 
 type Json = Record<string, unknown>;
@@ -1487,11 +1484,5 @@ export function chat(options: ChatOptions = {}): CandidateSource {
       }
     },
   };
-  if (options.bar !== undefined
-    && (typeof options.bar !== 'number' || !Number.isFinite(options.bar) || options.bar < 0 || options.bar > 1)) {
-    throw new TypeError('bar must be a number between 0 and 1.');
-  }
-  const questions = options.questions ?? AGENT_CHAT_CASCADE;
-  const bar = options.bar ?? questions.model?.bar ?? chatSettings.bar;
-  return historySource({ reader, ...chatSettings, questions, bar });
+  return historySource({ reader, ...chatSettings, mode: options.mode ?? agentTranscripts });
 }

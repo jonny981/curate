@@ -5,9 +5,9 @@ import { createRequire } from 'node:module';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { curate, DEFAULT_MAX_QUESTION_TEXT, levelDistribution, pickFromSources, sinceCutoff, taskPeriod } from '@curatejs/core';
+import { curate, DEFAULT_MAX_QUESTION_TEXT, levelDistribution, pickFromSources, rankedRead, sinceCutoff, taskPeriod } from '@curatejs/core';
 import { jev } from '@curatejs/core/models';
-import { chat, scrubChat, AGENT_CHAT_CASCADE, CHAT_SEARCH_LINE_REGISTER, JUDGMENT_CHAT_CASCADE } from '@curatejs/chat';
+import { agentTranscripts, chat, scrubChat, AGENT_CHAT_CASCADE, CHAT_SEARCH_LINE_REGISTER, JUDGMENT_CHAT_CASCADE } from '@curatejs/chat';
 import { git, GIT_HISTORY_CASCADE, GIT_SEARCH_LINE_REGISTER } from '@curatejs/git';
 import { knowledgeBase, markdown, MARKDOWN_CASCADE, MARKDOWN_SEARCH_LINE_REGISTER } from '@curatejs/markdown';
 
@@ -111,11 +111,17 @@ const atLeast = (version, floor) => {
 const engineFound = () => (createRequire(import.meta.url).resolve.paths('node-llama-cpp') ?? [])
   .some((folder) => existsSync(join(folder, 'node-llama-cpp', 'package.json')));
 
-// The question sets a chat source can select by name. 'default' is the
-// same set an omitted questions key produces; 'judgments' is the only
-// measured model-scored set, and it fails closed inside chat() while
-// its weights file is unfitted.
-export const CHAT_QUESTION_SETS = { default: AGENT_CHAT_CASCADE, judgments: JUDGMENT_CHAT_CASCADE };
+// The modes a chat source can select by its question set's name.
+// 'default' is the mode an omitted questions key produces; 'judgments'
+// asks the only measured model-scored set, read down the ranked list,
+// and it fails closed inside chat() while its weights file is unfitted.
+export const CHAT_MODES = { default: agentTranscripts,
+  judgments: { name: 'judgments', questions: JUDGMENT_CHAT_CASCADE, read: rankedRead } };
+// A chat entry's mode, with its own bar when it sets one.
+const chatMode = (entry) => {
+  const mode = CHAT_MODES[entry.questions ?? 'default'];
+  return entry.bar === undefined ? mode : { ...mode, bar: entry.bar };
+};
 
 const SOURCE_ENTRY_KEYS = {
   'claude-code': ['type', 'path', 'since', 'exclude', 'questions', 'bar', 'always'],
@@ -155,8 +161,8 @@ export function parseSources(value, base = process.cwd()) {
         throw new Error(`${key} must be an array of paths.`);
       }
     }
-    if (source.questions !== undefined && !Object.hasOwn(CHAT_QUESTION_SETS, source.questions)) {
-      throw new Error(`Unknown questions "${source.questions}"; allowed names are ${Object.keys(CHAT_QUESTION_SETS).join(', ')}.`);
+    if (source.questions !== undefined && !Object.hasOwn(CHAT_MODES, source.questions)) {
+      throw new Error(`Unknown questions "${source.questions}"; allowed names are ${Object.keys(CHAT_MODES).join(', ')}.`);
     }
     if (source.bar !== undefined
       && (typeof source.bar !== 'number' || !Number.isFinite(source.bar) || source.bar < 0 || source.bar > 1)) {
@@ -449,9 +455,7 @@ export async function snapshotCodex(entry, folder) {
   }
   const source = chat({ id: `chat:codex:${entry.path}`, providers: ['codex'], paths: [folder],
     ...(entry.since === undefined ? {} : { since: entry.since }),
-    ...(exclude === undefined ? {} : { exclude }),
-    ...(entry.questions === undefined ? {} : { questions: CHAT_QUESTION_SETS[entry.questions] }),
-    ...(entry.bar === undefined ? {} : { bar: entry.bar }) });
+    ...(exclude === undefined ? {} : { exclude }), mode: chatMode(entry) });
   return { filter, source: { ...source, async read(request, context) {
     const result = await source.read(request, context);
     return result.status !== 'read' ? result : { ...result,
@@ -1213,8 +1217,7 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
         ...(entry.since === undefined ? {} : { since: entry.since }),
         ...(entry.exclude === undefined ? {} : { exclude: [...new Set(folders.flatMap((folder) =>
           entry.exclude.map((path) => isAbsolute(path) ? path : join(folder, path))))] }),
-        ...(entry.questions === undefined ? {} : { questions: CHAT_QUESTION_SETS[entry.questions] }),
-        ...(entry.bar === undefined ? {} : { bar: entry.bar }) }) };
+        mode: chatMode(entry) }) };
     };
     const modelPath = settings.embeddingModel ?? defaultModelPath();
     const cacheDirectory = join(process.env.XDG_CACHE_HOME ?? join(homedir(), '.cache'), 'curate/embeddings');
@@ -1384,15 +1387,14 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
     // count the way a yes/no question's criteria do.
     const maxBatchChars = maxDecisionBatchChars([
       AGENT_CHAT_CASCADE, GIT_HISTORY_CASCADE, MARKDOWN_CASCADE,
-      ...new Set(sources.map((source) => source.questions).filter(Boolean)),
+      ...new Set(sources.map((source) => source.mode?.questions).filter(Boolean)),
     ]);
     const count = Math.max(...searchKinds.map((kind) => record.searches[kind].keywords.length + record.searches[kind].answers.length));
     const pickStart = Date.now();
     const lineNames = (length) => Array.from({ length }, (_, i) => `curate-search:${i}`);
     const request = { task: options.task, searchLines: lineNames(count), meaning: { embed: local.embed } };
-    // The coding-agent transcripts: the sources scored with the agent
-    // question set, the one set that carries a `person` weight.
-    const agentIds = new Set(sources.filter((source) => source.questions?.person !== undefined).map((source) => source.id));
+    // The coding-agent transcripts: the sources in the agent mode.
+    const agentIds = new Set(sources.filter((source) => source.mode?.name === agentTranscripts.name).map((source) => source.id));
     // Their second search reuses round one's decisions, from a store
     // that lasts this call only.
     const decisions = new Map();

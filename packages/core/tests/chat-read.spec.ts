@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { pick, type MemoryCandidate, type PickCascade, type PickDecide } from '../src/index.js';
+import { conversationRead, pick, type MemoryCandidate, type PickCascade, type PickDecide } from '../src/index.js';
 import { topicShifts } from '../src/chat-read.js';
+import { modesOf } from './fixtures/modes.js';
 
 type Author = 'person' | 'agent';
 
@@ -41,7 +42,7 @@ const question = (key: string) => ({ key, instructions: `${key}?`, true: 'Yes', 
  *  rating, and the read judges parts without the weight, so the read sees
  *  each rating as the rater gives it. */
 const agentSet: PickCascade = { bias: 0, person: 4.5, questions: [question('relevant')] };
-const agentRead = { sourceKinds: chatKind, questionsBySource: { chat: agentSet } };
+const agentRead = { sourceKinds: chatKind, modesBySource: modesOf({ chat: agentSet }, conversationRead) };
 /** The score selection keeps a person part on: its rating plus the weight. */
 const weighted = (rating: number) => 1 / (1 + Math.exp(-(Math.log(rating / (1 - rating)) + 4.5)));
 
@@ -114,6 +115,22 @@ describe('the chat read', () => {
     expect(result.record.pick?.chatRead).toMatchObject({ requests: 3, ended: 'fall' });
   });
 
+  it('keeps the ranked read for a set with a zero person weight or none, unless the mode says otherwise', async () => {
+    // One person part per session, each ranked in the one lane; part 300
+    // is an answer the ranked read reaches.
+    const parts = Array.from({ length: 336 }, (_, index) => part(`s${index}`, 1, 'person', { ranks: [index] }));
+    const ratings = Object.fromEntries(parts.map((item, index) => [item.id, index < 10 || index === 300 ? 0.9 : 0.001]));
+    for (const set of [{ bias: 0, person: 0, questions: [question('relevant')] }, { bias: 0, questions: [question('relevant')] }]) {
+      const ranked = await pick(parts, { task, decide: rater(ratings).decide, sourceKinds: chatKind,
+        modesBySource: modesOf({ chat: set }) });
+      expect(ranked.record.pick?.chatRead).toBeUndefined();
+      expect(ranked.selected.map((item) => item.id)).toContain(parts[300]!.id);
+      const own = await pick(parts, { task, decide: rater(ratings).decide, sourceKinds: chatKind,
+        modesBySource: modesOf({ chat: set }, conversationRead) });
+      expect(own.record.pick?.chatRead).toBeDefined();
+    }
+  });
+
   it('reaches every part the current read reaches when its stop does not fire', async () => {
     // One person part, then ranked agent parts in sessions of their own:
     // those past the lane's top ten are reached only through the order.
@@ -122,12 +139,20 @@ describe('the chat read', () => {
     // The rest of the order adds more warm parts than the person's request did.
     const ratings = { [idOf('a', 1)]: 0.9, [idOf('x12', 1)]: 0.5, [idOf('x13', 1)]: 0.4, [idOf('x14', 1)]: 0.6 };
     const current = rater(ratings);
-    const before = await pick(parts, { task, decide: current.decide, questionsBySource: { chat: agentSet } });
+    const before = await pick(parts, { task, decide: current.decide, modesBySource: modesOf({ chat: agentSet }) });
     const chat = rater(ratings);
     const after = await pick(parts, { task, decide: chat.decide, ...agentRead });
-    // The agent set alone, with no chat kind declared, keeps the current read.
+    // The mode chooses the read, not the set's person weight: the agent
+    // set in a mode with the ranked read keeps the current read, and a
+    // set with no person weight in a mode with the conversation read gets
+    // the chat read.
     expect(before.record.pick?.chatRead).toBeUndefined();
     expect(after.record.pick?.chatRead).toMatchObject({ ended: 'order', unread: 0 });
+    const plainSet: PickCascade = { bias: 0, questions: [question('relevant')] };
+    const conversation = await pick(parts, { task, decide: rater(ratings).decide,
+      modesBySource: modesOf({ chat: plainSet }, conversationRead) });
+    expect(conversation.record.pick?.chatRead).toMatchObject({ ended: 'order', unread: 0 });
+    expect(conversation.record.levers.sources.chat?.mode).toBe('chat');
     const reached = new Set(chat.asked.flat());
     expect(current.asked.flat().filter((id) => !reached.has(id))).toEqual([]);
     const kept = (result: typeof before) => result.selected.map((item) => item.id).sort();
@@ -167,10 +192,11 @@ describe('the chat read', () => {
     const isDiary = (id: string) => diary.some((item) => item.id === id);
     const both = rater(ratings);
     const together = await pick([...personSessions(336), ...diary], { task, decide: both.decide,
-      sourceKinds: { chat: 'chat', diary: 'chat' }, questionsBySource: { chat: agentSet, diary: personalSet } });
+      sourceKinds: { chat: 'chat', diary: 'chat' },
+      modesBySource: { ...modesOf({ chat: agentSet }, conversationRead), ...modesOf({ diary: personalSet }) } });
     const alone = rater(ratings);
     const apart = await pick(diary, { task, decide: alone.decide,
-      sourceKinds: { diary: 'chat' }, questionsBySource: { diary: personalSet } });
+      sourceKinds: { diary: 'chat' }, modesBySource: modesOf({ diary: personalSet }) });
     expect(together.record.pick?.chatRead?.ended).toBe('fall');
     expect(apart.record.pick?.chatRead).toBeUndefined();
     const diaryAsked = (asked: string[][]) => asked.map((ids) => ids.filter(isDiary)).filter((ids) => ids.length > 0);
@@ -267,7 +293,7 @@ describe('the chat read with a person weight', () => {
     const parts = [part('low', 1, 'person', { ranks: [0] }), part('low', 2, 'agent'),
       part('high', 1, 'person', { ranks: [1] }), part('high', 2, 'agent')];
     const { asked, decide } = rater({ [idOf('low', 1)]: 0.01, [idOf('high', 1)]: 0.95 });
-    const result = await pick(parts, { task, decide, sourceKinds: chatKind, questionsBySource: { chat: set } });
+    const result = await pick(parts, { task, decide, sourceKinds: chatKind, modesBySource: modesOf({ chat: set }, conversationRead) });
     // With the weight the low part would score about 0.11, over 0.1 of the best;
     // without it, about 0.0014, so only the high part's reply is read next.
     expect(asked[1]).toEqual([idOf('high', 2)]);

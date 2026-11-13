@@ -14,6 +14,7 @@ import {
   type PickCascade,
   type PickDecide,
 } from '../src/index.js';
+import { modesOf } from './fixtures/modes.js';
 
 const uncutPick = { everyRanked: true, everyScored: true } as const;
 
@@ -136,10 +137,10 @@ describe('pick decision cache', () => {
       (question) => [question.key, { status: 'answered' as const, probability: 0.9, truncated: true }]));
     const options = { ...uncutPick,
       task: 'Recall the plan', decide,
-      questionsBySource: { notes: {
+      modesBySource: modesOf({ notes: {
         bias: 0,
         questions: [{ key: 'relevant', instructions: 'Relevant?', true: 'yes', false: 'no', weight: 1 }],
-      } },
+      } }),
       cache: { store: decisionFileStore(directory), deciderId: 'test-decider' },
     };
     const first = await pick(threeParts(), options);
@@ -295,7 +296,7 @@ describe('pick decision cache', () => {
   it('asks again for that part only when its kind changes', async () => {
     const counter = counting(0.5);
     const options = { ...uncutPick,
-      task: 'Recall the plan', decide: counter.decide, questionsBySource: { notes: fitted },
+      task: 'Recall the plan', decide: counter.decide, modesBySource: modesOf({ notes: fitted }),
       cache: { store: countingStore().store, deciderId: 'test-decider' },
     };
     await pick(threeParts(), options);
@@ -412,7 +413,7 @@ describe('pick decision cache', () => {
     const counted = countingStore();
     const counter = counting();
     const options = { ...uncutPick,
-      task: 'Recall the plan', decide: counter.decide, questionsBySource: { notes: fitted },
+      task: 'Recall the plan', decide: counter.decide, modesBySource: modesOf({ notes: fitted }),
       cache: { store: counted.store, deciderId: 'test-decider' },
     };
     await pick(threeParts(), options);
@@ -422,7 +423,7 @@ describe('pick decision cache', () => {
       ...fitted,
       questions: fitted.questions.map((question) => ({ ...question, instructions: `${question.instructions} Still?` })),
     };
-    const second = await pick(threeParts(), { ...options, questionsBySource: { notes: reworded } });
+    const second = await pick(threeParts(), { ...options, modesBySource: modesOf({ notes: reworded }) });
     expect(counter.calls.flatMap((batch) => batch.questions)).toHaveLength(asked);
     expect(second.record.cache).toMatchObject({ asked, reused: 0 });
   });
@@ -431,7 +432,7 @@ describe('pick decision cache', () => {
     const counted = countingStore();
     const counter = counting();
     const options = { ...uncutPick,
-      task: 'Recall the plan', decide: counter.decide, questionsBySource: { notes: fitted },
+      task: 'Recall the plan', decide: counter.decide, modesBySource: modesOf({ notes: fitted }),
       cache: { store: counted.store, deciderId: 'test-decider' },
     };
     await pick(threeParts(), options);
@@ -442,7 +443,7 @@ describe('pick decision cache', () => {
       questions: fitted.questions.map((question) => 'levels' in question ? question
         : { ...question, true: `${question.true} Still.` }),
     };
-    const second = await pick(threeParts(), { ...options, questionsBySource: { notes: recriteria } });
+    const second = await pick(threeParts(), { ...options, modesBySource: modesOf({ notes: recriteria }) });
     expect(counter.calls.flatMap((batch) => batch.questions)).toHaveLength(asked);
     expect(second.record.cache).toMatchObject({ asked, reused: 0 });
   });
@@ -451,7 +452,7 @@ describe('pick decision cache', () => {
     const counted = countingStore();
     const counter = counting();
     const options = { ...uncutPick,
-      task: 'Recall the plan', decide: counter.decide, questionsBySource: { notes: fitted },
+      task: 'Recall the plan', decide: counter.decide, modesBySource: modesOf({ notes: fitted }),
       cache: { store: counted.store, deciderId: 'test-decider' },
     };
     await pick(threeParts(), options);
@@ -462,7 +463,7 @@ describe('pick decision cache', () => {
       questions: fitted.questions.map((question) => 'levels' in question ? question
         : { ...question, false: `${question.false} Still.` }),
     };
-    const second = await pick(threeParts(), { ...options, questionsBySource: { notes: recriteria } });
+    const second = await pick(threeParts(), { ...options, modesBySource: modesOf({ notes: recriteria }) });
     expect(counter.calls.flatMap((batch) => batch.questions)).toHaveLength(asked);
     expect(second.record.cache).toMatchObject({ asked, reused: 0 });
   });
@@ -680,7 +681,7 @@ describe('pick decision cache', () => {
     const counted = countingStore();
     const counter = counting(0.5);
     const options = { ...uncutPick,
-      task: 'Recall the plan', decide: counter.decide, questionsBySource: { notes: fitted },
+      task: 'Recall the plan', decide: counter.decide, modesBySource: modesOf({ notes: fitted }),
       cache: { store: counted.store, deciderId: 'test-decider' },
     };
     const first = await pick(threeParts(), options);
@@ -774,7 +775,7 @@ describe('pick decision cache', () => {
       ],
     };
     const options = { ...uncutPick,
-      task: 'Recall the plan', decide, questionsBySource: { notes: shared },
+      task: 'Recall the plan', decide, modesBySource: modesOf({ notes: shared }),
       cache: { store: counted.store, deciderId: 'test-decider' },
     };
     // Identical wording under two question names keys two answers:
@@ -950,7 +951,7 @@ describe('pick decision cache', () => {
       ],
     };
     const options = { ...uncutPick,
-      task: 'Recall the plan', decide, questionsBySource: { notes: judgments },
+      task: 'Recall the plan', decide, modesBySource: modesOf({ notes: judgments }),
       cache: { store: decisionFileStore(directory), deciderId: 'test-decider' },
     };
     const first = await pick(threeParts().slice(0, 1), options);

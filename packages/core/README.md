@@ -35,7 +35,7 @@ const { log, rules, picked, result } = await mem.recall('What billing constraint
 - **Log:** `log` is the text `curate()` lays out from the kept references, with each sentence `decide` rates under 0.1 left out. `result` is the full `CurateResult`, including its record. See [Curating](#curating).
 - **Rules:** `rules` joins selected rules with blank lines and preserves each rule's text. Rules are not in `log`.
 - **Selection:** `picked` is the full `PickSourcesResult`, including source reads and decision records.
-- **Questions:** Each source carries its decision question set as `questions`, set through `historySource()`, and each built-in reader carries its fitted set. `memory()`, `pickFromSources()` and the `/curate` skill all ask each source its own set. A source without one asks core's ordinary question. A direct `pick()` takes the sets by source id as `questionsBySource`.
+- **Modes:** Each source carries its mode, set through `historySource()`: its decision question set, the bar its parts are kept at, and how the decide step reads them (`rankedRead` or `conversationRead`). Each built-in reader carries its own mode (`agentTranscripts` for `chat()`, `commits` for `git()`, `notes` for the Markdown readers), and core holds none. `memory()`, `pickFromSources()` and the `/curate` skill all ask each source its own mode. A source without one asks core's ordinary question, keeps at 0.0146 and takes the ranked read. A direct `pick()` takes the modes by source id as `modesBySource`.
 - **Incomplete collection:** Absent or incomplete reads, unanswered candidates and interrupted decisions throw before the layout. Parts intentionally excluded by the label questions are allowed. The error's `cause` holds `picked` for inspection. Source read errors propagate. A limit that leaves candidates unassessed also throws; use `pickFromSources()` directly if you need to accept a partial selection.
 - **Cancellation:** `mem.recall(task, { signal })` passes the signal to the readers and every `decide` call.
 
@@ -46,7 +46,7 @@ Explicit `read`, `pick` and `curate` options apply to the whole call:
 
 ```ts
 const mem = memory({
-  sources: [historySource({ reader: chat(), ...chatSettings, questions: AGENT_CHAT_CASCADE }), git('.')],
+  sources: [historySource({ reader: chat(), ...chatSettings, mode: agentTranscripts }), git('.')],
   decide,
   read: { wholeLanes: true },
   pick: { everyScored: { bar: 0.05 } },
@@ -571,9 +571,10 @@ in bounded batches, and returns the selected candidates with a
 `PickRecord`. By default, labels run only for a source that carries
 label kinds: `chat()` carries the seven kinds, and `git()` and the
 Markdown readers carry none. Each reference is kept
-when its score reaches its source's bar: `barBySource`, keyed by source
-id, or 0.0146 for a source it does not name. `pickFromSources` fills
-`barBySource` from each source's `bar`. `everyScored` sets one bar for
+when its score reaches its source's mode's bar: `modesBySource`, keyed
+by source id, or the mode's question set's fitted bar, or 0.0146.
+`pickFromSources` fills `modesBySource` from each source's `mode`.
+`everyScored` sets one bar for
 every source in their place; `everyScored: true` keeps every valid
 score, including zero.
 The model orders and weights selected references. References
@@ -656,18 +657,18 @@ source's set the same way.
 ```ts
 import { historySource, pickFromSources } from '@curatejs/core';
 import { chat } from '@curatejs/chat';
-import { git, gitSettings } from '@curatejs/git';
+import { commits, git, gitSettings } from '@curatejs/git';
 import { knowledgeBase } from '@curatejs/markdown';
 
 const picked = await pickFromSources(
-  [chat({ paths: ['transcripts'] }), historySource({ reader: git('.'), ...gitSettings, questions: mySet }), knowledgeBase('docs')],
+  [chat({ paths: ['transcripts'] }), historySource({ reader: git('.'), ...gitSettings, mode: { ...commits, questions: mySet } }), knowledgeBase('docs')],
   { task },
   { task, decide },
 );
 ```
 
-A direct `pick` call has parts, not sources, so it takes the sets by
-source id: `questionsBySource: { conversations: CHAT_CASCADE }`.
+A direct `pick` call has parts, not sources, so it takes the modes by
+source id: `modesBySource: { conversations: assistantChatHistory }`.
 `pickFromSources` fills that map from the sources that returned those
 candidates.
 
@@ -743,7 +744,7 @@ const DATED = {
   }],
 };
 const mem = memory({
-  sources: [historySource({ reader: git('.'), ...gitSettings, questions: DATED })],
+  sources: [historySource({ reader: git('.'), ...gitSettings, mode: { ...commits, questions: DATED } })],
   decide,
   pick: { answerTypes: true },
 });
@@ -771,12 +772,12 @@ carries it. Add it to a set with `answerTypes` on:
 ```ts
 import { COUNT_MARKER, historySource, memory } from '@curatejs/core';
 import { jev } from '@curatejs/core/models';
-import { chat, chatSettings, AGENT_CHAT_CASCADE } from '@curatejs/chat';
+import { agentTranscripts, chat, chatSettings, AGENT_CHAT_CASCADE } from '@curatejs/chat';
 
 const decide = jev({ apiKey: process.env.TYPESAFE_API_KEY });
 
 const mem = memory({
-  sources: [historySource({ reader: chat(), ...chatSettings, questions: { ...AGENT_CHAT_CASCADE, typed: [COUNT_MARKER] } })],
+  sources: [historySource({ reader: chat(), ...chatSettings, mode: { ...agentTranscripts, questions: { ...AGENT_CHAT_CASCADE, typed: [COUNT_MARKER] } } })],
   decide,
   pick: { answerTypes: true },
 });
@@ -808,14 +809,14 @@ keeps the `firstOnly` score.
 ```ts
 import { historySource, memory, taskQuestionWriter, type CurateWrite } from '@curatejs/core';
 import { jev } from '@curatejs/core/models';
-import { chat, chatSettings, PERSONAL_CHAT_WRITTEN_CASCADE } from '@curatejs/chat';
+import { assistantChatHistory, chat, chatSettings, PERSONAL_CHAT_WRITTEN_CASCADE } from '@curatejs/chat';
 
 const decide = jev({ apiKey: process.env.TYPESAFE_API_KEY });
 // Any model call: it gets { instructions, body } and returns the reply text.
 const write: CurateWrite = async ({ instructions, body }, signal) => askYourModel(instructions, body, signal);
 
 const mem = memory({
-  sources: [historySource({ reader: chat(), ...chatSettings, questions: PERSONAL_CHAT_WRITTEN_CASCADE })],
+  sources: [historySource({ reader: chat(), ...chatSettings, mode: { ...assistantChatHistory, questions: PERSONAL_CHAT_WRITTEN_CASCADE } })],
   decide,
   pick: { writeQuestions: taskQuestionWriter(write) },
 });
@@ -1180,7 +1181,7 @@ rated cost about $0.00002 of decision questions on three benchmark
 runs: about $0.0033 for a LoCoMo conversation's 170 parts, and $0.053
 for the 2,361 parts a DolphinBench test rated on average.
 
-A chat source scored with the agent question set is not read this way:
+A source whose mode reads with `conversationRead` is not read this way:
 [the chat read](#the-chat-read) reads its parts, and that read's own
 stop decides how far, set or not, with the same wait for a kept part.
 `stopWhenCold` acts on every other source of the call.
@@ -1351,14 +1352,13 @@ with `everyRanked` throws a `TypeError` before any read, because
 
 ### The chat read
 
-On the fused order (`everyRanked` unset), a source of kind `'chat'`
-scored with the agent question set, `chat()`'s default
-`AGENT_CHAT_CASCADE` for Claude Code and Codex transcripts, is read its
-own way. The agent set is told apart by its `person` weight, which no
-other question set carries. Every other source keeps the read above,
-a chat source scored with `CHAT_CASCADE`, `PERSONAL_CHAT_CASCADE` or the
-judgment set included: replayed on long chats with an assistant and on
-two-person chats, the same stop lost evidence. A part is warm when it
+On the fused order (`everyRanked` unset), a source whose mode reads
+with `conversationRead`, `chat()`'s default `agentTranscripts` mode for
+Claude Code and Codex transcripts, is read its own way. Every source in
+a `rankedRead` mode keeps the read above, a chat source on
+`assistantChatHistory`, a personal set or the judgment set included:
+replayed on long chats with an assistant and on two-person chats, the
+same stop lost evidence. A part is warm when it
 is rated at least 0.1 times the best rating this read has seen. The
 read judges a part on its rating without the question set's `person`
 weight, the rating its levels were measured on: with the weight nearly
@@ -1555,7 +1555,7 @@ record holds `levers.wholeLanes: { keyword, meaning }`.
 | Lever | What "on" does | Cost when on | Measured impact | Where measured |
 | --- | --- | --- | --- | --- |
 | Read `wholeLanes` | Keeps every candidate each keyword and meaning lane returned. Off, each lane cuts where its own score curve flattens (chat: the pre-merge keyword score; `searchPhrases` lanes are never cut, and kind lanes are never cut on phrase counts). | The decide feed grows by the parts the curves would have cut; kept counts vary with each lane's scores, and deciding is the expensive stage. | The cut the off state applies missed 6 of 445 answer messages on the tuning half: three shared no words with the question, three ranked below the cut. Its score and cost impact, and the loss under the label gate, are not yet measured. | Saved tuning-half lanes, 249 questions. |
-| Pick `stopWhenCold` | Off unless set; off, the decide step rates every part of the fused order, so a call's cost grows with the parts the search lanes keep. Set (`{}` takes the defaults), it reads the order two batches at a time and stops at the first batch whose best decision score is under `floor` (0.1), or under `share` (0.2) times the best score before it, never before the read has kept a part. Parts below the stop record `unassessed` with reason `'stopWhenCold'`. A chat source on the agent question set keeps [the chat read](#the-chat-read)'s own stop. | The parts read before the scores go cold, and at most one batch past them; a question the history holds nothing for reads the whole order. A higher `floor` or `share` reads less; a lower one reads more. Saved $0.0012 a LoCoMo question and $0.0067 a LongMemEval question; about half the parts of a 5,800-part DolphinBench transcript. | On the replay's held-back halves the defaults rated 64%, 55% and 83% of the parts the runs rated on LoCoMo, DolphinBench and BEAM, and kept 98.5%, 95.2% and 100% of their evidence. On the published runs they cost about 5 to 12 of LoCoMo's 1,540 right answers and stayed inside the noise on LongMemEval. | Saved decision scores of three finished benchmark runs, replayed with no decision call, and the published LoCoMo and LongMemEval texts rebuilt and answered twice ([Stop when the ratings go cold](#stop-when-the-ratings-go-cold)). |
+| Pick `stopWhenCold` | Off unless set; off, the decide step rates every part of the fused order, so a call's cost grows with the parts the search lanes keep. Set (`{}` takes the defaults), it reads the order two batches at a time and stops at the first batch whose best decision score is under `floor` (0.1), or under `share` (0.2) times the best score before it, never before the read has kept a part. Parts below the stop record `unassessed` with reason `'stopWhenCold'`. A source in a `conversationRead` mode keeps [the chat read](#the-chat-read)'s own stop. | The parts read before the scores go cold, and at most one batch past them; a question the history holds nothing for reads the whole order. A higher `floor` or `share` reads less; a lower one reads more. Saved $0.0012 a LoCoMo question and $0.0067 a LongMemEval question; about half the parts of a 5,800-part DolphinBench transcript. | On the replay's held-back halves the defaults rated 64%, 55% and 83% of the parts the runs rated on LoCoMo, DolphinBench and BEAM, and kept 98.5%, 95.2% and 100% of their evidence. On the published runs they cost about 5 to 12 of LoCoMo's 1,540 right answers and stayed inside the noise on LongMemEval. | Saved decision scores of three finished benchmark runs, replayed with no decision call, and the published LoCoMo and LongMemEval texts rebuilt and answered twice ([Stop when the ratings go cold](#stop-when-the-ratings-go-cold)). |
 | Pick `everyRanked` | Unset by default: the decide step reads the whole fused order instead. `true` gives the earlier feed: every ranked reference part reaches the decide step. `{ c }` reads only the top `round(c × N^0.8)`, where N is the number of reference parts the pick received; rules pass through uncut and dropped parts record `unassessed` with reason `'pick'`. | With `true`, the decide step reads every ranked part, the whole ranking: all 850 of 850 parts at one measured size and all 8,475 of 8,475 at the largest. The off dial at c = 0.68 read 150 of the 850 and 944 of the 8,475. | On the keyword-and-label ranking the off dial at c = 0.68 kept 437–442 of 445 answer messages (98–99%) at every size from 127 to 8,475 parts (on keeps the whole ranking) and scored 229 of 249 at $0.18 a question; the on state's score and cost under the label gate are not yet measured. | Saved tuning-half rankings replayed, label gate on and `wholeLanes` on; the tuning dials in the root README. |
 | Source `bar`, pick `everyScored` | Off by default: each source cuts its references below its own `bar`, 0.0146 for every reader. `everyScored` sets one cut for every source in place of their bars: `true` keeps every part with a valid decision probability, including zero; `{ bar }` cuts below a flat bar; `{ bySize }` cuts below a bar that rises with the decided count. | `curate` receives every scored part. At the 0.0146 bar it receives about 70 of a LongMemEval history's 850 parts. | At the 0.0146 bar: 225 of the 249 tuning questions at $0.13 a question (223 on the all-500 replay), and 458 of 500. A saved 0.6 bar removed every fed fragment of 183 labelled answer turns; a 0.05 bar lost 8 of 438 answer messages. 0.0146 is the highest cut that lost no answer message on the tuning questions. | Saved-decision sweep and the LongMemEval runs in the root README. |
 | Source `labels` | Per source: a source that carries label kinds has its reference parts labelled with those kind questions, and the task is asked once per distinct kind set. Sources with no kinds receive no label questions. Stores each set under `directory` and adds a label lane so parts the keyword lanes dropped can reach decide on the `everyRanked` feed; under the fused order the lane reorders the order the decide step reads and admits none. Uses a default cache directory and decision-function ID; `pick.labels` overrides both. | One question per kind for each part and task, once per text, kind set and `deciderId`; later picks reuse the store. | Keyword alone reached 439 of the tuning half's 445 answer messages; with each part labelled, all 445 were reached at 38% of each history. Its score and cost impact is not yet measured. | Saved label run on the tuning half, in the root README. |
@@ -1567,14 +1567,13 @@ passes one.
 
 ### Source settings
 
-Each source carries seven settings, tuned for its kind of history:
+Each source carries six settings, tuned for its kind of history:
 
 - **`labels`:** the label kinds asked of each part: `true` for `LABEL_KINDS`, a list for those kinds, `false` for none.
 - **`labelBar`:** the label bar, from 0 to 1, for which kinds the task needs and which of this source's parts join the label lane; absent means 0.5.
 - **`names`:** open one exact-phrase lane per name the task names ([names in the task](#names-in-the-task)). The reason is recall.
-- **`bar`:** keep a reference part scored at or above this.
 - **`ruleBar`:** keep a rule scored at or above this; absent means 0. Only sources whose parts are rules use it.
-- **`questions`:** the decision questions asked of each reference part; absent means the built-in question for the part's kind.
+- **`mode`:** how the source's parts are judged and read: `name`; `questions`, the decision questions asked of each reference part (absent: the built-in question for the part's kind); `bar`, keep a reference part scored at or above this (absent: the set's fitted bar, or 0.0146); and `read`, `rankedRead` down the fused order or `conversationRead` ([the chat read](#the-chat-read)). Absent: the built-in question, 0.0146 and the ranked read.
 - **`decay`:** rank older notes lower by their age at the task date, as `{ halfLife: '365 days' }`; absent or `false` is off, as in every preset. Markdown sources only; see the [Markdown reader](https://github.com/jonny981/curate/blob/main/packages/markdown/README.md#decay).
 
 A source can also carry the look-back and path settings its reader ran
@@ -1586,16 +1585,27 @@ Each reader package exports its settings as one plain object:
 
 | Settings object | Value | Carried by |
 | --- | --- | --- |
-| `chatSettings` (`@curatejs/chat`) | `{ labels: true, names: true, bar: 0.0146, questions: CHAT_CASCADE }` | `chat()` overrides questions with `AGENT_CHAT_CASCADE` |
-| `gitSettings` (`@curatejs/git`) | `{ labels: false, names: true, bar: 0.0146, questions: GIT_HISTORY_CASCADE }` | `git()` |
-| `markdownSettings` (`@curatejs/markdown`) | `{ labels: false, names: true, bar: 0.0146, questions: MARKDOWN_CASCADE }` | `markdown()`, `knowledgeBase()` |
+| `chatSettings` (`@curatejs/chat`) | `{ labels: true, names: true, mode: assistantChatHistory }` | `chat()` overrides the mode with `agentTranscripts` |
+| `gitSettings` (`@curatejs/git`) | `{ labels: false, names: true, mode: commits }` | `git()` |
+| `markdownSettings` (`@curatejs/markdown`) | `{ labels: false, names: true, mode: notes }` | `markdown()`, `knowledgeBase()` |
 | `rulesSettings` (`@curatejs/markdown`) | `{ ...markdownSettings, names: false, ruleBar: 0.5 }`; 0.5 is a starting value, not yet tuned; it will be fitted on the 160-task rules test | `rules()` |
 
 Rules have no name lanes because they are chosen by where they apply, not by search.
 
+Each reader package exports its modes:
+
+| Mode | Name | Questions | Bar | Read |
+| --- | --- | --- | --- | --- |
+| `agentTranscripts` (`@curatejs/chat`) | `agent-transcripts` | `AGENT_CHAT_CASCADE` | 0.0146 | `conversationRead` |
+| `assistantChatHistory` (`@curatejs/chat`) | `assistant-chat-history` | `CHAT_CASCADE` | 0.0146 | `rankedRead` |
+| `commits` (`@curatejs/git`) | `commits` | `GIT_HISTORY_CASCADE` | 0.0146 | `rankedRead` |
+| `notes` (`@curatejs/markdown`) | `notes` | `MARKDOWN_CASCADE` | 0.0146 | `rankedRead` |
+
+Parts of modes that share a read are read together: every `rankedRead` mode's parts and every rule part in one read of the fused order, every `conversationRead` mode's parts in one chat read.
+
 The 0.0146 bar is the highest cut that lost no answer message on the tuning questions.
 The levers for the whole call start at: `stopWhenCold` off, `wholeLanes` off, and `route` off; `everyRanked` is unset.
-`everyScored` is unset, so each source's own `bar` applies.
+`everyScored` is unset, so each source's mode's `bar` applies.
 
 A source's settings change only that source's pick, with one exception: a selected commit brings in a note it changed, through the changed-path link.
 That holds only under `everyRanked: true` with no stopping limit set.
@@ -1604,6 +1614,7 @@ The fused order, the default, and `everyRanked: { c }` both rank every source's 
 The record's `levers.sources` maps each source id to the settings it ran with, a `SourceSettings`:
 
 - **`kind`:** the source's kind, when it declares one.
+- **`mode`:** the name of the source's mode, when it carries one.
 - **`labels`:** whether the label gate ran on its parts.
 - **`labelBar`:** the label bar its needs and label lane used, present when the source carries label kinds.
 - **`bar`:** the bar its references were cut at, 0 when every scored part was kept.
@@ -1611,26 +1622,26 @@ The record's `levers.sources` maps each source id to the settings it ran with, a
 - **`questions`:** the question set its reference parts were asked, present when the source carries one; absent, they were asked the built-in question.
 - **`decay`:** the half-life its parts ranked with, present when the source has `decay` on. Only a record `pickFromSources()` produced carries it.
 
-So a run reads as, for example, `{ kind: 'chat', labels: true, labelBar: 0.5, bar: 0.0146 }`: a chat source with labels on.
+So a run reads as, for example, `{ kind: 'chat', mode: 'assistant-chat-history', labels: true, labelBar: 0.5, bar: 0.0146 }`: a chat source with labels on.
 `levers.everyScored` is present only when the call gave it.
 `levers.stopWhenCold` holds the stop's floor and share, or `false` when off, the default, whenever `everyRanked` is unset; `levers.everyRanked` is present only when the call gave it, and the two never appear together.
 
 Set your own with `historySource()`.
-`reader` is any source, a reader's or your own, and `labels`, `names` and `bar` are required, so spread a settings object to start from its values:
+`reader` is any source, a reader's or your own, and `labels` and `names` are required, so spread a settings object to start from its values:
 
 ```ts
 import { historySource, pickFromSources } from '@curatejs/core';
-import { chat, chatSettings, AGENT_CHAT_CASCADE } from '@curatejs/chat';
-import { markdown, markdownSettings } from '@curatejs/markdown';
+import { agentTranscripts, chat, chatSettings } from '@curatejs/chat';
+import { markdown, markdownSettings, notes } from '@curatejs/markdown';
 
 const sources = [
-  historySource({ reader: chat(), ...chatSettings, labels: false, questions: AGENT_CHAT_CASCADE }),
-  historySource({ reader: markdown({ paths: ['docs'], kind: 'docs' }), ...markdownSettings, bar: 0.05 }),
+  historySource({ reader: chat(), ...chatSettings, labels: false, mode: agentTranscripts }),
+  historySource({ reader: markdown({ paths: ['docs'], kind: 'docs' }), ...markdownSettings, mode: { ...notes, bar: 0.05 } }),
 ];
 const picked = await pickFromSources(sources, { task }, { task, decide });
 ```
 
-A direct `pick()` takes the same settings by source id: `labelKindsBySource`, `labelBarBySource`, `barBySource`, `ruleBarBySource` and `questionsBySource`.
+A direct `pick()` takes the same settings by source id: `labelKindsBySource`, `labelBarBySource`, `ruleBarBySource` and `modesBySource`.
 
 ## What each setting did
 

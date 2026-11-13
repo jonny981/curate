@@ -1,13 +1,13 @@
 import type { HistorySettings } from '@curatejs/core';
-import { GIT_HISTORY_CASCADE } from './questions.js';
+import { commits } from './mode.js';
 
 /** The settings `git()` reads with: no label kinds, a name lane for
- *  each name the task names, the 0.0146
- *  decision-score bar and the `GIT_HISTORY_CASCADE` decision questions.
- *  Change one with
- *  `historySource({ reader: git('.'), ...gitSettings, bar: 0.05 })`. */
+ *  each name the task names, and the `commits` mode (the
+ *  `GIT_HISTORY_CASCADE` decision questions, the 0.0146 bar and the
+ *  ranked read). Change one with
+ *  `historySource({ reader: git('.'), ...gitSettings, mode: { ...commits, bar: 0.05 } })`. */
 export const gitSettings: HistorySettings = {
-  labels: false, names: true, bar: 0.0146, questions: GIT_HISTORY_CASCADE,
+  labels: false, names: true, mode: commits,
 };
 
 export interface GitKeywordSettings {

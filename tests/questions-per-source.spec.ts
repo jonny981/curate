@@ -90,7 +90,7 @@ describe('pickFromSources asks each source its own set', () => {
       true: 'It is about the task', false: 'It is not', weight: 1 }] };
     const reader = (id: string, word: string) => ({ ...fixtureSource('chat', parts(id, word)), id });
     const a = historySource({ reader: reader('chat-a', 'aword'), ...chatSettings, labels: false });
-    const b = historySource({ reader: reader('chat-b', 'bword'), ...chatSettings, labels: false, questions: ONE });
+    const b = historySource({ reader: reader('chat-b', 'bword'), ...chatSettings, labels: false, mode: { ...chatSettings.mode!, questions: ONE } });
     const { requests, how } = recording();
     const picked = await pickFromSources([a, b], { task }, { task, decide: how });
     const askedA = decisionQuestions(requests, 'chat-a');
@@ -105,7 +105,7 @@ describe('pickFromSources asks each source its own set', () => {
 
   it('asks a source without a set the built-in question', async () => {
     const custom = historySource({ reader: { ...fixtureSource('markdown', parts('custom', 'cword')), id: 'custom' },
-      labels: false, names: false, bar: 0.0146 });
+      labels: false, names: false });
     const { requests, how } = recording();
     const picked = await pickFromSources([custom], { task }, { task, decide: how });
     const asked = decisionQuestions(requests, 'custom');

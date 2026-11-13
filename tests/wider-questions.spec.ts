@@ -33,7 +33,7 @@ describe('the count marker keeps a part below the bar', () => {
   const low = sigmoid((Math.log(0.005 / 0.995) - CHAT_CASCADE.bias!) / (0.8588 + 0.5134));
   const run = async (list: number, instance: number) => {
     const source = historySource({ reader: fixtureSource('chat', pool(1)), ...chatSettings,
-      labels: false, questions: { ...CHAT_CASCADE, typed: [COUNT_MARKER] } });
+      labels: false, mode: { ...chatSettings.mode!, questions: { ...CHAT_CASCADE, typed: [COUNT_MARKER] } } });
     const { requests, decide } = recording((q) => isTask(q) ? (q.questionKey === 'list' ? list : 0.1)
       : q.questionKey === 'relevant' ? 0.5 : q.questionKey === 'instance' ? instance : low);
     const picked = await pickFromSources([source], { task }, { task, decide, answerTypes: true });
@@ -45,7 +45,7 @@ describe('the count marker keeps a part below the bar', () => {
     const [entry] = picked.record.candidates;
     expect(entry).toMatchObject({ id: 'chat#0', status: 'selected', keptBy: 'instance' });
     expect((entry as { probability: number }).probability).toBeCloseTo(0.005, 6);
-    expect((entry as { probability: number }).probability).toBeLessThan(chatSettings.bar);
+    expect((entry as { probability: number }).probability).toBeLessThan(chatSettings.mode!.bar!);
     expect(picked.record.effects.find((e) => e.setting === 'typed')).toMatchObject({ actedOn: 1, added: 1, dropped: 0 });
   });
 
@@ -68,7 +68,7 @@ const WRITTEN: readonly PickCriterion[] = [
   { key: 'b', instructions: 'Does this part give a deploy constraint?', true: 'It gives one', false: 'It gives none' },
 ];
 const written = () => historySource({ reader: fixtureSource('chat', pool(12)), ...chatSettings,
-  labels: false, questions: PERSONAL_CHAT_WRITTEN_CASCADE });
+  labels: false, mode: { ...chatSettings.mode!, questions: PERSONAL_CHAT_WRITTEN_CASCADE } });
 
 describe('written questions are asked and weighed', () => {
   // personal_fact below, inside and above the 0.1 to 0.9 band by part; every other answer varies by part and question.
@@ -117,7 +117,7 @@ describe('written questions beside the count marker', () => {
   // Every set question at 0.5 scores about 0.083; both written answers at 0.99 lift it to about 0.597, over the bar 0.5.
   const run = async (instance: number) => {
     const source = historySource({ reader: fixtureSource('chat', pool(1)), ...chatSettings,
-      labels: false, bar: 0.5, questions: { ...PERSONAL_CHAT_WRITTEN_CASCADE, typed: [COUNT_MARKER] } });
+      labels: false, mode: { ...chatSettings.mode!, bar: 0.5, questions: { ...PERSONAL_CHAT_WRITTEN_CASCADE, typed: [COUNT_MARKER] } } });
     const { decide } = recording((q) => isTask(q) ? (q.questionKey === 'list' ? 0.9 : 0.1)
       : q.questionKey === 'instance' ? instance : q.questionKey?.startsWith('task') === true ? 0.99 : 0.5);
     return pickFromSources([source], { task }, { task, decide, answerTypes: true, writeQuestions: async () => WRITTEN });

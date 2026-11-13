@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { LABEL_KINDS, curate, memory, pickFromSources,
+import { LABEL_KINDS, curate, memory, pickFromSources, rankedRead,
   type CandidateSource, type MemoryCandidate, type PickDecide, type PickQuestion } from '../src/index.js';
 
 const task = 'Recall the constraint';
@@ -70,8 +70,8 @@ describe('settings per source', () => {
   });
 
   it('rejects invalid per-source defaults before reading', async () => {
-    const reader = { ...source('git'), bar: 2 };
-    await expect(pickFromSources([reader], { task }, { task, decide: recorder().decide })).rejects.toThrow(/barBySource/);
+    const reader = { ...source('git'), mode: { name: 'commits', bar: 2, read: rankedRead } };
+    await expect(pickFromSources([reader], { task }, { task, decide: recorder().decide })).rejects.toThrow(/modesBySource\.git\.bar/);
     expect(reader.read).not.toHaveBeenCalled();
   });
 });

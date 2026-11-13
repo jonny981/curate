@@ -9,6 +9,7 @@ import {
   historySource,
   pick,
   pickFromSources,
+  rankedRead,
   ROUTE_QUESTIONS,
   type CandidateSource,
   type MemoryCandidate,
@@ -329,8 +330,8 @@ describe('levers', () => {
         ranking: { knwledge: { score: 2 } } as never }))
         .rejects.toThrow('`ranking.knwledge` is not an option; allowed keys are `knowledge`, `docs`, `rules`, `instructions`');
       await expect(pick([part], { task: 'task', decide: counter.decide,
-        questionsBySource: { notes: { ...fitted, firstonly: { bias: 0, weight: 1 } } } as never }))
-        .rejects.toThrow('`questionsBySource.notes.firstonly` is not an option; allowed keys are `bias`, `questions`, `typed`, `first`, `band`, `firstOnly`');
+        modesBySource: { notes: { name: 'notes', read: rankedRead, questions: { ...fitted, firstonly: { bias: 0, weight: 1 } } } } as never }))
+        .rejects.toThrow('`modesBySource.notes.questions.firstonly` is not an option; allowed keys are `bias`, `questions`, `typed`, `first`, `band`, `firstOnly`');
       await expect(pick([part], { task: 'task', decide: counter.decide,
         sourceKinds: { notes: 'markdwon' } as never }))
         .rejects.toThrow("`sourceKinds.notes` names a kind that is not 'chat', 'git-history' or 'markdown'.");
@@ -350,16 +351,19 @@ describe('levers', () => {
         },
       };
       await expect(pick([part], { task: 'task', decide: counter.decide,
-        questionsBySource: { notes: { ...fitted, questions: [{ ...fitted.questions[0]!, wieght: 2 }] } } } as never))
-        .rejects.toThrow('`questionsBySource.notes.questions[0].wieght` is not an option; allowed keys are `key`, `instructions`, `true`, `false`, `levels`, `weight`');
+        modesBySource: { notes: { name: 'notes', read: rankedRead,
+          questions: { ...fitted, questions: [{ ...fitted.questions[0]!, wieght: 2 }] } } } } as never))
+        .rejects.toThrow('`modesBySource.notes.questions.questions[0].wieght` is not an option; allowed keys are `key`, `instructions`, `true`, `false`, `levels`, `weight`');
       await expect(pick([part], { task: 'task', decide: counter.decide,
-        questionsBySource: { notes: { ...fitted, first: 'q', band: [0.4, 0.6], firstOnly: { bias: 0, wieght: 1 } } } } as never))
-        .rejects.toThrow('`questionsBySource.notes.firstOnly.wieght` is not an option; allowed keys are `bias`, `weight`');
-      const settings = { labels: false, bar: 0.0146, names: false } as const;
+        modesBySource: { notes: { name: 'notes', read: rankedRead,
+          questions: { ...fitted, first: 'q', band: [0.4, 0.6], firstOnly: { bias: 0, wieght: 1 } } } } } as never))
+        .rejects.toThrow('`modesBySource.notes.questions.firstOnly.wieght` is not an option; allowed keys are `bias`, `weight`');
+      const settings = { labels: false, names: false } as const;
+      expect(() => historySource({ reader: source, ...settings, mode: { name: 'notes', read: rankedRead,
+        questions: { ...fitted, questions: [{ ...fitted.questions[0]!, wieght: 2 }] } } as never }))
+        .toThrow('`mode.questions.questions[0].wieght` is not an option');
       expect(() => historySource({ reader: source, ...settings,
-        questions: { ...fitted, questions: [{ ...fitted.questions[0]!, wieght: 2 }] } as never }))
-        .toThrow('`questions.questions[0].wieght` is not an option');
-      expect(() => historySource({ reader: source, ...settings, questions: { ...fitted, bias: Number.NaN } }))
+        mode: { name: 'notes', read: rankedRead, questions: { ...fitted, bias: Number.NaN } } }))
         .toThrow('a question set needs unique questions and finite fitted weights.');
       await expect(pick([part], { task: 'task', decide: counter.decide,
         tags: [{ ...tagSet, questions: [{ ...tagSet.questions[0]!, wieght: 2 }] }] } as never))

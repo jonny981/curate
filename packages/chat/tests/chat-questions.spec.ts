@@ -34,7 +34,7 @@ describe('source decision questions', () => {
     expect(result.record.levers.sources.agent?.questions?.questions.map((question) => question.key))
       .toEqual(['relevant', 'needed']);
     expect(result.record.levers.sources.personal?.questions).toEqual(CHAT_CASCADE);
-    expect(chatSettings.questions).toBe(CHAT_CASCADE);
+    expect(chatSettings.mode?.questions).toBe(CHAT_CASCADE);
   });
 
   it('weighs the person\'s own words only in the agent set, the one weight fitted on agent transcripts', () => {

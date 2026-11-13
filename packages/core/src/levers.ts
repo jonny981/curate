@@ -53,6 +53,8 @@ export interface LeverStates {
 export interface SourceSettings {
   /** The source's kind, when it declares one. */
   readonly kind?: CandidateSourceKind;
+  /** The name of the source's mode, when it carries one. */
+  readonly mode?: string;
   /** The label gate ran on this source's parts with its label kinds. */
   readonly labels: boolean;
   /** The label bar this source's needs and label lane used, present

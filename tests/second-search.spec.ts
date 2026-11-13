@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { CandidateReadRequest, CandidateSource, MemoryCandidate, PickCascade, PickDecide } from '@curatejs/core';
+import { conversationRead, type CandidateReadRequest, type CandidateSource, type MemoryCandidate, type PickCascade, type PickDecide } from '@curatejs/core';
 // @ts-expect-error The standalone JavaScript command has no type declarations.
 import { pickFullSources, rareLines, searchAgain, searchSource } from '../skills/curate/run.mjs';
 
@@ -52,7 +52,8 @@ describe('the second search on coding-agent transcripts', () => {
     const answer = part('late', 1, 'agent', 'zanzibar holds the stored records', 10);
     const all = [...parts, answer];
     const words = (text: string) => text.toLowerCase().match(/[a-z]+/g) ?? [];
-    const source: CandidateSource = { id: 'agents', kind: 'chat', role: 'reference', questions: agentSet,
+    const source: CandidateSource = { id: 'agents', kind: 'chat', role: 'reference',
+      mode: { name: 'agent-transcripts', questions: agentSet, read: conversationRead },
       async read(request: CandidateReadRequest) {
         const asked = new Set(words(request.task));
         const scored = all.map((candidate) => ({ ...candidate,

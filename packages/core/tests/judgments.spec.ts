@@ -7,6 +7,7 @@ import { checkCascade } from '../src/options.js';
 import { pick, type MemoryCandidate, type PickAnswer, type PickCascade } from '../src/pick.js';
 import { classifyTask } from '../src/task.js';
 import { taskMoment } from '../src/time.js';
+import { modesOf } from './fixtures/modes.js';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -76,7 +77,7 @@ describe('model-scored question sets', () => {
         signals: { keyword: 0.4 }, chat: { provider: 'codex', sessionId: 'a', role: 'assistant' } }),
     ];
     const result = await pick(candidates, {
-      ...uncutPick, task: 'Which database did we pick?', questionsBySource: { chat: SET }, decide,
+      ...uncutPick, task: 'Which database did we pick?', modesBySource: modesOf({ chat: SET }), decide,
     });
 
     // One round: no first/band, so every question is asked together.
@@ -117,7 +118,7 @@ describe('model-scored question sets', () => {
       + wording(SET.questions[0]!) + wording(SET.questions[1]!) + parts[0]!.text.length
       + wording(SET.questions[0]!) + parts[1]!.text.length;
     const result = await pick(parts, { ...uncutPick, task,
-      questionsBySource: { chat: SET }, decide, limits: { maxBatchChars: bound } });
+      modesBySource: modesOf({ chat: SET }), decide, limits: { maxBatchChars: bound } });
     expect(batches).toEqual([
       ['chat:r:f:1:1:1:topic_match', 'chat:r:f:1:1:1:answerhood'],
       ['chat:r:f:1:1:2:topic_match', 'chat:r:f:1:1:2:answerhood'],
@@ -131,7 +132,7 @@ describe('model-scored question sets', () => {
         chat: { provider: 'codex', sessionId: 'a', role: 'user' } }),
     ];
     const result = await pick(candidates, {
-      ...uncutPick, task: 'the task', questionsBySource: { chat: SET },
+      ...uncutPick, task: 'the task', modesBySource: modesOf({ chat: SET }),
       decide: async ({ questions }) => Object.fromEntries(questions.map((question) => [question.key,
         question.questionKey === 'answerhood' ? { status: 'missing' } satisfies PickAnswer
           : { status: 'answered', probability: 0.8 } satisfies PickAnswer])),
@@ -152,7 +153,7 @@ describe('model-scored question sets', () => {
       { keys: ['a'], mu: [0], sd: [1], w: [1], b: 0, bar: 2 },
     ] as const) {
       await expect(pick(parts, {
-        ...uncutPick, task: 'the task', questionsBySource: { chat: { ...SET, model: model as never } }, decide,
+        ...uncutPick, task: 'the task', modesBySource: modesOf({ chat: { ...SET, model: model as never } }), decide,
       })).rejects.toThrowError(/model|weights/);
     }
     expect(decide).not.toHaveBeenCalled();

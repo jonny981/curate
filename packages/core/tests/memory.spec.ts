@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  historySource, memory, SourceReadError,
+  historySource, memory, rankedRead, SourceReadError,
   type CandidateReadResult, type CandidateSource, type MemoryCandidate,
   type PickBatch, type PickCascade, type PickDecide,
 } from '../src/index.js';
@@ -129,8 +129,8 @@ describe('memory', () => {
   it('asks the questions each source carries', async () => {
     const questions: (string | undefined)[] = [];
     const recalled = await memory({
-      sources: [historySource({ reader: { ...source(), kind: 'markdown' }, labels: false, bar: 0.0146,
-        names: false, questions: fitted('from-source') })],
+      sources: [historySource({ reader: { ...source(), kind: 'markdown' }, labels: false,
+        names: false, mode: { name: 'notes', questions: fitted('from-source'), read: rankedRead } })],
       decide: async (batch, signal) => {
         questions.push(...batch.questions.filter((question) => question.sourceId === 'notes').map((question) => question.questionKey));
         return decide(batch, signal);

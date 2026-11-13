@@ -34,10 +34,10 @@ it('combines search options and source questions across real readers', async () 
     const fitted = (key: string): PickCascade => ({ bias: 0, questions: [{
       key, instructions: `Check ${key}?`, true: 'It supplies evidence.', false: 'It supplies no evidence.', weight: 1,
     }] });
-    const readers = [historySource({ reader: chat({ paths: [join(directory, 'transcripts')], providers: ['codex'] }), ...chatSettings, labels: false, questions: fitted('chat') }),
-      historySource({ reader: gitSource(directory), ...gitSettings, questions: fitted('history') }),
-      historySource({ reader: knowledgeBase(join(directory, 'notes')), ...markdownSettings, questions: fitted('note') }),
-      historySource({ reader: rules(join(directory, 'policy')), ...rulesSettings, questions: fitted('note') })];
+    const readers = [historySource({ reader: chat({ paths: [join(directory, 'transcripts')], providers: ['codex'] }), ...chatSettings, labels: false, mode: { ...chatSettings.mode!, questions: fitted('chat') } }),
+      historySource({ reader: gitSource(directory), ...gitSettings, mode: { ...gitSettings.mode!, questions: fitted('history') } }),
+      historySource({ reader: knowledgeBase(join(directory, 'notes')), ...markdownSettings, mode: { ...markdownSettings.mode!, questions: fitted('note') } }),
+      historySource({ reader: rules(join(directory, 'policy')), ...rulesSettings, mode: { ...rulesSettings.mode!, questions: fitted('note') } })];
     const kinds = new Map(readers.map((reader) => [reader.id, reader.kind]));
     const task = 'Apple orchard. Answer in one line. Cite both.';
     const calls: string[][] = [];

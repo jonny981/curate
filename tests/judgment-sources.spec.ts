@@ -1,12 +1,12 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
 
-import { pickFromSources, type PickAnswer, type PickCascade } from '@curatejs/core';
+import { pickFromSources, rankedRead, type PickAnswer, type PickCascade } from '@curatejs/core';
 import { jev } from '@curatejs/core/models';
-import { AGENT_CHAT_CASCADE, chat, JUDGMENT_CHAT_CASCADE } from '@curatejs/chat';
+import { AGENT_CHAT_CASCADE, agentTranscripts, chat, JUDGMENT_CHAT_CASCADE } from '@curatejs/chat';
 import { GIT_HISTORY_CASCADE } from '@curatejs/git';
 import { MARKDOWN_CASCADE } from '@curatejs/markdown';
 // @ts-expect-error The standalone JavaScript command has no type declarations.
-import { CHAT_QUESTION_SETS, maxDecisionBatchChars, parseSources } from '../skills/curate/run.mjs';
+import { CHAT_MODES, maxDecisionBatchChars, parseSources } from '../skills/curate/run.mjs';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -40,9 +40,9 @@ describe('sources.json judgment selection', () => {
         ...(type === 'codex' ? { allowedCwd: '/x' } : {}) }] });
       expect(parsed.sources[0]).toMatchObject({ questions: 'judgments', bar: 0.3 });
     }
-    expect(CHAT_QUESTION_SETS.judgments).toBe(JUDGMENT_CHAT_CASCADE);
-    // 'default' names today's set: the same source an omitted key produces.
-    expect(CHAT_QUESTION_SETS.default).toBe(AGENT_CHAT_CASCADE);
+    expect(CHAT_MODES.judgments).toMatchObject({ questions: JUDGMENT_CHAT_CASCADE, read: rankedRead });
+    // 'default' names today's mode: the same source an omitted key produces.
+    expect(CHAT_MODES.default).toBe(agentTranscripts);
     const named = parseSources({ sources: [{ type: 'claude-code', path: '/x', questions: 'default' }] });
     expect(named.sources[0]).toMatchObject({ questions: 'default' });
     expect(() => parseSources({ sources: [{ type: 'claude-code', path: '/x', questions: 'other' }] }))
@@ -62,18 +62,20 @@ describe('a fitted model set through pickFromSources', () => {
     read: async () => ({ status: 'read' as const, complete: true, candidates: [item] }),
   });
 
-  it('selects the set through chat({ questions }) and scores it at its fitted bar', async () => {
-    const selected = await pickFromSources([source({ questions: FITTED })], { task: 'the task' },
+  const fitted = { name: 'fitted', questions: FITTED, read: rankedRead };
+
+  it('selects the set through chat({ mode }) and scores it at its fitted bar', async () => {
+    const selected = await pickFromSources([source({ mode: fitted })], { task: 'the task' },
       { task: 'the task', decide });
     expect(selected.record.candidates[0]!.status).toBe('selected');
 
-    const rejected = await pickFromSources([source({ questions: FITTED, bar: 0.999 })], { task: 'the task' },
+    const rejected = await pickFromSources([source({ mode: { ...fitted, bar: 0.999 } })], { task: 'the task' },
       { task: 'the task', decide });
     expect(rejected.record.candidates[0]!.status).toBe('rejected');
   });
 
   it('lets the everyScored pick override win over the source bar', async () => {
-    const result = await pickFromSources([source({ questions: FITTED })], { task: 'the task' },
+    const result = await pickFromSources([source({ mode: fitted })], { task: 'the task' },
       { task: 'the task', decide, everyScored: { bar: 0.999 } });
     expect(result.record.candidates[0]!.status).toBe('rejected');
   });
@@ -101,7 +103,7 @@ describe('decision request bodies for a judgment set', () => {
     }));
     const readers = (set: PickCascade, id: string) => ({
       id, role: 'reference' as const, kind: 'chat' as const,
-      questions: set,
+      mode: { name: id, questions: set, read: rankedRead },
       read: async () => ({ status: 'read' as const, complete: true,
         candidates: [{ ...item, sourceId: id }] }),
     });

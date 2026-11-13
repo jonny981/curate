@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  historySource, pickFromSources, type CandidateSource, type HistorySettings, type MemoryCandidate,
+  historySource, pickFromSources, rankedRead, type CandidateSource, type HistorySettings, type MemoryCandidate,
   type PickDecide, type PickSourcesResult,
 } from '../src/index.js';
 import { decide, fixtureSource, parts, task } from './fixtures/source-settings.js';
@@ -24,9 +24,9 @@ const baseline: Record<string, Baseline> = JSON.parse(
 
 // The presets' settings without their question sets, as the baseline ran them: it was recorded with the
 // built-in decision question.
-const chatSettings: HistorySettings = { labels: true, bar: 0.0146, names: false };
-const gitSettings: HistorySettings = { labels: false, bar: 0.0146, names: false };
-const markdownSettings: HistorySettings = { labels: false, bar: 0.0146, names: false };
+const chatSettings: HistorySettings = { labels: true, names: false };
+const gitSettings: HistorySettings = { labels: false, names: false };
+const markdownSettings: HistorySettings = { labels: false, names: false };
 
 const chat = (settings: Partial<HistorySettings> = {}, pool = parts('chat', 'chatword')) =>
   historySource({ reader: fixtureSource('chat', pool), ...chatSettings, ...settings });
@@ -119,8 +119,9 @@ describe('a setting on one source never changes another source\'s pick', () => {
   });
 
   it.each(['chat', 'git', 'markdown'] as const)('a higher %s bar leaves the other two unchanged', async (changed) => {
-    const sources = (bar: number) => [chat(changed === 'chat' ? { bar } : {}),
-      git(changed === 'git' ? { bar } : {}), markdown(changed === 'markdown' ? { bar } : {})];
+    const barred = (bar: number) => ({ mode: { name: changed, bar, read: rankedRead } });
+    const sources = (bar: number) => [chat(changed === 'chat' ? barred(bar) : {}),
+      git(changed === 'git' ? barred(bar) : {}), markdown(changed === 'markdown' ? barred(bar) : {})];
     const low = await run(sources(0.0146));
     const high = await run(sources(0.5));
     expect(high.record.levers.sources[changed]?.bar).toBe(0.5);
@@ -137,7 +138,7 @@ describe('a setting on one source never changes another source\'s pick', () => {
       id, role: 'reference', read: async () => ({ status: 'read', complete: true, candidates }) });
     const commits = reader('git', [part('git', 'commit', { changedPaths: ['docs/ops.md'] })]);
     const notes = historySource({ reader: reader('markdown', [part('markdown', 'ops', { path: 'docs/ops.md' }),
-      part('markdown', 'other', { path: 'docs/other.md' })]), ...markdownSettings, bar: 0.6 });
+      part('markdown', 'other', { path: 'docs/other.md' })]), ...markdownSettings, mode: { name: 'notes', bar: 0.6, read: rankedRead } });
     const answers: Record<string, number> = { commit: 0.9, ops: 0.45, other: 0.45 };
     const fixed: PickDecide = async ({ questions }) =>
       Object.fromEntries(questions.map((q) => [q.key, { status: 'answered', probability: answers[q.id]! }]));
@@ -148,7 +149,7 @@ describe('a setting on one source never changes another source\'s pick', () => {
     expect(entry(carried, 'ops')).toMatchObject({ status: 'selected', probability: 0.45, link: { sourceId: 'git', id: 'commit' } });
     expect(entry(carried, 'other')).toMatchObject({ status: 'rejected', probability: 0.45 });
 
-    const dropped = await run([historySource({ reader: commits, ...gitSettings, bar: 0.95 }), notes], fixed);
+    const dropped = await run([historySource({ reader: commits, ...gitSettings, mode: { name: 'commits', bar: 0.95, read: rankedRead } }), notes], fixed);
     expect(entry(dropped, 'commit')).toMatchObject({ status: 'rejected', probability: 0.9 });
     expect(entry(dropped, 'ops')).toMatchObject({ status: 'rejected', probability: 0.45 });
     expect(entry(dropped, 'ops')).not.toHaveProperty('link');

@@ -4,16 +4,16 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  LABEL_KINDS, historySource, pick, pickFromSources,
+  LABEL_KINDS, historySource, pick, pickFromSources, rankedRead,
   type CandidateReadRequest, type CandidateSource, type HistorySettings, type MemoryCandidate,
   type PickDecide, type PickQuestion, type PickRecord, type PickResult,
 } from '../src/index.js';
 import { decide, fixtureSource, parts, task } from './fixtures/source-settings.js';
 
 // Each source's settings as the settings-by-source baseline ran them, written out in full.
-const chatSettings: HistorySettings = { labels: false, bar: 0.0146, names: false };
-const gitSettings: HistorySettings = { labels: false, bar: 0.0146, names: false };
-const markdownSettings: HistorySettings = { labels: false, bar: 0.0146, names: false };
+const chatSettings: HistorySettings = { labels: false, names: false };
+const gitSettings: HistorySettings = { labels: false, names: false };
+const markdownSettings: HistorySettings = { labels: false, names: false };
 
 const chat = (settings: Partial<HistorySettings> = {}, pool = parts('chat', 'chatword')) =>
   historySource({ reader: fixtureSource('chat', pool), ...chatSettings, ...settings });
@@ -72,7 +72,7 @@ describe('the record says what each pick setting did', () => {
     });
 
     it('says when no scored part fell below the bar', async () => {
-      const picked = await pickFromSources([chat({ bar: 0 })], { task }, { task, decide });
+      const picked = await pickFromSources([chat({ mode: { name: 'chat', bar: 0, read: rankedRead } })], { task }, { task, decide });
       expect(effect(picked.record, 'bar', 'chat')).toEqual({
         setting: 'bar', source: 'chat', actedOn: 60, added: 0, dropped: 0,
         summary: 'bar on chat: no scored part of 60 fell below the bar 0, so the bar kept out none. It kept out no part.',
@@ -157,9 +157,9 @@ describe('the record says what each pick setting did', () => {
     const commits = reader('git', [part('git', 'commit', { repository: 'repo-1', changedPaths: ['docs/ops.md'] })]);
     const notes = historySource({ reader: reader('markdown', [
       part('markdown', 'ops', { repository: 'repo-1', path: 'docs/ops.md' }),
-      part('markdown', 'other', { repository: 'repo-1', path: 'docs/other.md' })]), ...markdownSettings, bar: 0.6 });
+      part('markdown', 'other', { repository: 'repo-1', path: 'docs/other.md' })]), ...markdownSettings, mode: { name: 'notes', bar: 0.6, read: rankedRead } });
     const answers: Record<string, number> = { commit: 0.9, ops: 0.45, other: 0.45 };
-    const run = (gitBar: number) => pickFromSources([historySource({ reader: commits, ...gitSettings, bar: gitBar }), notes],
+    const run = (gitBar: number) => pickFromSources([historySource({ reader: commits, ...gitSettings, mode: { name: 'commits', bar: gitBar, read: rankedRead } }), notes],
       { task }, { task, decide: fixed((q) => answers[q.id]!), everyRanked: true });
 
     it('counts the note the commit link kept', async () => {

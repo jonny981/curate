@@ -188,12 +188,14 @@ const mem = memory({ sources: [chat(), git('.'), markdown({ paths: ['docs'], kin
 Each source carries its own settings, tuned for that kind of history.
 Sources can still affect each other. A selected commit brings in a note it changed, and the whole-call limits below are shared by every source.
 
-| Source | Labels | Label bar | Name lanes | Decision-score bar | Rule bar | Questions |
-| --- | --- | --- | --- | --- | --- | --- |
-| `chat()` | On, the seven kinds | 0.5 | On | 0.0146 | | `AGENT_CHAT_CASCADE` |
-| `git()` | Off | | On | 0.0146 | | `GIT_HISTORY_CASCADE` |
-| `markdown()`, `knowledgeBase()` | Off | | On | 0.0146 | | `MARKDOWN_CASCADE` |
-| `rules()` | Off | | Off | 0.0146 | 0.5, not yet tuned | `MARKDOWN_CASCADE` |
+| Source | Mode | Labels | Label bar | Name lanes | Decision-score bar | Rule bar | Questions |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `chat()` | `agentTranscripts` | On, the seven kinds | 0.5 | On | 0.0146 | | `AGENT_CHAT_CASCADE` |
+| `git()` | `commits` | Off | | On | 0.0146 | | `GIT_HISTORY_CASCADE` |
+| `markdown()`, `knowledgeBase()` | `notes` | Off | | On | 0.0146 | | `MARKDOWN_CASCADE` |
+| `rules()` | `notes` | Off | | Off | 0.0146 | 0.5, not yet tuned | `MARKDOWN_CASCADE` |
+
+- **Mode:** the source's questions, decision-score bar and read in one object, exported by its reader package. `agentTranscripts` reads from the person's own messages outward ([the chat read](packages/core/README.md#the-chat-read)); the others read down the ranked list.
 
 - **Labels:** check each history part for seven kinds of personal fact, such as what someone owns, prefers or decided. This helps Curate find relevant parts that keyword search missed. Each part is labelled once and the label stored for later questions.
 - **Label bar (`labelBar`):** Curate checks which kinds of fact the task needs. If a kind scores at least `labelBar`, Curate brings in the source's parts whose label for that kind also scores at least `labelBar`. 0.5 for every source that carries labels.
@@ -202,7 +204,7 @@ Sources can still affect each other. A selected commit brings in a note it chang
 - **Rule bar:** keep a rule the decision model scored at or above this. Only sources whose parts are rules use it: `rules()`, and `markdown()` with kind `rules` or `instructions`.
 - **Questions:** the yes/no questions the decision model answers about each reference part, with fitted weights that combine the answers into its score.
 
-The pick record names the settings each source ran with under `levers.sources`, such as `{ kind: 'chat', labels: true, labelBar: 0.5, bar: 0.0146 }`, with `questions` holding the question set its parts were asked.
+The pick record names the settings each source ran with under `levers.sources`, such as `{ kind: 'chat', mode: 'agent-transcripts', labels: true, labelBar: 0.5, bar: 0.0146 }`, with `questions` holding the question set its parts were asked.
 Each pick record's `effects` list says what each setting changed: the parts it brought in or kept out, and why when it changed nothing ([what each setting did](packages/core/README.md#what-each-setting-did)).
 
 These levers act on the whole call:
@@ -229,9 +231,9 @@ Spread a reader's settings object, then change what you need:
 
 ```js
 import { historySource } from '@curatejs/core';
-import { chat, chatSettings, AGENT_CHAT_CASCADE } from '@curatejs/chat';
+import { agentTranscripts, chat, chatSettings } from '@curatejs/chat';
 
-const source = historySource({ reader: chat({ paths: ['transcripts'] }), ...chatSettings, labels: false, questions: AGENT_CHAT_CASCADE });
+const source = historySource({ reader: chat({ paths: ['transcripts'] }), ...chatSettings, labels: false, mode: agentTranscripts });
 ```
 
 This turns labels off for one chat source, as the DolphinBench run did.
@@ -240,7 +242,7 @@ This turns labels off for one chat source, as the DolphinBench run did.
 Give a source your own decision questions the same way:
 
 ```js
-import { git, gitSettings } from '@curatejs/git';
+import { commits, git, gitSettings } from '@curatejs/git';
 
 const mySet = {
   bias: 0,
@@ -252,10 +254,11 @@ const mySet = {
     weight: 1,
   }],
 };
-const commits = historySource({ reader: git('.'), ...gitSettings, questions: mySet });
+const history = historySource({ reader: git('.'), ...gitSettings, mode: { ...commits, questions: mySet } });
 ```
 
-A source without `questions` asks each part one built-in question.
+A source's mode carries its question set, its bar and how the decide step reads its parts; each reader exports its own (`agentTranscripts`, `assistantChatHistory`, `commits`, `notes`).
+A source without a mode asks each part one built-in question.
 Other question options: `PERSONAL_CHAT_CASCADE` for histories of a person's own life, `COUNT_MARKER` for count tasks, and `pick.writeQuestions` for questions written for each task (see [core's options](packages/core/README.md#questions-written-for-each-task)).
 `reader` can also be your own source; see [core's options](packages/core/README.md#levers-and-source-settings).
 
@@ -293,7 +296,7 @@ Add a typed question to git's set through `historySource()`:
 
 ```js
 import { historySource } from '@curatejs/core';
-import { git, gitSettings, GIT_HISTORY_CASCADE } from '@curatejs/git';
+import { commits, git, gitSettings, GIT_HISTORY_CASCADE } from '@curatejs/git';
 
 const DATED = {
   ...GIT_HISTORY_CASCADE,
@@ -306,7 +309,7 @@ const DATED = {
     weight: 1,
   }],
 };
-const commits = historySource({ reader: git('.'), ...gitSettings, questions: DATED });
+const history = historySource({ reader: git('.'), ...gitSettings, mode: { ...commits, questions: DATED } });
 ```
 
 A pick whose sources carry typed questions while `pick.answerTypes` is off throws a `TypeError` before it reads, so a typed question never sits unread.
@@ -567,7 +570,7 @@ Parts intentionally excluded by the label questions stay in the record without s
 - **Where the read stops:** off by default, so a call's cost grows with the parts the search lanes keep, about $0.00002 a part. `pick.stopWhenCold: {}` reads the list two batches at a time and stops at the first batch whose best rating is under `floor` (0.1), or under `share` (0.2) times the best rating of every batch before it. It never stops before the read has kept a part, so a question the history holds nothing for reads the whole order even with the stop on. `pick.stopWhenCold: { floor, share }` changes them for one call: a higher number stops sooner and asks fewer questions, a lower one reads further and finds more. Parts below the stop stay unasked and record `stopWhenCold`. A chat source on the agent questions has its own read and stop instead (the chat read below). `pick.feed: { order: 'combsum', size }` reads at most `size` parts, and parts past it record `feed`. `pick.everyRanked: true` decides every ranked part instead, and `pick.everyRanked: { c }` keeps the top `round(c × N^0.8)` reference parts, where N is the number of reference parts. Rules pass through uncut in every mode. The skipped parts are unassessed, so use the separate selection API to inspect them. On three benchmark runs' saved scores, `{}` rated 64% (LoCoMo), 55% (DolphinBench) and 83% (BEAM) of the parts the runs rated and kept 98.5%, 95.2% and 100% of the evidence they found. On the published runs it saved $0.0012 a LoCoMo question and $0.0067 a LongMemEval question; it cost about 5 to 12 of LoCoMo's 1,540 right answers, the 4 lost in both answer runs each because evidence left the text, and stayed inside the noise on LongMemEval. On DolphinBench's 5,800-part transcripts it rated about half the parts, about $0.026 saved a test; its effect on answers there is not measured. A share of 0.1 rated 70%, 87% and 89% and kept 99.3%, 100% and 100% of the evidence; a share of 0.5 rated 53%, 17% and 64% and kept 97.1%, 95.2% and 85.7%, both read one batch at a time without the floor. The evidence figures are evidence kept, not answers scored, and LoCoMo's rest on an order rebuilt with the question's text as every search line, since its run saved none ([details](packages/core/README.md#stop-when-the-ratings-go-cold)).
 - **Layout inputs:** a source's `bar` sets its score cut. `pick.everyScored: { bar }` sets one cut for every source, and `pick.everyScored: true` keeps every scored reference.
 - **Tags:** `pick.tags` labels selected items with their intent, importance, emphasis and whether they correct something earlier.
-- **Chat transcripts:** unless `pick.everyRanked` is set, a chat source scored with the agent question set (Claude Code and Codex transcripts, `chat()`'s default) is not read down the ranked list. The read starts from the person's own messages, reads the neighbours of those rated well, stops when a request adds few new well-rated parts, then opens the topic segments that hold one of them or a search lane's top 10 parts ([the chat read](packages/core/README.md#the-chat-read)). Its own stop decides how far it reads, never before it has kept a part, whether or not `pick.stopWhenCold` is set; a `pick.feed` size does not cap it. On one person's ~116,000-part history it found 51 of 56 known answers in 5,900 rated parts.
+- **Chat transcripts:** unless `pick.everyRanked` is set, a source in the `agentTranscripts` mode (Claude Code and Codex transcripts, `chat()`'s default) is not read down the ranked list. The read starts from the person's own messages, reads the neighbours of those rated well, stops when a request adds few new well-rated parts, then opens the topic segments that hold one of them or a search lane's top 10 parts ([the chat read](packages/core/README.md#the-chat-read)). Its own stop decides how far it reads, never before it has kept a part, whether or not `pick.stopWhenCold` is set; a `pick.feed` size does not cap it. On one person's ~116,000-part history it found 51 of 56 known answers in 5,900 rated parts.
 
 ### Curate
 

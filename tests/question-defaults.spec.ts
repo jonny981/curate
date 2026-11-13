@@ -3,6 +3,7 @@ import { pick, type MemoryCandidate, type PickCascade, type PickDecide } from '@
 import { CHAT_CASCADE } from '@curatejs/chat';
 import { GIT_HISTORY_CASCADE } from '@curatejs/git';
 import { MARKDOWN_CASCADE } from '@curatejs/markdown';
+import { modesOf } from './fixtures/modes.js';
 
 const uncutPick = { everyRanked: true, everyScored: true } as const;
 
@@ -19,7 +20,7 @@ async function score(questions: PickCascade, values: Readonly<Record<string, num
     return [question.key, { status: 'answered', probability: values[key]! }];
   }));
   const result = await pick([candidate], { ...uncutPick,
-    task: 'Find evidence', questionsBySource: { evidence: questions }, decide,
+    task: 'Find evidence', modesBySource: modesOf({ evidence: questions }), decide,
   });
   const entry = result.record.candidates[0]!;
   return { asked, probability: 'probability' in entry ? entry.probability : undefined };

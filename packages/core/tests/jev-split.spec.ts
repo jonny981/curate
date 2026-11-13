@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { jev, type JevCall } from '../src/models.js';
 import { pick, type MemoryCandidate, type PickBatch } from '../src/pick.js';
+import { modesOf } from './fixtures/modes.js';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -63,12 +64,12 @@ describe('a Jev request the service rejects as too large', () => {
     const decide = jev({ apiKey: 'test-key' });
     const picked = await pick([part(0, 'x'.repeat(50_000))], {
       ...uncutPick, task: 'notes?', decide,
-      questionsBySource: {
+      modesBySource: modesOf({
         notes: {
           bias: 0,
           questions: [{ key: 'relevant', instructions: 'Is this part relevant?', true: 'relevant', false: 'not relevant', weight: 1 }],
         },
-      },
+      }),
     });
 
     expect(picked.selected).toHaveLength(1);
@@ -132,7 +133,7 @@ describe('a Jev request the service rejects as too large', () => {
     };
     const decide = jev({ apiKey: 'test-key' });
     const picked = await pick([part(0, 'x'.repeat(300)), part(1, 'y'.repeat(300))], {
-      ...uncutPick, task: 'notes?', decide, questionsBySource: { notes: cascade } });
+      ...uncutPick, task: 'notes?', decide, modesBySource: modesOf({ notes: cascade }) });
 
     expect(picked.selected).toHaveLength(2);
     expect(bodies.length).toBeGreaterThanOrEqual(4);
