@@ -14,7 +14,10 @@ function part(index: number, text: string): MemoryCandidate {
   };
 }
 
-type JevBody = { state: string; questions: Record<string, { instructions: string }> };
+type JevBody = { state: { task: string; items: Record<string, { text: string }> }; questions: Record<string, unknown> };
+
+/** A request's state in characters, as sent. */
+const stateChars = (body: JevBody) => JSON.stringify(body.state).length;
 
 /** A fetch stub that answers every question asked of it, but rejects a
  *  request whose state is over `cap` characters with HTTP 400
@@ -24,9 +27,9 @@ function limited(cap = 20_000) {
   vi.stubGlobal('fetch', vi.fn<typeof globalThis.fetch>().mockImplementation(async (_url, init) => {
     const body = JSON.parse(String(init!.body)) as JevBody;
     bodies.push(body);
-    if (body.state.length > cap) return new Response('request too large', { status: 400 });
+    if (stateChars(body) > cap) return new Response('request too large', { status: 400 });
     return Response.json({
-      usage: { input_tokens: body.state.length, output_tokens: 1 },
+      usage: { input_tokens: stateChars(body), output_tokens: 1 },
       answers: Object.fromEntries(Object.keys(body.questions).map((name) => [name, { noul: 0.7 }])),
     });
   }));
@@ -43,8 +46,8 @@ describe('a Jev request the service rejects as too large', () => {
 
     expect(picked.selected).toHaveLength(12);
     expect(bodies.length).toBeGreaterThanOrEqual(3);
-    expect(bodies[0]!.state.length).toBeGreaterThan(20_000);
-    for (const body of bodies.slice(1)) expect(body.state.length).toBeLessThanOrEqual(20_000);
+    expect(stateChars(bodies[0]!)).toBeGreaterThan(20_000);
+    for (const body of bodies.slice(1)) expect(stateChars(body)).toBeLessThanOrEqual(20_000);
     expect(calls).toHaveLength(bodies.length);
     expect(calls.map((call) => call.status)).toEqual([400, 200, 200]);
     expect(calls.reduce((sum, call) => sum + call.splits, 0)).toBeGreaterThan(0);
@@ -70,9 +73,13 @@ describe('a Jev request the service rejects as too large', () => {
 
     expect(picked.selected).toHaveLength(1);
     expect(bodies.length).toBeGreaterThanOrEqual(2);
-    expect(bodies[0]!.state.length).toBeGreaterThan(20_000);
-    expect(bodies.map((body) => body.state.length)).toEqual([...bodies.map((body) => body.state.length)].sort((a, b) => b - a));
-    expect(bodies[bodies.length - 1]!.state.length).toBeLessThanOrEqual(20_000);
+    expect(stateChars(bodies[0]!)).toBeGreaterThan(20_000);
+    expect(bodies.map(stateChars)).toEqual([...bodies.map(stateChars)].sort((a, b) => b - a));
+    expect(stateChars(bodies[bodies.length - 1]!)).toBeLessThanOrEqual(20_000);
+    // Each resend halves the record's text and keeps the rest of it.
+    const records = bodies.map((body) => body.state.items['1']!);
+    expect(records.map((record) => record.text.length)).toEqual(records.map((_, index) => Math.floor(50_000 / 2 ** index)));
+    expect(records.every((record) => JSON.stringify({ ...record, text: '' }) === JSON.stringify({ ...records[0]!, text: '' }))).toBe(true);
     expect(picked.record.candidates[0]?.questions?.[0])
       .toMatchObject({ status: 'answered', probability: 0.7, truncated: true });
   });
@@ -132,7 +139,7 @@ describe('a Jev request the service rejects as too large', () => {
     // The first request asks the gate question of both items; the
     // second asks the five follow-ups of the same items, so its state
     // is identical and only its questions grew.
-    expect(bodies[0]!.body.state).toBe(bodies[1]!.body.state);
+    expect(bodies[0]!.body.state).toEqual(bodies[1]!.body.state);
     expect(Object.keys(bodies[0]!.body.questions)).toHaveLength(2);
     expect(Object.keys(bodies[1]!.body.questions)).toHaveLength(10);
     expect(bodies[1]!.raw.length).toBeGreaterThan(2_000);
@@ -251,9 +258,9 @@ describe('Jev request dispatch', () => {
       let rejected = false;
       vi.stubGlobal('fetch', vi.fn<typeof globalThis.fetch>().mockImplementation(async (_url, init) => {
         sent.push(Date.now());
-        const body = JSON.parse(String(init!.body)) as { state: string; questions: Record<string, unknown> };
+        const body = JSON.parse(String(init!.body)) as JevBody;
         // Only the first oversized request is rejected; its children fit.
-        if (!rejected && body.state.length > 5_000) {
+        if (!rejected && stateChars(body) > 5_000) {
           rejected = true;
           return new Response('request too large', { status: 400 });
         }
@@ -418,7 +425,7 @@ describe('Jev request dispatch', () => {
     vi.stubGlobal('fetch', vi.fn<typeof globalThis.fetch>().mockImplementation(async (_url, init) => {
       sent += 1;
       const body = JSON.parse(String(init!.body)) as JevBody;
-      if (body.state.includes('aaaa')) return new Response('server error', { status: 500 });
+      if (JSON.stringify(body.state).includes('aaaa')) return new Response('server error', { status: 500 });
       await gate;
       return Response.json({ answers: { q0: { noul: 0.5 } } });
     }));
@@ -453,7 +460,7 @@ describe('Jev request dispatch', () => {
       sent += 1;
       const body = JSON.parse(String(init!.body)) as JevBody;
       if (sent === 1) return new Response('request too large', { status: 400 });
-      if (body.state.includes('bbbb')) return new Response('half failed', { status: 500 });
+      if (JSON.stringify(body.state).includes('bbbb')) return new Response('half failed', { status: 500 });
       await gate;
       return Response.json({ answers: { q0: { noul: 0.5 } } });
     }));

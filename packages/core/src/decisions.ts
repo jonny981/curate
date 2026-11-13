@@ -16,9 +16,10 @@ export interface DecisionStore {
  *  and the fitted name and tag set it carries
  *  for a cascade or tag question),
  *  and every field of the part the decider receives: its source id,
- *  id, title, role, kind and date, the text cut applied, the text the
- *  decider sees and the part's full text. A changed task, version,
- *  deciderId, question, source, id, title, role, kind, date, cut or
+ *  id, title, role, kind and date, its author when its reader marked
+ *  one, the text cut applied, the text the decider sees and the part's
+ *  full text. A changed task, version, deciderId, question, source, id,
+ *  title, role, kind, date, author, cut or
  *  text names a different answer, even when the change sits past the
  *  cut; an unchanged part's key is the same in every batch, so an
  *  answer is reused across batches. The request `key` is not hashed
@@ -37,10 +38,12 @@ export function decisionKey(
     .update(JSON.stringify([
       'decision', task, questionVersion, deciderId,
       question.question, question.trueCriterion ?? null, question.falseCriterion ?? null,
-      // A levelled or anonymous question's fields hash only when it
-      // carries them: the array a plain question builds is unchanged.
+      // A levelled or anonymous question's fields, and an author, hash
+      // only when it carries them: the array a plain question builds is
+      // unchanged.
       ...(question.levels === undefined && question.anonymous === undefined ? []
         : [question.levels ?? null, question.anonymous ?? null]),
+      ...(question.author === undefined ? [] : [{ author: question.author }]),
       question.questionKey ?? null, question.tagSet ?? null,
       question.sourceId, question.id, question.title, question.role, question.kind ?? null,
       question.date === undefined ? null : [question.date.value, question.date.meaning],

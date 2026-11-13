@@ -190,14 +190,14 @@ describe('score questions through jevRequest and jev', () => {
     } as const;
     const body = jevRequest(batch as never);
     expect(body.questions).toEqual({
-      q0: { type: 'score', instructions: 'Could this excerpt itself be the answer?\n\nItem 1', criteria: [...LEVELS] },
-      q1: { type: 'noul', instructions: 'same subject?\n\nItem 2', criteria: { true: 'Same subject', false: 'Different subject' } },
+      q0: { type: 'score', instructions: { question: 'Could this excerpt itself be the answer?', item: 'items.1' }, criteria: [...LEVELS] },
+      q1: { type: 'noul', instructions: { question: 'same subject?', item: 'items.2' }, criteria: { true: 'Same subject', false: 'Different subject' } },
     });
     // The anonymous item carries date and text only; the named one keeps its id and title.
-    expect(body.state).toContain('Item 1: (recorded 2025-01-01T12:00:00.000Z)\n\nthe text');
-    expect(body.state).not.toContain('anon');
-    expect(body.state).not.toContain('hidden');
-    expect(body.state).toContain('Item 2: named\nshown\n\nother text');
+    expect(body.state).toEqual({ task: 'the task', items: {
+      1: { date: 'recorded 2025-01-01T12:00:00.000Z', text: 'the text' },
+      2: { id: 'named', date: null, title: 'shown', text: 'other text' },
+    } });
   });
 
   it('strips # session lines from anonymous item text only', () => {
@@ -214,10 +214,17 @@ describe('score questions through jevRequest and jev', () => {
       }],
     } as const;
     const { state } = jevRequest(batch as never);
-    expect(state).toContain('Item 1: user: kept line');
-    expect(state).not.toContain('aaa');
+    expect(state.items['1']).toEqual({ date: null, text: 'user: kept line' });
     // Identified items keep their text verbatim.
-    expect(state).toContain('Item 2: i2\nt2\n\n# session bbb\nuser: kept too');
+    expect(state.items['2']).toEqual({ id: 'i2', date: null, title: 't2', text: '# session bbb\nuser: kept too' });
+  });
+
+  it('keeps an anonymous item\'s author out of the request', () => {
+    const { state } = jevRequest({ task: 't', questions: [{
+      key: 'k0', role: 'reference', question: 'q', trueCriterion: 't', falseCriterion: 'f',
+      sourceId: 's', id: 'i1', title: 't1', anonymous: true, author: 'person', text: 'kept',
+    }] });
+    expect(state.items['1']).toEqual({ date: null, text: 'kept' });
   });
 
   it('reads score answers into probabilities and fails malformed ones', async () => {
@@ -260,10 +267,13 @@ describe('decision keys and stored answers for score questions', () => {
     expect(decisionKey('task', 'v1', 'decider', 700, question, 'x'))
       .toBe('da9b6ea3fcfdfc45e56d3bd40a2ea21ae8415e69ea4e8f00ee30e89c9c8bba1d');
   });
-  it('hashes levels and anonymity into the decision key', () => {
+  it('hashes levels, anonymity and the author into the decision key', () => {
     const base = decisionKey('task', 'v1', 'decider', 700, question, 'x');
     expect(decisionKey('task', 'v1', 'decider', 700, { ...question, levels: ['a', 'b'] }, 'x')).not.toBe(base);
     expect(decisionKey('task', 'v1', 'decider', 700, { ...question, anonymous: true }, 'x')).not.toBe(base);
+    expect(decisionKey('task', 'v1', 'decider', 700, { ...question, author: 'person' }, 'x')).not.toBe(base);
+    expect(decisionKey('task', 'v1', 'decider', 700, { ...question, author: 'person' }, 'x'))
+      .not.toBe(decisionKey('task', 'v1', 'decider', 700, { ...question, author: 'agent' }, 'x'));
     expect(decisionKey('task', 'v1', 'decider', 700, { ...question, levels: ['b', 'a'] }, 'x'))
       .not.toBe(decisionKey('task', 'v1', 'decider', 700, { ...question, levels: ['a', 'b'] }, 'x'));
   });

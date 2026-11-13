@@ -88,7 +88,7 @@ describe('a fitted model set through pickFromSources', () => {
 
 describe('decision request bodies for a judgment set', () => {
   it('renders anonymous items and score criteria while the default set stays identified', async () => {
-    const bodies: { state: string; questions: Record<string, { type: string; criteria: unknown }> }[] = [];
+    const bodies: { state: { items: Record<string, unknown> }; questions: Record<string, { type: string; criteria: unknown }> }[] = [];
     vi.stubGlobal('fetch', vi.fn<typeof globalThis.fetch>().mockImplementation(async (_url, init) => {
       const body = JSON.parse(String(init!.body));
       bodies.push(body);
@@ -112,10 +112,11 @@ describe('decision request bodies for a judgment set', () => {
     // item renders as text alone, the default set's identified item as
     // id, title and text. A second band-round body renumbers its lone
     // item, so the id check is scoped to the shared body.
-    const shared = bodies.find((body) => body.state.includes('Item 2:'))!;
-    expect(shared.state).toContain('Item 1: user: evidence');
-    expect(shared.state).toContain('Item 2: chat:r:f:1:1:1\nt\n\nuser: evidence');
-    expect(shared.state).not.toContain('Item 1: chat:r:f:1:1:1');
+    const shared = bodies.find((body) => '2' in body.state.items)!;
+    expect(shared.state.items).toEqual({
+      1: { date: null, text: 'user: evidence' },
+      2: { id: 'chat:r:f:1:1:1', date: null, title: 't', text: 'user: evidence' },
+    });
     const types = bodies.flatMap((body) => Object.values(body.questions).map((q) => q.type));
     expect(types).toContain('score');
     expect(types).toContain('noul');

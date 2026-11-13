@@ -130,7 +130,7 @@ describe('jev at another address', () => {
 
   it('records the server in its deciderId', () => {
     expect(jev({ url: 'http://127.0.0.1:30000/v1/systemone', model: 'clef-flash' }).deciderId)
-      .toBe('jev:127.0.0.1:30000/v1/systemone:clef-flash:items-once');
+      .toBe('jev:127.0.0.1:30000/v1/systemone:clef-flash:item-records');
   });
 
   it.each([undefined, ''])('still requires a key at the default address: %j', (apiKey) => {

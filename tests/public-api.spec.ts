@@ -151,7 +151,7 @@ describe('package exports', () => {
 
   it('exports the one Jev request builder, which the skill imports instead of keeping its own', async () => {
     const { jevRequest } = await import('@curatejs/core');
-    expect(jevRequest({ task: 'task', questions: [] })).toEqual({ model: 'jev-latest', state: 'task', questions: {} });
+    expect(jevRequest({ task: 'task', questions: [] })).toEqual({ model: 'jev-latest', state: { task: 'task', items: {} }, questions: {} });
     const skill = readFileSync(join(__dirname, '../skills/curate/run.mjs'), 'utf8');
     expect(skill).not.toContain('function jevRequest');
     expect(skill.split('\n').find((line) => line.includes("from '@curatejs/core/models'"))).toContain('jev');

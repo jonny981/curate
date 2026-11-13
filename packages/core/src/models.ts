@@ -150,13 +150,18 @@ function rateAllowance(tokensPerSecond: number, requestsPerSecond: number) {
   return { wait, stop };
 }
 
-/** An item as a decision model reads it: its id and date, its title,
- *  then its text. An anonymous item keeps only its date and its text,
- *  with the `# session` header lines bench chunks carry stripped —
- *  its identifying fields never reach the request body. */
+/** An anonymous item's text: the `# session` header lines bench chunks
+ *  carry are stripped. */
+function anonymousText(text: string): string {
+  return text.split('\n').filter((line) => !line.startsWith('# session')).join('\n');
+}
+
+/** An item as a local model reads it: its id and date, its title, then
+ *  its text. An anonymous item keeps only its date and its text, so its
+ *  identifying fields never reach the request. */
 function itemState(question: PickQuestion): string {
   if (question.anonymous === true) {
-    const text = question.text.split('\n').filter((line) => !line.startsWith('# session')).join('\n');
+    const text = anonymousText(question.text);
     return question.date === undefined ? text
       : `(${question.date.meaning} ${question.date.value})\n\n${text}`;
   }
@@ -164,9 +169,21 @@ function itemState(question: PickQuestion): string {
     : ` (${question.date.meaning} ${question.date.value})`}\n${question.title}\n\n${question.text}`;
 }
 
-/** Jev's request body for a batch. The state is the batch's task, then
- *  each distinct item once, numbered; each question's instructions are
- *  its wording, then the number of the item it asks about. */
+/** An item as a named record in a Jev request's state: its id, date,
+ *  title and text, and its author where its reader marked one. A
+ *  missing date is null. An anonymous item keeps only its date and its
+ *  text, so its identifying fields and author never reach the request. */
+function itemRecord(question: PickQuestion) {
+  const date = question.date === undefined ? null : `${question.date.meaning} ${question.date.value}`;
+  if (question.anonymous === true) return { date, text: anonymousText(question.text) };
+  return { id: question.id, date, title: question.title, text: question.text,
+    ...(question.author === undefined ? {} : { author: question.author }) };
+}
+
+/** Jev's request body for a batch. The state is a JSON object: the
+ *  batch's task, and each distinct item once, as a record under its
+ *  number in `items`. Each question's instructions are its wording and
+ *  the path of the record it asks about, such as `items.3`. */
 export function jevRequest(batch: PickBatch, model = 'jev-latest') {
   const items = new Map<string, PickQuestion>();
   for (const question of batch.questions) {
@@ -174,22 +191,24 @@ export function jevRequest(batch: PickBatch, model = 'jev-latest') {
     if (!items.has(key)) items.set(key, question);
   }
   const numbers = new Map([...items.keys()].map((key, index) => [key, index + 1]));
-  const number = (question: PickQuestion) => numbers.get(`${question.sourceId}\n${question.id}`);
-  const state = [batch.task, ...[...items.values()].map((question) =>
-    `Item ${number(question)}: ${itemState(question)}`)].join('\n\n');
+  const instructions = (question: PickQuestion) =>
+    ({ question: question.question, item: `items.${numbers.get(`${question.sourceId}\n${question.id}`)}` });
   return {
     model,
-    state,
+    state: {
+      task: batch.task,
+      items: Object.fromEntries([...items.values()].map((question, index) => [String(index + 1), itemRecord(question)])),
+    },
     questions: Object.fromEntries(batch.questions.map((question, index) => [`q${index}`,
       question.levels === undefined
         ? {
           type: 'noul',
-          instructions: `${question.question}\n\nItem ${number(question)}`,
+          instructions: instructions(question),
           criteria: { true: question.trueCriterion, false: question.falseCriterion },
         }
         : {
           type: 'score',
-          instructions: `${question.question}\n\nItem ${number(question)}`,
+          instructions: instructions(question),
           criteria: [...question.levels],
         }])),
   };
@@ -197,16 +216,17 @@ export function jevRequest(batch: PickBatch, model = 'jev-latest') {
 
 /** Jev's limits are 32,000 tokens for the state plus the longest
  *  question and 64,000 for the whole request, at an estimate of three
- *  characters a token. */
+ *  characters a token. The state and each question's instructions are
+ *  counted as sent, with their field names, quotes and escapes. */
 const JEV_STATE_CHARS = 32_000 * 3;
 const JEV_REQUEST_CHARS = 64_000 * 3;
 
 function fitsJev(body: ReturnType<typeof jevRequest>, maxChars = JEV_REQUEST_CHARS): boolean {
   const longest = Math.max(0, ...Object.values(body.questions).map((question) =>
-    question.instructions.length + (Array.isArray(question.criteria)
+    JSON.stringify(question.instructions).length + (Array.isArray(question.criteria)
       ? question.criteria.join('').length
       : (question.criteria.true ?? '').length + (question.criteria.false ?? '').length)));
-  return body.state.length + longest <= JEV_STATE_CHARS && JSON.stringify(body).length <= maxChars;
+  return JSON.stringify(body.state).length + longest <= JEV_STATE_CHARS && JSON.stringify(body).length <= maxChars;
 }
 
 /** The batch split into requests inside Jev's limits. Whole items join a
@@ -279,7 +299,7 @@ export function jev({ apiKey, model = 'jev-latest', url = JEV_URL, onCall }: {
   readonly onCall?: ((call: JevCall) => void | Promise<void>) | undefined;
 }): PickDecide {
   if (!apiKey && url === JEV_URL) throw new Error('Jev requires an API key.');
-  const deciderId = url === JEV_URL ? `typesafe:${model}:items-once` : `jev:${hostAndPath(url)}:${model}:items-once`;
+  const deciderId = url === JEV_URL ? `typesafe:${model}:item-records` : `jev:${hostAndPath(url)}:${model}:item-records`;
   // The largest whole body Jev has accepted in this pick. Once a
   // rejection has landed, later batches are planned inside it, and a
   // request rejected at no more than it did not fail for size: its

@@ -118,6 +118,8 @@ export interface PickQuestion {
   /** Render the item as a date and its text only, keeping its id,
    *  title and other identifying fields out of the model request. */
   readonly anonymous?: boolean;
+  /** Who wrote the part, where its reader marked it: a chat part's `chat.author`. */
+  readonly author?: NonNullable<MemoryCandidate['chat']>['author'];
   readonly sourceId: string;
   readonly id: string;
   readonly title: string;
@@ -2119,6 +2121,7 @@ export async function pick(
       ...(tagSet === undefined ? {} : { tagSet }),
       ...(candidate.date === undefined ? {} : { date: candidate.date }),
       ...(candidate.kind === undefined ? {} : { kind: candidate.kind }),
+      ...(candidate.chat?.author === undefined ? {} : { author: candidate.chat.author }),
       role: candidate.role, question: spec.question,
       ...(spec.levels === undefined
         ? { trueCriterion: spec.trueCriterion, falseCriterion: spec.falseCriterion }
@@ -2142,12 +2145,13 @@ export async function pick(
   // A part with no text is judged by its title, as a title-only
   // commit's subject is, so the title stands in for the text in the
   // sharing key. With text present the title is a byline or locator,
-  // and identical texts keep sharing one answer.
+  // and identical texts keep sharing one answer. The decider sees the
+  // author, so two authors' identical texts are asked apart.
   const sharingKey = ({ candidate, question }: Pending) => JSON.stringify([candidate.text,
     candidate.text === '' ? candidate.title : null,
     question.role, question.kind, question.questionKey, question.question,
     question.trueCriterion ?? null, question.falseCriterion ?? null,
-    question.levels ?? null, question.anonymous ?? null]);
+    question.levels ?? null, question.anonymous ?? null, question.author ?? null]);
   // Asks packed into request-sized batches, at most `most` of them.
   const pack = (fresh: readonly Pending[], task: string, whole: boolean, most: number): Pending[][] => {
     const slices: Pending[][] = [];

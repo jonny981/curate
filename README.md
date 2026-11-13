@@ -394,7 +394,7 @@ import { openAIDecisions } from '@curatejs/core/models';
 const decide = openAIDecisions({ apiKey: process.env.OPENAI_API_KEY });
 ```
 
-The hosted helpers identify their label answers as `typesafe:${model}:items-once` and `openai:${model}`.
+The hosted helpers identify their label answers as `typesafe:${model}:item-records` and `openai:${model}`.
 For a handwritten `decide`, set its `deciderId` property.
 An explicit `pick.labels.deciderId` overrides the function's ID.
 Without an ID it uses `'custom'`, so different handwritten decision functions must supply different IDs to keep their saved labels apart.
@@ -439,7 +439,7 @@ try {
 }
 ```
 
-Labels from each server are stored under its own ID: `local:<host><path>:<model>` for `localDecisions()`, and `jev:<host><path>:<model>:items-once` for `jev()` at another address.
+Labels from each server are stored under its own ID: `local:<host><path>:<model>` for `localDecisions()`, and `jev:<host><path>:<model>:item-records` for `jev()` at another address.
 The ID leaves out the scheme and the query, so set `pick.labels.deciderId` yourself for two servers that differ only there.
 A decision cache keeps the `deciderId` you give it, so give each server its own.
 

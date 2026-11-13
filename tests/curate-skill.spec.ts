@@ -638,13 +638,14 @@ it('sends each item’s evidence in the Jev state once and names the item in eac
   // the batch's counted size.
   expect(serialized.match(/FIRST BODY/g)).toHaveLength(1);
   expect(serialized.match(/SECOND BODY/g)).toHaveLength(1);
-  expect(payload.state).toContain('task text');
-  expect(payload.state).toContain('Item 1: commit one (recorded 2026-01-01)');
-  expect(payload.state).toContain('Item 2: commit two (recorded 2026-01-01)');
+  expect(payload.state).toEqual({ task: 'task text', items: {
+    1: { id: 'commit one', date: 'recorded 2026-01-01', title: 'title of commit one', text: 'FIRST BODY' },
+    2: { id: 'commit two', date: 'recorded 2026-01-01', title: 'title of commit two', text: 'SECOND BODY' },
+  } });
   expect(payload.questions).toEqual({
-    q0: { type: 'noul', instructions: 'Is it useful?\n\nItem 1', criteria: { true: 'yes', false: 'no' } },
-    q1: { type: 'noul', instructions: 'Does it say when?\n\nItem 1', criteria: { true: 'yes', false: 'no' } },
-    q2: { type: 'noul', instructions: 'Is it useful?\n\nItem 2', criteria: { true: 'yes', false: 'no' } },
+    q0: { type: 'noul', instructions: { question: 'Is it useful?', item: 'items.1' }, criteria: { true: 'yes', false: 'no' } },
+    q1: { type: 'noul', instructions: { question: 'Does it say when?', item: 'items.1' }, criteria: { true: 'yes', false: 'no' } },
+    q2: { type: 'noul', instructions: { question: 'Is it useful?', item: 'items.2' }, criteria: { true: 'yes', false: 'no' } },
   });
 });
 
@@ -953,7 +954,7 @@ it('saves the pick record naming the rejected batch when the decision service fa
   vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
   vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => {
     const payload = JSON.parse(String(init.body));
-    if (payload.state.startsWith('Label short excerpts') || payload.state.startsWith('QUESTION the user asked:')) {
+    if (payload.state.task.startsWith('Label short excerpts') || payload.state.task.startsWith('QUESTION the user asked:')) {
       return Response.json({ answers: Object.fromEntries(
         Object.keys(payload.questions).map((key) => [key, { noul: 0.8 }]),
       ) });
@@ -1017,7 +1018,7 @@ describe('a run through core decision calls', () => {
       const raw = String(init.body);
       const sent = JSON.parse(raw);
       bodies.push(raw);
-      if (sent.state.length > 20_000) return new Response('request too large', { status: 400 });
+      if (JSON.stringify(sent.state).length > 20_000) return new Response('request too large', { status: 400 });
       return new Response(JSON.stringify({
         usage: { input_tokens: 1, output_tokens: 1 },
         answers: Object.fromEntries(Object.keys(sent.questions).map((key) => [key, { noul: 0.8 }])),

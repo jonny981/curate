@@ -368,17 +368,15 @@ describe('the rating stop', () => {
     // over 7,000 characters, so every four-part batch is split in two.
     const best = [0.8, 0.6, 0.05, 0.9, 0.9];
     const parts = ranked(20, (i) => `rating ${best[Math.floor(i / 4)]} of part ${i} ${'x'.repeat(3_000)}`);
-    const bodies: { state: string }[] = [];
     vi.stubGlobal('fetch', vi.fn<typeof globalThis.fetch>().mockImplementation(async (_url, init) => {
-      const body = JSON.parse(String(init!.body)) as { state: string; questions: Record<string, { instructions: string }> };
-      bodies.push(body);
-      if (body.state.length > 7_000) return new Response('request too large', { status: 400 });
-      const items = new Map<string, string>();
-      const sections = body.state.split(/\n\nItem (\d+): /);
-      for (let at = 1; at + 1 < sections.length; at += 2) items.set(sections[at]!, sections[at + 1]!);
+      const body = JSON.parse(String(init!.body)) as {
+        state: { items: Record<string, { text: string }> };
+        questions: Record<string, { instructions: { item: string } }>;
+      };
+      if (JSON.stringify(body.state).length > 7_000) return new Response('request too large', { status: 400 });
       return Response.json({ answers: Object.fromEntries(Object.entries(body.questions).map(([name, question]) => {
-        const item = items.get(/Item (\d+)$/.exec(question.instructions)![1]!)!;
-        return [name, { noul: Number(/rating ([\d.]+)/.exec(item)![1]) }];
+        const item = body.state.items[question.instructions.item.replace(/^items\./, '')]!;
+        return [name, { noul: Number(/rating ([\d.]+)/.exec(item.text)![1]) }];
       })) });
     }));
     const calls: JevCall[] = [];
