@@ -321,7 +321,7 @@ export function checkMode(mode: Mode, at: string): void {
   if (mode.bar !== undefined && (typeof mode.bar !== 'number' || !Number.isFinite(mode.bar) || mode.bar < 0 || mode.bar > 1)) {
     throw new TypeError(`${at}.bar must be a number between 0 and 1.`);
   }
-  if (typeof mode.read !== 'function') throw new TypeError(`${at}.read must be a read, such as rankedRead or conversationRead.`);
+  if (typeof mode.read !== 'function') throw new TypeError(`${at}.read must be a read, such as rankedRead or conversationRead().`);
 }
 
 /** A writer no source's set weighs would be paid for and never read.

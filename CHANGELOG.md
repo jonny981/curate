@@ -108,7 +108,8 @@ What each part does:
   label bar, 0.5 by default), `ruleBar` (the bar for its rules) and `mode`.
   A mode holds the decision questions asked of its references, the
   decision-score bar they are kept at and how the decide step reads them:
-  `rankedRead` down the fused order, or `conversationRead`, the chat read.
+  `rankedRead` down the fused order, or `conversationRead()`, the chat read,
+  whose walk, open and stop decisions a mode can replace.
   Each reader package exports its modes (`agentTranscripts` and
   `assistantChatHistory`, `commits`, `notes`), and core holds none. The presets `chat()`, `git()`, `markdown()`,
   `knowledgeBase()` and `rules()` carry their package's tuned settings

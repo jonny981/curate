@@ -62,6 +62,20 @@ export interface ChatReadInput {
   readonly kept: (parts: readonly MemoryCandidate[]) => boolean;
   /** True once a stopping dial has ended the call. */
   readonly stopped: () => boolean;
+  /** The read's decisions; each one absent is today's measured rule
+   *  (`walksOn`, `opens`, `stops`). */
+  readonly rules?: ConversationRules;
+}
+
+/** The decisions a conversation read makes from ratings, each given the
+ *  facts it may use. */
+export interface ConversationRules {
+  /** Whether a walk goes on from a part. */
+  readonly walksOn?: (facts: WalkFacts) => boolean;
+  /** Whether a topic segment opens. */
+  readonly opens?: (facts: OpenFacts) => boolean;
+  /** Whether the read stops after its last request. */
+  readonly stops?: (facts: StopFacts) => boolean;
 }
 
 export interface ChatReadResult {
@@ -218,6 +232,7 @@ export function stops(facts: StopFacts): boolean {
  *  round. Warm means rated at least `WARM` times the best rating the
  *  read has seen so far. */
 export async function chatRead(input: ChatReadInput): Promise<ChatReadResult> {
+  const rules = { walksOn, opens, stops, ...input.rules };
   const { score, stopped } = input;
   if (stopped()) return { read: [], requests: 0, segments: 0, ended: 'stopped' };
   const members = new Set(input.parts);
@@ -275,7 +290,7 @@ export async function chatRead(input: ChatReadInput): Promise<ChatReadResult> {
   // A walk decision about a part, with the facts the read has about it.
   const walkable = (part: MemoryCandidate) => {
     const { session, at } = where.get(part)!;
-    return walksOn({ rating: score(part), best,
+    return rules.walksOn({ rating: score(part), best,
       neighbours: bestOf([session[at - 2], session[at - 1], session[at + 1], session[at + 2]]
         .map((next) => next === undefined ? undefined : rated(next))),
       segment: bestOf(segmentOf.get(part)!.map((next) => next === part ? undefined : rated(next))) });
@@ -317,7 +332,7 @@ export async function chatRead(input: ChatReadInput): Promise<ChatReadResult> {
     for (let at = 0; at < parts.length && ended === 'order'; at += STEP) {
       await request(parts.slice(at, at + STEP), rings);
       if (stopped()) ended = 'stopped';
-      else if (stops({ requests: log, kept: input.kept(read) })) ended = 'fall';
+      else if (rules.stops({ requests: log, kept: input.kept(read) })) ended = 'fall';
     }
   }
   const requests = log.length;
@@ -328,7 +343,7 @@ export async function chatRead(input: ChatReadInput): Promise<ChatReadResult> {
   for (const lane of input.lanes) {
     for (const part of lane.slice(0, HEADS)) if (members.has(part)) heads.add(segmentOf.get(part)!);
   }
-  const opened = [...new Set([...read.map((part) => segmentOf.get(part)!), ...heads])].filter((segment) => opens({
+  const opened = [...new Set([...read.map((part) => segmentOf.get(part)!), ...heads])].filter((segment) => rules.opens({
     person: bestOf(segment.map((part) => person(part) ? rated(part) : undefined)),
     rating: bestOf(segment.map(rated)), best, laneHead: heads.has(segment) }));
   const first = (segment: readonly MemoryCandidate[]) =>

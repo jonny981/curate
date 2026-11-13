@@ -112,11 +112,14 @@ describe('package exports', () => {
       { labels: false, names: false, mode: notes, ruleBar: 0.5 },
     ]);
     expect([agentTranscripts, assistantChatHistory, commits, notes]).toEqual([
-      { name: 'agent-transcripts', questions: AGENT_CHAT_CASCADE, bar: 0.0146, read: conversationRead },
+      { name: 'agent-transcripts', questions: AGENT_CHAT_CASCADE, bar: 0.0146, read: expect.any(Function) },
       { name: 'assistant-chat-history', questions: CHAT_CASCADE, bar: 0.0146, read: rankedRead },
       { name: 'commits', questions: GIT_HISTORY_CASCADE, bar: 0.0146, read: rankedRead },
       { name: 'notes', questions: MARKDOWN_CASCADE, bar: 0.0146, read: rankedRead },
     ]);
+    // Each call makes a conversation read of its own, with any of its rules replaced.
+    expect(conversationRead()).not.toBe(conversationRead());
+    expect(typeof conversationRead({ stops: () => true })).toBe('function');
     const reader = chat({ providers: ['codex'], paths: ['/nonexistent'] });
     expect(reader).toMatchObject({ kind: 'chat', labelKinds: LABEL_KINDS, mode: agentTranscripts });
     expect(historySource({ reader, labels: false, names: false }).mode).toBeUndefined();

@@ -54,7 +54,7 @@ describe('the second search on coding-agent transcripts', () => {
     const all = [...parts, answer];
     const words = (text: string) => text.toLowerCase().match(/[a-z]+/g) ?? [];
     const source: CandidateSource = { id: 'agents', kind: 'chat', role: 'reference',
-      mode: { name: 'agent-transcripts', questions: agentSet, read: conversationRead },
+      mode: { name: 'agent-transcripts', questions: agentSet, read: conversationRead() },
       async read(request: CandidateReadRequest) {
         const asked = new Set(words(request.task));
         const scored = all.map((candidate) => ({ ...candidate,

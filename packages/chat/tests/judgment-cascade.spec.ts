@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { conversationRead, historySource, rankedRead, type PickCascade } from '@curatejs/core';
+import { historySource, rankedRead, type PickCascade } from '@curatejs/core';
 import { AGENT_CHAT_CASCADE, agentTranscripts, chat, chatSettings, JUDGMENT_CHAT_CASCADE } from '../src/index.js';
 
 /** A model-scored set with invented weights, for the selection tests. */
@@ -50,7 +50,8 @@ describe('JUDGMENT_CHAT_CASCADE', () => {
 describe('chat() modes', () => {
   it('reads in the agent mode by default: AGENT_CHAT_CASCADE, the 0.0146 bar and the conversation read', () => {
     expect(chat({ id: 'a' }).mode).toBe(agentTranscripts);
-    expect(agentTranscripts).toMatchObject({ questions: AGENT_CHAT_CASCADE, bar: 0.0146, read: conversationRead });
+    expect(agentTranscripts).toMatchObject({ questions: AGENT_CHAT_CASCADE, bar: 0.0146, read: expect.any(Function) });
+    expect(agentTranscripts.read).not.toBe(rankedRead);
   });
 
   it('takes a caller mode', () => {

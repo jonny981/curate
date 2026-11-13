@@ -1,4 +1,4 @@
-import { chatRead } from './chat-read.js';
+import { chatRead, type ConversationRules } from './chat-read.js';
 import type { MemoryCandidate, PickCascade } from './pick.js';
 
 /** How one kind of source is judged and read: its decision questions,
@@ -15,8 +15,8 @@ export interface Mode {
    *  the question set's fitted bar, or else 0.0146. */
   readonly bar?: number;
   /** How the decide step reads the mode's parts on the fused order:
-   *  `rankedRead` or `conversationRead`. Parts of modes that share a
-   *  read are read together. */
+   *  `rankedRead` or a `conversationRead()`. Parts of modes that share
+   *  a read are read together. */
   readonly read: ModeRead;
 }
 
@@ -143,15 +143,20 @@ export const rankedRead: ModeRead = async (input) => {
     ...(input.stop === undefined ? {} : { waves, batches }), ...(cold === undefined ? {} : { cold }) };
 };
 
-/** The conversation read (`chatRead`): the person's own parts first,
+/** A conversation read (`chatRead`): the person's own parts first,
  *  rings of neighbours around the warm ones, a stop when a request's
  *  new warm parts fall, then the topic segments that hold a warm person
- *  part or a search lane's top part, walked out from their warm parts.
- *  Measured on coding-agent transcripts. */
-export const conversationRead: ModeRead = async (input) => {
-  const result = await chatRead({ parts: input.parts, order: input.order, byKeyword: input.byKeyword,
-    lanes: input.lanes, rate: input.rate, score: input.rating, kept: input.kept, stopped: input.stopped });
-  const reached = new Set(result.read);
-  return { read: result.read, unread: input.order.filter((part) => !reached.has(part)), reason: 'chatRead',
-    ended: result.ended, requests: result.requests, segments: result.segments };
-};
+ *  part or a search lane's top part, walked out from their warm parts,
+ *  each container read in the order its parts' `place` gives. `rules`
+ *  replaces any of its three decisions; with none it is the read
+ *  measured on coding-agent transcripts. Make it once per mode: modes
+ *  that share one read are read together. */
+export function conversationRead(rules: ConversationRules = {}): ModeRead {
+  return async (input) => {
+    const result = await chatRead({ parts: input.parts, order: input.order, byKeyword: input.byKeyword,
+      lanes: input.lanes, rate: input.rate, score: input.rating, kept: input.kept, stopped: input.stopped, rules });
+    const reached = new Set(result.read);
+    return { read: result.read, unread: input.order.filter((part) => !reached.has(part)), reason: 'chatRead',
+      ended: result.ended, requests: result.requests, segments: result.segments };
+  };
+}

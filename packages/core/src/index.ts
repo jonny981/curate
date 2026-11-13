@@ -11,6 +11,7 @@ export { stripSearchInstructions } from './search.js';
 export * from './meaning.js';
 export * from './levers.js';
 export { conversationRead, rankedRead, type Mode, type ModeRead, type ModeReadInput, type ModeReadResult } from './mode.js';
+export { opens, stops, walksOn, type ConversationRules, type OpenFacts, type StopFacts, type WalkFacts } from './chat-read.js';
 export { jevRequest } from './models.js';
 export { judgmentFacts, judgmentPopulation, modelScore, type JudgmentFacts, type JudgmentPopulation } from './judgments.js';
 export { sinceCutoff, taskMoment, taskPeriod, type TaskPeriod } from './time.js';
