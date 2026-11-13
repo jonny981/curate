@@ -234,10 +234,11 @@ export interface PickLimits {
   readonly maxCandidates?: number;
   readonly maxElapsedMs?: number;
   readonly maxQuestionText?: number;
-  /** The most decision requests of one round in flight at once: the
-   *  independent batches of a round dispatch together up to this many
-   *  and the rest go out in dispatch order as earlier replies land.
-   *  Omitted means every batch of a round goes out at once. */
+  /** The most decision requests of the call in flight at once, across
+   *  every read running at the same time: the independent batches of a
+   *  round dispatch together up to this many and the rest go out in
+   *  dispatch order as earlier replies land. Omitted means every batch
+   *  of a round goes out at once. */
   readonly maxInFlight?: number;
 }
 
@@ -2124,6 +2125,15 @@ export async function pick(
    *  trusted even when an earlier batch answered some questions. */
   const decideFailed = new Set<MemoryCandidate>();
   const decisionsByText = new Map<string, Pending>();
+  // When each first ask's answer has applied: a copy of a text another
+  // read has in flight waits for it.
+  const settling = new Map<Pending, Promise<void>>();
+  // Requests open, and batches packed whose answers have not applied:
+  // reads that run at once share the caller's `maxInFlight` and
+  // `maxBatches`.
+  let openRequests = 0;
+  const slotWaits: (() => void)[] = [];
+  let packedBatches = 0;
   // A part with no text is judged by its title, as a title-only
   // commit's subject is, so the title stands in for the text in the
   // sharing key. With text present the title is a byline or locator,
@@ -2173,12 +2183,15 @@ export async function pick(
   };
   const ask = async (asks: Pending[], sink = answered, task = options.task, whole = false) => {
     const copies: { item: Pending; first: Pending }[] = [];
+    let settle!: () => void;
+    const settled = new Promise<void>((resolve) => { settle = resolve; });
     if (sink === answered) {
       asks = asks.filter((item) => {
         const key = sharingKey(item);
         const first = decisionsByText.get(key);
         if (first !== undefined) { copies.push({ item, first }); return false; }
         decisionsByText.set(key, item);
+        settling.set(item, settled);
         return true;
       });
     }
@@ -2259,9 +2272,11 @@ export async function pick(
     // Requests of parts whose mode lists the facts the answer needs go
     // apart from the rest, so no other part's request carries them.
     const listed = sink === answered && needed !== undefined ? fresh.filter((item) => carriesNeeded(item.candidate)) : [];
-    const listedSlices = pack(listed, task, whole, limits.maxBatches - batches);
-    const slices = listed.length === 0 ? pack(fresh, task, whole, limits.maxBatches - batches) : [...listedSlices,
-      ...pack(fresh.filter((item) => !carriesNeeded(item.candidate)), task, whole, limits.maxBatches - batches - listedSlices.length)];
+    const room = limits.maxBatches - batches - packedBatches;
+    const listedSlices = pack(listed, task, whole, room);
+    const slices = listed.length === 0 ? pack(fresh, task, whole, room) : [...listedSlices,
+      ...pack(fresh.filter((item) => !carriesNeeded(item.candidate)), task, whole, room - listedSlices.length)];
+    packedBatches += slices.length;
     const withNeeded = new Set(listedSlices);
     interface BatchOutcome {
       readonly slice: Pending[];
@@ -2307,8 +2322,8 @@ export async function pick(
         return { slice, sent: true, timedOut: decideDeadline?.aborted === true, decideError };
       }
     };
-    // At most `maxInFlight` requests of the round are open at once;
-    // unbounded, every slice goes out together. A queued slice starts
+    // At most `maxInFlight` requests of the call are open at once, across
+    // every read; unbounded, every slice goes out together. A queued slice starts
     // only when an earlier one settles, in dispatch order — and only
     // while no settled outcome would have stopped a sequential round:
     // a rejection, a deadline or a cancellation keeps later queued
@@ -2320,14 +2335,24 @@ export async function pick(
     await Promise.all(Array.from({ length: Math.min(slices.length, limits.maxInFlight) },
       async () => {
         while (!halted && next < slices.length) {
+          // Every request the call allows is open, some of them another
+          // read's: wait for one to settle.
+          if (openRequests >= limits.maxInFlight) {
+            await new Promise<void>((resolve) => slotWaits.push(resolve));
+            continue;
+          }
           const at = next;
           next += 1;
+          openRequests += 1;
           const outcome = await dispatch(slices[at]!);
+          openRequests -= 1;
+          for (const wake of slotWaits.splice(0)) wake();
           outcomes[at] = outcome;
           if (!outcome.sent || outcome.timedOut || outcome.decideError !== undefined) halted = true;
         }
       }));
     for (const outcome of outcomes) {
+      packedBatches -= 1;
       // A batch the halt left queued stays unasked like the tail of a
       // stopped sequential run.
       if (outcome === undefined) continue;
@@ -2376,10 +2401,15 @@ export async function pick(
       if (signal.aborted) stop = 'cancelled';
       else if (slices.reduce((sum, slice) => sum + slice.length, 0) < fresh.length) stop = 'limits';
     }
+    settle();
     // Copies keep their source identity and score with their own question set.
     // Only the answer to the identical text and question is shared.
     for (const { item, first } of copies) {
-      const answer = sink.get(first.candidate)?.get(first.spec.key);
+      let answer = sink.get(first.candidate)?.get(first.spec.key);
+      if (answer === undefined && settling.get(first) !== settled) {
+        await settling.get(first);
+        answer = sink.get(first.candidate)?.get(first.spec.key);
+      }
       if (answer === undefined) continue;
       let got = sink.get(item.candidate);
       if (got === undefined) { got = new Map(); sink.set(item.candidate, got); }
@@ -2948,7 +2978,10 @@ export async function pick(
     rankedRead({ ...shared, parts: [], order, byKeyword: [], lanes: [],
       ...(then === undefined ? {} : { then }), ...(between === undefined ? {} : { between }),
       kept: (some) => some.some(keepsAt(answeredReferences(feed))) });
-  let ranked: ModeReadResult | undefined;
+  // Every read runs at once, all through the one rating function, so
+  // their waits overlap instead of adding up: the ranked read of the
+  // rest of the feed, and each mode read of its own.
+  let rankedRun: Promise<ModeReadResult | undefined> = Promise.resolve(undefined);
   if (!stop && options.bestPartFirst) {
     const terms = [...new Set(options.task.toLowerCase().split(/[^a-z0-9]+/).filter((word) => word.length > 2))];
     const matches = (candidate: MemoryCandidate) => {
@@ -2971,7 +3004,7 @@ export async function pick(
       const first = group.reduce((best, candidate) => matches(candidate) > matches(best) ? candidate : best);
       for (const candidate of group) representatives.set(candidate, first);
     }
-    ranked = await readRanked(feed.filter((c) => c.role === 'rule' || representatives.get(c) === c),
+    rankedRun = readRanked(feed.filter((c) => c.role === 'rule' || representatives.get(c) === c),
       feed.filter((candidate) => {
         const representative = representatives.get(candidate);
         return representative !== undefined && representative !== candidate;
@@ -2981,23 +3014,18 @@ export async function pick(
         else if (Date.now() - started >= limits.maxElapsedMs) stop = 'time';
         return !stop;
       });
-  } else if (!stop) ranked = await readRanked(feed);
-  // The parts below the stop leave the feed: the decide step never
-  // reached them.
-  const rankedUnread = new Set(ranked?.unread ?? []);
-  if (rankedUnread.size > 0) {
-    feed = feed.filter((candidate) => !rankedUnread.has(candidate));
-    for (const candidate of rankedUnread) statuses.set(candidate, { status: 'unassessed', reason: 'stopWhenCold' });
-  }
-  const rankedRated = ranked?.read ?? [];
+  } else if (!stop) rankedRun = readRanked(feed);
 
   // Each mode read of its own starts from its parts of the feed's order
   // and can reach any of its parts the pick holds; its own stop decides
   // how far it reads. The parts it rated join the feed, and a part of
   // the order it never reached records why.
-  let chatRecord: NonNullable<PickRecord['pick']>['chatRead'];
   const ownReads = [...new Set(chatOrder.map(readOf))];
+  let ownRuns: Promise<ModeReadResult>[] = [];
   if (ownReads.length > 0) {
+    // The ranked read's feed while every read runs: the count of
+    // answered parts a keep bar on the decided size reads.
+    const rankedFeed = feed;
     // The keyword lanes' ranking: a part's best share of a keyword lane
     // it holds, as the fused order places it without its meaning place.
     const keyword = (candidate: MemoryCandidate, index: number) =>
@@ -3012,30 +3040,42 @@ export async function pick(
     const laneParts = Array.from({ length: lanes }, (_, lane) => rankAndInterleave(references.filter((candidate) =>
       candidate.poolOnly !== true && (candidate.searchRanks === undefined || candidate.searchRanks[lane] != null)),
     new Map(), lane, options.ranking));
-    for (const read of ownReads) {
+    ownRuns = ownReads.map((read) => {
       const parts = queue.filter((candidate) => candidate.role === 'reference' && readOf(candidate) === read
         && (limitAdmits === undefined || limitAdmits(candidate)));
       const share = new Map(parts.map((candidate) => [candidate, (candidate.searchRanks ?? [])
         .reduce<number>((best, rank, index) => rank === null || !keyword(candidate, index) ? best
           : Math.max(best, (laneLength.get(index)! - rank) / laneLength.get(index)!), 0)] as const));
-      const result = await read({
+      return read({
         ...shared, parts, order: chatOrder.filter((candidate) => readOf(candidate) === read),
         byKeyword: [...share.keys()].filter((candidate) => share.get(candidate)! > 0)
           .sort((left, right) => share.get(right)! - share.get(left)!),
         lanes: laneParts,
         // Kept on the bar the selection pass keeps a part at, with the
         // feed's answered count so far, as the rating stop waits for one.
-        kept: (some) => some.some(keepsAt(answeredReferences([...feed, ...some]))),
+        kept: (some) => some.some(keepsAt(answeredReferences([...rankedFeed, ...some]))),
       });
-      feed = feed.concat(result.read);
-      for (const candidate of result.unread) {
-        statuses.set(candidate, { status: 'unassessed',
-          reason: result.reason === 'chatRead' ? stop ?? 'chatRead' : result.reason });
-      }
-      if (result.requests !== undefined) {
-        chatRecord = { requests: result.requests, segments: result.segments ?? 0, rated: result.read.length,
-          unread: result.unread.length, ended: result.ended === 'stopped' ? stop! : result.ended as 'fall' | 'order' };
-      }
+    });
+  }
+  const [ranked, ...results] = await Promise.all([rankedRun, ...ownRuns]);
+  // The parts below the ranked read's stop leave the feed: the decide
+  // step never reached them.
+  const rankedUnread = new Set(ranked?.unread ?? []);
+  if (rankedUnread.size > 0) {
+    feed = feed.filter((candidate) => !rankedUnread.has(candidate));
+    for (const candidate of rankedUnread) statuses.set(candidate, { status: 'unassessed', reason: 'stopWhenCold' });
+  }
+  const rankedRated = ranked?.read ?? [];
+  let chatRecord: NonNullable<PickRecord['pick']>['chatRead'];
+  for (const result of results) {
+    feed = feed.concat(result.read);
+    for (const candidate of result.unread) {
+      statuses.set(candidate, { status: 'unassessed',
+        reason: result.reason === 'chatRead' ? stop ?? 'chatRead' : result.reason });
+    }
+    if (result.requests !== undefined) {
+      chatRecord = { requests: result.requests, segments: result.segments ?? 0, rated: result.read.length,
+        unread: result.unread.length, ended: result.ended === 'stopped' ? stop! : result.ended as 'fall' | 'order' };
     }
   }
 

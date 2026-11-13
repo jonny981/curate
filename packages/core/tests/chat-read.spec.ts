@@ -240,6 +240,68 @@ describe('the chat read', () => {
   });
 });
 
+describe('reads of several modes in one call', () => {
+  const notes = Array.from({ length: 6 }, (_, index): MemoryCandidate => ({
+    sourceId: 'notes', role: 'reference', id: `notes/decisions.md#${index}`, title: `Decision ${index}`,
+    text: `Note ${index}`, signals: {}, searchRanks: [index],
+  }));
+  const mixed = { ...agentRead, sourceKinds: { chat: 'chat', notes: 'markdown' } } as const;
+  /** The rater's answers 5 ms after each request, or 30 ms when it asks
+   *  about one of `slower`, with the sources of every request open at
+   *  once. */
+  const slow = (ratings: Readonly<Record<string, number>>, slower: ReadonlySet<string> = new Set()) => {
+    const { asked, decide: rate } = rater(ratings);
+    const open: string[][] = [];
+    const overlaps: string[][][] = [];
+    const decide: PickDecide = async (batch, signal) => {
+      const sources = [...new Set(batch.questions.map((item) => item.sourceId))];
+      open.push(sources);
+      overlaps.push([...open]);
+      await new Promise((resolve) => setTimeout(resolve,
+        batch.questions.some((item) => slower.has(item.id)) ? 30 : 5));
+      open.splice(open.indexOf(sources), 1);
+      return rate(batch, signal);
+    };
+    return { asked, overlaps, decide };
+  };
+
+  it('runs the ranked read and the conversation read at once', async () => {
+    const { overlaps, decide } = slow({ [idOf('s0', 1)]: 0.9, [notes[1]!.id]: 0.7 });
+    const result = await pick([...personSessions(4), ...notes], { task, decide, ...mixed });
+    expect(overlaps.some((open) => open.flat().includes('notes') && open.flat().includes('chat'))).toBe(true);
+    expect(result.selected.map((item) => item.id)).toEqual(expect.arrayContaining([idOf('s0', 1), notes[1]!.id]));
+  });
+
+  it('keeps the reads together inside the call\'s request limits', async () => {
+    const ratings = { [idOf('s0', 1)]: 0.9, [notes[1]!.id]: 0.7 };
+    const one = slow(ratings);
+    await pick([...personSessions(4), ...notes], { task, decide: one.decide, ...mixed,
+      limits: { maxPerBatch: 2, maxInFlight: 1 } });
+    expect(Math.max(...one.overlaps.map((open) => open.length))).toBe(1);
+    const three = slow(ratings);
+    const capped = await pick([...personSessions(4), ...notes], { task, decide: three.decide, ...mixed,
+      limits: { maxPerBatch: 2, maxBatches: 3 } });
+    expect(three.asked).toHaveLength(3);
+    expect(capped.record.candidates.some((entry) => entry.status === 'unassessed' && entry.reason === 'limits')).toBe(true);
+  });
+
+  it('asks a text once when two reads reach it at the same time, and both parts take its answer', async () => {
+    // A ranked source with the agent set holds the person's first message
+    // word for word. Whichever read asks it first, its request is still
+    // open when the other read's own requests have answered.
+    const diary = part('d', 1, 'person', { sourceId: 'diary', ranks: [0], text: 's0 part 1' });
+    const { asked, decide } = slow({ [idOf('s0', 1)]: 0.9, [diary.id]: 0.9 }, new Set([idOf('s0', 1), diary.id]));
+    const result = await pick([...personSessions(4), diary], { task, decide, sourceKinds: { chat: 'chat', diary: 'chat' },
+      modesBySource: { ...modesOf({ chat: agentSet }, conversationRead()), ...modesOf({ diary: agentSet }) } });
+    expect(asked.flat().filter((id) => id === idOf('s0', 1) || id === diary.id)).toHaveLength(1);
+    for (const id of [idOf('s0', 1), diary.id]) {
+      const entry = result.record.candidates.find((item) => item.id === id);
+      expect(entry?.status).toBe('selected');
+      expect(entry && 'probability' in entry ? entry.probability : 0).toBeCloseTo(0.9, 12);
+    }
+  });
+});
+
 describe('the chat read beside stopWhenCold', () => {
   const warmAt = (from: number, count: number) => Object.fromEntries(Array.from({ length: count },
     (_, index) => [idOf(`s${from + index}`, 1), 0.9]));
