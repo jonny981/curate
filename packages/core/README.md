@@ -160,6 +160,8 @@ Every lane of a call then reads the file instead of decoding the transcripts, fe
   From it a keyword lane reads each term's per-part counts, each part's word total and each term's document frequency.
   Chat stores its words stemmed when its settings stem. Git stores the words of the subject and body joined.
   Markdown also stores each note's frontmatter, its fields, its links and whether it says it was replaced.
+  Chat and Markdown store each part's [vector key](#optional-local-meaning-search), so a meaning lane finds the part's vector without hashing its text.
+  Chat's key is that of the part's text with the part before it in its transcript, the text a meaning lane embeds unless a date window starts between them.
 - **Ranks do not change:** each reader keeps its own scoring and reads the stored counts where it read the text.
   A lane read from the file returns the same candidates, in the same order, with the same signals, as the same read with `index: false`.
   Git's commit count, holding counts and average length depend on the call's look-back, filters and limit, so they are counted for each call over the commits the lane ranks.
@@ -421,14 +423,17 @@ try {
   embedding, including a commit with only a subject.
   Its original body and title remain in the returned evidence.
 - **Storage:** Set `cacheDirectory` on `createLocalEmbedder()` to persist vectors by model bytes and complete input text.
-  Each model holds one vector file of normalized 64-bit vectors, read whole into memory once per process, so a stored text costs no lookup on disk.
-  New vectors wait in a SQLite file beside it (`<model>.vectors.waiting.sqlite`) and are folded into the vector file once 4,096 wait. The file is only ever written whole and renamed into place.
-  An earlier `<model>.vectors.sqlite` store is read once, to build the vector file when there is none, and is never written: code from before the vector file keeps finding its vectors there.
-  Nothing deletes that earlier store. Delete it by hand once no older checkout shares the folder.
-  A fold leaves out a vector unused for 30 days, so the vectors of deleted or changed parts do not pile up; using such a text again embeds it again.
-  A text neither file holds is read once from the earlier per-text JSON files, which are never written.
-  A returned vector can be the stored one itself: read it, do not write to it.
-  Repeated inputs reuse these files across calls. The vector files contain hashes and vectors, not source text.
+  Each model holds its normalized 64-bit vectors in two files: `<model>.vectors.data`, one record per text appended after the last, and `<model>.vectors.keys.sqlite`, which finds a text's record by the text's SHA-256.
+  A read looks up the records it needs, or passes over the data file once, a chunk at a time, when it needs most of them; neither file is ever read whole into memory.
+  Nothing rewrites a record, and no vector expires: the vectors of deleted or changed parts stay in the files.
+  A record a stopped write left cut is never used: its text is embedded again. A vector of another length than the model's is kept in the key file.
+  The chat and Markdown [stored indexes](#stored-index) keep each part's vector key, so a call finds those parts' vectors without hashing their text.
+  When the key file is first made it takes in every vector the earlier files hold: the whole-file `<model>.vectors.flat`, the vectors waiting to join it in `<model>.vectors.waiting.sqlite`, and, when there is no `.flat` file, the store before it, `<model>.vectors.sqlite`.
+  Using the store removes nothing, since an older process can still have those files open. Between calls, `removeEarlierFiles()` removes the `.flat` file and the waiting store once every vector in them is found again in the new files, byte for byte, and returns the paths it removed; when one cannot be checked so, both stay and a line on standard error says so. The skill's `--prepare` (`curate prepare`) calls it.
+  The older `<model>.vectors.sqlite` is only read and nothing deletes it, so an older checkout sharing the folder keeps its vectors there.
+  A text the files do not hold is read once from the earlier per-text JSON files, which are never written.
+  A returned vector can be shared by other callers: read it, do not write to it.
+  Repeated inputs reuse the files across calls. They contain hashes and vectors, not source text.
   With no directory supplied, vectors exist only while a batch is scored.
   Vectors are kept apart from the [stored index](#stored-index), whose file per source does hold the history's text.
 - **GPU:** Set `gpu: 'metal'` to require the Mac GPU. An unavailable explicit backend stops the call instead of selecting CPU.

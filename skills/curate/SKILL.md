@@ -155,4 +155,4 @@ A call from `~/work/app` then reads the app's own history, with only its last 90
 curate prepare
 ```
 
-`curate prepare` brings the stored index and embeddings of every source a call from this folder would read up to date, then exits. It makes no model call and needs no key or login, so a hook or a scheduled job can run it between questions to make the next call faster. It checks only the needs it uses, and exits with code 3 when one is missing. The skill installs no hook or job itself.
+`curate prepare` brings the stored index and embeddings of every source a call from this folder would read up to date, removes the cache files an earlier version of Curate kept for them and names each, then exits. Run it when no call from an older version of Curate is in flight: it cannot tell whether one still reads those files. It makes no model call and needs no key or login, so a hook or a scheduled job can run it between questions to make the next call faster. It checks only the needs it uses, and exits with code 3 when one is missing. The skill installs no hook or job itself.

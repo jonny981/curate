@@ -2502,6 +2502,23 @@ describe('a call reads the project its working folder sits in', () => {
     expect(printed.mock.calls.map(([line]) => String(line))).toEqual([`Prepared 4 sources for ${repo}.`]);
   });
 
+  it('--prepare removes the files an earlier version of Curate kept and names them, where a call removes none', async () => {
+    const { at } = await project();
+    const vectors = at('cache', 'curate', 'embeddings', 'model.vectors.flat');
+    const removeEarlierFiles = vi.fn(async () => [vectors]);
+    const embed = Object.assign(async (texts: readonly string[]) => texts.map(() => [1, 0]), { removeEarlierFiles });
+    const model = (async () => ({ embed, dispose: vi.fn(async () => {}) })) as never;
+    vi.mocked(createLocalEmbedder).mockImplementationOnce(model).mockImplementationOnce(model);
+    const { call } = subscriptionReply(searches());
+    await run(['What did we plan for the orchard?'], call);
+    expect(removeEarlierFiles).not.toHaveBeenCalled();
+    const printed = vi.mocked(console.log);
+    printed.mockClear();
+    await run(['--prepare']);
+    expect(printed.mock.calls.map(([line]) => String(line)).slice(1))
+      .toEqual([`Removed 1 file an earlier version of Curate kept:\n  ${vectors}`]);
+  });
+
   it('heads each commit with its hash and each document with its file', async () => {
     const { at, commit, settings } = await project();
     const sourcesFile = await settings([{ type: 'markdown', path: at('always'), always: true }]);

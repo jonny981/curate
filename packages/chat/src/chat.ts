@@ -5,8 +5,8 @@ import { basename, join, relative, resolve, sep } from 'node:path';
 
 import {
   canonicalPath, phraseCount, laneBend, normalized, similarity, sinceCutoff, taskMoment, timeZoneOf,
-  zonedIso, bagEntries, checkIndexOption, indexDirectory, indexFilePath, openIndexFile, updateIndex,
-  type IndexDatabase, type StoredIndexOptions, type StoredIndexReport,
+  zonedIso, bagEntries, checkIndexOption, eachPartVector, indexDirectory, indexFilePath, openIndexFile, textKey,
+  updateIndex, type IndexDatabase, type StoredIndexOptions, type StoredIndexReport,
 } from '@curatejs/core/internal';
 import {
   startChatRank, storedChatWords, CHAT_KEYWORD_SETTINGS, type ChatKeywordSettings, type ChatRankSession,
@@ -354,9 +354,28 @@ async function* eachPart(
   for (const { provider, root } of walkable) yield* visit(provider, root, root);
 }
 
-/** A part read from the stored index: a transcript part and its text's
- *  stored words. Its text is empty on a pass that never reads text. */
-type StoredPart = RawPart & { readonly words: StoredChatWords; readonly at: string };
+/** A part read from the stored index: a transcript part, its text's
+ *  stored words, its row, and its vector key as stored (see `vectorKey`).
+ *  Its text is empty on a pass that never reads text. */
+type StoredPart = RawPart & {
+  readonly words: StoredChatWords; readonly at: string; readonly transcript: number; readonly ordinal: number;
+  readonly vec: string | null;
+};
+
+/** Whether a text has anything to embed; a part without uses its title. */
+const embeddable = (text: string) => /[^\s\p{Cf}]/u.test(text);
+
+/** The vector key a part's row stores: the key of the text a meaning
+ *  lane embeds for it when the part before it in the walk is the one
+ *  before it in its transcript, as it is unless a date window cuts in.
+ *  That text is the part before's text, a line end and its own, or its
+ *  own alone for a transcript's first part. Null when either text is
+ *  empty: the lane then embeds a title, which depends on the time zone. */
+function vectorKey(text: string, before: string | undefined, ordinal: number): string | null {
+  if (!embeddable(text)) return null;
+  if (ordinal === 0) return textKey(text);
+  return before !== undefined && embeddable(before) ? textKey(`${before}\n${text}`) : null;
+}
 
 /** What one call's meaning lanes share through the read context: each
  *  part's similarity over the call's query list, and the enumeration
@@ -414,7 +433,8 @@ interface ChatCorpus {
   /** Each word's postings as part indexes, read from the index once. */
   readonly postings: Map<string, { readonly index: number[]; readonly count: number[] }>;
   readonly skips: number;
-  /** Each part's unit vector, once a meaning lane has embedded them. */
+  /** Each part's unit vector, once a meaning lane has embedded them with
+   *  an embedder that keeps no store. */
   units?: Float64Array[];
 }
 
@@ -531,7 +551,7 @@ const CHAT_TABLES = `CREATE TABLE IF NOT EXISTS transcripts (id INTEGER PRIMARY 
   CREATE TABLE IF NOT EXISTS parts (transcript INTEGER NOT NULL, ordinal INTEGER NOT NULL, line INTEGER NOT NULL,
     block INTEGER NOT NULL, piece INTEGER NOT NULL, session TEXT NOT NULL, role TEXT NOT NULL, author TEXT NOT NULL,
     author_name TEXT, date INTEGER NOT NULL, text TEXT NOT NULL, long INTEGER NOT NULL, stems TEXT NOT NULL,
-    short TEXT NOT NULL, PRIMARY KEY (transcript, ordinal)) WITHOUT ROWID;
+    short TEXT NOT NULL, vec TEXT, PRIMARY KEY (transcript, ordinal)) WITHOUT ROWID;
   CREATE TABLE IF NOT EXISTS postings (term TEXT NOT NULL, transcript INTEGER NOT NULL,
     ordinal INTEGER NOT NULL, count INTEGER NOT NULL, PRIMARY KEY (term, transcript, ordinal)) WITHOUT ROWID;
   CREATE INDEX IF NOT EXISTS postingsTranscript ON postings (transcript);`;
@@ -562,7 +582,8 @@ async function syncChatIndex(
       const deleteParts = database.prepare('DELETE FROM parts WHERE transcript = ?');
       const deletePostings = database.prepare('DELETE FROM postings WHERE transcript = ?');
       const insertPart = database.prepare(`INSERT INTO parts (transcript, ordinal, line, block, piece, session, role,
-        author, author_name, date, text, long, stems, short) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+        author, author_name, date, text, long, stems, short, vec) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+      const textAt = database.prepare('SELECT text FROM parts WHERE transcript = ? AND ordinal = ?');
       const insertPosting = database.prepare('INSERT OR IGNORE INTO postings (term, transcript, ordinal, count) VALUES (?, ?, ?, ?)');
       // A part's posting list is its stored words with their counts:
       // each stem under its own term, each short word under a term no
@@ -629,11 +650,15 @@ async function syncChatIndex(
           const text = bytes.toString('utf8');
           const lines = text.split(/\r?\n/);
           let ordinal = start;
+          // An append continues from the last part the file already holds.
+          let before = start === 0 ? undefined : (textAt.get(id, start - 1) as { text: string } | undefined)?.text;
           for (const part of decodeLines(provider, lines, firstLine, state, includeTools, size, signal, () => { undated += 1; })) {
             const words = storedChatWords(part.text, keyword);
             insertPart.run(id, ordinal, part.line, part.block, part.piece, part.sessionId, part.role, part.author,
-              part.authorName ?? null, part.date, part.text, words.long, words.stems, words.short);
+              part.authorName ?? null, part.date, part.text, words.long, words.stems, words.short,
+              vectorKey(part.text, before, ordinal));
             insertPostings(id, ordinal, words.stems, words.short);
+            before = part.text;
             ordinal += 1;
           }
           added += ordinal - start;
@@ -681,7 +706,7 @@ function* storedParts(
   const rows = database.prepare(`SELECT ordinal, line, block, piece, session, role,
     ${light ? "'unmarked' AS author, NULL AS author_name" : 'author, author_name'}, date,
     ${withText ? 'text' : "'' AS text"}, long,
-    ${light ? "'' AS stems, '' AS short" : 'stems, short'} FROM parts WHERE transcript = ? ORDER BY ordinal`)
+    ${light ? "'' AS stems, '' AS short, NULL AS vec" : 'stems, short, vec'} FROM parts WHERE transcript = ? ORDER BY ordinal`)
     .all(transcript.id) as Record<string, unknown>[];
   for (const row of rows) yield storedPart(provider, root, transcript, row);
 }
@@ -689,7 +714,8 @@ function* storedParts(
 function storedPart(provider: ChatProvider, root: string, transcript: StoredTranscript, row: Record<string, unknown>): StoredPart {
   return {
     provider, root, file: transcript.file,
-    at: `${transcript.id}:${row.ordinal as number}`,
+    at: `${transcript.id}:${row.ordinal as number}`, transcript: transcript.id, ordinal: row.ordinal as number,
+    vec: (row.vec as string | null | undefined) ?? null,
     line: row.line as number, block: row.block as number, piece: row.piece as number,
     sessionId: row.session as string, role: row.role as MessageRole, author: row.author as Author,
     ...(row.author_name === null ? {} : { authorName: row.author_name as string }),
@@ -705,7 +731,7 @@ function storedRows(
   database: IndexDatabase, provider: ChatProvider, root: string, transcript: StoredTranscript, ordinals: readonly number[],
 ): StoredPart[] {
   const rows = database.prepare(`SELECT ordinal, line, block, piece, session, role, author, author_name, date, text,
-    long, stems, short FROM parts WHERE transcript = ? AND ordinal IN (SELECT value FROM json_each(?)) ORDER BY ordinal`)
+    long, stems, short, vec FROM parts WHERE transcript = ? AND ordinal IN (SELECT value FROM json_each(?)) ORDER BY ordinal`)
     .all(transcript.id, JSON.stringify(ordinals)) as Record<string, unknown>[];
   return rows.map((row) => storedPart(provider, root, transcript, row));
 }
@@ -1035,34 +1061,49 @@ export function chat(options: ChatOptions = {}): CandidateSource {
               : { queries: list, similarities: [], ids: corpus.ids, refs: corpus.refs, partFile: corpus.partFile, fileRanges: corpus.fileRanges };
             let pending: string[] = [];
             let previous: { file: string; text: string } | undefined;
-            // With the call's one walk, each part's unit vector is kept
-            // for the call: a later query list scores the same vectors
-            // without embedding the parts again.
-            const units: Float64Array[] | undefined = corpus === undefined ? undefined : [];
             const flush = async () => {
               if (pending.length === 0) return;
               const vectors = await embed(pending, request.signal);
               if (vectors.length !== pending.length) throw new TypeError('embed must return one vector per input text.');
               for (const vector of vectors) {
                 const unit = normalized(vector, queryVectors[0]!.length);
-                units?.push(unit);
                 lite.similarities.push(queryVectors.map((query) => similarity(unit, query)));
               }
               pending = [];
             };
             if (corpus !== undefined) {
               skips.n += corpus.skips;
-              if (corpus.units !== undefined && (corpus.units[0]?.length ?? queryVectors[0]!.length) === queryVectors[0]!.length) {
+              const { parts } = corpus;
+              // A store hands its vectors out again by key, so only an
+              // embedder with no store has each part's unit vector kept
+              // for the call, for a later query list to score.
+              const stored = 'eachVector' in embed;
+              if (!stored && corpus.units !== undefined
+                && (corpus.units[0]?.length ?? queryVectors[0]!.length) === queryVectors[0]!.length) {
                 for (const unit of corpus.units) lite.similarities.push(queryVectors.map((query) => similarity(unit, query)));
                 return lite;
               }
-              for (const [index, part] of corpus.parts.entries()) {
-                const text = /[^\s\p{Cf}]/u.test(part.text) ? part.text : corpus.titles[index]!;
-                pending.push(previous?.file === part.file ? `${previous.text}\n${text}` : text);
-                previous = { file: part.file, text };
-                if (pending.length === 32) await flush();
-              }
-              await flush();
+              const units: Float64Array[] | undefined = stored ? undefined : [];
+              // A part embeds with the part before it in the walk when
+              // both are in one file.
+              const own = (index: number) => embeddable(parts[index]!.text) ? parts[index]!.text : corpus!.titles[index]!;
+              const follows = (index: number) => index > 0 && parts[index - 1]!.file === parts[index]!.file;
+              const text = (index: number) => follows(index) ? `${own(index - 1)}\n${own(index)}` : own(index);
+              // The stored key holds when the part before it in the walk
+              // is the one before it in its transcript.
+              const key = (index: number) => {
+                const part = parts[index]!;
+                const before = follows(index) ? parts[index - 1]! : undefined;
+                const holds = before === undefined ? part.ordinal === 0
+                  : before.transcript === part.transcript && before.ordinal === part.ordinal - 1;
+                return holds && part.vec !== null ? part.vec : textKey(text(index));
+              };
+              lite.similarities = Array.from({ length: parts.length });
+              await eachPartVector(embed, parts.length, key, text, (index, vector) => {
+                const unit = normalized(vector, queryVectors[0]!.length);
+                if (units !== undefined) units[index] = unit;
+                lite.similarities[index] = queryVectors.map((query) => similarity(unit, query));
+              }, request.signal);
               corpus.units = units;
               return lite;
             }

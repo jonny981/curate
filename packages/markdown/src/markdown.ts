@@ -24,6 +24,8 @@ import {
   wordBag,
   bagCount,
   bagEntries,
+  eachPartVector,
+  textKey,
   type IndexDatabase,
   type IndexStatement,
   type StoredIndexOptions,
@@ -930,9 +932,10 @@ function* noteParts(
   }
 }
 
-/** A part and, when it came from the stored index, its text's tokens:
- *  how many there are and a `wordBag` of them. */
-type NotePart = EnumeratedPart & { readonly tokens?: { readonly length: number; readonly words: string } };
+/** A part and, when it came from the stored index, its text's tokens
+ *  (how many there are and a `wordBag` of them) and the key of the
+ *  vector a meaning lane finds for its text. */
+type NotePart = EnumeratedPart & { readonly tokens?: { readonly length: number; readonly words: string }; readonly vec?: string };
 
 /** What the passes read from one note, from its text or from the
  *  stored index. */
@@ -953,7 +956,8 @@ interface StoredNote {
   readonly frontmatter: string;
   readonly links: readonly (readonly [string | null, string | null])[];
   readonly replaced: boolean;
-  readonly parts: readonly (EnumeratedPart & { readonly tokens: { readonly length: number; readonly words: string } })[];
+  readonly parts: readonly (EnumeratedPart & { readonly tokens: { readonly length: number; readonly words: string };
+    readonly vec: string })[];
 }
 
 /** A note read from its text: its parts are cut only when a pass asks. */
@@ -979,7 +983,7 @@ function storeEntry(entry: NoteEntry): StoredNote {
     replaced: entry.replaced(),
     parts: [...entry.parts()].map((part) => {
       const tokens = tokenize(part.text);
-      return { ...part, tokens: { length: tokens.length, words: wordBag(tokens) } };
+      return { ...part, tokens: { length: tokens.length, words: wordBag(tokens) }, vec: textKey(part.text) };
     }),
   };
 }
@@ -1207,8 +1211,9 @@ interface Corpus {
   readonly rank: Uint32Array;
   /** Each word's postings as part indexes, read from the index once. */
   readonly postings: Map<string, { readonly hitsOf: readonly { readonly index: number; readonly f: number }[]; readonly held: number }>;
-  /** Each embedded part's unit vector, kept for the call so a later
-   *  query list scores the same vectors without embedding again. */
+  /** Each embedded part's unit vector, kept for the call when the
+   *  embedder keeps no store, so a later query list scores the same
+   *  vectors without embedding again. */
   readonly units: Map<number, Float64Array>;
 }
 
@@ -1852,9 +1857,24 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
         const compute = async (list: readonly string[]): Promise<Lite> => {
           const queryVectors = (await embed(list, request.signal)).map((vector) => normalized(vector));
           const lite: Lite = { queries: list, sims: new Map() };
-          // With the call's one walk, a part embedded earlier in the call
-          // is scored from its held vector. A part not yet held sends
-          // every part through the embedder as before.
+          // With the call's one walk, each in-window part's vector is
+          // found by its stored key. A store hands its vectors out again,
+          // so only an embedder with no store has them kept for the call:
+          // a part embedded earlier in the call is then scored from its
+          // held vector, and a part not yet held sends every part through
+          // the embedder as before.
+          const stored = 'eachVector' in embed;
+          if (corpus !== undefined && stored) {
+            const inWindow = parts.map((_, index) => index).filter(inside);
+            await eachPartVector(embed, inWindow.length,
+              (at) => corpus.refs[inWindow[at]!]!.vec ?? textKey(corpus.refs[inWindow[at]!]!.text),
+              (at) => corpus.refs[inWindow[at]!]!.text,
+              (at, vector) => {
+                const unit = normalized(vector, queryVectors[0]!.length);
+                lite.sims.set(inWindow[at]!, queryVectors.map((query) => similarity(unit, query)));
+              }, request.signal);
+            return lite;
+          }
           if (corpus !== undefined && corpus.units.size > 0) {
             const dimensions = queryVectors[0]!.length;
             let every = true;

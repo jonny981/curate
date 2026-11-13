@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import type { CandidateReadRequest, CandidateSource } from '@curatejs/core';
+import { cachedEmbeddings, type CandidateReadRequest, type CandidateSource } from '@curatejs/core';
 import { knowledgeBase, markdown } from '../src/index.js';
 import { onePass } from '../src/markdown.js';
 
@@ -80,26 +80,26 @@ const bare = (result: Read) => {
 };
 
 /** Every lane of one call, in order or all at once. */
-async function call(source: () => CandidateSource, on: boolean, atOnce = false) {
+async function call(source: () => CandidateSource, on: boolean, atOnce = false, list = lanes) {
   onePass.on = on;
   onePass.served = 0;
   const reader = source();
   const shared = { files: new Map<string, Promise<string>>(), shared: new Map<object, unknown>() };
   const results: Read[] = [];
-  if (atOnce) results.push(...await Promise.all(lanes.map((lane) => reader.read(lane, shared))));
-  else for (const lane of lanes) results.push(await reader.read(lane, shared));
+  if (atOnce) results.push(...await Promise.all(list.map((lane) => reader.read(lane, shared))));
+  else for (const lane of list) results.push(await reader.read(lane, shared));
   return { results: results.map(bare), served: onePass.served };
 }
 
 /** The per-read path first, then the one-pass path in order and all at
  *  once, on the same files and index. */
-async function agree(source: () => CandidateSource) {
-  const oracle = await call(source, false);
+async function agree(source: () => CandidateSource, list = lanes) {
+  const oracle = await call(source, false, false, list);
   expect(oracle.served).toBe(0);
-  const inOrder = await call(source, true);
+  const inOrder = await call(source, true, false, list);
   expect(inOrder.served).toBe(SERVED);
   expect(inOrder.results).toEqual(oracle.results);
-  const together = await call(source, true, true);
+  const together = await call(source, true, true, list);
   expect(together.served).toBe(SERVED);
   expect(together.results).toEqual(oracle.results);
   return oracle.results;
@@ -111,6 +111,34 @@ const kinds: [string, (root: string, cache: string) => CandidateSource][] = [
   ['docs', (root, cache) => markdown({ paths: [root], kind: 'docs', index: { directory: cache } })],
   ['docs from two paths', (root, cache) => markdown({ paths: [join(root, 'notes'), join(root, 'log.md')], kind: 'docs', index: { directory: cache } })],
 ];
+
+describe('one-pass read with a vector store', () => {
+  // The one-pass meaning lanes find each part's vector by the key the
+  // stored note holds; the per-read path hashes the text it embeds. With
+  // the per-read path run first, every text's vector is stored, so a
+  // one-pass run that embeds anything used a key that is not its text's.
+  const stored = (directory: string) => {
+    const texts: string[] = [];
+    const embedder = cachedEmbeddings(async (list) => { texts.push(...list); return embed(list); }, { directory, modelId: 'test' });
+    return { texts, lanes: lanes.map((lane) => lane.meaningLane === undefined ? lane : { ...lane, meaningLane: { embed: embedder } }) };
+  };
+  it.each(kinds)('gives the lanes the per-read path gives, and embeds nothing the store holds, with %s', { timeout: 60_000 }, async (_name, make) => {
+    const root = await folder();
+    const cache = await folder();
+    const vectors = await folder();
+    await write(root, notes);
+    await call(() => make(root, cache), false, false, stored(vectors).lanes);
+    const again = stored(vectors);
+    const results = await agree(() => make(root, cache), again.lanes);
+    expect(again.texts).toEqual([]);
+    expect(results[10]!.candidates.length).toBeGreaterThan(0);
+    await write(root, { 'notes/new.md': '## Backup window\n\nThe battery backup window is two hours.\n' });
+    await call(() => make(root, cache), false, false, stored(vectors).lanes);
+    const added = stored(vectors);
+    await agree(() => make(root, cache), added.lanes);
+    expect(added.texts).toEqual([]);
+  });
+});
 
 describe.each(kinds)('one-pass read of %s', (_name, make) => {
   const signalOf = (results: ReturnType<typeof bare>[], id: RegExp, signal: string) =>

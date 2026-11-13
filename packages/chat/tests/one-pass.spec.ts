@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import type { CandidateReadRequest, CandidateSource } from '@curatejs/core';
+import { cachedEmbeddings, type CandidateReadRequest, type CandidateSource } from '@curatejs/core';
 import { chat, type ChatProvider } from '../src/index.js';
 import { onePass } from '../src/chat.js';
 
@@ -186,6 +186,41 @@ describe.each(kinds)('one-pass chat read with %s', (_name, make) => {
     await transcript('codex', [message('codex', 'user', 'A new quince note about the pump.', LATER)], root, 'added');
     const second = await agree(() => make(root, cache));
     expect(second[4]!.candidates.length).toBe(first[4]!.candidates.length + 2);
+  });
+});
+
+describe('one-pass chat read with a vector store', () => {
+  // The one-pass meaning lanes find each part's vector by the key its row
+  // stores; the per-lane path hashes the text it embeds. With the per-lane
+  // path run first, every true text's vector is stored, so a one-pass run
+  // that embeds anything used a key that is not its text's.
+  const stored = (directory: string) => {
+    const texts: string[] = [];
+    const embedder = cachedEmbeddings(async (list) => { texts.push(...list); return embed(list); }, { directory, modelId: 'test' });
+    return { texts, lanes: lanes.map((lane) => lane.meaningLane === undefined ? lane : { ...lane, meaningLane: { embed: embedder } }) };
+  };
+  it.each(kinds)('gives the lanes the per-lane path gives, and embeds nothing the store holds, with %s', { timeout: 60_000 }, async (_name, make) => {
+    const root = await folder();
+    const cache = await folder();
+    const vectors = await folder();
+    await history(root);
+    // A part with only an invisible character embeds its title.
+    await transcript('codex', [message('codex', 'user', 'Before the mark.'), message('codex', 'user', '​'),
+      message('codex', 'assistant', 'After the mark, the pond pump.')], root, 'marks');
+    const first = stored(vectors);
+    await call(() => make(root, cache), false, false, first.lanes);
+    expect(first.texts.length).toBeGreaterThan(30);
+    const second = stored(vectors);
+    const together = await agree(() => make(root, cache), second.lanes);
+    expect(second.texts).toEqual([]);
+    expect(together[14]!.candidates.length).toBeGreaterThan(1);
+    // New parts: an appended part embeds with the stored part before it.
+    await appendFile(join(root, '2026/10/02', 'orchard.jsonl'),
+      `${JSON.stringify(message('codex', 'assistant', 'The pond pump filter moved to the orchard.', LATER))}\n`);
+    await call(() => make(root, cache), false, false, stored(vectors).lanes);
+    const third = stored(vectors);
+    await agree(() => make(root, cache), third.lanes);
+    expect(third.texts).toEqual([]);
   });
 });
 

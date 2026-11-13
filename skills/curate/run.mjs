@@ -1210,8 +1210,15 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
         return { source: source.id, ...await warmSource(source, { task: options.task || 'prepare' }, local.embed, context) };
       }));
       for (const read of reads) if (readWarning(read) !== undefined) console.error(readWarning(read));
+      // `--prepare` runs between calls, when no older process still has the
+      // files an earlier version kept open, so it removes them.
+      const removed = [...await local.embed.removeEarlierFiles?.() ?? []];
       record.status = 'prepared';
       console.log(`Prepared ${reads.length} ${reads.length === 1 ? 'source' : 'sources'}${project === undefined ? '' : ` for ${project}`}.`);
+      if (removed.length > 0) {
+        console.log(`Removed ${removed.length} ${removed.length === 1 ? 'file' : 'files'} an earlier version of Curate kept:\n${
+          removed.map((path) => `  ${path}`).join('\n')}`);
+      }
       return { memory, record, folder: records ? folder : null };
     }
     const apiKey = process.env.TYPESAFE_API_KEY;

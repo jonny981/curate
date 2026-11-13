@@ -29,7 +29,7 @@ export interface StoredIndexReport {
 
 /** The stored layout's version. A file of another version is never
  *  opened: its name differs, so the source is indexed again. */
-export const STORED_INDEX_FORMAT = 2;
+export const STORED_INDEX_FORMAT = 3;
 
 /** Checks a reader's `index` option: a settings object or false. */
 export function checkIndexOption(option: unknown): void {
@@ -62,6 +62,8 @@ export interface IndexStatement {
   run(...values: unknown[]): { readonly changes: number | bigint; readonly lastInsertRowid: number | bigint };
   all(...values: unknown[]): unknown[];
   get(...values: unknown[]): unknown;
+  /** The rows one at a time, never all held. */
+  iterate(...values: unknown[]): IterableIterator<unknown>;
 }
 
 /** The file for one source: its name comes from the source id, the

@@ -1,10 +1,10 @@
-import { appendFile, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { historySource, LABEL_KINDS, pickFromSources, type CandidateReadRequest, type CandidateSource, type PickDecide, type PickQuestion } from '@curatejs/core';
+import { cachedEmbeddings, historySource, LABEL_KINDS, pickFromSources, type CandidateReadRequest, type CandidateSource, type PickDecide, type PickQuestion } from '@curatejs/core';
 import { chat, chatSettings, type ChatProvider } from '../src/index.js';
 import { CHAT_KEYWORD_SETTINGS, rankChat } from '../src/chat-rank.js';
 import { porterStem } from '../src/porter.js';
@@ -993,6 +993,34 @@ describe('stored index', () => {
     // A request that excludes a transcript leaves its parts in the file.
     expect(await reported({ task: 'orchard', exclude: ['2026/10/02/four.jsonl'] })).toBe(await counted());
     expect(await counted()).toBe(9);
+  });
+
+  it('rebuilds over an index of an earlier format and embeds no part again', { timeout: 60_000 }, async () => {
+    const directory = await history();
+    const cache = await folder();
+    const vectors = await folder();
+    const lane = (embed: CandidateReadRequest['meaningLane'] & object) =>
+      ({ task, wholeLanes: true, meaningLane: embed, meaningQueries: [task, 'battery storage'] });
+    const read = async () => {
+      const texts: string[] = [];
+      const embed = cachedEmbeddings(async (list) => { texts.push(...list); return list.map((text) => [text.length % 7, 1]); },
+        { directory: vectors, modelId: 'test' });
+      const context = { files: new Map<string, Promise<string>>(), shared: new Map<object, unknown>() };
+      const result = await chat({ paths: [directory], index: { directory: cache } }).read(lane({ embed }), context);
+      return { texts, result: withoutReport(result) };
+    };
+    const first = await read();
+    expect(first.texts.length).toBeGreaterThan(5);
+    // What an earlier format leaves on disk: a file of another version.
+    for (const name of await readdir(cache)) {
+      if (name.endsWith('.v3.sqlite')) await rename(join(cache, name), join(cache, name.replace('.v3.', '.v2.')));
+    }
+    const earlier = (await readdir(cache)).filter((name) => name.endsWith('.v2.sqlite'));
+    expect(earlier).toHaveLength(1);
+    const rebuilt = await read();
+    expect(rebuilt.texts).toEqual([]);
+    expect(rebuilt.result).toEqual(first.result);
+    expect((await readdir(cache)).filter((name) => name.endsWith('.v3.sqlite'))).toHaveLength(1);
   });
 
   it('drops a removed transcript and reads a new one', async () => {
