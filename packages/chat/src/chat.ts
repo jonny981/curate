@@ -247,7 +247,11 @@ function split(text: string, size: number): string[] {
 
 const partIdOf = (part: RawPart) =>
   `${part.provider}:${part.root}:${relative(part.root, part.file)}:${part.line}:${part.block}:${part.piece}`;
-const partId = (part: RawPart) => scrubChat(partIdOf(part));
+// The folder read and the file's path in it are each scrubbed whole, then
+// joined: a value that looks like a secret is masked, and masking it never
+// reaches the id's other fields or the part's place, which keep it its own.
+const partId = (part: RawPart) =>
+  `${part.provider}:${scrubChat(part.root)}:${scrubChat(relative(part.root, part.file))}:${part.line}:${part.block}:${part.piece}`;
 const partTitle = (part: RawPart, zone: string) =>
   `${part.provider} ${part.sessionId} ${part.role} ${zonedIso(part.date, zone)}`;
 const AUTHOR_TITLES: Record<Author, string> = { person: ' (the person)', agent: ' (agent)', tool: ' (tool)', system: ' (system)', unmarked: '' };

@@ -134,6 +134,33 @@ describe.each(['claude-code', 'codex'] as const)('chat %s', (provider) => {
     expect(new Set(result.candidates.map((candidate) => candidate.id)).size).toBe(3);
   });
 
+  it('gives each part its own id in a folder whose name holds a credential word', async () => {
+    for (const name of ['token-service', 'secrets', 'pwd-notes']) {
+      const root = join(await folder(), name);
+      await transcript(provider, [message(provider, 'user', 'first part'), message(provider, 'assistant', 'second part')], root);
+      const result = await read(provider, root);
+      expect(result.candidates.map((candidate) => candidate.text).sort(), name).toEqual(['first part', 'second part']);
+      expect(new Set(result.candidates.map((candidate) => candidate.id)).size, name).toBe(2);
+      expect(result.candidates.every((candidate) => candidate.id.includes(`${name}:`)), name).toBe(true);
+    }
+  });
+
+  it('masks a folder that looks like a secret in each id and keeps the rest of the id', async () => {
+    for (const name of [`sk-${'Ab3'.repeat(8)}`, 'api_key=Kd7Kd7Kd7', 'api_key:Kd7Kd7Kd7', 'password:tinyFakePwd']) {
+      const root = join(await folder(), name);
+      await transcript(provider, [message(provider, 'user', 'first part'), message(provider, 'assistant', 'second part')], root);
+      // Read from the stored index and straight from the files.
+      for (const options of [{}, { index: false as const }]) {
+        const ids = (await read(provider, root, options)).candidates.map((candidate) => candidate.id);
+        expect(new Set(ids).size, name).toBe(2);
+        for (const id of ids) {
+          expect(id.includes(name), name).toBe(false);
+          expect(id, name).toMatch(new RegExp(`/\\[redacted\\]:${provider === 'codex' ? '2026/10/02' : 'project'}/session-one\\.jsonl:\\d+:\\d+:\\d+$`));
+        }
+      }
+    }
+  });
+
   it('preserves message parts, roles, session ids and dates', async () => {
     const directory = await transcript(provider, [message(provider, 'user', 'A user request'), message(provider, 'assistant', 'An assistant reply')]);
     const result = await read(provider, directory, {}, { task: 'find useful evidence', timeZone: 'UTC' });

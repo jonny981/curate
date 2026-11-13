@@ -67,7 +67,11 @@ const source = chat({ providers: ['claude-code', 'codex'], since: '14 days' });
   keys and tokens, named passwords and credentials, credentials in URLs,
   and long strings that look like secrets. A 40-character hex commit id
   is retained. Pattern matching is not a guarantee that arbitrary secret
-  text will be recognized.
+  text will be recognized. A part's `id` (the folder read, the
+  transcript's path in it, and the part's line, block and piece) has
+  the folder and the path scrubbed each on its own before they are
+  joined, so a name that looks like a secret is masked and every id
+  stays distinct.
 - **Ranking:** Chat uses the LongMemEval settings: BM25 with `k1: 0.6`
   and `b: 0`, Porter word stems, short identifiers, noun weights, and
   merged rankings for the full query, content words and names. Markdown
