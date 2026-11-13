@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
 import { historySource, pickFromSources, type CandidateSource, type PickQuestion } from '@curatejs/core';
-import { chat, chatSettings, CHAT_CASCADE } from '../src/index.js';
+import {
+  AGENT_CHAT_CASCADE, chat, chatSettings, CHAT_CASCADE, JUDGMENT_CHAT_CASCADE, PERSONAL_CHAT_CASCADE, PERSONAL_CHAT_WRITTEN_CASCADE,
+} from '../src/index.js';
 
 describe('source decision questions', () => {
   it('asks agent transcripts no own question while preserving the personal provider questions', async () => {
@@ -33,5 +35,12 @@ describe('source decision questions', () => {
       .toEqual(['relevant', 'needed']);
     expect(result.record.levers.sources.personal?.questions).toEqual(CHAT_CASCADE);
     expect(chatSettings.questions).toBe(CHAT_CASCADE);
+  });
+
+  it('weighs the person\'s own words only in the agent set, the one weight fitted on agent transcripts', () => {
+    expect(AGENT_CHAT_CASCADE.person).toBe(4.5);
+    for (const set of [CHAT_CASCADE, PERSONAL_CHAT_CASCADE, PERSONAL_CHAT_WRITTEN_CASCADE, JUDGMENT_CHAT_CASCADE]) {
+      expect(set.person).toBeUndefined();
+    }
   });
 });

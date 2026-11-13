@@ -135,8 +135,9 @@ In a `cli` session a user message can be the person's or text another tool
 typed into the terminal. The transcript cannot tell them apart, so it stays
 `unmarked`.
 
-The author mark changes no rank: keyword scores and phrase matches read the
-title without it.
+The author mark changes no search rank: keyword scores and phrase matches
+read the title without it. The decision score does read it: see
+**Questions** below.
 
 ## Defaults and overrides
 
@@ -157,8 +158,8 @@ const source = historySource({ reader: chat({ paths: ['transcripts'] }), ...chat
 See [core's measured reason](https://github.com/jonny981/curate/blob/main/packages/core/README.md#defaults-and-evidence) for the saved-decision sweep's answer-turn losses.
 
 - **Keyword settings:** `CHAT_KEYWORD_SETTINGS` exports the ranking defaults. Pass a partial `keyword` object to the reader to override them.
-- **Questions:** `chat()` uses `AGENT_CHAT_CASCADE`: `relevant` first, then `needed` inside the question band. It leaves out `own`. Core's `memory()` and `pickFromSources()` ask this set. Shared `chatSettings` keeps `CHAT_CASCADE`, including `own`, for host-provided personal histories. Spreading `chatSettings` into `historySource()` selects that shared set. Set `questions: AGENT_CHAT_CASCADE` to preserve agent questions when you change other settings.
-- **Question band:** `AGENT_CHAT_CASCADE.band`, `[0.1, 0.9]`, decides when the other questions are asked. A part whose answer to the first question, `relevant`, falls outside the band is scored on that answer alone. Set your own band through `questions`:
+- **Questions:** `chat()` uses `AGENT_CHAT_CASCADE`: `relevant` first, then `needed` inside the question band. It leaves out `own`. A part the reader marks as the person's own words adds the set's `person` weight, 4.5, to its score's logit, inside and outside the band: it moves those parts up and drops no other part. Core's `memory()` and `pickFromSources()` ask this set. Shared `chatSettings` keeps `CHAT_CASCADE`, including `own`, for host-provided personal histories. Spreading `chatSettings` into `historySource()` selects that shared set. Set `questions: AGENT_CHAT_CASCADE` to preserve agent questions when you change other settings.
+- **Question band:** `AGENT_CHAT_CASCADE.band`, `[0.1, 0.9]`, decides when the other questions are asked. A part whose answer to the first question, `relevant`, falls outside the band is scored on that answer alone, plus the `person` weight when the person wrote it. Set your own band through `questions`:
 
   ```ts
   import { historySource } from '@curatejs/core';

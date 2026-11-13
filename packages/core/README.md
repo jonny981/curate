@@ -864,6 +864,20 @@ of that set. No other shipped set carries `named`, because no weight
 was fitted for one. A set's own question keys cannot be the name
 question's key followed by a number.
 
+### The person's own words
+
+A question set's `person` weight is added to the logit of a reference
+part's score when its reader marks the person as the part's author
+(`chat.author` is `'person'`), inside the band and outside it. It moves
+the person's own words up the order and over the bar, and never drops
+another part. A part any other author wrote, or with no author mark,
+adds nothing. A model-scored set cannot carry it.
+
+`AGENT_CHAT_CASCADE` carries `person` 4.5, fitted with that set's
+answers on coding-agent transcripts, the same on each held-out half of
+the tasks. No other shipped set carries `person`, because no weight was
+fitted for one.
+
 ### Decision tags
 
 `tags` asks extra yes/no questions of each reference that passes

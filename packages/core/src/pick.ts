@@ -415,11 +415,16 @@ export interface PickCascade {
     /** Added when the task has at least one name. */
     readonly hasNames: number;
   };
+  /** Added to the logit of a reference part's score when its reader
+   *  marks the person as its author (`chat.author` 'person'), inside
+   *  and outside the band: a boost in the order, never a filter. A part
+   *  any other author wrote, or with no author mark, adds nothing. */
+  readonly person?: number;
   /** A fitted combining model: the answers and the code facts Curate
    *  computes per part score through its weights instead of the
    *  per-question weights. A set carrying one selects no first, band,
-   *  firstOnly, typed, written or named machinery, and only its set
-   *  may hold levelled questions. */
+   *  firstOnly, typed, written, named or person machinery, and only its
+   *  set may hold levelled questions. */
   readonly model?: PickCascadeModel;
   /** Render each item as a date and its text only: the model never
    *  sees the part's id, title or other identifying fields. */
@@ -2785,10 +2790,12 @@ export async function pick(
       if (!got) continue;
       let answer: CheckedAnswer;
       if (candidate.role === 'reference' && cascade) {
+        // The person's own words add the set's person weight to the logit.
+        const personZ = candidate.chat?.author === 'person' ? cascade.person ?? 0 : 0;
         const first = cascade.first === undefined ? undefined : got.get(cascade.first);
         if (first?.status === 'answered' && 'probability' in first
           && (first.probability < cascade.band![0] || first.probability > cascade.band![1])) {
-          answer = { status: 'answered', probability: 1 / (1 + Math.exp(-(cascade.firstOnly!.bias + cascade.firstOnly!.weight * logit(first.probability)))),
+          answer = { status: 'answered', probability: 1 / (1 + Math.exp(-(cascade.firstOnly!.bias + cascade.firstOnly!.weight * logit(first.probability) + personZ))),
             ...(first.reused === true ? { reused: true } : {}) };
         } else {
           // A returned missing answer contributes nothing, as in the prototype.
@@ -2847,16 +2854,16 @@ export async function pick(
             }).reduce<number | undefined>((top, p) => top === undefined || p > top ? p : top, undefined);
             const namedZ = named.length === 0 ? 0
               : cascade.named!.hasNames + (best === undefined ? 0 : cascade.named!.highest * writtenLogit(best));
-            if (typed.length > 0) untyped.set(candidate, 1 / (1 + Math.exp(-(z + writtenZ + namedZ))));
-            if (written.length > 0) unwritten.set(candidate, 1 / (1 + Math.exp(-(z + typedZ + namedZ))));
-            if (named.length > 0) unnamed.set(candidate, 1 / (1 + Math.exp(-(z + typedZ + writtenZ))));
+            if (typed.length > 0) untyped.set(candidate, 1 / (1 + Math.exp(-(z + writtenZ + namedZ + personZ))));
+            if (written.length > 0) unwritten.set(candidate, 1 / (1 + Math.exp(-(z + typedZ + namedZ + personZ))));
+            if (named.length > 0) unnamed.set(candidate, 1 / (1 + Math.exp(-(z + typedZ + writtenZ + personZ))));
             const keeper = typed.find((q) => {
               const reply = got.get(q.key);
               return q.keepAt !== undefined && reply?.status === 'answered'
                 && 'probability' in reply && reply.probability >= q.keepAt;
             });
             if (keeper !== undefined) keptBy.set(candidate, keeper.key);
-            answer = { status: 'answered', probability: 1 / (1 + Math.exp(-(z + typedZ + writtenZ + namedZ))),
+            answer = { status: 'answered', probability: 1 / (1 + Math.exp(-(z + typedZ + writtenZ + namedZ + personZ))),
               // The verdict reused the store only when every answer
               // behind it did: a question this pick asked — even one
               // that came back unanswered — keeps it fresh.
