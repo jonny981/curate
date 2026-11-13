@@ -185,7 +185,9 @@ export interface PickLabels {
 }
 
 /** The decision cache's settings, off by default. It stores each
- *  answered decide response once per part question and reuses it on a
+ *  answered decide response once per part question, and the answer an
+ *  identical text with the same question and author shared, and reuses
+ *  it on a
  *  later pick whose key matches: the key covers the task text, the
  *  question-set version, the rendered question's wording and criteria
  *  and its `questionKey` and `tagSet` when it carries them, the
@@ -2162,6 +2164,28 @@ export async function pick(
     // names the part's question, not the batch around it. Reads run in
     // bounded groups, as the label store's reads do.
     const cacheable = cache !== undefined && sink !== labelAnswers;
+    // A part's question's store key. A request that carries the needed
+    // facts asks with them, so its answers are stored under them.
+    const cacheKeyOf = (item: Pending) => decisionKey(
+      sink === answered && carriesNeeded(item.candidate) ? JSON.stringify([task, needed]) : task,
+      cacheVersion, cache!.deciderId, limits.maxQuestionText, item.question, item.candidate.text);
+    // Only a fully answered result is stored: a refusal, a missing
+    // answer, an error or a cancelled call is never written, so the store
+    // can never hold one. A failed write keeps the answer and the record
+    // warns once.
+    const storeAnswer = async (key: string, answer: CheckedAnswer) => {
+      if (answer.status !== 'answered') return;
+      try {
+        await cache!.store.set(key,
+          { answer: { status: 'answered',
+            ...('probability' in answer ? { probability: answer.probability }
+              : { probabilities: answer.probabilities }),
+            ...(answer.truncated === true ? { truncated: true } : {}) } });
+      } catch (error) {
+        cacheFailedWrites += 1;
+        cacheWriteError ??= error;
+      }
+    };
     let fresh = asks;
     if (cacheable) {
       fresh = [];
@@ -2176,11 +2200,7 @@ export async function pick(
         if (limits.maxElapsedMs - (Date.now() - started) <= 0) { stop = 'time'; break; }
         const group = await Promise.all(asks.slice(index, index + LABEL_STORE_READ_GROUP)
           .map(async (item) => {
-            // A request that carries the needed facts asks with them, so
-            // its answers are stored under them.
-            const key = decisionKey(sink === answered && carriesNeeded(item.candidate) ? JSON.stringify([task, needed]) : task,
-              cacheVersion, cache.deciderId,
-              limits.maxQuestionText, item.question, item.candidate.text);
+            const key = cacheKeyOf(item);
             let stored: ReturnType<typeof storedDecision>;
             try {
               stored = storedDecision(await cache.store.get(key));
@@ -2313,22 +2333,7 @@ export async function pick(
         let got = sink.get(candidate);
         if (!got) { got = new Map(); sink.set(candidate, got); }
         got.set(spec.key, answer);
-        // Only a fully answered result is stored: a refusal, a missing
-        // answer, an error or a cancelled call is never written, so the
-        // store can never hold one. A failed write keeps the answer and
-        // the record warns once.
-        if (cacheKey !== undefined && answer.status === 'answered') {
-          try {
-            await cache!.store.set(cacheKey,
-              { answer: { status: 'answered',
-                ...('probability' in answer ? { probability: answer.probability }
-                  : { probabilities: answer.probabilities }),
-                ...(answer.truncated === true ? { truncated: true } : {}) } });
-          } catch (error) {
-            cacheFailedWrites += 1;
-            cacheWriteError ??= error;
-          }
-        }
+        if (cacheKey !== undefined) await storeAnswer(cacheKey, answer);
         // `truncated` marks a decision item the text cut shortened; a
         // label ask never sends one, so the flag belongs to the decide
         // sink only.
@@ -2357,6 +2362,9 @@ export async function pick(
       got.set(item.spec.key, answer);
       if (truncated.has(first.candidate)) truncated.set(item.candidate, truncated.get(first.candidate)!);
       if (decideFailed.has(first.candidate)) decideFailed.add(item.candidate);
+      // A copy's answer is stored under its own key too, so a later pick
+      // that reaches the copy first reuses it rather than asking again.
+      if (cacheable && !decideFailed.has(item.candidate)) await storeAnswer(cacheKeyOf(item), answer);
     }
   };
 

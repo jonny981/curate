@@ -110,3 +110,45 @@ describe('the second search on coding-agent transcripts', () => {
     expect(again).toEqual({ picked: first });
   });
 });
+
+describe('the second search reuses every rating of the first', () => {
+  it('asks nothing in round two that round one rated, a copy of an identical text included', async () => {
+    // Two transcripts end in the same agent reply. Round one asks it once
+    // and gives the copy the same answer; round two's order makes the copy
+    // the one it would ask.
+    const texts: Record<string, readonly string[]> = { c: ['database database database database', 'Fine.'],
+      a: ['database database zanzibar', 'We chose Postgres.'], b: ['database zanzibar zanzibar', 'We chose Postgres.'] };
+    const all = Object.entries(texts).flatMap(([session, lines]) =>
+      lines.map((text, index) => part(session, index + 1, index === 0 ? 'person' : 'agent', text, index)));
+    const words = (text: string) => text.toLowerCase().match(/[a-z]+/g) ?? [];
+    const source: CandidateSource = { id: 'agents', kind: 'chat', role: 'reference',
+      mode: { name: 'agent-transcripts', questions: agentSet, read: conversationRead() },
+      async read(request: CandidateReadRequest) {
+        const asked = new Set(words(request.task));
+        const scored = all.map((candidate) => ({ ...candidate,
+          signals: { keyword: words(candidate.text).filter((word) => asked.has(word)).length } }));
+        return { status: 'read', complete: true, candidates: request.wholeLanes === true ? scored
+          : scored.filter((candidate) => candidate.signals.keyword > 0) };
+      } };
+    const asks: string[][] = [];
+    const store = new Map<string, unknown>();
+    const options = { task: 'Which database?', cache: { deciderId: 'test', store: {
+      get: async (key: string) => store.get(key), set: async (key: string, value: unknown) => { store.set(key, value); } } },
+      decide: (async ({ questions }) => {
+        asks.push(questions.map((question) => question.id));
+        return Object.fromEntries(questions.map((question) => [question.key, { status: 'answered', probability: 0.8 }]));
+      }) as PickDecide };
+    const pickWith = (lines: { keywords: string[]; answers: string[] }) => pickFullSources(
+      [searchSource(source, { chat: lines }, [], '/nonexistent', { readAudit: false })],
+      { task: options.task, searchLines: Array.from({ length: lines.keywords.length + lines.answers.length }, (_, i) => `curate-search:${i}`) },
+      options);
+    const first = await pickWith({ keywords: [], answers: [] });
+    const rated = new Set(first.record.candidates.filter((entry: { status: string }) =>
+      entry.status === 'selected' || entry.status === 'rejected').map((entry: { id: string }) => entry.id));
+    expect(rated.size).toBe(6);
+    const roundOne = asks.length;
+    const again = await searchAgain(options.task, first, new Set(['agents']), pickWith);
+    expect(again.record).toBeDefined();
+    expect(asks.slice(roundOne).flat().filter((id) => rated.has(id))).toEqual([]);
+  });
+});

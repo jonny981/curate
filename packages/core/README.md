@@ -1097,7 +1097,9 @@ is identical to a pick without it.
 ### Optional decision cache
 
 `cache: { store, deciderId }` stores each answered decision, off by
-default. The `store` port is asynchronous `get(key)` and
+default, and stores the answer an identical text shared under the
+copy's own key too, so a later pick that reaches the copy first does
+not ask again. The `store` port is asynchronous `get(key)` and
 `set(key, value)`; `decisionFileStore(directory)` is the supplied one,
 one JSON file per answer under `directory`, each written to a
 temporary file and renamed into place. `deciderId` is required: it
