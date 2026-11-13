@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { conversationRead, pick, type MemoryCandidate, type PickCascade, type PickDecide } from '../src/index.js';
-import { topicShifts } from '../src/chat-read.js';
+import { chatRead, topicShifts } from '../src/chat-read.js';
 import { modesOf } from './fixtures/modes.js';
 
 type Author = 'person' | 'agent';
@@ -303,6 +303,26 @@ describe('the conversation read\'s rules', () => {
     expect(stopped.record.pick?.chatRead).toMatchObject({ requests: 1, ended: 'fall' });
     const measuredMany = await pick(personSessions(336), { task, decide: rater(ratingsMany).decide, ...agentRead });
     expect(measuredMany.record.pick?.chatRead?.requests).toBe(3);
+  });
+});
+
+describe('the cost of a read', () => {
+  it('looks up ratings a bounded number of times on a long single-topic transcript', async () => {
+    // 800 warm parts of one transcript and one topic. Walk checks read
+    // only the facts the walk rule uses: computing every neighbour and
+    // segment fact for each check cost 386 million lookups here.
+    const n = 800;
+    const parts: MemoryCandidate[] = Array.from({ length: n }, (_, index) => ({ sourceId: 'chat', id: `p${index}`,
+      role: 'reference', title: 'title', text: `postgres database migration schema unique ${index}`, signals: {},
+      author: 'agent', place: { container: 's.jsonl', at: [index + 1, 1, 1] } }));
+    const rated = new Set<MemoryCandidate>();
+    let lookups = 0;
+    const result = await chatRead({ parts, order: parts, byKeyword: parts, lanes: [[parts[n / 2]!]],
+      rate: async (some) => { for (const item of some) rated.add(item); },
+      score: (item) => { lookups += 1; return rated.has(item) ? 0.8 : undefined; },
+      kept: () => true, stopped: () => false });
+    expect(result.read).toHaveLength(n);
+    expect(lookups).toBeLessThan(600_000);
   });
 });
 

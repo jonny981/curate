@@ -166,8 +166,10 @@ const bestOf = (ratings: Iterable<number | undefined>) => {
 export interface WalkFacts {
   readonly rating: number | undefined;
   readonly best: number;
-  readonly neighbours: number | undefined;
-  readonly segment: number | undefined;
+  /** Computed when called: a walk check runs for every part of every
+   *  ring, so facts no rule reads cost nothing. */
+  readonly neighbours: () => number | undefined;
+  readonly segment: () => number | undefined;
 }
 
 /** What the read knows when it decides whether a topic segment opens:
@@ -291,9 +293,9 @@ export async function chatRead(input: ChatReadInput): Promise<ChatReadResult> {
   const walkable = (part: MemoryCandidate) => {
     const { session, at } = where.get(part)!;
     return rules.walksOn({ rating: score(part), best,
-      neighbours: bestOf([session[at - 2], session[at - 1], session[at + 1], session[at + 2]]
+      neighbours: () => bestOf([session[at - 2], session[at - 1], session[at + 1], session[at + 2]]
         .map((next) => next === undefined ? undefined : rated(next))),
-      segment: bestOf(segmentOf.get(part)!.map((next) => next === part ? undefined : rated(next))) });
+      segment: () => bestOf(segmentOf.get(part)!.map((next) => next === part ? undefined : rated(next))) });
   };
 
   // Each request's new parts' ratings and the best rating when it ended.
