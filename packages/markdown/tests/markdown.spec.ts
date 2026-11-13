@@ -1534,6 +1534,121 @@ describe('markdown stored index', () => {
     expect(deleted.index).toMatchObject({ parts: total - 1, added: 0, removed: 1 });
   });
 
+  it('reports the part total the file holds, as a sum over its notes would, including a file written before the count was kept', async () => {
+    const directory = await tree(notes);
+    const cache = await tree({});
+    const source = () => knowledgeBase(directory, { index: { directory: cache } });
+    const { DatabaseSync } = process.getBuiltinModule('node:sqlite');
+    const file = async () => join(cache, (await readdir(cache)).find((entry) => entry.endsWith('.sqlite'))!);
+    const summed = async () => {
+      const database = new DatabaseSync(await file(), { readOnly: true });
+      try {
+        return (database.prepare('SELECT COALESCE(SUM(parts), 0) AS n FROM notes').get() as { n: number }).n;
+      } finally {
+        database.close();
+      }
+    };
+    const reported = async () => {
+      const result = await read(source(), { task: 'orchard', wholeLanes: false });
+      if (result.status !== 'read') throw new Error('Expected a read');
+      return result.index!.parts;
+    };
+    expect(await reported()).toBe(await summed());
+    await writeFile(join(directory, 'notes/retention.md'), '## Policy\n\nThe orchard keeps thirty days.\n\n## More\n\nAnd more.\n');
+    expect(await reported()).toBe(await summed());
+    await writeFile(join(directory, 'notes/new.md'), '## New\n\nA new note.\n');
+    expect(await reported()).toBe(await summed());
+    await rm(join(directory, 'notes/alice.md'));
+    expect(await reported()).toBe(await summed());
+    // A file from before the count: the next update sums its notes once.
+    const database = new DatabaseSync(await file());
+    database.exec('DROP TABLE counts');
+    database.close();
+    await writeFile(join(directory, 'notes/new.md'), '## New\n\nA new note.\n\n## Second\n\nAnd a second part.\n');
+    expect(await reported()).toBe(await summed());
+    expect(await summed()).toBeGreaterThan(0);
+  });
+
+  it('runs the date log again only when the head has moved, and dates notes as the direct read does', { timeout: 60_000 }, async () => {
+    const repository = await inRepository(notes);
+    const cache = await tree({});
+    const lane = { task, wholeLanes: true, taskDate: '2026-11-28T12:00:00Z' };
+    const logs: (readonly string[])[] = [];
+    onGitChild = (_child, args) => { if (args.includes('--cc')) logs.push(args); };
+    const env = { ...process.env, GIT_AUTHOR_NAME: 'Test', GIT_AUTHOR_EMAIL: 'test@example.com', GIT_COMMITTER_NAME: 'Test',
+      GIT_COMMITTER_EMAIL: 'test@example.com', GIT_AUTHOR_DATE: '2026-11-02T12:00:00Z', GIT_COMMITTER_DATE: '2026-11-02T12:00:00Z' };
+    try {
+      const same = async () => {
+        const stored = withoutReport(await read(knowledgeBase(repository, { index: { directory: cache } }), lane));
+        expect(stored).toEqual(withoutReport(await read(knowledgeBase(repository, { index: false }), lane)));
+        return stored;
+      };
+      const before = await same();
+      logs.length = 0;
+      await same();
+      // The direct read ran its log; the stored read ran none.
+      expect(logs).toHaveLength(1);
+      // A new undated note, committed: only a log of the new head dates it.
+      await writeFile(join(repository, 'notes/fresh.md'), '## Fresh\n\nThe battery backup moved.\n');
+      execFileSync('git', ['-C', repository, 'add', 'notes/fresh.md'], { env });
+      execFileSync('git', ['-C', repository, 'commit', '-q', '-m', 'fresh'], { env });
+      logs.length = 0;
+      const after = await same();
+      expect(logs).toHaveLength(2);
+      const fresh = (result: typeof before) => result.candidates.find((candidate) => candidate.id.startsWith('notes/fresh.md'))?.date;
+      expect(fresh(before)).toBeUndefined();
+      expect(fresh(after)).toEqual({ value: '2026-11-02T12:00:00+00:00', meaning: 'changed' });
+    } finally {
+      onGitChild = undefined;
+    }
+  });
+
+  it('dates notes as the direct read does when a fetch deepens a shallow clone without moving its head', { timeout: 60_000 }, async () => {
+    const origin = await tree({ 'note.md': '# Orchard\n\nThe orchard opens Monday.\n' });
+    const env = (date: string) => ({ ...process.env, GIT_AUTHOR_NAME: 'Test', GIT_AUTHOR_EMAIL: 'test@example.com',
+      GIT_COMMITTER_NAME: 'Test', GIT_COMMITTER_EMAIL: 'test@example.com', GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date });
+    execFileSync('git', ['-C', origin, 'init', '-q', '-b', 'main'], { env: env('2026-01-01T12:00:00Z') });
+    execFileSync('git', ['-C', origin, 'add', '-A'], { env: env('2026-01-01T12:00:00Z') });
+    execFileSync('git', ['-C', origin, 'commit', '-q', '-m', 'note'], { env: env('2026-01-01T12:00:00Z') });
+    await writeFile(join(origin, 'other.txt'), 'Other');
+    execFileSync('git', ['-C', origin, 'add', '-A'], { env: env('2026-02-01T12:00:00Z') });
+    execFileSync('git', ['-C', origin, 'commit', '-q', '-m', 'other'], { env: env('2026-02-01T12:00:00Z') });
+    const parent = await tree({});
+    const clone = join(parent, 'clone');
+    execFileSync('git', ['clone', '-q', '--depth', '1', `file://${origin}`, clone], { env: env('2026-02-01T12:00:00Z') });
+    const cache = await tree({});
+    const lane = { task: 'orchard', wholeLanes: true, taskDate: '2026-11-13T12:00:00Z' };
+    const same = async (since?: string) => {
+      const options = since === undefined ? {} : { since };
+      const stored = withoutReport(await read(markdown({ paths: [clone], kind: 'docs', index: { directory: cache }, ...options }), lane));
+      expect(stored).toEqual(withoutReport(await read(markdown({ paths: [clone], kind: 'docs', index: false, ...options }), lane)));
+      return stored.candidates.map((candidate) => candidate.date?.value);
+    };
+    // The shallow history holds only the later commit.
+    expect(await same()).toEqual(['2026-02-01T12:00:00+00:00']);
+    const head = execFileSync('git', ['-C', clone, 'rev-parse', 'HEAD'], { encoding: 'utf8' });
+    execFileSync('git', ['-C', clone, 'fetch', '-q', '--unshallow'], { env: env('2026-02-01T12:00:00Z') });
+    expect(execFileSync('git', ['-C', clone, 'rev-parse', 'HEAD'], { encoding: 'utf8' })).toBe(head);
+    expect(await same()).toEqual(['2026-01-01T12:00:00+00:00']);
+    expect(await same('2026-01-15')).toEqual([]);
+  });
+
+  it('reports the part total a sum over the notes gives when two roots hold one note and requests exclude it in turn', async () => {
+    const directory = await tree({ 'notes/sub/note.md': '# Orchard\n\nThe orchard is open.\n' });
+    const cache = await tree({});
+    const source = markdown({ paths: [join(directory, 'notes/sub'), join(directory, 'notes')], kind: 'docs', index: { directory: cache } });
+    const { DatabaseSync } = process.getBuiltinModule('node:sqlite');
+    for (const exclude of [[], ['note.md'], [], ['note.md'], []]) {
+      const result = await read(source, { task: 'orchard', wholeLanes: true, exclude });
+      if (result.status !== 'read') throw new Error('Expected a read');
+      const database = new DatabaseSync(join(cache, (await readdir(cache)).find((name) => name.endsWith('.sqlite'))!), { readOnly: true });
+      const summed = (database.prepare('SELECT COALESCE(SUM(parts), 0) AS n FROM notes').get() as { n: number }).n;
+      database.close();
+      expect(result.index!.parts, JSON.stringify(exclude)).toBe(summed);
+      expect(summed).toBe(1);
+    }
+  });
+
   it('reads one source at two part sizes in one read context, as separate contexts read it', async () => {
     const directory = await tree(notes);
     const cache = await tree({});

@@ -285,6 +285,28 @@ describe('curate', () => {
     expect(record.items.map((item) => [item.id, item.weight])).toEqual([['["orchard","same"]', 0.9], ['["pond","same"]', 0.3]]);
   });
 
+  it('weighs each item by the first record entry of its source and id, as a search of the record from the start does', async () => {
+    // Many entries, repeated pairs and ids shared across sources: the
+    // oracle searches the record from the start for every item.
+    const items = Array.from({ length: 300 }, (_, index) =>
+      part(`source-${index % 3}`, `id-${index % 120}`, '2024-03-05', `Item ${index}.`));
+    const base = picked(items.map((item, index) => [item, ((index * 37) % 100) / 100, index] as const));
+    const record = { ...base.record, candidates: [
+      ...base.record.candidates.map((entry, index) => index % 7 === 0 ? { ...entry, probability: 0.99 } : entry),
+      ...base.record.candidates,
+    ] };
+    const oracle = (item: MemoryCandidate) => {
+      const entry = record.candidates.find((candidate) => candidate.sourceId === item.sourceId && candidate.id === item.id)!;
+      return entry.status === 'selected' ? entry.probability : undefined;
+    };
+    const result = await curate(TASK, { ...base, record }, { answerTokens: 1_000_000 });
+    const weight = new Map(result.record.items.map((item) => [item.candidate, item.weight]));
+    expect(result.record.items.length).toBeGreaterThan(100);
+    for (const item of base.selected) {
+      if (weight.has(item)) expect(weight.get(item), `${item.sourceId} ${item.id}`).toBe(oracle(item));
+    }
+  });
+
   it('fails when no reference was selected', async () => {
     await expect(curate(TASK, picked([[RULE, 1, 0]]))).rejects.toThrow('no selected reference items');
   });

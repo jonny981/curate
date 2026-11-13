@@ -29,6 +29,7 @@ import {
   type StoredIndexOptions,
   type StoredIndexReport,
 } from '@curatejs/core/internal';
+import { existsSync } from 'node:fs';
 import { lstat, readdir, readFile, realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, join, matchesGlob, relative, resolve, sep } from 'node:path';
@@ -565,6 +566,51 @@ async function logDates(
   return dates;
 }
 
+/** `logDates` for the head, kept in the source's stored index: the log
+ *  runs again only when the head has moved. The dates depend on the
+ *  commits the log can walk from the head, and those change without the
+ *  head moving when a shallow clone is deepened or replacement refs or
+ *  grafts are set, so such a repository's dates are never stored or
+ *  reused: its log runs on every call, as before. So does a repository
+ *  whose head does not resolve. */
+async function storedLogDates(
+  path: string, directory: string, toplevel: string, prefix: string, signal: AbortSignal | undefined,
+): Promise<ReadonlyMap<string, string>> {
+  let head: string;
+  let whole: boolean;
+  try {
+    const [resolved, facts, replaced] = await Promise.all([
+      resolveCommit(toplevel, 'HEAD', signal),
+      runGit(toplevel, ['rev-parse', '--is-shallow-repository', '--git-path', 'info/grafts'], { signal }),
+      runGit(toplevel, ['for-each-ref', '--count=1', '--format=x', 'refs/replace/'], { signal }),
+    ]);
+    const [shallow = '', grafts = ''] = facts.trim().split('\n');
+    head = resolved;
+    whole = shallow === 'false' && !existsSync(resolve(toplevel, grafts)) && replaced.trim() === '';
+  } catch (error) {
+    if (error instanceof GitFailure && error.kind === 'cancelled') throw error;
+    return logDates(toplevel, prefix, undefined, signal);
+  }
+  if (!whole) return logDates(toplevel, prefix, undefined, signal);
+  const database = await openIndexFile(path, directory);
+  try {
+    return await updateIndex(path, database, async () => {
+      database.exec(`CREATE TABLE IF NOT EXISTS dates (toplevel TEXT NOT NULL, prefix TEXT NOT NULL, head TEXT NOT NULL,
+        dates TEXT NOT NULL, PRIMARY KEY (toplevel, prefix)) WITHOUT ROWID`);
+      const row = database.prepare('SELECT head, dates FROM dates WHERE toplevel = ? AND prefix = ?')
+        .get(toplevel, prefix) as { head: string; dates: string } | undefined;
+      if (row?.head === head) return new Map(JSON.parse(row.dates) as [string, string][]);
+      const dates = await logDates(toplevel, prefix, head, signal);
+      database.prepare(`INSERT INTO dates (toplevel, prefix, head, dates) VALUES (?, ?, ?, ?)
+        ON CONFLICT (toplevel, prefix) DO UPDATE SET head = excluded.head, dates = excluded.dates`)
+        .run(toplevel, prefix, head, JSON.stringify([...dates]));
+      return dates;
+    });
+  } finally {
+    database.close();
+  }
+}
+
 /** The files under `prefix` with uncommitted changes, staged or not, and
  *  the files with no commit yet, as repository paths, from one `git
  *  status` pass over the pathspecs. `specs` names the reader's Markdown
@@ -987,7 +1033,13 @@ async function syncNotes(
         parts INTEGER NOT NULL) WITHOUT ROWID;
       CREATE TABLE IF NOT EXISTS postings (term TEXT NOT NULL, path TEXT NOT NULL,
         ordinal INTEGER NOT NULL, count INTEGER NOT NULL, PRIMARY KEY (term, path, ordinal)) WITHOUT ROWID;
-      CREATE INDEX IF NOT EXISTS postingsPath ON postings (path)`);
+      CREATE INDEX IF NOT EXISTS postingsPath ON postings (path);
+      CREATE TABLE IF NOT EXISTS counts (name TEXT PRIMARY KEY, n INTEGER NOT NULL) WITHOUT ROWID`);
+      // The file's part total, kept beside the notes so no call sums the
+      // `parts` column, which sits after each note's whole text. A file
+      // written before the count existed is summed once.
+      let total = (database.prepare("SELECT n FROM counts WHERE name = 'parts'").get() as { n: number } | undefined)?.n
+        ?? (database.prepare('SELECT COALESCE(SUM(parts), 0) AS n FROM notes').get() as { n: number }).n;
       const insertPosting = database.prepare('INSERT OR IGNORE INTO postings (term, path, ordinal, count) VALUES (?, ?, ?, ?)');
       const wipePostings = database.prepare('DELETE FROM postings WHERE path = ?');
       // A note's posting list is its parts' stored words with their
@@ -1005,6 +1057,8 @@ async function syncNotes(
       const rows = new Map((database.prepare('SELECT path, size, mtime, modified FROM notes WHERE root = ?')
         .all(root) as { path: string; size: number; mtime: string; modified: string }[])
         .map((row) => [row.path, row]));
+      // A note's stored parts, under whichever root of the file stored it:
+      // rewriting it here replaces them.
       const partsOf = database.prepare('SELECT parts FROM notes WHERE path = ?');
       const storedParts = (file: string) => (partsOf.get(file) as { parts: number } | undefined)?.parts ?? 0;
       const write = database.prepare(`INSERT INTO notes (path, root, size, mtime, modified, entry, parts)
@@ -1038,23 +1092,29 @@ async function syncNotes(
           throw new SourceReadError('failed', `Could not read ${file}: ${message(error)}`);
         }
         const stored = storeEntry(build(file, text));
-        if (row !== undefined) removed += storedParts(file);
+        const old = storedParts(file);
+        if (row !== undefined) removed += old;
+        total -= old;
         write.run(file, root, size, mtime, changed, JSON.stringify(stored), stored.parts.length);
         wipePostings.run(file);
         postParts(file, stored);
         modified.set(file, changed);
         added += stored.parts.length;
+        total += stored.parts.length;
       }
       if (prune) {
         const walked = new Set(files);
         const remove = database.prepare('DELETE FROM notes WHERE path = ?');
         for (const file of rows.keys()) {
           if (walked.has(file)) continue;
-          removed += storedParts(file);
+          const old = storedParts(file);
+          removed += old;
+          total -= old;
           remove.run(file);
           wipePostings.run(file);
         }
       }
+      database.prepare("INSERT INTO counts (name, n) VALUES ('parts', ?) ON CONFLICT (name) DO UPDATE SET n = excluded.n").run(total);
       return { added, removed, ms: Math.round(performance.now() - started), modified };
     });
   } finally {
@@ -1404,7 +1464,7 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
             lastChanged = indexPath === undefined
               ? await logDates(repo.toplevel, repo.prefix, state.pinned?.revision, request.signal)
               : await once(context, JSON.stringify(['dates', repo.toplevel, repo.prefix]),
-                () => logDates(repo.toplevel, repo.prefix, undefined, request.signal));
+                () => storedLogDates(indexPath, indexFolder!, repo.toplevel, repo.prefix, request.signal));
             if (state.pinned === undefined) {
               // Only the reader's Markdown names are checked for
               // uncommitted work, so status never scans the rest of the
@@ -1718,12 +1778,12 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
       let indexed: { readonly index?: StoredIndexReport } = {};
       if (indexPath !== undefined && updates.size > 0) {
         const done = [...updates.values()];
-        // The total is counted once per call: the count walks every stored
-        // note, and every read of the call reports the same update.
+        // The total is read once per call from the count the updates keep;
+        // every read of the call reports the same update.
         const total = await once(context, JSON.stringify(['parts', indexPath, [...updates.keys()], requestExclude]), async () => {
           const database = await openIndexFile(indexPath, indexFolder!);
           try {
-            return (database.prepare('SELECT COALESCE(SUM(parts), 0) AS n FROM notes').get() as { n: number }).n;
+            return (database.prepare("SELECT n FROM counts WHERE name = 'parts'").get() as { n: number }).n;
           } finally {
             database.close();
           }

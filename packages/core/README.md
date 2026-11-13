@@ -174,7 +174,9 @@ Every lane of a call then reads the file instead of decoding the transcripts, fe
   A read pinned to a revision reads the file only when this call brought the file to that commit. Any other pinned read runs git as before.
 - **Markdown:** notes that are new, or changed in size or modification time, are read again.
   A note no longer in the folder loses its parts on a read whose request excludes nothing.
-  The folder walk and the git date lookups run once per call. A read pinned to a revision reads the files as before.
+  The folder walk runs once per call. The last commit date of each file is stored with the head it was read at, and the git log runs again only when the head has moved.
+  A shallow clone, or a repository with replacement refs or grafts, can show other history without its head moving, so its dates are never stored: its log runs on every call.
+  The check for uncommitted changes runs once per call. A read pinned to a revision reads the files as before.
 - **Exclusions:** a path the source's own `exclude` names is never written to the file.
   A path the request's `exclude` names is never opened, returned or scored. Its stored parts stay for calls that do read it.
   Git records a commit the source's own `exclude` names, or one that changed none of the source's `paths`, by its name only, and never reads its subject or body.

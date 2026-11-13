@@ -233,9 +233,14 @@ export async function curate(task: string, picked: PickResult, options: CurateOp
   const signal = options.signal ?? new AbortController().signal;
   signal.throwIfAborted();
   const references = picked.selected.filter((candidate) => candidate.role === 'reference');
+  // Each record entry by source and id; the first entry of a pair wins.
+  const entries = new Map<string, PickResult['record']['candidates'][number]>();
+  for (const item of picked.record.candidates) {
+    const key = JSON.stringify([item.sourceId, item.id]);
+    if (!entries.has(key)) entries.set(key, item);
+  }
   const items = references.map((candidate) => {
-    const entry = picked.record.candidates.find((item) =>
-      item.sourceId === candidate.sourceId && item.id === candidate.id);
+    const entry = entries.get(JSON.stringify([candidate.sourceId, candidate.id]));
     if (entry?.status !== 'selected' || entry.probability === undefined
       || !Number.isFinite(entry.probability) || entry.probability < 0 || entry.probability > 1) {
       throw new TypeError('curate: each reference needs a selected record entry with a weight between 0 and 1.');

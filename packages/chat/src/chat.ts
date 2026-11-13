@@ -659,7 +659,9 @@ async function syncChatIndex(
         database.prepare('DELETE FROM transcripts WHERE id = ?').run(row.id);
         removed += row.parts;
       }
-      const total = (database.prepare('SELECT COUNT(*) AS n FROM parts').get() as { n: number }).n;
+      // Each transcript row counts its own parts, so the file's total is a
+      // sum over transcripts, never a walk over every part.
+      const total = (database.prepare('SELECT COALESCE(SUM(parts), 0) AS n FROM transcripts').get() as { n: number }).n;
       return {
         path, directory, roots: loaded,
         report: { parts: total, added, removed, rebuilt: false, ms: Math.round(performance.now() - started) },

@@ -957,6 +957,44 @@ describe('stored index', () => {
     expect(edited.candidates.map((candidate) => candidate.text)).toContain('The orchard harvest starts on Monday.');
   });
 
+  it('reports the part total the file holds, as a count of its parts would, through appends, edits, removals and exclusions', async () => {
+    const directory = await folder();
+    const cache = await folder();
+    await transcript('codex', Array.from({ length: 6 }, (_, index) => message('codex', 'user', `orchard ${index}`)), directory, 'one');
+    await transcript('codex', [message('codex', 'user', 'orchard two')], directory, 'two');
+    await transcript('claude-code', [message('claude-code', 'user', 'orchard three')], directory, 'three');
+    const counted = async () => {
+      const [name] = (await readdir(cache)).filter((entry) => entry.endsWith('.sqlite'));
+      const { DatabaseSync } = process.getBuiltinModule('node:sqlite');
+      const database = new DatabaseSync(join(cache, name!), { readOnly: true });
+      try {
+        return (database.prepare('SELECT COUNT(*) AS n FROM parts').get() as { n: number }).n;
+      } finally {
+        database.close();
+      }
+    };
+    const reported = async (request: CandidateReadRequest = { task: 'orchard' }) => {
+      const result = await chat({ paths: [directory], index: { directory: cache } }).read(request);
+      if (result.status !== 'read') throw new Error('Expected a read');
+      return result.index!.parts;
+    };
+    const changes: (() => Promise<unknown>)[] = [
+      async () => undefined,
+      () => appendFile(join(directory, '2026/10/02/one.jsonl'), `${JSON.stringify(message('codex', 'user', 'orchard later'))}\n`),
+      async () => writeFile(join(directory, '2026/10/02/one.jsonl'),
+        (await readFile(join(directory, '2026/10/02/one.jsonl'), 'utf8')).split('\n').slice(2).join('\n')),
+      () => rm(join(directory, '2026/10/02/two.jsonl')),
+      () => transcript('codex', [message('codex', 'user', 'orchard four'), message('codex', 'assistant', 'orchard five')], directory, 'four'),
+    ];
+    for (const change of changes) {
+      await change();
+      expect(await reported()).toBe(await counted());
+    }
+    // A request that excludes a transcript leaves its parts in the file.
+    expect(await reported({ task: 'orchard', exclude: ['2026/10/02/four.jsonl'] })).toBe(await counted());
+    expect(await counted()).toBe(9);
+  });
+
   it('drops a removed transcript and reads a new one', async () => {
     const directory = await folder();
     const cache = await folder();
