@@ -16,13 +16,14 @@ const RENAMED_OPTIONS: Readonly<Record<string, string>> = {
   'thresholds.referenceBySize': '`everyScored.bySize`',
   laneCut: '`wholeLanes`',
   'meaning.laneCut': '`meaning.wholeLanes`',
+  thoroughness: '`stopWhenCold`',
 };
 
 const PICK_OPTION_KEYS: readonly (keyof PickOptions)[] = [
   'ranking', 'task', 'decide', 'questionsBySource', 'sourceKinds', 'labelKindsBySource', 'labelBarBySource',
   'keepTop', 'rankProtection', 'bestPartFirst', 'tags', 'tagsByKind',
   'labels', 'cache', 'route', 'answerTypes', 'writeQuestions', 'findNames', 'everyRanked', 'everyScored', 'rare', 'rareBySource',
-  'thoroughness', 'feed',
+  'stopWhenCold', 'feed',
   'barBySource', 'ruleBarBySource', 'rulesEnumerationComplete', 'readsBySource', 'limits', 'thresholds',
   'taskDate', 'timeZone', 'taskPeriod', 'signal',
 ];
@@ -230,13 +231,17 @@ export function checkPickOptions(options: PickOptions): void {
   }
   checkKeys(options.cache, CACHE_KEYS, 'cache');
   checkKeys(options.everyRanked, ['c'], 'everyRanked');
-  if (options.thoroughness !== undefined) {
-    if (options.thoroughness !== 'quick' && options.thoroughness !== 'normal' && options.thoroughness !== 'deep') {
-      throw new TypeError(`thoroughness must be 'quick', 'normal' or 'deep'.`);
+  checkKeys(options.stopWhenCold, ['floor', 'share'], 'stopWhenCold');
+  if (options.stopWhenCold !== undefined) {
+    const stop: unknown = options.stopWhenCold;
+    if (stop !== false && (typeof stop !== 'object' || stop === null || Array.isArray(stop)
+      || Object.values(stop).some((value) => value !== undefined
+        && (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 1)))) {
+      throw new TypeError('stopWhenCold must be false or hold a floor and a share between 0 and 1.');
     }
     // The dials name two different feeds and are never combined.
     if (options.everyRanked !== undefined) {
-      throw new TypeError('everyRanked and thoroughness cannot both be set; thoroughness applies only when everyRanked is not given.');
+      throw new TypeError('everyRanked and stopWhenCold cannot both be set; stopWhenCold reads the fused order, which everyRanked replaces.');
     }
   }
   if (options.feed !== undefined) {
@@ -248,7 +253,7 @@ export function checkPickOptions(options: PickOptions): void {
       throw new TypeError('feed.size must be a positive integer.');
     }
     if (options.everyRanked !== undefined) {
-      throw new TypeError('feed and everyRanked cannot both be set; feed orders the feed a thoroughness level bounds.');
+      throw new TypeError('feed and everyRanked cannot both be set; feed orders the fused order, which everyRanked replaces.');
     }
   }
   checkKeys(options.everyScored, ['bar', 'bySize'], 'everyScored');

@@ -316,7 +316,7 @@ export async function addMeaningRanks(
     const keywordHeld = ranks[index]!.slice(0, keywordLanes).some((rank) => rank !== null);
     const past = keywordHeld ? keywordPast === true && pastMeaning[index] !== false : pastMeaning[index] === true;
     // A part a meaning lane kept holds its best similarity over the
-    // queries, for the fused order a thoroughness level reads.
+    // queries, for the fused order the decide step reads.
     const meaningKept = ranks[index]!.slice(keywordLanes).some((rank) => rank !== null);
     return [{ ...rest, searchRanks: ranks[index]!,
       ...(meaningKept ? { meaningScore: Math.max(...scores.map((lane) => lane[index]!)) } : {}),

@@ -41,7 +41,7 @@ describe('labels carried by a source', () => {
   it('cuts weak decisions and asks no labels when no source carries label kinds', async () => {
     const result = await pick(parts, { task, decide });
     expect(result.record.levers).toEqual({
-      thoroughness: 'normal', route: false, rare: false,
+      stopWhenCold: false, route: false, rare: false,
       sources: { notes: { labels: false, rare: false, bar: 0.0146 } },
     });
     expect(result.selected.map((part) => part.id)).toEqual(['billing']);

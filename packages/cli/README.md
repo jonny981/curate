@@ -34,6 +34,9 @@ The command hides Node's experimental-feature warning for SQLite, which the stor
 ## Settings and data
 
 The settings, the history a call reads, and what each setting does are in the skill's [settings reference](https://github.com/jonny981/curate/blob/main/skills/curate/references/settings.md).
+A call has Jev rate every part of the ranked history the search lanes keep, so its cost grows with that number: about $0.00002 a part.
+`stopWhenCold` in the settings file ends the read sooner: `{}` rates the history from the top, two batches of parts at a time, and stops at the first batch whose best rating is under 0.1, or under 0.2 times the best rating before it; higher numbers stop sooner and cost less, lower ones read further and find more. It never stops before the read has kept a part, so a question the history holds nothing for reads the whole order even with the stop on.
+On three benchmark runs' saved scores, `{}` rated 64% (LoCoMo), 55% (DolphinBench) and 83% (BEAM) of the parts the runs rated and kept 98.5%, 95.2% and 100% of the evidence they found. On the published runs it saved $0.0012 a LoCoMo question and $0.0067 a LongMemEval question; it cost about 5 to 12 of LoCoMo's 1,540 right answers, the 4 lost in both answer runs each because evidence left the text, and stayed inside the noise on LongMemEval. On DolphinBench's 5,800-part transcripts it rated about half the parts, about $0.026 saved a test; its effect on answers there is not measured.
 What a call sends to the decision service and to the search-line model is in [What leaves your machine](https://github.com/jonny981/curate#what-leaves-your-machine).
 
 The command runs the skill's script, `skills/curate/run.mjs`, which this package ships as `dist/run.mjs`.

@@ -14,15 +14,15 @@ Five packages:
 - **`@curatejs/core`** holds selection and layout: `pick`, `pickFromSources`,
   `curate` and `memory`. Keyword search lanes, host-written search lines,
   question sets that each source carries as `questions`, decision tags,
-  optional score cuts, and thoroughness levels that bound how many ranked
-  parts reach the decision step. Optional local meaning search adds embedding
-  ranks through a host-supplied function or the shipped `node-llama-cpp`
-  adapter. An optional label gate labels every reference part of a source
-  that carries label kinds, and the task once, against the kind questions,
-  keeps the answers in a directory you choose, and adds the parts whose labels
-  match a kind the task needs to the parts keyword search already found for
-  the decide step. Chat asks its seven label kinds by default; git and
-  Markdown carry none.
+  optional score cuts, and an optional stop that ends the decision step's read
+  of the ranked parts where their ratings go cold. Optional local meaning
+  search adds embedding ranks through a host-supplied function or the shipped
+  `node-llama-cpp` adapter. An optional label gate labels every reference part
+  of a source that carries label kinds, and the task once, against the kind
+  questions, keeps the answers in a directory you choose, and adds the parts
+  whose labels match a kind the task needs to the parts keyword search already
+  found for the decide step. Chat asks its seven label kinds by default; git
+  and Markdown carry none.
 - **`@curatejs/chat`** reads local Claude Code and Codex transcripts. It
   scrubs likely secrets before ranking.
 - **`@curatejs/git`** reads commit history, with optional blame and co-change
@@ -67,10 +67,24 @@ What each part does:
   `$XDG_CACHE_HOME/curate/index` or `~/.cache/curate/index`. Each call brings
   it up to date first, and every lane reads it in place of the raw history.
   `index: false` reads the source directly.
-- **Thoroughness bounds the decision feed.** `pick.thoroughness` sends the
-  top 672 (`quick`), 3,674 (`normal`, the default) or 12,896 (`deep`) parts
-  of the fused order to the decision step. `pick.feed: { order: 'combsum' }`
-  orders the feed by summed lane places, with an optional `size`.
+- **The decision step rates every part the search lanes keep, or stops where
+  the ratings go cold.** By default `pick()` rates every part of the fused
+  order, so a call's cost grows with the parts the lanes keep: about $0.00002
+  a part. `pick.stopWhenCold` is off unless set; `{}` reads the order two
+  batches at a time and stops at the first batch whose best decision score is
+  under 0.1, or under 0.2 times the best score before it, never before the
+  read has kept a part, so a question the history holds nothing for reads the
+  whole order; `{ floor, share }` sets the two numbers for one call: a higher
+  one stops sooner and costs less, a lower one reads further and finds more.
+  On three benchmark runs' saved scores `{}` rated 64% (LoCoMo), 55%
+  (DolphinBench) and 83% (BEAM) of the parts the runs rated and kept 98.5%,
+  95.2% and 100% of their evidence. On the published runs it saved $0.0012 a
+  LoCoMo question and $0.0067 a LongMemEval question, cost about 5 to 12 of
+  LoCoMo's 1,540 right answers, and stayed inside the noise on LongMemEval.
+  The record's `pick.stopWhenCold` says how many parts were rated, in how many
+  waves, and what ended the read and why. `pick.feed: { order: 'combsum' }`
+  orders the feed by summed lane places, with an optional `size` that bounds
+  the read.
 - **Settings by source.** Each source carries its own settings, so a setting
   chosen for one kind of history never changes what Curate picks from
   another: `rare` (follow strong parts by their rare words to parts the first

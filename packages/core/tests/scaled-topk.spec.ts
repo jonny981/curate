@@ -5,7 +5,6 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   LABEL_KINDS,
-  THOROUGHNESS,
   pick,
   pickFromSources,
   type CandidateSource,
@@ -67,7 +66,7 @@ afterEach(() => {
 });
 
 describe('pick scaled top-k', () => {
-  it('sends the same parts as a pick without the dial on a history smaller than the depth', async () => {
+  it('sends the same parts as a pick without the dial', async () => {
     const candidates = parts(20);
     const task = 'Recall the plan';
     const baseline = stubDecide(() => answered(0.9));
@@ -76,11 +75,10 @@ describe('pick scaled top-k', () => {
     expect(decidedIds(baseline.calls)).toEqual(candidates.map((item) => item.id));
     expect(plain.selected.map((item) => item.id)).toEqual(candidates.map((item) => item.id));
     const absent = await pick(candidates, { ...uncutPick, task, decide: allAnswered.decide, everyRanked: undefined });
-    // With `everyRanked` unset the thoroughness lever runs at 'normal'; on
-    // a history inside its depth the same parts are decided.
+    // With `everyRanked` unset the decide step reads the whole fused
+    // order, so the same parts are decided.
     expect(absent.selected).toEqual(plain.selected);
-    expect(absent.record.pick).toEqual({ n: 20, sent: 20, questions: 20, kept: 20,
-      thoroughness: { level: 'normal', depth: THOROUGHNESS.normal }, ranking: 'fusion' });
+    expect(absent.record.pick).toEqual({ n: 20, sent: 20, questions: 20, kept: 20, ranking: 'fusion' });
   });
 
   it.each([

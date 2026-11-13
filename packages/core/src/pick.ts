@@ -93,7 +93,7 @@ export interface MemoryCandidate {
   readonly pastLaneCut?: true;
   /** The part's best similarity over the read's meaning queries: the
    *  highest cosine score any meaning lane gave it, kept for the fused
-   *  order a `thoroughness` level reads. Set by `addMeaningRanks` for a
+   *  order the decide step reads. Set by `addMeaningRanks` for a
    *  part a meaning lane kept, by `readSearches` merging a reader's own
    *  meaning lanes, or by a caller that scores its candidates itself. */
   readonly meaningScore?: number;
@@ -269,12 +269,15 @@ export type PickEntryStatus =
   | { readonly status: 'unassessed';
       /** Why no decide question was asked: a stopping dial ('limits',
        *  'time', 'cancelled', 'error'), the scaled top-k cut ('pick'),
-       *  the thoroughness depth ('thoroughness'), or 'gate': with the
+       *  the rating stop ('stopWhenCold': the part sat in the fused
+       *  order below where the ratings went cold), the fused order's
+       *  reach ('feed': the part sat past the caller's `feed.size`, or
+       *  no search lane placed it in the order), or 'gate': with the
        *  label gate on, a reference part the
        *  keyword lanes never held whose stored or answered labels
        *  cleared no needed kind. A part a lane limit cut or a stop
        *  left unlabelled keeps that reason instead. */
-      readonly reason: 'limits' | 'time' | 'cancelled' | 'document' | 'error' | 'gate' | 'pick' | 'thoroughness' };
+      readonly reason: 'limits' | 'time' | 'cancelled' | 'document' | 'error' | 'gate' | 'pick' | 'stopWhenCold' | 'feed' };
 
 export type PickRecordEntry = {
   readonly sourceId: string;
@@ -425,7 +428,7 @@ export interface PickCascade {
 export interface PickSettingEffect {
   /** The setting's name as a caller writes it: 'labels', 'rare', 'bar', 'ruleBar', 'searchLines',
    *  'searchPhrases', 'meaning', 'names', 'wholeLanes', 'linkedPathBar', 'everyScored', 'everyRanked', 'typed',
-   *  'taskPeriod', 'written', 'named' or 'decay'.
+   *  'taskPeriod', 'written', 'named', 'decay', 'feed' or 'stopWhenCold'.
    *  'alwaysOnSkipped' is no setting: it reports the always-on files a rule read skipped. */
   readonly setting: string;
   /** The source the counts are for. A setting given for the whole call gets one entry per source. */
@@ -586,7 +589,8 @@ export interface PickRecord {
    *  the keyword lanes never held), how many of the feed's reference
    *  parts went on to the decide step, and which ranking the decide
    *  step read: 'fusion' when the label gate fused its lane into the
-   *  keyword order or a `thoroughness` level ran, 'keyword' otherwise.
+   *  keyword order or the fused order ran (`everyRanked` unset),
+   *  'keyword' otherwise.
    *  `c` is the supplied top-k coefficient, present only when the cut
    *  ran; candidates the cut dropped record 'unassessed' with reason
    *  'pick'. Rules never count toward N or the keep count and are
@@ -608,14 +612,38 @@ export interface PickRecord {
     readonly questions: number;
     readonly c?: number;
     readonly kept: number;
-    /** The level and the depth in parts it cut the fused order at,
-     *  present when a `thoroughness` level was in force. */
-    readonly thoroughness?: { readonly level: Thoroughness; readonly depth: number };
     /** Present when the `feed` option was given: the order the feed
-     *  was cut in, the size given (absent when the level's depth
-     *  stood), and how many ranked reference parts the cut left
-     *  unjudged. With a size, `thoroughness.depth` is that size. */
+     *  was cut in, the size given (absent when none was), and how many
+     *  ranked reference parts the size left unjudged. */
     readonly feed?: { readonly order: 'combsum'; readonly size?: number; readonly unjudged: number };
+    /** Present when the rating stop read the fused order: the floor
+     *  and share it tested with, the waves of decision requests the
+     *  read sent, the batches of the order it rated, the parts of the
+     *  order it rated, the parts of the order it never rated, the rated
+     *  parts at or above their keep bar, and what ended the read: 'order' when it reached the order's end, 'cold'
+     *  when the ratings went cold, or the stopping dial that ended it
+     *  first ('limits', 'time', 'cancelled', 'error'). `cold` is
+     *  present when the ratings went cold: the batch, counted from 1
+     *  down the order, whose best rating failed a test, that best
+     *  rating, the best rating of every batch before it, and the test
+     *  it failed. The rest of that batch's wave was already sent, so
+     *  `batches` can pass `cold.batch` by the rest of one wave. */
+    readonly stopWhenCold?: {
+      readonly floor: number;
+      readonly share: number;
+      readonly waves: number;
+      readonly batches: number;
+      readonly rated: number;
+      readonly unread: number;
+      readonly kept: number;
+      readonly ended: 'order' | 'cold' | 'limits' | 'time' | 'cancelled' | 'error';
+      readonly cold?: {
+        readonly batch: number;
+        readonly best: number;
+        readonly bestBefore: number;
+        readonly under: 'floor' | 'share';
+      };
+    };
     readonly ranking: 'keyword' | 'fusion';
     readonly rare?: {
       readonly share: number;
@@ -758,8 +786,8 @@ export interface PickOptions {
    *  `named`. A function that throws, or returns anything but an array
    *  of strings, stops the pick. Curate ships no model for it. */
   readonly findNames?: (task: string) => Promise<readonly string[]>;
-  /** Read every ranked part. Unset, a `thoroughness` level bounds the
-   *  feed instead, 'normal' when that too is unset, and passing both
+  /** Read every ranked part. Unset, the decide step reads the whole
+   *  fused order instead, and passing `stopWhenCold` or `feed` with it
    *  throws a TypeError before any read. `{ c }` keeps only the top
    *  `round(c × N^0.8)` reference parts of the
    *  ranking the decide step reads — the label gate's fused order when
@@ -778,35 +806,56 @@ export interface PickOptions {
    *  was cut; dropped candidates record 'unassessed' with reason
    *  'pick'. */
   readonly everyRanked?: true | { readonly c: number };
-  /** The appetite for look-back: which thoroughness level feeds the
-   *  decide step. In force whenever `everyRanked` is not given (passing
-   *  both throws a TypeError), and 'normal' when unset. The
-   *  decide step is then asked about only the top `THOROUGHNESS[level]`
-   *  reference parts of one fused order across the sources: a part's
-   *  place is the better of its best keyword lane's share of that lane
-   *  (a keyword lane is one `searchRanks` index across every source)
-   *  and its position in the history's own best-similarity ranking.
-   *  The task's period and the label lane are members of the order too;
-   *  a part below the depth is never asked by the first pass, and the
-   *  rare-word round reaches one only while the depth still has room,
-   *  so the reference parts sent never pass the depth. A part the depth
-   *  left out records 'unassessed' with reason 'thoroughness'. */
-  readonly thoroughness?: Thoroughness;
-  /** Off unless set. Which reference parts the decide step is asked
-   *  about under a thoroughness level, and how many.
-   *  `order: 'combsum'` cuts the fused order by the SUM of a part's lane
+  /** The rating stop, off unless set: how far down the fused order
+   *  the decide step reads. Unset or `false`, it rates every part of
+   *  the order, so a call's cost grows with the parts the search lanes
+   *  keep. The fused order spans the sources: a part's place is the
+   *  better of its best keyword lane's share of that lane (a keyword
+   *  lane is one `searchRanks` index across every source) and its
+   *  position in the history's own best-similarity ranking; the task's
+   *  period and the label lane are members of the order too. With the
+   *  stop set (`{}` takes both defaults), the decide step reads the
+   *  order in the request-sized batches the limits form, two batches a
+   *  wave, and after each wave checks the wave's batches in order: the
+   *  read stops at the first batch whose best decision score is under
+   *  `floor` (default 0.1), or under `share` (default 0.2) times the
+   *  best score of every batch before it. It never stops before the
+   *  read has kept a reference part on the bar the selection keeps it
+   *  at, whatever sets that bar, so a question the history
+   *  holds nothing for reads the whole order even with the stop set.
+   *  The rest of that wave is rated and kept as usual; a part below
+   *  the stop is never asked by the read and records 'unassessed' with
+   *  reason 'stopWhenCold'. A higher floor or share stops sooner and
+   *  spends less; a lower one reads further and finds more. It applies
+   *  only when `everyRanked`
+   *  is not given (passing both throws a TypeError). On three
+   *  benchmarks' saved ratings the defaults rated 64% (LoCoMo), 55%
+   *  (DolphinBench) and 83% (BEAM) of the parts the runs rated and
+   *  kept 98.5%, 95.2% and 100% of the evidence they found. On the
+   *  published LoCoMo and LongMemEval runs they cost about 5 to 12 of
+   *  LoCoMo's 1,540 right answers and stayed inside the noise on
+   *  LongMemEval, for $0.0012 and $0.0067 saved a question. */
+  readonly stopWhenCold?: false | {
+    /** Stop when a batch's best decision score is under this. */
+    readonly floor?: number;
+    /** Or under this share of the best score of every batch before it. */
+    readonly share?: number;
+  };
+  /** Off unless set. Which reference parts of the fused order the
+   *  decide step is asked about, and how many.
+   *  `order: 'combsum'` orders the fused order by the SUM of a part's lane
    *  places in place of its best place, which favours a part several
    *  search lanes agree on over a part one lane placed high. A keyword
    *  lane's place is the part's share of that lane across every
    *  source; a meaning lane's place is its share among its own
    *  source's members of that lane; a names lane adds nothing. Equal
    *  sums keep the queue's order, as equal places do by default.
-   *  `size` is the number of reference parts fed, in place of the
-   *  level's depth, smaller or larger; unset, the level's depth stands.
-   *  A shorter feed costs fewer decision questions and judges fewer
-   *  parts: a part the default order would have fed can go unjudged.
-   *  A part the cut leaves out records 'unassessed' with reason
-   *  'thoroughness', and the record's `pick.feed` keeps the order, the
+   *  `size` is the most reference parts fed: a rating stop reads
+   *  inside it and can end the read sooner; unset, the whole order is
+   *  fed. A shorter feed costs fewer decision questions and judges
+   *  fewer parts: a part the default order would have fed can go
+   *  unjudged. A part the size leaves out records 'unassessed' with
+   *  reason 'feed', and the record's `pick.feed` keeps the order, the
    *  size and the count left unjudged. Rules are never cut. Passing
    *  `feed` with `everyRanked` throws a TypeError before any read. */
   readonly feed?: { readonly order: 'combsum'; readonly size?: number };
@@ -838,7 +887,10 @@ export interface PickOptions {
    *  source sharing one of its rare words is
    *  pulled in, pool members included: one never asked goes through
    *  the decide step, one already decided reuses its score, and a part
-   *  scoring at or above `bar` joins the selection. `bar` is a second,
+   *  scoring at or above `bar` joins the selection. Under the rating
+   *  stop the round reads the parts it asks in fused order, two batches
+   *  at a time, with a best score of its own, and ends when they go
+   *  cold. `bar` is a second,
    *  lower bar than the selection bar (default 0.0146); the seeds keep
    *  their source's own bar. `true` runs the defaults on every source,
    *  an object supplies them. Omit it to use rareBySource, or false to
@@ -889,24 +941,21 @@ export interface PickOptions {
   readonly signal?: AbortSignal;
 }
 
-/** A thoroughness level: how deep into the fused order the decide
- *  step reads. 'deep' is set where measured recall stopped improving:
- *  the smallest depth that kept every known answer part in all eight
- *  replayed task sets over a history of about 116,000 parts of
- *  coding-agent transcripts, git history and Markdown notes. 'normal',
- *  the default, and 'quick' are the largest depths priced at about 5p
- *  and 1p a call on that history, with the measured loss in the README
- *  beside each. */
-export type Thoroughness = 'quick' | 'normal' | 'deep';
-
-/** The depth in parts each thoroughness level cuts the fused order at:
- *  the decision model is asked only about the top that many parts of
- *  the one cross-source order, whatever the history's size. */
-export const THOROUGHNESS: Record<Thoroughness, number> = {
-  quick: 672,
-  normal: 3674,
-  deep: 12896,
-};
+/** The rating stop's floor and share when a call sets it without
+ *  them. On a free replay of saved ratings from three benchmarks, 0.2
+ *  was the cheapest of 80 rules that kept at least 98% of the evidence
+ *  the runs found on every tuning half; the 0.1 floor stops a read at
+ *  its first batch when nothing in the history scores warm, at a cost
+ *  of 0.8 points of LoCoMo evidence. */
+const STOP_FLOOR = 0.1;
+const STOP_SHARE = 0.2;
+/** The batches the rating stop sends at once before it checks them.
+ *  On the same saved ratings, two a wave read 3, 1 and 1 points more of
+ *  LoCoMo's, DolphinBench's and BEAM's parts than one batch at a time,
+ *  for an estimated 45%, 16% and 48% less decide time under the
+ *  service's token allowance; three a wave read 14, 3 and 2 points
+ *  more for little further gain. */
+const WAVE_BATCHES = 2;
 
 export const PICK_QUESTION_VERSION = 'memory-pick-questions-1';
 
@@ -1184,6 +1233,9 @@ interface EffectInput {
   readonly rareSeeds: ReadonlyMap<string, ReadonlySet<string>>;
   readonly rareTaken: readonly MemoryCandidate[];
   readonly rareAdded: ReadonlySet<MemoryCandidate>;
+  /** The pulled parts the round never asked, and why: past a feed
+   *  size's room, or below the round's own stop. */
+  readonly rareHeld: ReadonlyMap<MemoryCandidate, 'size' | 'cold'>;
   /** The parts the selection pass scored, and those it scored below their bar. */
   readonly scored: ReadonlySet<MemoryCandidate>;
   readonly belowBar: ReadonlySet<MemoryCandidate>;
@@ -1191,11 +1243,22 @@ interface EffectInput {
   readonly linkActed: ReadonlySet<MemoryCandidate>;
   readonly rankedBySource: ReadonlyMap<string, number>;
   readonly cutBySource: ReadonlyMap<string, number>;
-  /** The thoroughness level in force and the depth it cut the fused
-   *  order at; undefined when `everyRanked` was given. */
-  readonly thoroughness: { readonly level: Thoroughness; readonly depth: number } | undefined;
-  /** The `feed` size, when one stood in place of the level's depth. */
-  readonly feedSize: number | undefined;
+  /** The decide step read the fused order: `everyRanked` was not given. */
+  readonly fused: boolean;
+  /** The `feed` option, when given. */
+  readonly feedOption: PickOptions['feed'];
+  /** What the rating stop did, when it was on: its floor and share,
+   *  the batch that went cold, what ended the read, and by source the
+   *  parts of the order it could read and the parts it rated. */
+  readonly stopWhenCold: {
+    readonly floor: number;
+    readonly share: number;
+    readonly cold: NonNullable<NonNullable<PickRecord['pick']>['stopWhenCold']>['cold'];
+    readonly ended: NonNullable<NonNullable<PickRecord['pick']>['stopWhenCold']>['ended'];
+    readonly kept: number;
+    readonly orderBySource: ReadonlyMap<string, number>;
+    readonly ratedBySource: ReadonlyMap<string, number>;
+  } | undefined;
   readonly reads: Readonly<Record<string, PickSourceRead>>;
   /** `taskPeriod` was on, the period the task named, and which parts it brought in. */
   readonly taskPeriod: boolean;
@@ -1261,13 +1324,13 @@ function settingEffects(input: EffectInput): PickSettingEffect[] {
         for (const index of held) found.add(lanes[index] ?? 'task');
       }
     }
-    // Under a level a feed reference no lane held has the depth itself
-    // as its way in: the label lane and the period reorder the short
-    // list but admit none. A part a lane held keeps that lane as a way
+    // Under the fused order a feed reference no lane held has the order
+    // itself as its way in: the label lane and the period reorder the
+    // order but admit none. A part a lane held keeps that lane as a way
     // in; its position in the fused order is what the lane placed.
-    if (input.thoroughness !== undefined && candidate.role === 'reference'
+    if (input.fused && candidate.role === 'reference'
       && feed.has(candidate) && held === undefined) {
-      found.add('thoroughness');
+      found.add('order');
     }
     if (input.labelLane.has(candidate)) found.add('labels');
     if (input.windowed(candidate)) found.add('taskPeriod');
@@ -1358,7 +1421,7 @@ function settingEffects(input: EffectInput): PickSettingEffect[] {
       const { reached, added } = opened('labels');
       const head = `labels on ${id} at the label bar ${input.labelBar(id)}: labelled ${count(labelled)}`;
       const through = 'reached the decide step only through the label lane';
-      const reason = input.thoroughness !== undefined
+      const reason = input.fused
           || queued.every((candidate) => input.laneHeld.has(candidate))
         ? 'every part was already going to the decide step'
         : (input.labelNeeds.get(id) ?? []).length === 0 ? 'the task needed none of its label kinds'
@@ -1375,13 +1438,15 @@ function settingEffects(input: EffectInput): PickSettingEffect[] {
     if (seeds !== undefined) {
       const pulled = input.rareTaken.filter((candidate) => candidate.sourceId === id);
       const added = pulled.filter((candidate) => input.rareAdded.has(candidate)).length;
-      // Under a level the round reaches only inside the depth; a pulled
-      // part it held out was never asked, however rare its words.
-      const held = pulled.filter((candidate) => {
-        const status = input.statuses.get(candidate);
-        return status?.status === 'unassessed' && status.reason === 'thoroughness';
-      }).length;
-      const depthNote = held === 0 ? '' : `; the thoroughness depth held ${count(held)} of them out`;
+      // A pulled part the round held out was never asked, however rare
+      // its words: a feed size's room ran out, or the round's own
+      // answers went cold first.
+      const held = (why: 'size' | 'cold') => pulled.filter((candidate) => input.rareHeld.get(candidate) === why
+        && input.statuses.get(candidate)?.status === 'unassessed').length;
+      const depthNote = [
+        ...(held('size') === 0 ? [] : [`; the feed size held ${count(held('size'))} of them out`]),
+        ...(held('cold') === 0 ? [] : [`; its ratings went cold with ${held('cold')} of them unasked`]),
+      ].join('');
       effects.push({ setting: 'rare', source: id, actedOn: pulled.length, added, dropped: 0,
         summary: added > 0
           ? `rare on ${id}: pulled in ${count(pulled.length)} that share a rare word with a kept part, and ${keptOf(added)}${depthNote}.`
@@ -1507,16 +1572,37 @@ function settingEffects(input: EffectInput): PickSettingEffect[] {
           : `everyRanked on ${id}: the cut (c ${input.topK}) kept every one of ${count(ranked, 'ranked part')}, so it left 0 undecided.` });
     }
 
-    if (input.thoroughness !== undefined) {
+    if (input.fused && input.feedOption?.size !== undefined) {
       const ranked = input.rankedBySource.get(id) ?? 0;
       const left = input.cutBySource.get(id) ?? 0;
-      const { level, depth } = input.thoroughness;
-      const cut = input.feedSize === undefined
-        ? `the '${level}' depth of ${count(depth, 'part')}` : `the feed size of ${count(depth, 'part')}`;
-      effects.push({ setting: 'thoroughness', source: id, actedOn: ranked, added: 0, dropped: null,
+      const cut = `the feed size of ${count(input.feedOption.size, 'part')}`;
+      effects.push({ setting: 'feed', source: id, actedOn: ranked, added: 0, dropped: null,
         summary: left > 0
-          ? `thoroughness on ${id}: ${cut} kept ${ranked - left} of ${count(ranked, 'ranked part')} and left ${left} undecided.`
-          : `thoroughness on ${id}: ${cut} kept every one of ${count(ranked, 'ranked part')}, so it left 0 undecided.` });
+          ? `feed on ${id}: ${cut} kept ${ranked - left} of ${count(ranked, 'ranked part')} and left ${left} undecided.`
+          : `feed on ${id}: ${cut} kept every one of ${count(ranked, 'ranked part')}, so it left 0 undecided.` });
+    }
+
+    if (input.stopWhenCold !== undefined) {
+      const { floor, share, cold, ended, kept } = input.stopWhenCold;
+      const order = input.stopWhenCold.orderBySource.get(id) ?? 0;
+      const read = input.stopWhenCold.ratedBySource.get(id) ?? 0;
+      const unread = order - read;
+      const rating = (value: number) => Number(value.toFixed(3));
+      const went = cold === undefined ? '' : `the ratings went cold at batch ${cold.batch}, whose best rating ${rating(cold.best)} was under ${
+        cold.under === 'floor' ? `the floor ${floor}` : `${share} of the best before it, ${rating(cold.bestBefore)}`}`;
+      const left = `${read} of ${count(order, 'part')} in the order and left ${unread} unread`;
+      effects.push({ setting: 'stopWhenCold', source: id, actedOn: order, added: 0, dropped: null,
+        summary: ended !== 'cold' && ended !== 'order'
+          ? `stopWhenCold on ${id}: a stop (${ended}) ended the read before the ratings went cold or the order ran out, so it rated ${left}.`
+          : ended === 'order'
+            ? kept === 0 && unread === 0
+              ? `stopWhenCold on ${id}: no part reached the keep bar, so the read rated every one of ${count(order, 'part')} in the order and kept none.`
+            : unread === 0
+              ? `stopWhenCold on ${id}: the ratings never went cold, so the read rated every one of ${count(order, 'part')} in the order and left 0 unread.`
+              : `stopWhenCold on ${id}: the ratings never went cold and the read reached the end of the order, but ${unread} of its parts got no decision score: it rated ${left}.`
+            : unread > 0
+              ? `stopWhenCold on ${id}: ${went}, so the read rated ${left}.`
+              : `stopWhenCold on ${id}: the read rated every one of ${count(order, 'part')} in the order before ${went}, so it left 0 unread.` });
     }
   }
   for (const id of input.typedSources.keys()) {
@@ -1687,24 +1773,28 @@ export async function pick(
   const rareOn = options.rare === undefined ? rareSources.length > 0 : options.rare !== false;
   const rareShare = (isRecord(options.rare) ? options.rare.share : undefined) ?? RARE_SHARE;
   const rareBar = (isRecord(options.rare) ? options.rare.bar : undefined) ?? RARE_BAR;
+  // The decide step reads the fused order whenever `everyRanked` is
+  // not given: all of it, or under the rating stop when the call sets one.
+  const fused = options.everyRanked === undefined;
+  const stopRule = !fused || options.stopWhenCold === undefined || options.stopWhenCold === false ? undefined : {
+    floor: options.stopWhenCold?.floor ?? STOP_FLOOR,
+    share: options.stopWhenCold?.share ?? STOP_SHARE,
+  };
   // The levers as resolved, for the record. `pick`
   // never sees `wholeLanes`: the read request carries it, and only a
   // pickFromSources record holds it.
   const levers: Omit<LeverStates, 'sources'> = {
-    ...(options.everyRanked === undefined
-      ? { thoroughness: options.thoroughness ?? 'normal' }
-      : { everyRanked: options.everyRanked }),
+    ...(fused
+      ? { stopWhenCold: stopRule ?? false }
+      : { everyRanked: options.everyRanked! }),
     ...(everyScored === undefined ? {} : { everyScored }),
     route: options.route === 'jev',
     rare: rareOn ? { share: rareShare, bar: rareBar } : false,
   };
   const topK = isRecord(options.everyRanked) ? options.everyRanked.c : undefined;
-  // The thoroughness lever feeds the decide step the top
-  // THOROUGHNESS[level] parts of the fused order; it is in force
-  // whenever `everyRanked` is not given, at 'normal' by default.
-  const thoroughness = options.everyRanked === undefined ? (options.thoroughness ?? 'normal') : undefined;
-  // A `feed` size stands in place of the level's depth.
-  const depth = thoroughness === undefined ? undefined : options.feed?.size ?? THOROUGHNESS[thoroughness];
+  // A `feed` size bounds the fused order; unset, the read can reach
+  // every part of it.
+  const depth = fused ? options.feed?.size : undefined;
   // A decide-feed dial is on when `everyRanked` supplies a c or the
   // rare-word round is on: pool-only parts then count toward the
   // history's size without joining the feed or the record, the
@@ -1802,11 +1892,11 @@ export async function pick(
   // always had: unasked, 'unassessed' with reason 'limits'.
   // A part the task's period brought in is admitted like a lane member.
   const windowed = (candidate: MemoryCandidate) => candidate.dateWindow !== undefined && options.taskPeriod !== false;
-  // With a level in force every reference part joins the queue: the
-  // fused order positions pool members too, and a part the depth leaves
-  // out records 'thoroughness' rather than sit outside the record.
+  // Under the fused order every reference part joins the queue, and a
+  // part outside the order's reach records 'feed' rather than sit
+  // outside the record.
   const admitted = (candidate: MemoryCandidate) =>
-    thoroughness !== undefined
+    fused
       || kindsFor(candidate).length > 0 || (topK === undefined && !rareForSource(candidate.sourceId))
       || candidate.poolOnly !== true || windowed(candidate);
   for (const candidate of references) {
@@ -1824,13 +1914,13 @@ export async function pick(
   // left undecided, for the record's `effects`.
   const rankedBySource = new Map<string, number>();
   const cutBySource = new Map<string, number>();
-  // The reference parts inside the thoroughness depth, in the fused
+  // The reference parts of the fused order inside any feed size, in
   // order: the decide feed follows it.
   const insideDepth = new Set<MemoryCandidate>();
   const insideOrder: MemoryCandidate[] = [];
   // Each fused-order member's place score, for the label lane's reorder.
   const fusedScore = new Map<MemoryCandidate, number>();
-  if (thoroughness !== undefined) {
+  if (fused) {
     // The fused order: one cross-source ranking in which a part's place
     // is the better of its best keyword lane's share of that lane (a
     // keyword lane is one `searchRanks` index across every source) and
@@ -1847,7 +1937,7 @@ export async function pick(
       });
     }
     // A lane's candidate limit bounds which of its members enter the
-    // order: each lane's own slice, before the depth cut, the same
+    // order: each lane's own slice, before any feed size, the same
     // limit the lane feeds below apply. Parts a lane's limit cut keep
     // 'limits', the reason the decide step never reached them, so a
     // memory run over them stays an incomplete collection.
@@ -1899,7 +1989,7 @@ export async function pick(
         if (candidate.role === 'reference' && permitted(candidate)) fusedScore.set(candidate, 0);
       }
     }
-    // `feed.order: 'combsum'`: the depth cut reads the sum of a part's
+    // `feed.order: 'combsum'`: the order reads the sum of a part's
     // lane places, so a part several lanes agree on outranks one a
     // single lane placed first. A meaning lane's place is the part's
     // place among its own source's members of that lane; a names lane
@@ -1930,23 +2020,23 @@ export async function pick(
       insideDepth.add(candidate);
       insideOrder.push(candidate);
     }
-    // Each source's ranked parts, and how many the depth left
+    // Each source's ranked parts, and how many the feed size left
     // undecided, for the record's `effects`.
     for (const candidate of fusedScore.keys()) {
       rankedBySource.set(candidate.sourceId, (rankedBySource.get(candidate.sourceId) ?? 0) + 1);
     }
-    // 'thoroughness' names only the depth cut: a part the depth left
-    // out of the order, or a part no lane positioned at all, sits out
-    // because the level bounds the feed. A part a lane's candidate
-    // limit cut keeps 'limits', the same reason it carries under the
-    // everyRanked feed, so memory() still rejects the collection.
+    // 'feed' names only the order's reach: a part the feed size left
+    // out of the order, or a part no lane positioned at all. A part a
+    // lane's candidate limit cut keeps 'limits', the same reason it
+    // carries under the everyRanked feed, so memory() still rejects the
+    // collection.
     for (const candidate of queue) {
       if (candidate.role === 'reference' && !insideDepth.has(candidate)) {
         if (fusedScore.has(candidate)) {
           cutBySource.set(candidate.sourceId, (cutBySource.get(candidate.sourceId) ?? 0) + 1);
         }
         statuses.set(candidate, { status: 'unassessed',
-          reason: fusedScore.has(candidate) || !laneCut.has(candidate) ? 'thoroughness' : 'limits' });
+          reason: fusedScore.has(candidate) || !laneCut.has(candidate) ? 'feed' : 'limits' });
       }
     }
   } else {
@@ -1967,7 +2057,7 @@ export async function pick(
     }
     for (const candidate of queue) if (windowed(candidate)) eligible.add(candidate);
   }
-  let feed = thoroughness === undefined
+  let feed = !fused
     ? queue.filter((candidate) => eligible.has(candidate))
     : queue.filter((candidate) => candidate.role !== 'reference').concat(insideOrder);
   // Set when the label gate fused its lane into the keyword order: the
@@ -2049,20 +2139,57 @@ export async function pick(
    *  trusted even when an earlier batch answered some questions. */
   const decideFailed = new Set<MemoryCandidate>();
   const decisionsByText = new Map<string, Pending>();
+  // A part with no text is judged by its title, as a title-only
+  // commit's subject is, so the title stands in for the text in the
+  // sharing key. With text present the title is a byline or locator,
+  // and identical texts keep sharing one answer.
+  const sharingKey = ({ candidate, question }: Pending) => JSON.stringify([candidate.text,
+    candidate.text === '' ? candidate.title : null,
+    question.role, question.kind, question.questionKey, question.question,
+    question.trueCriterion ?? null, question.falseCriterion ?? null,
+    question.levels ?? null, question.anonymous ?? null]);
+  // Asks packed into request-sized batches, at most `most` of them.
+  const pack = (fresh: readonly Pending[], task: string, whole: boolean, most: number): Pending[][] => {
+    const slices: Pending[][] = [];
+    for (let index = 0; index < fresh.length && slices.length < most;) {
+      // A batch packs whole items until the character bound; the first
+      // item always goes, so a single oversized item is sent alone. An
+      // item counts once per batch however many of its questions it holds.
+      // A `whole` call packs every ask into its one request instead: the
+      // task's own label and route questions always ride together.
+      const slice: Pending[] = [];
+      const counted = new Set<MemoryCandidate>();
+      let batchChars = task.length;
+      for (let at = index; at < fresh.length && (whole || slice.length < limits.maxPerBatch);) {
+        // A model-scored set's questions for one part stay in one
+        // request: its score needs every answer, and a batch closed
+        // between them would send the part's text twice.
+        const item = fresh[at]!;
+        let end = at + 1;
+        if (cascadeFor(item.candidate)?.model !== undefined) {
+          while (end < fresh.length && fresh[end]!.candidate === item.candidate) end += 1;
+        }
+        const group = fresh.slice(at, end);
+        const size = group.reduce((sum, entry) => sum + questionChars(entry.question), 0)
+          + (counted.has(item.candidate) ? 0 : itemChars(item.question));
+        if (slice.length > 0 && !whole
+          && (batchChars + size > limits.maxBatchChars
+            || slice.length + group.length > limits.maxPerBatch)) break;
+        batchChars += size;
+        counted.add(item.candidate);
+        slice.push(...group);
+        at = end;
+      }
+      slices.push(slice);
+      index += slice.length;
+    }
+    return slices;
+  };
   const ask = async (asks: Pending[], sink = answered, task = options.task, whole = false) => {
     const copies: { item: Pending; first: Pending }[] = [];
     if (sink === answered) {
       asks = asks.filter((item) => {
-        const { question } = item;
-        // A part with no text is judged by its title, as a title-only
-        // commit's subject is, so the title stands in for the text in
-        // the sharing key. With text present the title is a byline or
-        // locator, and identical texts keep sharing one answer.
-        const key = JSON.stringify([item.candidate.text,
-          item.candidate.text === '' ? item.candidate.title : null,
-          question.role, question.kind, question.questionKey, question.question,
-          question.trueCriterion ?? null, question.falseCriterion ?? null,
-          question.levels ?? null, question.anonymous ?? null]);
+        const key = sharingKey(item);
         const first = decisionsByText.get(key);
         if (first !== undefined) { copies.push({ item, first }); return false; }
         decisionsByText.set(key, item);
@@ -2122,39 +2249,7 @@ export async function pick(
     // still waits for this round's answers. Results apply in dispatch
     // order whatever order the replies land in, so answer order never
     // depends on completion order.
-    const slices: Pending[][] = [];
-    for (let index = 0; index < fresh.length && batches + slices.length < limits.maxBatches;) {
-      // A batch packs whole items until the character bound; the first
-      // item always goes, so a single oversized item is sent alone. An
-      // item counts once per batch however many of its questions it holds.
-      // A `whole` call packs every ask into its one request instead: the
-      // task's own label and route questions always ride together.
-      const slice: Pending[] = [];
-      const counted = new Set<MemoryCandidate>();
-      let batchChars = task.length;
-      for (let at = index; at < fresh.length && (whole || slice.length < limits.maxPerBatch);) {
-        // A model-scored set's questions for one part stay in one
-        // request: its score needs every answer, and a batch closed
-        // between them would send the part's text twice.
-        const item = fresh[at]!;
-        let end = at + 1;
-        if (cascadeFor(item.candidate)?.model !== undefined) {
-          while (end < fresh.length && fresh[end]!.candidate === item.candidate) end += 1;
-        }
-        const group = fresh.slice(at, end);
-        const size = group.reduce((sum, entry) => sum + questionChars(entry.question), 0)
-          + (counted.has(item.candidate) ? 0 : itemChars(item.question));
-        if (slice.length > 0 && !whole
-          && (batchChars + size > limits.maxBatchChars
-            || slice.length + group.length > limits.maxPerBatch)) break;
-        batchChars += size;
-        counted.add(item.candidate);
-        slice.push(...group);
-        at = end;
-      }
-      slices.push(slice);
-      index += slice.length;
-    }
+    const slices = pack(fresh, task, whole, limits.maxBatches - batches);
     interface BatchOutcome {
       readonly slice: Pending[];
       readonly sent: boolean;
@@ -2384,10 +2479,11 @@ export async function pick(
       }
       sourceSets.set(id, set);
     }
-    // Labels follow the short list: under a thoroughness level a label
-    // question is asked only of parts inside the depth, so the decision
-    // model never reads every part of a history.
-    for (const candidate of thoroughness === undefined ? queue : feed) {
+    // Labels follow the fused order: under it a label question is asked
+    // only of the order's parts inside any feed size, never of a part
+    // no search lane placed. The label lane reorders the order before
+    // the read, so its labels are asked before any rating stop runs.
+    for (const candidate of !fused ? queue : feed) {
       const set = sourceSets.get(candidate.sourceId);
       if (candidate.role !== 'reference' || set === undefined) continue;
       set.parts.push(candidate);
@@ -2546,7 +2642,7 @@ export async function pick(
     const inLane = new Set(queue.filter((candidate) =>
       candidate.role === 'reference' && strength(candidate) >= labelBarFor(candidate.sourceId)));
     labelLane = inLane;
-    if (thoroughness === undefined) {
+    if (!fused) {
       for (const candidate of inLane) eligible.add(candidate);
       feed = queue.filter((candidate) => eligible.has(candidate));
       if ([...labelNeeds.values()].some((needs) => needs.length > 0)) {
@@ -2555,8 +2651,8 @@ export async function pick(
       }
     } else {
       // The label lane is one more list in the fused order, but it is
-      // resolved only inside the depth: it reorders the short list and
-      // can never admit a part to it.
+      // resolved only inside any feed size: it reorders the order the
+      // read follows and can never admit a part to it.
       const byStrength = [...inLane].sort((left, right) =>
         strength(right) - strength(left) || left.id.localeCompare(right.id));
       const share = new Map(byStrength.map((candidate, index) =>
@@ -2663,10 +2759,12 @@ export async function pick(
   };
   // Candidates a stop left half-assessed inside a cascade.
   const curtailed = new Map<MemoryCandidate, 'limits' | 'time' | 'cancelled' | 'error'>();
+  // A part's first-round asks: every question, or a cascade's first.
+  const firstAsks = (candidate: MemoryCandidate) => specsFor(candidate)
+    .filter((spec) => candidate.role === 'rule' || !cascadeFor(candidate)?.first || spec.key === cascadeFor(candidate)!.first)
+    .map((spec) => pending(candidate, spec));
   const evaluate = async (phase: readonly MemoryCandidate[]) => {
-    await ask(phase.flatMap((candidate) => specsFor(candidate)
-      .filter((spec) => candidate.role === 'rule' || !cascadeFor(candidate)?.first || spec.key === cascadeFor(candidate)!.first)
-      .map((spec) => pending(candidate, spec))));
+    await ask(phase.flatMap(firstAsks));
     if (!stop) {
       await ask(phase.flatMap((candidate) => {
         const cascade = cascadeFor(candidate);
@@ -2768,6 +2866,128 @@ export async function pick(
     }
   };
 
+  // The reference parts of `parts` the decide step answered: the count
+  // a size-based bar reads.
+  const answeredReferences = (parts: readonly MemoryCandidate[]) => parts.reduce((total, candidate) =>
+    total + Number(candidate.role === 'reference' && combined.get(candidate)?.status === 'answered'), 0);
+  // The bar the selection pass keeps a part at: a rule's own bar, or
+  // the reference bar, read off the size curve at `decided` answered
+  // references when `everyScored.bySize` sets one. The selection pass
+  // and the rating stop's wait for a kept part both read it.
+  const keepBar = (candidate: MemoryCandidate, decided: number) => candidate.role === 'rule'
+    ? ruleBarFor(candidate.sourceId)
+    : thresholds.referenceBySize === undefined ? barFor(candidate.sourceId) : sizeBar(thresholds.referenceBySize, decided);
+  // Whether the selection pass keeps a scored part: at or above its bar,
+  // or, for a reference, through a typed question's keepAt.
+  const keepsAt = (decided: number) => (candidate: MemoryCandidate) => {
+    const answer = combined.get(candidate);
+    return answer?.status === 'answered' && 'probability' in answer
+      && (answer.probability >= keepBar(candidate, decided) || (candidate.role !== 'rule' && keptBy.has(candidate)));
+  };
+  // The rating stop's reads, when it is on: the main read of the fused
+  // order, and the rare-word round's own read of the parts it pulls.
+  // Each counts the waves it sent, the batches it rated, the reference
+  // parts it rated, the best decision score so far, where it went cold,
+  // and the parts below its stop.
+  interface Reading {
+    waves: number;
+    batches: number;
+    readonly rated: Set<MemoryCandidate>;
+    /** The main read holds the stop until it has kept a part, so a
+     *  history whose evidence sits below a cold stretch never comes back
+     *  empty. The rare-word round runs only once the main read kept
+     *  parts, so its own read does not wait. */
+    readonly waitForKept: boolean;
+    best: number;
+    cold?: NonNullable<NonNullable<PickRecord['pick']>['stopWhenCold']>['cold'];
+    readonly unread: Set<MemoryCandidate>;
+  }
+  const reading = (waitForKept: boolean): Reading => ({ waves: 0, batches: 0, rated: new Set(),
+    waitForKept, best: 0, unread: new Set() });
+  // A part is rated once it holds a decision score.
+  const scoreOf = (candidate: MemoryCandidate) => {
+    const answer = combined.get(candidate);
+    return answer?.status === 'answered' && 'probability' in answer ? answer.probability : undefined;
+  };
+  const main = reading(true);
+  // Parts an identical earlier text answers: they ride free and do not
+  // count toward a batch's best score, so a copy of a warm part cannot
+  // keep a cold stretch reading.
+  const copied = new Set<MemoryCandidate>();
+  // The next wave of the read from `from`: the parts whose first-round
+  // asks fill the next WAVE_BATCHES batches as `ask` packs them, listed
+  // by batch. An ask an identical earlier text answers rides free in
+  // the batch it falls in, as in `ask`. A part whose asks would run
+  // past the wave's last batch waits for the next wave, unless it is
+  // the wave's first part.
+  const nextWave = (order: readonly MemoryCandidate[], from: number): MemoryCandidate[][] => {
+    const shared = new Set<string>();
+    const items: Pending[] = [];
+    const owners: { readonly candidate: MemoryCandidate; readonly start: number; readonly end: number }[] = [];
+    for (let at = from; at < order.length && items.length < WAVE_BATCHES * limits.maxPerBatch; at += 1) {
+      const start = items.length;
+      for (const item of firstAsks(order[at]!)) {
+        const key = sharingKey(item);
+        if (decisionsByText.has(key) || shared.has(key)) continue;
+        shared.add(key);
+        items.push(item);
+      }
+      owners.push({ candidate: order[at]!, start, end: items.length });
+    }
+    const ends: number[] = [];
+    for (const slice of pack(items, options.task, false, WAVE_BATCHES)) ends.push((ends.at(-1) ?? 0) + slice.length);
+    const batches: MemoryCandidate[][] = ends.map(() => []);
+    if (!batches.length) batches.push([]);
+    for (const [index, { candidate, start, end }] of owners.entries()) {
+      if (index > 0 && end > (ends.at(-1) ?? 0)) break;
+      if (start === end) copied.add(candidate);
+      const place = ends.findIndex((last) => Math.max(start, end - 1) < last);
+      batches[place < 0 ? batches.length - 1 : place]!.push(candidate);
+    }
+    return batches.filter((batch) => batch.length > 0);
+  };
+  // Read the order in waves. After each wave its batches are checked
+  // in order, as a read of one batch at a time would check them: the
+  // read stops at the first batch whose best decision score is under
+  // the floor, or under the share of the best score before it, once the
+  // read has kept a part. The rest of that wave is already rated. A batch holding no reference
+  // part it asked about is not checked. A stopping dial that ends a
+  // wave early leaves its batches unchecked: the dial, not the ratings,
+  // ended the read. Without the stop the order goes out at once.
+  const read = async (order: readonly MemoryCandidate[], state = main) => {
+    if (stopRule === undefined) { await evaluate(order); return; }
+    let at = 0;
+    while (at < order.length && !stop && state.cold === undefined) {
+      const wave = nextWave(order, at);
+      const parts = wave.flat();
+      await evaluate(parts);
+      state.waves += 1;
+      at += parts.length;
+      for (const candidate of parts) {
+        if (candidate.role === 'reference' && scoreOf(candidate) !== undefined) state.rated.add(candidate);
+      }
+      // Whether the read has kept a reference part yet, on the bar the
+      // selection pass will apply: with the feed's answered count so
+      // far, which is its final count should the stop fire here.
+      let kept: boolean | undefined;
+      const keptAny = () => kept ??= [...state.rated].some(keepsAt(answeredReferences(feed)));
+      for (const batch of wave) {
+        const own = batch.filter((candidate) => candidate.role === 'reference' && !copied.has(candidate));
+        if (!own.some((candidate) => scoreOf(candidate) !== undefined)) continue;
+        state.batches += 1;
+        if (stop || state.cold !== undefined) continue;
+        const best = Math.max(0, ...own.map((candidate) => scoreOf(candidate) ?? 0));
+        // Until the read has kept a part, a cold batch does not stop it.
+        if ((best < stopRule.floor || best < stopRule.share * state.best)
+          && (!state.waitForKept || keptAny())) {
+          state.cold = { batch: state.batches, best, bestBefore: state.best,
+            under: best < stopRule.floor ? 'floor' : 'share' };
+        } else state.best = Math.max(state.best, best);
+      }
+    }
+    if (state.cold !== undefined) for (const candidate of order.slice(at)) state.unread.add(candidate);
+  };
+
   const representatives = new Map<MemoryCandidate, MemoryCandidate>();
   if (!stop && options.bestPartFirst) {
     const terms = [...new Set(options.task.toLowerCase().split(/[^a-z0-9]+/).filter((word) => word.length > 2))];
@@ -2791,22 +3011,27 @@ export async function pick(
       const first = group.reduce((best, candidate) => matches(candidate) > matches(best) ? candidate : best);
       for (const candidate of group) representatives.set(candidate, first);
     }
-    await evaluate(feed.filter((c) => c.role === 'rule' || representatives.get(c) === c));
+    await read(feed.filter((c) => c.role === 'rule' || representatives.get(c) === c));
     if (signal.aborted) stop = 'cancelled';
     else if (Date.now() - started >= limits.maxElapsedMs) stop = 'time';
     if (!stop) {
-      await evaluate(feed.filter((candidate) => {
+      await read(feed.filter((candidate) => {
         const representative = representatives.get(candidate);
         return representative !== undefined && representative !== candidate;
       }));
     }
-  } else if (!stop) await evaluate(feed);
+  } else if (!stop) await read(feed);
+  // The parts below the stop leave the feed: the decide step never
+  // reached them.
+  if (main.unread.size > 0) {
+    feed = feed.filter((candidate) => !main.unread.has(candidate));
+    for (const candidate of main.unread) statuses.set(candidate, { status: 'unassessed', reason: 'stopWhenCold' });
+  }
 
   // The reference bar may rise with the decided set's size, so the
   // selection pass runs once the whole feed has answered. Without that
   // curve each reference is cut at its own source's bar.
-  const decided = feed.reduce((count, candidate) =>
-    count + Number(candidate.role === 'reference' && combined.get(candidate)?.status === 'answered'), 0);
+  const decided = answeredReferences(feed);
   const appliedReference = thresholds.referenceBySize === undefined
     ? undefined : sizeBar(thresholds.referenceBySize, decided);
   const referenceBar = (id: string) => appliedReference ?? barFor(id);
@@ -2831,13 +3056,13 @@ export async function pick(
       continue;
     }
     if (answer.status === 'answered' && 'probability' in answer) {
-      const threshold = candidate.role === 'rule' ? ruleBarFor(candidate.sourceId) : referenceBar(candidate.sourceId);
+      const threshold = keepBar(candidate, decided);
       const reused = answer.reused === true ? { reused: true } : {};
       scoredParts.add(candidate);
       if (answer.probability < threshold) belowBar.add(candidate);
       // A typed answer at or above its keepAt keeps a reference below the bar.
       const kept = candidate.role === 'rule' || answer.probability >= threshold ? undefined : keptBy.get(candidate);
-      if (answer.probability >= threshold || kept !== undefined) {
+      if (keepsAt(decided)(candidate)) {
         selected.push(candidate);
         statuses.set(candidate, { status: 'selected', asked: true, probability: answer.probability, ...reused,
           ...(kept === undefined ? {} : { keptBy: kept }) });
@@ -2850,6 +3075,13 @@ export async function pick(
   }
   // A stop before this point left some of the feed undecided.
   const feedStop = stop;
+  // What ended the main read: its ratings went cold, a stopping dial
+  // ended it, or it reached the end of the order.
+  const readEnded = stopRule === undefined ? undefined
+    : main.cold !== undefined ? 'cold' as const : feedStop ?? 'order' as const;
+  // The reference parts the read rated that the selection pass kept on
+  // its own bar.
+  const readKept = [...main.rated].filter(keepsAt(decided)).length;
   // A queued part the feed never held was never asked a question. The
   // 'gate' reason names only the gate's own call: a reference part the
   // keyword lanes never held — not one a lane's candidate limit cut —
@@ -2919,6 +3151,9 @@ export async function pick(
   const rareSeeds = new Map<string, ReadonlySet<string>>();
   let rareTaken: readonly MemoryCandidate[] = [];
   const rareAdded = new Set<MemoryCandidate>();
+  // The pulled parts the round never asked: past a feed size's room,
+  // or below the round's own stop.
+  const rareHeld = new Map<MemoryCandidate, 'size' | 'cold'>();
   let rareResult: NonNullable<PickRecord['pick']>['rare'];
   if (rareOn && !stop) {
     const wordSets = new Map<MemoryCandidate, ReadonlySet<string>>();
@@ -2970,18 +3205,27 @@ export async function pick(
         rarePulled.add(candidate);
       }
     }
-    // Under a level the round asks pulled parts while the depth still
-    // has room: the depth bounds how many reference parts the decide
-    // step is asked about across the whole pick, so a pulled part is
-    // asked only into a free slot, never past it. Each part the depth
-    // admitted fills a slot whether the decide port, the decision
-    // cache or an identical text answered it, so the free room is the
-    // depth less the short list's length, not what the port was sent.
-    // On a pick the depth already filled, the round asks nothing.
-    const room = thoroughness === undefined
-      ? pulled.length : Math.max(0, depth! - insideOrder.length);
-    await evaluate(pulled.filter((candidate) =>
-      statuses.get(candidate)!.status === 'unassessed').slice(0, room));
+    // The round reaches past the rating stop: the pulled parts never
+    // asked, in fused order and then the parts outside it, are read as
+    // the order is, in waves under the same stop with a best score of
+    // their own, so a round whose answers go cold ends. With a feed size
+    // it asks pulled parts only while the size still has room: the size
+    // bounds how many reference parts the decide step is asked about
+    // across the whole pick, so a pulled part is asked only into a free
+    // slot, never past it. Each part the read reached fills a slot
+    // whether the decide port, the decision cache or an identical text
+    // answered it, so the free room is the size less the parts read,
+    // not what the port was sent. On a pick whose read filled the size,
+    // the round asks nothing.
+    const room = depth === undefined
+      ? pulled.length : Math.max(0, depth - (insideOrder.length - main.unread.size));
+    const place = new Map(insideOrder.map((candidate, index) => [candidate, index]));
+    const unasked = pulled.filter((candidate) => statuses.get(candidate)!.status === 'unassessed')
+      .sort((left, right) => (place.get(left) ?? Infinity) - (place.get(right) ?? Infinity));
+    const round = reading(false);
+    await read(unasked.slice(0, room), round);
+    for (const candidate of unasked.slice(room)) rareHeld.set(candidate, 'size');
+    for (const candidate of round.unread) rareHeld.set(candidate, 'cold');
     let asked = 0;
     let added = 0;
     for (const candidate of pulled) {
@@ -3036,16 +3280,25 @@ export async function pick(
     questions: sentQuestions,
     ...(topK === undefined ? {} : { c: topK }),
     kept: feed.reduce((count, candidate) => count + Number(candidate.role === 'reference'), 0),
-    ...(thoroughness === undefined ? {} : { thoroughness: { level: thoroughness, depth: depth! } }),
     ...(options.feed === undefined ? {} : { feed: {
       order: options.feed.order,
       ...(options.feed.size === undefined ? {} : { size: options.feed.size }),
       unjudged: [...cutBySource.values()].reduce((total, left) => total + left, 0),
     } }),
-    ranking: feedFused || thoroughness !== undefined ? 'fusion' : 'keyword',
+    ...(stopRule === undefined ? {} : { stopWhenCold: {
+      ...stopRule, waves: main.waves, batches: main.batches, rated: main.rated.size,
+      unread: insideOrder.length - main.rated.size, kept: readKept, ended: readEnded!,
+      ...(main.cold === undefined ? {} : { cold: main.cold }),
+    } }),
+    ranking: feedFused || fused ? 'fusion' : 'keyword',
     ...(rareResult === undefined ? {} : { rare: rareResult }),
   };
 
+  const bySource = (parts: Iterable<MemoryCandidate>) => {
+    const counts = new Map<string, number>();
+    for (const candidate of parts) counts.set(candidate.sourceId, (counts.get(candidate.sourceId) ?? 0) + 1);
+    return counts;
+  };
   const effects = settingEffects({
     candidates: candidates.filter((candidate) => admitted(candidate) || rarePulled.has(candidate)),
     queue, feed, statuses, laneHeld, labelLane, labelNeeds, labelBar: labelBarFor, labels, labelKindsBySource,
@@ -3056,13 +3309,17 @@ export async function pick(
     linkedPathBar: thresholds.linkedPathBar, rareBar, topK,
     ended: [
       ...(cutBySource.size > 0
-        ? [thoroughness === undefined ? `a feed cut (everyRanked c ${topK})`
-          : options.feed?.size === undefined ? `a feed cut (thoroughness '${thoroughness}')` : `a feed cut (feed size ${options.feed.size})`]
+        ? [!fused ? `a feed cut (everyRanked c ${topK})` : `a feed cut (feed size ${options.feed?.size})`]
         : []),
+      ...(main.unread.size > 0 ? ['a stop when the ratings went cold (stopWhenCold)'] : []),
       ...(feedStop === undefined ? [] : [`a stop (${feedStop})`]),
     ],
-    thoroughness: thoroughness === undefined ? undefined : { level: thoroughness, depth: depth! },
-    feedSize: options.feed?.size,
+    fused,
+    feedOption: options.feed,
+    stopWhenCold: stopRule === undefined ? undefined : {
+      ...stopRule, cold: main.cold, ended: readEnded!, kept: readKept, orderBySource: bySource(insideOrder),
+      ratedBySource: bySource(main.rated) },
+    rareHeld,
     typedSources: new Map(Object.entries(options.questionsBySource ?? {}).flatMap(([id, set]) =>
       (set.typed?.length ?? 0) > 0 ? [[id, set.typed!.some((q) => neededTypes.has(q.answerType))] as const] : [])),
     typedAsked: new Set(candidates.filter((candidate) =>

@@ -51,7 +51,8 @@ export function memory(options: MemoryOptions): Memory {
       });
       if (picked.reads.some((read) => read.status !== 'read' || !read.complete)
         || picked.record.candidates.some((item) => item.status === 'unanswered'
-          || (item.status === 'unassessed' && item.reason !== 'gate' && item.reason !== 'thoroughness'))) {
+          || (item.status === 'unassessed' && item.reason !== 'gate'
+            && item.reason !== 'stopWhenCold' && item.reason !== 'feed'))) {
         throw new Error('Context collection did not finish; inspect the source and decision records.', { cause: picked });
       }
       const result = await curate(task, picked, { ...layout, signal });

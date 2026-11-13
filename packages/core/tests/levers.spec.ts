@@ -122,7 +122,7 @@ describe('levers', () => {
     // The default cut references below 0.0146.
     expect(defaults.selected.map((item) => item.id)).toEqual(['p0', 'p1']);
     expect(defaults.record.levers).toEqual({
-      thoroughness: 'normal',
+      stopWhenCold: false,
       route: false,
       rare: false,
       sources: { notes: { labels: false, rare: false, bar: 0.0146 } },
@@ -135,7 +135,7 @@ describe('levers', () => {
     expect(read.reads[0]?.status === 'read'
       && read.reads[0].candidates.filter((c) => c.poolOnly !== true)).toHaveLength(1);
     expect(read.record.levers).toEqual({
-      wholeLanes: false, thoroughness: 'normal', route: false, rare: false, sources: { notes: { labels: false, rare: false, bar: 0.0146 } },
+      wholeLanes: false, stopWhenCold: false, route: false, rare: false, sources: { notes: { labels: false, rare: false, bar: 0.0146 } },
     });
 
     const plain = await curate('Recall the plan', defaults);

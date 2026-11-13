@@ -211,9 +211,9 @@ These levers act on the whole call:
 | Lever | Out of the box |
 | --- | --- |
 | `read.wholeLanes` | Off: cut each search lane |
-| `pick.thoroughness` | `'normal'`: decide the top 3,674 of the fused order; `quick` 672, `deep` 12,896 |
-| `pick.feed` | Unset: the fused order at the level's depth. `{ order: 'combsum', size }` feeds by summed lane places, `size` parts |
-| `pick.everyRanked` | Unset: `thoroughness` bounds the feed. `true` decides every ranked part; `{ c }` a scaled top-k |
+| `pick.stopWhenCold` | Off: rate every part of the fused order. `{}`, or `{ floor, share }`, stops where the decision scores go cold |
+| `pick.feed` | Unset: the whole fused order. `{ order: 'combsum', size }` orders by summed lane places and reads at most `size` parts |
+| `pick.everyRanked` | Unset: the decision step reads the fused order. `true` decides every ranked part; `{ c }` a scaled top-k |
 | `pick.route` | Off |
 | `pick.everyScored` | Unset: each source's bar. When set, one bar for every source |
 | `pick.rare` | Unset: each source's setting. When set, one setting for every source |
@@ -221,7 +221,7 @@ These levers act on the whole call:
 | `curate.answerTokens` | 2,000: the estimated tokens the laid-out text keeps within |
 | `curate.sentenceCutoff` | 0.1: the sentence rating the text keeps; `false` rates no sentence |
 
-`pick.thoroughness` and `pick.everyRanked: { c }` rank every source's parts in one fused list before they cut, and a stopping limit in `pick.limits` (questions, batches, time) is shared by every source.
+The fused order and `pick.everyRanked: { c }` rank every source's parts in one fused list before they read or cut, and a stopping limit in `pick.limits` (questions, batches, time) is shared by every source.
 With any of them, one source's settings can change what Curate picks from another.
 
 ### Set your own
@@ -501,7 +501,6 @@ Save `~/.curate/sources.json` with your own paths, or name another file with `--
     }
   ],
   "embeddingModel": "~/models/embeddinggemma-300M-Q8_0.gguf",
-  "thoroughness": "normal",
   "envFile": "~/.curate/credentials.env"
 }
 ```
@@ -514,8 +513,9 @@ Optional `related`, such as `[["~/work/app", "~/work/docs"]]`, lists groups of r
 The nearest `curate.json` above the working folder adds sources for every call under it, such as a knowledge base beside a code repository; it holds no secret, and its paths may be relative to it.
 `curate prepare` brings the stored index and embeddings of those sources up to date and exits, with no model call; it needs no decision key or login.
 Optional `answerTokens` and `sentenceCutoff` set the layout's budget and sentence cutoff, as in [Curate](#curate).
-Optional `thoroughness` sets how many ranked history parts the decision model checks: `quick` checks the top 672, `normal` 3,674, the default, and `deep` 12,896.
-Measured on a replayed ~116,000-part history, each level cost about 1, 5 and 17 pence of questions on the largest of eight task sets; `quick` kept 24 of the 56 known answer parts, `normal` 49 and `deep` all 56.
+The decision model rates every part the search lanes keep, so a call's cost grows with that number: about $0.00002 a part, $0.0033 for a 170-part LoCoMo conversation and $0.053 for the 2,361 parts a DolphinBench test rated on average.
+Optional `stopWhenCold` ends the read sooner: `{}` reads the ranked history from the top, two batches of parts at a time, and stops at the first batch whose best rating is under `floor` (0.1), or under `share` (0.2) times the best rating before it; `{ "share": 0.1 }` and the like change those numbers, where a higher one stops sooner and costs less, and a lower one reads further and finds more. It never stops before the read has kept a part, so a question the history holds nothing for reads the whole order even with the stop on.
+On three benchmark runs' saved scores, `{}` rated 64% (LoCoMo), 55% (DolphinBench) and 83% (BEAM) of the parts the runs rated and kept 98.5%, 95.2% and 100% of the evidence they found. On the published runs it saved $0.0012 a LoCoMo question and $0.0067 a LongMemEval question; it cost about 5 to 12 of LoCoMo's 1,540 right answers, the 4 lost in both answer runs each because evidence left the text, and stayed inside the noise on LongMemEval. On DolphinBench's 5,800-part transcripts it rated about half the parts, about $0.026 saved a test; its effect on answers there is not measured.
 Each source can also set `since` (an ISO date or a duration such as `"14 days"`, counted back from the task date), `exclude` (paths that source alone refuses, resolved inside `path`), and, for `git` only, `include` (only commits that changed one of the paths).
 The skill combines keyword and meaning lanes, and disables label admission and the rare-word round.
 Saved embeddings are reused when the model file and input text match. Identical text shares matching decision answers within each pick.
@@ -560,14 +560,14 @@ Set `read.wholeLanes: true` to keep every part the readers return.
 
 The decision function answers each reader's narrow questions.
 By default, Curate combines search results from all sources into a ranked list.
-The decision model checks the top 3,674 reference parts (the `normal` thoroughness level).
+The decision model rates every part of that list, unless `pick.stopWhenCold` is set.
 Curate keeps those that score at least their source's decision-score bar (0.0146 for every reader), highest scores first.
 Unanswered candidates and unfinished decisions stay visible in the record and stop `recall()`.
 Parts intentionally excluded by the label questions stay in the record without stopping recall.
 
-- **Feed depth:** `pick.thoroughness` sets how many ranked history parts the decision model checks: 672 for `quick`, 3,674 for `normal`, the default, and 12,896 for `deep`. Parts deeper than the level stay unasked and record `thoroughness`. `pick.everyRanked: true` decides every ranked part instead, and `pick.everyRanked: { c }` keeps the top `round(c × N^0.8)` reference parts, where N is the number of reference parts. Rules pass through uncut in every mode. The skipped parts are unassessed, so use the separate selection API to inspect them. Measured on a replayed ~116,000-part history of chat transcripts, Git history and Markdown notes: each level cost about 1, 5 and 17 pence of questions on the largest of eight task sets, and `quick` kept 24 of the 56 known answer parts, `normal` 49 of 56 and `deep` all 56.
+- **Where the read stops:** off by default, so a call's cost grows with the parts the search lanes keep, about $0.00002 a part. `pick.stopWhenCold: {}` reads the list two batches at a time and stops at the first batch whose best rating is under `floor` (0.1), or under `share` (0.2) times the best rating of every batch before it. It never stops before the read has kept a part, so a question the history holds nothing for reads the whole order even with the stop on. `pick.stopWhenCold: { floor, share }` changes them for one call: a higher number stops sooner and asks fewer questions, a lower one reads further and finds more. Parts below the stop stay unasked and record `stopWhenCold`. `pick.feed: { order: 'combsum', size }` reads at most `size` parts, and parts past it record `feed`. `pick.everyRanked: true` decides every ranked part instead, and `pick.everyRanked: { c }` keeps the top `round(c × N^0.8)` reference parts, where N is the number of reference parts. Rules pass through uncut in every mode. The skipped parts are unassessed, so use the separate selection API to inspect them. On three benchmark runs' saved scores, `{}` rated 64% (LoCoMo), 55% (DolphinBench) and 83% (BEAM) of the parts the runs rated and kept 98.5%, 95.2% and 100% of the evidence they found. On the published runs it saved $0.0012 a LoCoMo question and $0.0067 a LongMemEval question; it cost about 5 to 12 of LoCoMo's 1,540 right answers, the 4 lost in both answer runs each because evidence left the text, and stayed inside the noise on LongMemEval. On DolphinBench's 5,800-part transcripts it rated about half the parts, about $0.026 saved a test; its effect on answers there is not measured. A share of 0.1 rated 70%, 87% and 89% and kept 99.3%, 100% and 100% of the evidence; a share of 0.5 rated 53%, 17% and 64% and kept 97.1%, 95.2% and 85.7%, both read one batch at a time without the floor. The evidence figures are evidence kept, not answers scored, and LoCoMo's rest on an order rebuilt with the question's text as every search line, since its run saved none ([details](packages/core/README.md#stop-when-the-ratings-go-cold)).
 - **Layout inputs:** a source's `bar` sets its score cut. `pick.everyScored: { bar }` sets one cut for every source, and `pick.everyScored: true` keeps every scored reference.
-- **More evidence:** Git and Markdown run the rare-word round through their settings, each within its own parts. `pick.rare: true` runs it on every source; `pick.rare: false` turns it off. Under a thoroughness level the round asks its pulled parts only while the depth still has room.
+- **More evidence:** Git and Markdown run the rare-word round through their settings, each within its own parts. `pick.rare: true` runs it on every source; `pick.rare: false` turns it off. With the stop set, the round asks the parts it pulls, a part below the stop included, two batches at a time under a stop of its own; with a `feed` size it asks only while the size still has room.
 - **Tags:** `pick.tags` labels selected items with their intent, importance, emphasis and whether they correct something earlier.
 
 ### Curate

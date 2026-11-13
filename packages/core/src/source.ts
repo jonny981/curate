@@ -95,14 +95,14 @@ export interface CandidateReadRequest {
    *  parts are enumerated and embedded once rather than per lane. A
    *  read without it scores `task` alone. */
   readonly meaningQueries?: readonly string[];
-  /** Internal to pickFromSources: set while a thoroughness level is in
-   *  force: the pick's fused order reads each part's meaning position,
+  /** Internal to pickFromSources: set while the fused order is in
+   *  force (`everyRanked` unset): it reads each part's meaning position,
    *  its best similarity over every query measured before any lane
    *  cut. The meaning lane reads then keep every part's similarity
    *  (`wholeLanes` on, no `limit`), and the marks say which parts each
    *  lane's own bend kept. `meaning.wholeLanes` still decides whether
    *  the position reaches every part or only the ones a lane kept.
-   *  Leave unset otherwise: the score is unused without a level. */
+   *  Leave unset otherwise: the score is unused without the fused order. */
   readonly meaningPositions?: boolean;
   /** Internal to pickFromSources: on a meaning lane read that keeps
    *  whole lanes, the pick uses a whole candidate only for a part the
@@ -880,8 +880,8 @@ async function readSearches(
     }
     lanes.push(...meaningReports.filter((report) => report !== undefined));
     // A part a meaning lane kept holds its best similarity over every
-    // query (the meaning position a thoroughness level's fused order
-    // reads), as `addMeaningRanks` attaches it below.
+    // query (the meaning position the fused order reads), as
+    // `addMeaningRanks` attaches it below.
     const combined = [...union.values()].map((candidate) => {
       const kept = candidate.searchRanks?.slice(tasks.length).some((rank) => rank !== null) === true;
       const sim = bestSims.get(JSON.stringify([candidate.sourceId, candidate.id]));
@@ -1062,8 +1062,8 @@ export async function pickFromSources(
       ...(source.decay === undefined ? {} : { decayHalfLife: durationMs(source.decay.halfLife, 'decay.halfLife') }),
       maxQuestionText: options.limits?.maxQuestionText ?? request.maxQuestionText
         ?? (source.maxQuestionText === Number.POSITIVE_INFINITY ? undefined : source.maxQuestionText ?? DEFAULT_MAX_QUESTION_TEXT),
-      // With a thoroughness level in force (`everyRanked` unset) the
-      // fused order positions every pool member, so the history's size
+      // With the fused order in force (`everyRanked` unset) the order
+      // positions every pool member, so the history's size
       // and a pool member's own meaning score come from the uncut pool,
       // as 'count' reads it for the other feed dials.
       labelPool: (source.labelKinds?.length ?? 0) > 0 ? 'gate'

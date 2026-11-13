@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  THOROUGHNESS, pick,
+  pick,
   type MemoryCandidate, type PickAnswer, type PickBatch, type PickDecide,
 } from '../src/index.js';
 
@@ -46,8 +46,8 @@ describe('feed', () => {
     const picked = await pick(PARTS, { task: 'recall the plan', decide, feed: { order: 'combsum', size: 2 } });
     expect(asked(calls)).toEqual(['third', 'second']);
     const status = (id: string) => picked.record.candidates.find((entry) => entry.id === id);
-    expect(status('alone')).toMatchObject({ status: 'unassessed', reason: 'thoroughness' });
-    expect(status('last')).toMatchObject({ status: 'unassessed', reason: 'thoroughness' });
+    expect(status('alone')).toMatchObject({ status: 'unassessed', reason: 'feed' });
+    expect(status('last')).toMatchObject({ status: 'unassessed', reason: 'feed' });
   });
 
   it('places a part one lane holds by that lane alone', async () => {
@@ -95,31 +95,30 @@ describe('feed', () => {
     const { decide } = stubDecide();
     const picked = await pick(PARTS, { task: 'recall the plan', decide, feed: { order: 'combsum', size: 3 } });
     expect(picked.record.pick!.feed).toEqual({ order: 'combsum', size: 3, unjudged: 1 });
-    expect(picked.record.pick!.thoroughness).toEqual({ level: 'normal', depth: 3 });
     expect(picked.record.pick!.sent).toBe(3);
-    const effect = picked.record.effects.find((entry) => entry.setting === 'thoroughness')!;
+    const effect = picked.record.effects.find((entry) => entry.setting === 'feed')!;
     expect(effect.summary).toContain('the feed size of 3 parts kept 3 of 4 ranked parts and left 1 undecided');
   });
 
-  it('with no size, keeps the level\'s depth and records the order alone', async () => {
+  it('with no size, feeds the whole order and records the order alone', async () => {
     const { decide, calls } = stubDecide();
-    const picked = await pick(PARTS, { task: 'recall the plan', decide, thoroughness: 'quick', feed: { order: 'combsum' } });
+    const picked = await pick(PARTS, { task: 'recall the plan', decide, feed: { order: 'combsum' } });
     expect(asked(calls)).toEqual(['third', 'second', 'alone', 'last']);
     expect(picked.record.pick!.feed).toEqual({ order: 'combsum', unjudged: 0 });
-    expect(picked.record.pick!.thoroughness).toEqual({ level: 'quick', depth: THOROUGHNESS.quick });
+    expect(picked.record.effects.some((entry) => entry.setting === 'feed')).toBe(false);
   });
 
-  it('lets the size stand in place of the level\'s depth, smaller or larger', async () => {
+  it('bounds the read at the size, smaller or larger than one batch', async () => {
     const small = stubDecide();
-    await pick(PARTS, { task: 'recall the plan', decide: small.decide, thoroughness: 'normal', feed: { order: 'combsum', size: 2 } });
+    await pick(PARTS, { task: 'recall the plan', decide: small.decide, feed: { order: 'combsum', size: 2 } });
     expect(asked(small.calls)).toHaveLength(2);
 
-    const many = Array.from({ length: THOROUGHNESS.quick + 10 }, (_, index) => part(`p${index}`, [index]));
+    const many = Array.from({ length: 200 }, (_, index) => part(`p${index}`, [index]));
     const large = stubDecide();
     const picked = await pick(many, {
-      task: 'recall the plan', decide: large.decide, thoroughness: 'quick', feed: { order: 'combsum', size: THOROUGHNESS.quick + 5 } });
-    expect(picked.record.pick!.sent).toBe(THOROUGHNESS.quick + 5);
-    expect(picked.record.pick!.feed).toEqual({ order: 'combsum', size: THOROUGHNESS.quick + 5, unjudged: 5 });
+      task: 'recall the plan', decide: large.decide, feed: { order: 'combsum', size: 195 } });
+    expect(picked.record.pick!.sent).toBe(195);
+    expect(picked.record.pick!.feed).toEqual({ order: 'combsum', size: 195, unjudged: 5 });
   });
 
   it('leaves the record without a feed entry when the option is not given', async () => {

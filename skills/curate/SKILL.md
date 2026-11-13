@@ -145,7 +145,7 @@ A call from `~/work/app` then reads the app's own history, with only its last 90
 - **Source types:** `claude-code`, `codex`, `git` and `markdown`. Each takes a `path`, and optional `since`, `exclude` and `always`. `git` also takes `include`. Chat sources also take `questions` and `bar`. A `codex` source with a `path` needs `allowedCwd`, the folders whose sessions may be read.
 - **Chat sources with no path:** A `claude-code` or `codex` entry may leave out `path`. It then reads only the transcripts of the project the call runs in, with the entry's own `since`, `exclude`, `questions` and `bar`, in place of the ones the call reads on its own. It takes no `always` or `allowedCwd`, and outside a project it reads nothing.
 - **Related projects:** `"related": [["~/work/app", "~/work/docs"]]` makes a call in either project also read the other's Claude Code transcripts and Codex sessions, never its commits or Markdown.
-- **Call settings:** `thoroughness` (`quick`, `normal` by default, or `deep`), `answerTokens` (2,000 by default), `sentenceCutoff`, `searchModel` (`haiku` or `luna`), `scope`, `threshold`, `feed`, `userFirst`, `recentFirst`, `records`, `readAudit` and `maxInFlight`.
+- **Call settings:** `stopWhenCold` (off unless set; `{}` stops at a floor of 0.1 and a share of 0.2), `answerTokens` (2,000 by default), `sentenceCutoff`, `searchModel` (`haiku` or `luna`), `scope`, `threshold`, `feed`, `userFirst`, `recentFirst`, `records`, `readAudit` and `maxInFlight`.
 
 [references/settings.md](references/settings.md) explains every key and what the call does with it. Read it when you change a setting or need to explain a result.
 

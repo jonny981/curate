@@ -7,7 +7,7 @@ import { delimiter, join, resolve } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { LABEL_KINDS, THOROUGHNESS, historySource, jevRequest, pickFromSources, type CandidateReadRequest, type CandidateSource, type MemoryCandidate } from '@curatejs/core';
+import { LABEL_KINDS, historySource, jevRequest, pickFromSources, type CandidateReadRequest, type CandidateSource, type MemoryCandidate } from '@curatejs/core';
 import { createLocalEmbedder } from '@curatejs/core/local-embeddings';
 import { chat, CHAT_CASCADE, chatSettings } from '@curatejs/chat';
 import { git as gitSource } from '@curatejs/git';
@@ -164,13 +164,18 @@ describe('curate command input', () => {
     expect(parseSources({ sources }).maxInFlight).toBeUndefined();
   });
 
-  it.each(['quick', 'normal', 'deep'])('keeps thoroughness %s', (level) => {
-    expect(parseSources({ sources: [{ type: 'markdown', path: 'documents' }], thoroughness: level }).thoroughness).toBe(level);
+  it.each([[false], [{}], [{ floor: 0.2 }], [{ floor: 0, share: 0.5 }]])('keeps stopWhenCold %j', (value) => {
+    expect(parseSources({ sources: [{ type: 'markdown', path: 'documents' }], stopWhenCold: value }).stopWhenCold).toEqual(value);
   });
 
-  it.each([['exhaustive'], ['QUICK'], [true], [0]])('rejects thoroughness %j', (value) => {
-    expect(() => parseSources({ sources: [{ type: 'markdown', path: 'documents' }], thoroughness: value }))
-      .toThrow("'quick', 'normal' or 'deep'");
+  it.each([[true], [0.2], [{ floor: 2 }], [{ share: -1 }], [{ cutoff: 0.1 }], [null]])('rejects stopWhenCold %j', (value) => {
+    expect(() => parseSources({ sources: [{ type: 'markdown', path: 'documents' }], stopWhenCold: value }))
+      .toThrow('stopWhenCold must be false or { floor, share }, each a number between 0 and 1.');
+  });
+
+  it.each(['quick', 'normal', 'deep'])('rejects the removed thoroughness setting %s, naming stopWhenCold', (level) => {
+    expect(() => parseSources({ sources: [{ type: 'markdown', path: 'documents' }], thoroughness: level }))
+      .toThrow('Remove thoroughness; the decision feed stops where the ratings go cold, and stopWhenCold sets how soon.');
   });
 
   it('keeps since, exclude and include on the sources that accept them', () => {
@@ -1077,7 +1082,7 @@ describe('a run through core decision calls', () => {
     expect(await readFile(join(runFolder, 'log.md'), 'utf8')).toContain('2026-01-01');
   });
 
-  it('runs the pick at the thoroughness level the sources file names', async () => {
+  it('runs the pick with the rating stop the sources file names', async () => {
     const directory = await folder();
     const home = join(directory, 'home');
     const notes = join(directory, 'notes');
@@ -1087,7 +1092,7 @@ describe('a run through core decision calls', () => {
     const sourcesFile = join(directory, 'sources.json');
     await writeFile(sourcesFile, JSON.stringify({
       records: true,
-      sources: [{ type: 'markdown', path: notes }], thoroughness: 'quick',
+      sources: [{ type: 'markdown', path: notes }], stopWhenCold: { floor: 0.9 },
     }));
     vi.stubEnv('HOME', home);
     vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
@@ -1102,9 +1107,10 @@ describe('a run through core decision calls', () => {
 
     const record = JSON.parse(await readFile(join(runFolder, 'record.json'), 'utf8'));
     expect(record.status).toBe('complete');
-    expect(record.pick?.pick?.thoroughness).toEqual({ level: 'quick', depth: THOROUGHNESS.quick });
-    expect(record.pick?.pick?.sent).toBeLessThanOrEqual(THOROUGHNESS.quick);
-    expect(record.pick?.levers?.thoroughness).toBe('quick');
+    // Every answer is 0.8, under the floor of 0.9: the read stops at its first batch.
+    expect(record.pick?.pick?.stopWhenCold).toMatchObject({ floor: 0.9, share: 0.2, waves: 1,
+      cold: { batch: 1, under: 'floor' } });
+    expect(record.pick?.levers?.stopWhenCold).toEqual({ floor: 0.9, share: 0.2 });
     expect(record.pick?.levers).not.toHaveProperty('everyRanked');
   });
 
@@ -2128,7 +2134,7 @@ describe('the feed setting', () => {
     await writeFile(join(notes, 'pond.md'), '# Pond\n\nThe pond by the orchard has koi. Trees shade it.\n');
     const sourcesFile = join(directory, 'sources.json');
     await writeFile(sourcesFile, JSON.stringify({
-      records: true, sources: [{ type: 'markdown', path: notes }], thoroughness: 'quick',
+      records: true, sources: [{ type: 'markdown', path: notes }],
       feed: { order: 'combsum', size: 1 },
     }));
     vi.stubEnv('HOME', home);
@@ -2147,10 +2153,9 @@ describe('the feed setting', () => {
     expect(pick.feed.order).toBe('combsum');
     expect(pick.feed.size).toBe(1);
     expect(pick.feed.unjudged).toBeGreaterThan(0);
-    expect(pick.thoroughness).toEqual({ level: 'quick', depth: 1 });
     expect(pick.sent).toBe(1);
     expect(pick.feed.unjudged).toBe(record.pick.candidates.filter((entry: { status: string; reason?: string }) =>
-      entry.status === 'unassessed' && entry.reason === 'thoroughness').length);
+      entry.status === 'unassessed' && entry.reason === 'feed').length);
   });
 });
 
@@ -2555,8 +2560,8 @@ describe('a call reads the project its working folder sits in', () => {
 
     it('reads its sources beside the project\'s own, with its settings over the personal file\'s', async () => {
       const { at } = await project();
-      await writeFile(at('curate.json'), JSON.stringify({ sources: [{ type: 'markdown', path: 'always' }], thoroughness: 'quick' }));
-      await personal(at, { sources: [{ type: 'markdown', path: at('notes') }], thoroughness: 'deep', answerTokens: 1500 });
+      await writeFile(at('curate.json'), JSON.stringify({ sources: [{ type: 'markdown', path: 'always' }], stopWhenCold: false }));
+      await personal(at, { sources: [{ type: 'markdown', path: at('notes') }], stopWhenCold: { share: 0.5 }, answerTokens: 1500 });
       const warned = errors();
       const { call } = subscriptionReply(searches());
       const { record, memory } = await run(['What did we plan for the orchard?'], call);
@@ -2564,7 +2569,7 @@ describe('a call reads the project its working folder sits in', () => {
       expect(sourceIds(record)).toContain(`knowledge-base:${at('always')}`);
       expect(sourceIds(record)).not.toContain(`knowledge-base:${at('notes')}`);
       expect(memory).toContain('Orchard notes read everywhere.');
-      expect(record.pick.pick.thoroughness.level).toBe('quick');
+      expect(record.pick.levers.stopWhenCold).toBe(false);
       expect(record.curate.answerTokens).toBe(1500);
       expect(lines(warned).filter((line) => line.startsWith('Skipped'))).toEqual([
         `Skipped 1 configured source outside this project; set "always": true on one to read it everywhere: markdown ${at('notes')}.`,

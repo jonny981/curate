@@ -267,7 +267,7 @@ describe('local meaning search', () => {
     expect(streamedRead.noSearchMatch).toBeUndefined();
   });
 
-  it('under a level asks a lane for kept bodies only, and a reader that honours it changes no pick', async () => {
+  it('under the fused order asks a lane for kept bodies only, and a reader that honours it changes no pick', async () => {
     const scores = [{ id: 'dog', similarity: 0.9 }, { id: 'cat', similarity: 0.8 },
       { id: 'bill', similarity: 0.1, pastLaneCut: true as const }];
     const texts: Record<string, string> = { dog: 'puppy', cat: 'kitten', bill: 'invoice' };
@@ -288,14 +288,14 @@ describe('local meaning search', () => {
         };
       },
     });
-    const level = { task: 'pets', decide, thoroughness: 'deep' as const, taskDate: '2026-01-01T00:00:00Z' };
+    const level = { task: 'pets', decide, taskDate: '2026-01-01T00:00:00Z' };
     const whole = await pickFromSources([source(false)], { task: 'pets', meaning: { embed } }, level);
     expect(asked).toEqual([true]);
     const lean = await pickFromSources([source(true)], { task: 'pets', meaning: { embed } }, level);
     expect(lean.record).toEqual(whole.record);
     expect(lean.selected).toEqual(whole.selected);
     expect(lean.reads).toEqual(whole.reads);
-    // A lane that holds every part needs every body, and so does a pick with no level.
+    // A lane that holds every part needs every body, and so does a pick with no fused order.
     asked.length = 0;
     await pickFromSources([source(true)], { task: 'pets', meaning: { embed, wholeLanes: true } }, level);
     await pickFromSources([source(true)], { task: 'pets', meaning: { embed } }, { ...uncutPick, task: 'pets', decide });

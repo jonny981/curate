@@ -176,9 +176,16 @@ export function parseSources(value, base = process.cwd()) {
   if (value.threshold !== undefined && (!Number.isFinite(value.threshold) || value.threshold < 0 || value.threshold > 1)) {
     throw new Error('threshold must be between 0 and 1.');
   }
-  if (value.thoroughness !== undefined
-    && !['quick', 'normal', 'deep'].includes(value.thoroughness)) {
-    throw new Error("thoroughness must be 'quick', 'normal' or 'deep'.");
+  if (value.thoroughness !== undefined) {
+    throw new Error('Remove thoroughness; the decision feed stops where the ratings go cold, and stopWhenCold sets how soon.');
+  }
+  if (value.stopWhenCold !== undefined && value.stopWhenCold !== false) {
+    const stop = value.stopWhenCold;
+    if (stop === null || typeof stop !== 'object' || Array.isArray(stop)
+      || Object.entries(stop).some(([key, number]) => !['floor', 'share'].includes(key)
+        || typeof number !== 'number' || !(number >= 0 && number <= 1))) {
+      throw new Error('stopWhenCold must be false or { floor, share }, each a number between 0 and 1.');
+    }
   }
   if (value.answerTokens !== undefined && (!Number.isSafeInteger(value.answerTokens) || value.answerTokens < 1)) {
     throw new Error('answerTokens must be a positive integer.');
@@ -726,16 +733,16 @@ export async function pickFullSources(sources, call, options, context = { files:
       // Lane cuts narrow each task and search line inside the read, so the
       // cached results held for the pick carry only the kept candidates.
       for (const meaningLane of request.meaning === undefined ? [undefined] : [undefined, request.meaning]) {
-        // Under a thoroughness level the pick's own meaning reads keep
-        // every part's similarity, so the cached read must match them.
+        // Under the fused order the pick's own meaning reads keep every
+        // part's similarity, so the cached read must match them.
         const readRequest = { wholeLanes: false, ...request, task,
           ...(meaningLane === undefined ? {} : { meaning: undefined, searchLines: undefined, meaningLane,
             meaningQueries,
             wholeLanes: options.everyRanked === undefined ? true
               : meaningLane.wholeLanes ?? request.wholeLanes ?? false,
             limit: options.everyRanked === undefined ? undefined : meaningLane.nearest,
-            // The pick asks its lane reads for kept bodies only under a
-            // level, so the cached read must be the same read.
+            // The pick asks its lane reads for kept bodies only under the
+            // fused order, so the cached read must be the same read.
             ...(options.everyRanked === undefined
               && !(meaningLane.wholeLanes ?? !(request.wholeLanes !== true && source.role === 'reference'))
               ? { keptBodiesOnly: true } : {}) }),
@@ -747,8 +754,8 @@ export async function pickFullSources(sources, call, options, context = { files:
     }
     let pool;
     if (source.role === 'reference' && (source.labelKinds?.length
-      // A thoroughness level is in force whenever everyRanked is unset;
-      // the fused order it feeds positions every pool member.
+      // The fused order is read whenever everyRanked is unset, and it
+      // positions every pool member.
       || options.everyRanked !== true
       || (options.rare ?? source.rare ?? false) !== false)) {
       pool = await source.read({ ...request, task: request.task, wholeLanes: true, limit: undefined,
@@ -1303,7 +1310,7 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
     const pickOptions = { task: options.task, decide,
       limits: { maxBatchChars,
         ...(settings.maxInFlight === undefined ? {} : { maxInFlight: settings.maxInFlight }) },
-      ...(settings.thoroughness === undefined ? {} : { thoroughness: settings.thoroughness }),
+      ...(settings.stopWhenCold === undefined ? {} : { stopWhenCold: settings.stopWhenCold }),
       ...(settings.feed === undefined ? {} : { feed: settings.feed }),
       ...(settings.threshold === undefined ? {} : { everyScored: { bar: settings.threshold } }) };
     const picked = await pickFullSources(sources.map((source) => {

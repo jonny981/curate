@@ -29,8 +29,8 @@ describe('reader rare-word defaults', () => {
       [q.key, { status: 'answered', probability: 0.9 }]));
     const git = reader('git', true);
     const transcript = reader('chat', false);
-    // On the old feed a full-pool read happens only where rare is on; a
-    // thoroughness level reads every source's pool for the fused order.
+    // On the old feed a full-pool read happens only where rare is on;
+    // the fused order reads every source's pool.
     const result = await pickFullSources([git, transcript], { task: 'one' },
       { task: 'one', decide, everyRanked: true });
     expect(git.read).toHaveBeenCalledTimes(2);

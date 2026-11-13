@@ -29,7 +29,7 @@ export const offSources = (): CandidateSource[] => [
 ];
 
 /** The record as the baseline build wrote it: without the moment, the time zone and the task-period
- *  entries, which the task date added, without `pick`'s decide-call counts, which the thoroughness
+ *  entries, which the task date added, without `pick`'s decide-call counts, which the fused-order
  *  accounting added (the old build wrote `pick` only under a dial, so a `pick` holding counts alone
  *  goes too), and without lane-0 ranks, which the fused order's need for positions added to
  *  single-search reads. */

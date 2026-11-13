@@ -28,13 +28,13 @@ export interface LeverStates {
    *  top `round(c × N^0.8)` reference parts of the ranking the decide
    *  step reads, where N is every reference part the pick received.
    *  Present only when the call gave it; a pick without it records
-   *  `thoroughness` instead, 'normal' when no level was named. */
+   *  `stopWhenCold` instead. */
   readonly everyRanked?: true | { readonly c: number };
-  /** The appetite for look-back the pick ran with: the level whose
-   *  `THOROUGHNESS` depth cut the fused order's short list. Present
-   *  whenever `everyRanked` was not given; 'normal' unless the call
-   *  chose a level. */
-  readonly thoroughness?: 'quick' | 'normal' | 'deep';
+  /** The rating stop the pick read the fused order with: the floor and
+   *  share it tested each batch's best decision score against, or
+   *  `false`, the default, when the call set none and the whole order
+   *  was read. Present whenever `everyRanked` was not given. */
+  readonly stopWhenCold?: false | { readonly floor: number; readonly share: number };
   /** Present only when the call gave it, in place of every source's
    *  own `bar`: `true` keeps every scored part, `{ bar }` cuts references
    *  below a flat decision bar, `{ bySize }` cuts below a bar that rises
