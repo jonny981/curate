@@ -110,9 +110,10 @@ describe('the fused order', () => {
     expect(crowded.record.pick).toMatchObject({
       n: 2 * depth + 20, sent: bare.record.pick!.sent, questions: bare.record.pick!.questions, kept: depth + 20 });
     expect(askedPartIds(second.calls)).toEqual(askedPartIds(first.calls));
-    const off = crowded.record.candidates.filter((entry) => entry.id.startsWith('u'));
-    expect(off).toHaveLength(depth);
-    expect(off.every((entry) => entry.status === 'unassessed' && entry.reason === 'feed')).toBe(true);
+    // The parts no lane kept size the history and are counted, not
+    // recorded one by one: none of them could reach the decide step.
+    expect(crowded.record.candidates.filter((entry) => entry.id.startsWith('u'))).toEqual([]);
+    expect(crowded.record.unheld).toEqual({ notes: depth });
   });
 
   it('never sends past the feed size, however the rare-word round or the label lane reaches', async () => {

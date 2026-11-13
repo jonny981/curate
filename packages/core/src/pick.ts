@@ -494,6 +494,11 @@ export interface PickRecord {
    *  questions asked. */
   readonly levers: LeverStates;
   readonly candidates: readonly PickRecordEntry[];
+  /** Present when pickFromSources only sized a history for the fused
+   *  order: by source ID, how many of its parts no lane kept.
+   *  They are counted here, not recorded one by one in `candidates`, and
+   *  none of them could reach the decide step. */
+  readonly unheld?: Readonly<Record<string, number>>;
   readonly rulesCoverage: 'complete' | 'incomplete';
   /** Present when a decide call rejected its batch and ended the pick:
    *  the batch's candidate ids and the error's message. The pick fails
@@ -921,6 +926,12 @@ export interface PickOptions {
    *  without an entry has no extra-lane or `wholeLanes` entries there.
    *  pickFromSources supplies these. */
   readonly readsBySource?: Readonly<Record<string, PickSourceRead>>;
+  /** Internal to pickFromSources: each history it only sized for the
+   *  fused order, by source ID: how many distinct parts it holds,
+   *  the candidates given and the parts no lane kept, which are not
+   *  given. The fused order places meaning against the whole history,
+   *  and the record counts the parts not given in `unheld`. */
+  readonly historySizeBySource?: Readonly<Record<string, number>>;
   readonly limits?: PickLimits;
   readonly thresholds?: PickThresholds;
   /** The task's date, as the read request's `taskDate` takes it: the
@@ -1295,6 +1306,9 @@ interface EffectInput {
   readonly namedAsked: ReadonlySet<MemoryCandidate>;
   /** Each part's score without its name terms, for the parts that have them. */
   readonly unnamed: ReadonlyMap<MemoryCandidate, number>;
+  /** By source ID, the parts of a sized history no lane kept: not
+   *  candidates, but part of the source's history. */
+  readonly unheld: Readonly<Record<string, number>>;
 }
 
 const count = (n: number, noun = 'part') => `${n} ${noun}${n === 1 ? '' : 's'}`;
@@ -1404,7 +1418,10 @@ function settingEffects(input: EffectInput): PickSettingEffect[] {
           : `${head}; ${count(added)} reached the bar ${bar} only with the name terms, and ${count(dropped)} fell below it only because of them.` };
   };
   const effects: PickSettingEffect[] = [];
-  for (const id of new Set(input.candidates.map((candidate) => candidate.sourceId))) {
+  // A history no lane kept a part of still has its effects.
+  const looped = new Set([...input.candidates.map((candidate) => candidate.sourceId),
+    ...Object.keys(input.unheld).filter((id) => input.unheld[id]! > 0)]);
+  for (const id of looped) {
     const own = input.candidates.filter((candidate) => candidate.sourceId === id);
     const opened = (way: string) => {
       const reached = own.filter((candidate) => {
@@ -1457,7 +1474,7 @@ function settingEffects(input: EffectInput): PickSettingEffect[] {
     }
 
     const references = own.filter((candidate) => candidate.role === 'reference');
-    if (references.length > 0) {
+    if (references.length > 0 || (input.unheld[id] ?? 0) > 0) {
       const setting = input.everyScored ? 'everyScored' : 'bar';
       const bar = input.bar(id);
       const scored = references.filter((candidate) => input.scored.has(candidate));
@@ -1606,7 +1623,7 @@ function settingEffects(input: EffectInput): PickSettingEffect[] {
     }
   }
   for (const id of input.typedSources.keys()) {
-    if (!input.candidates.some((candidate) => candidate.sourceId === id)) effects.push(typedEffect(id, []));
+    if (!looped.has(id)) effects.push(typedEffect(id, []));
   }
   // One entry per read that skipped always-on files, a read that returned no part included.
   const listed = new Set<PickSourceRead>();
@@ -1619,14 +1636,14 @@ function settingEffects(input: EffectInput): PickSettingEffect[] {
         + `${skipped.map((skip) => `${skip.file} (${skip.reason})`).join('; ')}.` });
   }
   for (const id of input.writtenSources) {
-    if (!input.candidates.some((candidate) => candidate.sourceId === id)) effects.push(writtenEffect(id, []));
+    if (!looped.has(id)) effects.push(writtenEffect(id, []));
   }
   for (const id of input.namedSources) {
-    if (!input.candidates.some((candidate) => candidate.sourceId === id)) effects.push(namedEffect(id, []));
+    if (!looped.has(id)) effects.push(namedEffect(id, []));
   }
   // A source with name lanes on whose read returned no part still gets its entry.
   for (const [id, read] of Object.entries(reads)) {
-    if (!(read.given ?? read.lanes).includes('names') || input.candidates.some((candidate) => candidate.sourceId === id)) continue;
+    if (!(read.given ?? read.lanes).includes('names') || looped.has(id)) continue;
     effects.push({ setting: 'names', source: id, actedOn: 0, added: 0, dropped: 0,
       summary: read.lanes.includes('names')
         ? `names on ${id}: the lanes held no part, so they added none. It added no part.`
@@ -1870,6 +1887,13 @@ export async function pick(
   const priority = new Map<MemoryCandidate, number>();
   const rules = rankAndInterleave(candidates.filter((c) => c.role === 'rule'), priority, undefined, options.ranking);
   const references = rankAndInterleave(candidates.filter((c) => c.role === 'reference'), priority, undefined, options.ranking);
+  // The history's size: the reference parts given, and the parts of a
+  // sized history no lane kept, which are counted and never given.
+  const givenBySource = new Map<string, number>();
+  for (const candidate of references) givenBySource.set(candidate.sourceId, (givenBySource.get(candidate.sourceId) ?? 0) + 1);
+  const unheld: Record<string, number> = Object.fromEntries(Object.entries(options.historySizeBySource ?? {})
+    .map(([id, size]) => [id, Math.max(0, size - (givenBySource.get(id) ?? 0))]));
+  const historySize = references.length + Object.values(unheld).reduce((total, count) => total + count, 0);
 
   const selected: MemoryCandidate[] = [];
   const statuses = new Map<MemoryCandidate, PickEntryStatus>();
@@ -1966,7 +1990,7 @@ export async function pick(
     const meaningPlace = new Map<MemoryCandidate, number>();
     byMeaning.forEach((candidate, index) => {
       if (candidate.meaningScore !== undefined) {
-        meaningPlace.set(candidate, (references.length - index) / references.length);
+        meaningPlace.set(candidate, (historySize - index) / historySize);
       }
     });
     const permitted = (candidate: MemoryCandidate) =>
@@ -3275,7 +3299,7 @@ export async function pick(
   // questions the decide port was actually asked, the dial or level
   // applied, and which ranking the feed followed.
   pickRecord = {
-    n: references.length,
+    n: historySize,
     sent: sentParts.size,
     questions: sentQuestions,
     ...(topK === undefined ? {} : { c: topK }),
@@ -3334,6 +3358,7 @@ export async function pick(
     namedSources: new Set(Object.entries(options.questionsBySource ?? {})
       .flatMap(([id, set]) => set.named === undefined ? [] : [id])),
     named: (names?.found.length ?? 0) > 0,
+    unheld,
     namedAsked: new Set(candidates.filter((candidate) =>
       namedFor(candidate).some((q) => answered.get(candidate)?.has(q.key) === true))),
     unnamed,
@@ -3450,6 +3475,7 @@ export async function pick(
       ...(appliedReference === undefined ? {} : { appliedReference }) },
     ...(options.ranking === undefined ? {} : { ranking: options.ranking }),
     candidates: entries,
+    ...(options.historySizeBySource === undefined ? {} : { unheld }),
     rulesCoverage,
     ...(decideFailure === undefined ? {} : {
       decideError: { candidates: decideFailure.ids, message: decideFailure.message },

@@ -752,18 +752,24 @@ export async function pickFullSources(sources, call, options, context = { files:
         reads.set(key(readRequest), read);
       }
     }
-    let pool;
-    if (source.role === 'reference' && (source.labelKinds?.length
-      // The fused order is read whenever everyRanked is unset, and it
-      // positions every pool member.
+    // The fused order is read whenever everyRanked is unset, and it
+    // positions every pool member. The pool is read once, as the pick
+    // asks for it: its parts, or only their ids when the pick only sizes
+    // the history.
+    const pooled = source.role === 'reference' && (source.labelKinds?.length
       || options.everyRanked !== true
-      || (options.rare ?? source.rare ?? false) !== false)) {
-      pool = await source.read({ ...request, task: request.task, wholeLanes: true, limit: undefined,
-        ...(revision === undefined ? {} : { revision }) }, context);
-    }
+      || (options.rare ?? source.rare ?? false) !== false);
+    const pools = new Map();
     return { ...source, async read(readRequest) {
       const { wholeLanes, limit } = readRequest;
-      if (readRequest.meaningLane === undefined && wholeLanes && limit === undefined && pool !== undefined) return pool;
+      if (readRequest.meaningLane === undefined && wholeLanes && limit === undefined && pooled) {
+        const ids = readRequest.poolIds === true;
+        if (!pools.has(ids)) {
+          pools.set(ids, source.read({ ...request, task: request.task, wholeLanes: true, limit: undefined,
+            ...(ids ? { poolIds: true } : {}), ...(revision === undefined ? {} : { revision }) }, context));
+        }
+        return pools.get(ids);
+      }
       const held = reads.get(key(readRequest));
       // A read the cache does not hold — a name lane, a task-period read —
       // goes to the wrapped source with the same request.

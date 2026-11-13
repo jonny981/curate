@@ -1201,7 +1201,14 @@ A part below the stop is never asked by the read and records
 `unassessed` with reason `'stopWhenCold'`; the rare-word round can
 still pull one in. A part no lane placed in the order records
 `'feed'`. Pool members sit in the record the same way, so an unordered
-member is unassessed rather than absent. A lane's candidate limit, not
+member is unassessed rather than absent. When no rare-word round can
+pull a pool member in, the source asks no label kinds and the task
+names no period, `pickFromSources()` only counts them: the record's
+`unheld` holds, by source ID, how many parts of each history no lane
+kept, and neither `candidates` nor a read's candidates in `reads` lists
+them. `pick.n` still counts every part. A part only a meaning lane kept
+then follows the keyword lanes' parts in those lists, in the order the
+meaning lanes reached it. A lane's candidate limit, not
 the stop, leaves its cut parts unassessed with reason `'limits'`, and
 `memory()` still rejects that collection; it accepts `'stopWhenCold'`
 and `'feed'`.

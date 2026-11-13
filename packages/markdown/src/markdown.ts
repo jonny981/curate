@@ -2177,6 +2177,23 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
         };
       }
 
+      // A whole read that only sizes the history answers with the ids of
+      // every part it would return: the dated parts of the call's walk.
+      if (request.poolIds === true && request.wholeLanes === true && limit === undefined && corpus !== undefined && !kindLane) {
+        const period = request.taskPeriod;
+        const partial = skipped > 0 ? [`skipped ${skipped} symbolic-link ${skipped === 1 ? 'entry' : 'entries'}`] : [];
+        return {
+          status: 'read',
+          ...(revision === undefined ? {} : { revision }),
+          candidates: [],
+          poolIds: parts.flatMap((part, index) => inside(index)
+            && (period === undefined || datedIn(dateOf(index)?.value ?? '', period)) ? [part.id] : []),
+          ...indexed,
+          ...skippedAlwaysOn,
+          complete: partial.length === 0 && reasons.length === 0,
+          ...(partial.length === 0 && reasons.length === 0 ? {} : { partial: [...reasons, ...partial].join('; ') }),
+        };
+      }
       // The scoring pass BM25-scores each part against the corpus
       // statistics the first pass collected. With the index the
       // postings alone carry a covered group: its stored counts give

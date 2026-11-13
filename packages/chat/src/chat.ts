@@ -1434,6 +1434,17 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           corpus = undefined;
           onePass.served -= 1;
         }
+        // A whole read that only sizes the history answers with the ids of
+        // every part it would return: the call's whole walk.
+        if (request.poolIds === true && request.wholeLanes === true && request.limit === undefined && corpus !== undefined) {
+          skips.n += corpus.skips;
+          if (skips.n) reasons.push(`skipped ${skips.n} symbolic links or undated messages`);
+          return {
+            status: 'read', candidates: [], poolIds: corpus.ids, ...indexed,
+            complete: reasons.length === 0,
+            ...(reasons.length ? { partial: reasons.join('; ') } : {}),
+          };
+        }
         if (corpus !== undefined) {
           // The call's one walk carries the corpus: each word's postings
           // are read from the index once for every lane, each title was
