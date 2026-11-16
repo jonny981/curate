@@ -48,7 +48,7 @@ curate "What did we decide about retrying failed uploads, and why?"
 - **Expect a few pence a call.** The decision step is a paid service. This cost is why the question count is capped above.
 - **Run calls one after another.** Each call loads the local embedding model and updates the same stored index.
 - **Read standard error as well as the printed text.** It names sources that were missing, only partly read, or skipped as outside this project, and it says when the token budget left out strong evidence. You report these to the person. It also says which model wrote the search lines; that line needs no report.
-- **Treat exit code 3 as setup, not as an answer.** The message lists every need not met, each with why Curate needs it and the fix. Run `curate check`, then walk the person through the missing lines as [Setup](#setup) describes. Report any other failure plainly with its message.
+- **Treat exit code 3 as setup, not as an answer.** The message lists every need not met, each with why Curate needs it and the fix. Run `curate check`, then walk the person through the missing lines as [Setup](#setup) describes. Exit code 4 means the decision service refused the call or could not be reached: tell the person the message's first line, which says why and what to do; a call refused for no credit or for its key fails again until they act. Report any other failure plainly with its message.
 
 ## Read the evidence
 

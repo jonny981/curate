@@ -3414,8 +3414,10 @@ export async function pick(
     effects,
   };
   if (decideFailure !== undefined) {
-    throw new PickError(
-      `The decide call failed for candidates ${decideFailure.ids.join(', ')}: ${decideFailure.message}`,
+    // The cause leads; the refused request's ids are in the record.
+    const count = decideFailure.ids.length;
+    throw new PickError(`The decide call failed. ${decideFailure.message}\n${count === 1 ? 'One part' : `${count} parts`}`
+      + ` of the refused request ${count === 1 ? 'was' : 'were'} not decided; record.decideError lists the ids.`,
       record, { cause: decideFailure.error });
   }
   return { selected, record };

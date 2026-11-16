@@ -28,7 +28,7 @@ The last line installs the `/curate` skill for Claude Code and Codex. The skill 
 - **`--sources <file>`** reads that settings file in place of `~/.curate/sources.json`. `--version` and `--help` print the version and the usage.
 
 A word names a step only when it is the whole command line: `curate "check the retry decision"` is a question.
-Any other failure exits 1.
+A call the decision service refused or could not reach exits 4; the first line of its message says why and what to do. Any other failure exits 1.
 The command hides Node's experimental-feature warning for SQLite, which the stored index uses, and no other warning.
 
 ## Settings and data

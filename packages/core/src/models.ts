@@ -41,6 +41,56 @@ async function jevPost(url: string, apiKey: string | undefined, text: string, si
     retryAfter: response.headers.get('retry-after'), text: await response.text() };
 }
 
+/** Why the decision service gave no answers: it has no credit (HTTP
+ *  402), it refused the key (401 or 403), it could not be reached (no
+ *  reply), or it refused the request for another reason. */
+export type DecisionServiceFailure = 'credit' | 'key' | 'unreachable' | 'refused';
+
+/** A Jev request that failed for a reason no smaller request can fix.
+ *  `status` is the reply's HTTP status, or 0 when no reply came; `reply`
+ *  is its whole body; `said` is the message the service gave in it, or
+ *  the network error's. */
+export class DecisionServiceError extends Error {
+  readonly status: number;
+  readonly reason: DecisionServiceFailure;
+  readonly reply: string;
+  readonly said: string;
+  constructor(status: number, reply: string, said: string, options?: ErrorOptions) {
+    const reason: DecisionServiceFailure = status === 0 ? 'unreachable' : status === 402 ? 'credit'
+      : status === 401 || status === 403 ? 'key' : 'refused';
+    super(reason === 'unreachable' ? `The decision service could not be reached: ${said}`
+      : `The decision service ${reason === 'credit' ? 'has no credit' : reason === 'key' ? 'refused the API key'
+        : 'refused the request'} (HTTP ${status}): ${said}`, options);
+    this.name = 'DecisionServiceError';
+    this.status = status;
+    this.reason = reason;
+    this.reply = reply;
+    this.said = said;
+  }
+}
+
+/** The message a reply's body gives: a JSON body's `detail` text or its
+ *  `detail.message` or `message`, otherwise the body as sent. */
+function saidIn(body: string): string {
+  try {
+    const parsed = record(JSON.parse(body));
+    const detail = parsed.detail;
+    const said = typeof detail === 'string' ? detail : record(detail).message ?? parsed.message;
+    if (typeof said === 'string' && said.trim() !== '') return said.trim();
+  } catch {
+    // Not JSON: the body is the message.
+  }
+  return body.trim();
+}
+
+/** A network error's message, with its cause's when it has one, as
+ *  `fetch failed (getaddrinfo ENOTFOUND host)`. */
+function networkSaid(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const cause = error instanceof Error && error.cause instanceof Error ? error.cause.message : undefined;
+  return cause === undefined ? message : `${message} (${cause})`;
+}
+
 /** The wait a reply's Retry-After header names, in milliseconds; an
  *  unreadable or absent header waits one second. */
 function retryAfterMs(header: string | null): number {
@@ -347,7 +397,9 @@ export function jev({ apiKey, model = 'jev-latest', url = JEV_URL, onCall }: {
             error: error instanceof Error ? error.message : String(error),
             splits: 0,
           });
-          throw error;
+          // A cancellation stays as it is; a request that got no reply
+          // for any other reason could not reach the service.
+          throw signal.aborted ? error : new DecisionServiceError(0, '', networkSaid(error), { cause: error });
         }
         const raw = (() => { try { return record(JSON.parse(reply.text)); } catch { return {}; } })();
         const call = {
@@ -439,7 +491,7 @@ export function jev({ apiKey, model = 'jev-latest', url = JEV_URL, onCall }: {
     }
     // A terminal reply stops the sends still queued before the record
     // write below can let one through; the failure thrown is its own.
-    const error = new Error(`Model request failed: HTTP ${call.status}. ${replyText}`);
+    const error = new DecisionServiceError(call.status, replyText, saidIn(replyText));
     allow.stop(domain, error);
     await onCall?.(call);
     throw error;

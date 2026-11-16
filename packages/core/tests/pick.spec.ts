@@ -266,7 +266,8 @@ describe('pick', () => {
     );
 
     expect(failure).toBeInstanceOf(PickError);
-    expect(failure.message).toBe('The decide call failed for candidates alpha, beta: engine down');
+    expect(failure.message).toBe('The decide call failed. engine down\n'
+      + '2 parts of the refused request were not decided; record.decideError lists the ids.');
     expect(failure.record.decideError).toEqual({ candidates: ['alpha', 'beta'], message: 'engine down' });
     expect(failure.record.candidates.map((entry) => entry.status)).toEqual([
       'unanswered', 'unanswered', 'unanswered',

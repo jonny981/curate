@@ -306,8 +306,8 @@ describe('best document part first', () => {
       (reason: unknown) => reason as PickError,
     );
     expect(asked).toEqual(['representative']);
-    expect(failure.message).toContain('decision failed');
-    expect(failure.message).toContain('representative');
+    expect(failure.message).toBe('The decide call failed. decision failed\n'
+      + 'One part of the refused request was not decided; record.decideError lists the ids.');
     expect(failure.record.decideError).toEqual({ candidates: ['representative'], message: 'decision failed' });
     expect(failure.record.candidates).toMatchObject([
       { status: 'unassessed', reason: 'error' },

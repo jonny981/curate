@@ -13,7 +13,7 @@ import { indexFilePath, STORED_INDEX_FORMAT } from '@curatejs/core/internal';
 import { chat, CHAT_CASCADE, chatSettings } from '@curatejs/chat';
 import { git as gitSource } from '@curatejs/git';
 // @ts-expect-error The standalone JavaScript command has no type declarations.
-import { acceptScope, allowedSession, citable, decisionAnswers, haikuCall, instructionsProfile, lunaCall, NODE_FLOOR, pickFullSources, rankMatches, parseArgs, parseSearches, parseSources, run, PROCESSOR_WARNING, sandboxAvailable, scopedEntries, sourcesFor, searchLinesPrompt, searchRoute, searchSource, sessionHeader, SETUP, SetupError, setupGuide, snapshotCodex, writeLog } from '../skills/curate/run.mjs';
+import { acceptScope, allowedSession, citable, decisionAnswers, haikuCall, instructionsProfile, lunaCall, NODE_FLOOR, pickFullSources, rankMatches, parseArgs, parseSearches, parseSources, run, DECISION_EXIT, PROCESSOR_WARNING, sandboxAvailable, scopedEntries, sourcesFor, searchLinesPrompt, searchRoute, searchSource, sessionHeader, SETUP, SETUP_EXIT, SetupError, setupGuide, snapshotCodex, writeLog } from '../skills/curate/run.mjs';
 
 const uncutPick = { everyRanked: true, everyScored: true } as const;
 
@@ -940,15 +940,20 @@ describe('the sentence cutoff, and what the skill tells the caller', () => {
   });
 });
 
-it('saves the pick record naming the rejected batch when the decision service fails', async () => {
+/** A call on a notes folder whose decision requests get `reply`; the
+ *  search-line and label requests are answered. Resolves to the call's
+ *  result or failure, and the home folder its records go under. */
+async function decisionCall(reply: (payload: { questions: Record<string, unknown> }) => Response | Promise<Response>, records = false) {
   const directory = await folder();
   const home = join(directory, 'home');
   const notes = join(directory, 'notes');
   await mkdir(home);
   await mkdir(notes);
-  await writeFile(join(notes, 'orchard.md'), '# Orchard\n\nThe orchard has trees. Fruit trees grow here.\n');
+  for (let at = 0; at < 6; at += 1) {
+    await writeFile(join(notes, `orchard-${at}.md`), `# Orchard ${at}\n\nThe orchard has trees. Fruit trees grow here, row ${at}.\n`);
+  }
   const sourcesFile = join(directory, 'sources.json');
-  await writeFile(sourcesFile, JSON.stringify({ records: true, sources: [{ type: 'markdown', path: notes }] }));
+  await writeFile(sourcesFile, JSON.stringify({ records, sources: [{ type: 'markdown', path: notes }] }));
   vi.stubEnv('HOME', home);
   vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
   vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
@@ -959,19 +964,78 @@ it('saves the pick record naming the rejected batch when the decision service fa
         Object.keys(payload.questions).map((key) => [key, { noul: 0.8 }]),
       ) });
     }
-    return new Response('rejected', { status: 400 });
+    return reply(payload);
   }));
   const { call } = subscriptionReply(searches());
-  await expect(run(['--sources', sourcesFile, 'orchard'], call)).rejects.toThrow('The decide call failed');
-  const folders = await readdir(join(home, '.curate', 'runs'));
-  expect(folders).toHaveLength(1);
-  const saved = JSON.parse(await readFile(join(home, '.curate', 'runs', folders[0]!, 'record.json'), 'utf8'));
-  expect(saved.status).toBe('failed');
-  expect(saved.error).toContain('Model request failed: HTTP 400. rejected');
-  expect(saved.pick?.decideError?.message).toBe('Model request failed: HTTP 400. rejected');
-  expect(saved.pick?.decideError?.candidates?.length).toBeGreaterThan(0);
-  const ids = new Set<string>((saved.pick?.candidates ?? []).map((entry: { id: string }) => entry.id));
-  expect(saved.pick?.decideError?.candidates?.every((id: string) => ids.has(id))).toBe(true);
+  const outcome = await run(['--sources', sourcesFile, 'orchard'], call).then(
+    (value: Awaited<ReturnType<typeof run>>) => ({ value, error: undefined }),
+    (error: Error & { exitCode?: number }) => ({ value: undefined, error }));
+  return { ...outcome, home };
+}
+const answered = (payload: { questions: Record<string, unknown> }) =>
+  Response.json({ answers: Object.fromEntries(Object.keys(payload.questions).map((key) => [key, { noul: 0.8 }])) });
+const BILLING = JSON.stringify({ detail: { error_type: 'billing_error', message: 'Your organization has no available TypeSafe API credits. Please add more credits and/or set up auto-reload at https://console.typesafe.ai/settings/billing' } });
+
+describe('a call the decision service refuses', () => {
+  it('leads with no credit, the service\'s own message and what to do, counts the parts, and exits with its own code', async () => {
+    const { error } = await decisionCall(() => new Response(BILLING, { status: 402 }));
+    expect(error?.exitCode).toBe(DECISION_EXIT);
+    expect(DECISION_EXIT).not.toBe(SETUP_EXIT);
+    const [first, second, ...rest] = error!.message.split('\n');
+    expect(first).toBe('The decision service has no credit, so Curate stopped before deciding which parts answer the question. '
+      + 'Add credit to the TypeSafe account, then ask again. The service said: Your organization has no available TypeSafe API credits. '
+      + 'Please add more credits and/or set up auto-reload at https://console.typesafe.ai/settings/billing');
+    expect(second).toMatch(/^\d+ parts were left undecided; set `records` to true to keep their ids\.$/);
+    expect(rest).toEqual([]);
+    expect(error!.message).not.toContain('orchard-');
+  });
+
+  it('keeps the undecided parts\' ids in the run record when records are on, and names it', async () => {
+    const { error, home } = await decisionCall(() => new Response(BILLING, { status: 402 }), true);
+    const folders = await readdir(join(home, '.curate', 'runs'));
+    expect(folders).toHaveLength(1);
+    const recordFile = join(home, '.curate', 'runs', folders[0]!, 'record.json');
+    const saved = JSON.parse(await readFile(recordFile, 'utf8'));
+    expect(saved.status).toBe('failed');
+    expect(saved.error).toBe(error!.message);
+    const count = saved.pick?.decideError?.candidates?.length;
+    expect(count).toBeGreaterThan(0);
+    expect(error!.message.split('\n')[1]).toBe(`${count} parts were left undecided; ${recordFile} lists them under pick.decideError.`);
+    const ids = new Set<string>((saved.pick?.candidates ?? []).map((entry: { id: string }) => entry.id));
+    expect(saved.pick?.decideError?.candidates?.every((id: string) => ids.has(id))).toBe(true);
+  });
+
+  it('names the key setting when the service refuses the key', async () => {
+    const { error } = await decisionCall(() => Response.json({ detail: 'Invalid API key' }, { status: 401 }));
+    expect(error?.exitCode).toBe(DECISION_EXIT);
+    expect(error!.message.split('\n')[0]).toBe('The decision service refused the key in `TYPESAFE_API_KEY` (HTTP 401), so Curate stopped before '
+      + 'deciding which parts answer the question. Set a current key from TypeSafe (https://typesafe.ai), then ask again. The service said: Invalid API key');
+  });
+
+  it('says the service could not be reached when a request gets no reply', async () => {
+    const { error } = await decisionCall(() => { throw new TypeError('fetch failed', { cause: new Error('getaddrinfo ENOTFOUND api.typesafe.ai') }); });
+    expect(error?.exitCode).toBe(DECISION_EXIT);
+    expect(error!.message.split('\n')[0]).toBe('Curate could not reach the decision service (fetch failed (getaddrinfo ENOTFOUND api.typesafe.ai)), '
+      + 'so it stopped before deciding which parts answer the question. Check the network connection, then ask again.');
+  });
+
+  it('names any other refusal with its status and the service\'s reply', async () => {
+    const { error } = await decisionCall(() => new Response('upstream overloaded', { status: 503 }));
+    expect(error?.exitCode).toBe(DECISION_EXIT);
+    expect(error!.message.split('\n')[0]).toBe('The decision service refused a request (HTTP 503), so Curate stopped before '
+      + 'deciding which parts answer the question. The service said: upstream overloaded');
+  });
+
+  it('waits out a 429 and answers as usual', async () => {
+    let calls = 0;
+    const { value, error } = await decisionCall((payload) => {
+      calls += 1;
+      return calls === 1 ? new Response('rate limited', { status: 429, headers: { 'retry-after': '0' } }) : answered(payload);
+    });
+    expect(error).toBeUndefined();
+    expect(value?.memory).toContain('Orchard');
+    expect(calls).toBeGreaterThan(1);
+  });
 });
 
 // The injected call stands in for Haiku as the helper would: it answers the

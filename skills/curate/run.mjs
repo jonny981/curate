@@ -38,6 +38,8 @@ export function parseArgs(args, command = 'node skills/curate/run.mjs') {
 export const NODE_FLOOR = '22.20.0';
 // The exit code of a command stopped because its setup is not complete.
 export const SETUP_EXIT = 3;
+// A call the decision service refused, or could not reach, exits with this.
+export const DECISION_EXIT = 4;
 const SCRIPT = fileURLToPath(import.meta.url);
 export const MODEL_URL = 'https://huggingface.co/ggml-org/embeddinggemma-300M-GGUF/resolve/main/embeddinggemma-300M-Q8_0.gguf';
 // Where a call looks for the model when the settings name none: under the
@@ -1489,6 +1491,10 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
     // A PickError carries the pick's record: the failed batch's ids, the
     // unanswered candidates, and the answers that came back. Keep it.
     if (error?.record !== undefined) record.pick = error.record;
+    if (error?.record?.decideError !== undefined) {
+      error.message = decisionFailure(error, records ? join(folder, 'record.json') : undefined);
+      error.exitCode = DECISION_EXIT;
+    }
     record.status = 'failed'; record.error = error.message; throw error;
   }
   finally {
@@ -1505,6 +1511,26 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
     }
   }
   return { memory, record, folder: records ? folder : null };
+}
+
+// What a call the decision service refused prints: why and what to do
+// first, then how many parts went undecided and where their ids are.
+function decisionFailure(error, recordFile) {
+  const cause = error.cause;
+  const stopped = 'so Curate stopped before deciding which parts answer the question.';
+  const said = cause?.said === undefined || cause.said === '' ? '' : ` The service said: ${cause.said}`;
+  const lead = cause?.reason === 'credit'
+    ? `The decision service has no credit, ${stopped} Add credit to the TypeSafe account, then ask again.${said}`
+    : cause?.reason === 'key'
+      ? `The decision service refused the key in \`TYPESAFE_API_KEY\` (HTTP ${cause.status}), ${stopped} Set a current key from TypeSafe (https://typesafe.ai), then ask again.${said}`
+      : cause?.reason === 'unreachable'
+        ? `Curate could not reach the decision service (${cause.said}), ${stopped.replace('Curate ', 'it ')} Check the network connection, then ask again.`
+        : cause?.reason === 'refused'
+          ? `The decision service refused a request (HTTP ${cause.status}), ${stopped}${said}`
+          : `The decision step failed (${error.record.decideError.message}), ${stopped}`;
+  const count = error.record.decideError.candidates.length;
+  return `${lead}\n${count === 1 ? 'One part was' : `${count} parts were`} left undecided; `
+    + (recordFile === undefined ? 'set `records` to true to keep their ids.' : `${recordFile} lists them under pick.decideError.`);
 }
 
 // The command as a person runs it: a signal ends what the call started and
