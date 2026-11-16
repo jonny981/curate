@@ -300,6 +300,32 @@ describe('reads of several modes in one call', () => {
       expect(entry && 'probability' in entry ? entry.probability : 0).toBeCloseTo(0.9, 12);
     }
   });
+
+  it('asks that text twice when only one of the two reads carries the facts the answer needs', async () => {
+    // As above, but the conversation read's mode lists the facts and the
+    // ranked one does not: an answer asked with the facts is not the
+    // answer to the same text asked without them.
+    const diary = part('d', 1, 'person', { sourceId: 'diary', ranks: [0], text: 's0 part 1' });
+    const shared = new Set([idOf('s0', 1), diary.id]);
+    const asked: { id: string; needed: boolean }[] = [];
+    const decide: PickDecide = async (batch) => {
+      for (const question of batch.questions) asked.push({ id: question.id, needed: batch.needed !== undefined });
+      await new Promise((resolve) => setTimeout(resolve, batch.questions.some((item) => shared.has(item.id)) ? 30 : 5));
+      return Object.fromEntries(batch.questions.map((question) =>
+        [question.key, { status: 'answered', probability: batch.needed === undefined ? 0.002 : 0.9 }]));
+    };
+    const result = await pick([...personSessions(4), diary], { task, decide, sourceKinds: { chat: 'chat', diary: 'chat' },
+      needed: ['Which database was chosen'],
+      modesBySource: { chat: { name: 'chat', questions: agentSet, read: conversationRead(), needed: true }, ...modesOf({ diary: agentSet }) } });
+    expect(asked.filter((item) => shared.has(item.id))).toEqual(expect.arrayContaining([
+      { id: idOf('s0', 1), needed: true }, { id: diary.id, needed: false }]));
+    const probability = (id: string) => {
+      const entry = result.record.candidates.find((item) => item.id === id);
+      return entry && 'probability' in entry ? entry.probability : undefined;
+    };
+    expect(probability(idOf('s0', 1))).toBeCloseTo(0.9, 12);
+    expect(probability(diary.id)).toBeCloseTo(0.002, 12);
+  });
 });
 
 describe('the chat read beside stopWhenCold', () => {

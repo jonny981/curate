@@ -47,6 +47,43 @@ describe('the facts the answer needs', () => {
     expect(empty.batches).toEqual(plain.batches);
   });
 
+  it('keep identical text apart when only one of its parts is asked with them, in either source order', async () => {
+    // One text, said by the same author in two sources: one mode lists the
+    // facts, the other does not. The rater answers 0.9 with the facts in
+    // the state and 0.001 without, so a shared answer shows.
+    const same = (sourceId: string, rank: number): MemoryCandidate => ({ sourceId, id: sourceId, role: 'reference',
+      author: 'person', title: 'Evidence', text: 'We chose Postgres for its transactions.', searchRanks: [rank], signals: {} });
+    const modes = { facts: { ...modesBySource.agents }, plain: { ...modesBySource.notes } };
+    const stored = new Map<string, unknown>();
+    const cache = { deciderId: 'stub', store: { get: async (key: string) => stored.get(key), set: async (key: string, value: unknown) => { stored.set(key, value); } } };
+    const asked: (readonly string[] | undefined)[] = [];
+    const decide: PickDecide = async (batch) => {
+      asked.push(batch.needed);
+      return Object.fromEntries(batch.questions.map((question) =>
+        [question.key, { status: 'answered', probability: batch.needed === undefined ? 0.001 : 0.9 }]));
+    };
+    const probability = (result: Awaited<ReturnType<typeof pick>>, sourceId: string) => {
+      const entry = result.record.candidates.find((item) => item.sourceId === sourceId);
+      return entry !== undefined && 'probability' in entry ? entry.probability : undefined;
+    };
+    for (const order of [['facts', 'plain'], ['plain', 'facts']]) {
+      stored.clear();
+      asked.length = 0;
+      const options = { task, decide, modesBySource: modes, needed: facts, cache };
+      const both = await pick(order.map((sourceId, rank) => same(sourceId, rank)), options);
+      expect(probability(both, 'facts')).toBeCloseTo(0.9, 12);
+      expect(probability(both, 'plain')).toBeCloseTo(0.001, 12);
+      expect(asked.map((list) => list !== undefined).sort()).toEqual([false, true]);
+      // A later call on one source takes its own stored answer.
+      asked.length = 0;
+      const plainLater = await pick([same('plain', 0)], options);
+      const factsLater = await pick([same('facts', 0)], options);
+      expect(asked).toEqual([]);
+      expect(probability(plainLater, 'plain')).toBeCloseTo(0.001, 12);
+      expect(probability(factsLater, 'facts')).toBeCloseTo(0.9, 12);
+    }
+  });
+
   it('must be nonempty strings', async () => {
     await expect(pick(parts, { task, decide: recording().decide, modesBySource, needed: ['ok', ' '] }))
       .rejects.toThrow('needed must be a list of facts, each a nonempty string.');

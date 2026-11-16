@@ -2138,12 +2138,14 @@ export async function pick(
   // commit's subject is, so the title stands in for the text in the
   // sharing key. With text present the title is a byline or locator,
   // and identical texts keep sharing one answer. The decider sees the
-  // author, so two authors' identical texts are asked apart.
+  // author, so two authors' identical texts are asked apart, and the
+  // facts the answer needs, so a text asked with them is asked apart from
+  // the same text asked without them.
   const sharingKey = ({ candidate, question }: Pending) => JSON.stringify([candidate.text,
     candidate.text === '' ? candidate.title : null,
     question.role, question.kind, question.questionKey, question.question,
     question.trueCriterion ?? null, question.falseCriterion ?? null,
-    question.levels ?? null, question.anonymous ?? null, question.author ?? null]);
+    question.levels ?? null, question.anonymous ?? null, question.author ?? null, carriesNeeded(candidate)]);
   // Asks packed into request-sized batches, at most `most` of them.
   const pack = (fresh: readonly Pending[], task: string, whole: boolean, most: number): Pending[][] => {
     const slices: Pending[][] = [];
