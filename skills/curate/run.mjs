@@ -1436,7 +1436,11 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
     // Their second search reuses round one's decisions, from a store
     // that lasts this call only.
     const decisions = new Map();
-    const pickOptions = { task: options.task, decide,
+    // The search texts each source reads, the task first: the read of
+    // the agent sources ranks their units of work against them.
+    const queriesOf = (searches) => Object.fromEntries(sources.map((source) => [source.id,
+      [options.task, ...(searches[source.kind]?.keywords ?? []), ...(searches[source.kind]?.answers ?? [])]]));
+    const pickOptions = { task: options.task, decide, queriesBySource: queriesOf(record.searches),
       limits: { maxBatchChars,
         ...(settings.maxInFlight === undefined ? {} : { maxInFlight: settings.maxInFlight }) },
       ...(settings.stopWhenCold === undefined ? {} : { stopWhenCold: settings.stopWhenCold }),
@@ -1476,7 +1480,8 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
       const againStart = Date.now();
       const again = await searchAgain(options.task, picked, agentIds, (lines) => pickFullSources(
         sources.filter((source) => agentIds.has(source.id)).map((source) => searched(source, { ...record.searches, chat: lines })),
-        { ...request, searchLines: lineNames(lines.keywords.length + lines.answers.length) }, pickOptions, context));
+        { ...request, searchLines: lineNames(lines.keywords.length + lines.answers.length) },
+        { ...pickOptions, queriesBySource: queriesOf({ ...record.searches, chat: lines }) }, context));
       final = again.picked;
       if (again.record !== undefined) {
         record.secondSearch = { seeds: again.seeds, lines: again.lines, added: again.added, pick: again.record,

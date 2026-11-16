@@ -14,6 +14,7 @@ import {
   ANSWER_TYPES, classifyTask, ROUTE_QUESTIONS, routeOptions, type AnswerType, type RouteKey, type RouteOption,
 } from './task.js';
 import { conversationRead, rankedRead, type Mode, type ModeRead, type ModeReadResult } from './mode.js';
+import type { EmbeddingFunction } from './meaning.js';
 import type { LeverStates } from './levers.js';
 import type { StoredIndexReport } from './stored-index.js';
 import { WRITTEN_QUESTION_KEYS, checkCascade, checkPickOptions, checkWriteQuestions, findTaskNames } from './options.js';
@@ -677,13 +678,15 @@ export interface PickRecord {
      *  parts, the walks of every segment advancing a ring a round
      *  together. Warm means rated at least 0.1 times the best rating the
      *  read has seen. `requests` counts the requests read before the
-     *  stop, `segments` the segments opened, `rated` the parts it
+     *  stop, `segments` the segments opened, `units` the units of agent
+     *  work (a subagent's prompt or report) opened after them, `rated` the parts it
      *  rated, `unread` the chat parts of the order it never reached,
      *  and `ended` what ended it: 'fall', 'order' when the order ran out
      *  first, or the stopping dial. */
     readonly chatRead?: {
       readonly requests: number;
       readonly segments: number;
+      readonly units: number;
       readonly rated: number;
       readonly unread: number;
       readonly ended: 'fall' | 'order' | 'limits' | 'time' | 'cancelled' | 'error';
@@ -736,6 +739,14 @@ export interface PickOptions {
    *  question and the ranked read. pickFromSources fills these from
    *  each source's `mode`. */
   readonly modesBySource?: Readonly<Record<string, Mode>>;
+  /** The search texts each source reads, by source ID, the task first:
+   *  a conversation read ranks the units of agent work against them.
+   *  pickFromSources fills a source left out with the call's task and
+   *  search lines. */
+  readonly queriesBySource?: Readonly<Record<string, readonly string[]>>;
+  /** The call's local embedder, for the units' meaning ranking.
+   *  pickFromSources fills it from the request's meaning lanes. */
+  readonly embed?: EmbeddingFunction;
   /** The facts a complete answer needs, as the caller's writer split the
    *  task. A request of parts whose mode sets `needed` carries them in
    *  its decision state beside the task; parts of every other mode go in
@@ -3052,8 +3063,10 @@ export async function pick(
       const share = new Map(parts.map((candidate) => [candidate, (candidate.searchRanks ?? [])
         .reduce<number>((best, rank, index) => rank === null || !keyword(candidate, index) ? best
           : Math.max(best, (laneLength.get(index)! - rank) / laneLength.get(index)!), 0)] as const));
+      const queries = [...new Set(parts.flatMap((candidate) => options.queriesBySource?.[candidate.sourceId] ?? []))];
       return read({
         ...shared, parts, order: chatOrder.filter((candidate) => readOf(candidate) === read),
+        ...(queries.length === 0 ? {} : { queries }), ...(options.embed === undefined ? {} : { embed: options.embed }),
         byKeyword: [...share.keys()].filter((candidate) => share.get(candidate)! > 0)
           .sort((left, right) => share.get(right)! - share.get(left)!),
         lanes: laneParts,
@@ -3080,7 +3093,7 @@ export async function pick(
         reason: result.reason === 'chatRead' ? stop ?? 'chatRead' : result.reason });
     }
     if (result.requests !== undefined) {
-      chatRecord = { requests: result.requests, segments: result.segments ?? 0, rated: result.read.length,
+      chatRecord = { requests: result.requests, segments: result.segments ?? 0, units: result.units ?? 0, rated: result.read.length,
         unread: result.unread.length, ended: result.ended === 'stopped' ? stop! : result.ended as 'fall' | 'order' };
     }
   }

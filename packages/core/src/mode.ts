@@ -1,4 +1,5 @@
 import { chatRead, type ConversationRules } from './chat-read.js';
+import type { EmbeddingFunction } from './meaning.js';
 import type { MemoryCandidate, PickCascade } from './pick.js';
 
 /** How one kind of source is judged and read: its decision questions,
@@ -60,6 +61,10 @@ export interface ModeReadInput {
   readonly stopped: () => boolean;
   /** The call's rating stop (`stopWhenCold`), when set. */
   readonly stop?: { readonly floor: number; readonly share: number };
+  /** The search texts the read's sources read, the task first. */
+  readonly queries?: readonly string[];
+  /** The call's local embedder, when it has one. */
+  readonly embed?: EmbeddingFunction;
 }
 
 /** What a read did. */
@@ -87,9 +92,11 @@ export interface ModeReadResult {
     readonly under: 'floor' | 'share';
   };
   /** The conversation read: the requests of the order it read before
-   *  the segments, and the segments it opened. */
+   *  the segments, the segments it opened, and the units of agent work
+   *  it opened after them. */
   readonly requests?: number;
   readonly segments?: number;
+  readonly units?: number;
 }
 
 /** The ranked read: the fused order from the top. With no rating stop
@@ -147,16 +154,20 @@ export const rankedRead: ModeRead = async (input) => {
  *  rings of neighbours around the warm ones, a stop when a request's
  *  new warm parts fall, then the topic segments that hold a warm person
  *  part or a search lane's top part, walked out from their warm parts,
- *  each container read in the order its parts' `place` gives. `rules`
+ *  then the units of agent work (a subagent's prompt or report) that
+ *  the queries rank above their bends among their own kind, read the
+ *  same way, each container read in the order its parts' `place` gives. `rules`
  *  replaces any of its three decisions; with none it is the read
  *  measured on coding-agent transcripts. Make it once per mode: modes
  *  that share one read are read together. */
 export function conversationRead(rules: ConversationRules = {}): ModeRead {
   return async (input) => {
     const result = await chatRead({ parts: input.parts, order: input.order, byKeyword: input.byKeyword,
-      lanes: input.lanes, rate: input.rate, score: input.score, kept: input.kept, stopped: input.stopped, rules });
+      lanes: input.lanes, rate: input.rate, score: input.score, kept: input.kept, stopped: input.stopped, rules,
+      ...(input.queries === undefined ? {} : { queries: input.queries }),
+      ...(input.embed === undefined ? {} : { embed: input.embed }) });
     const reached = new Set(result.read);
     return { read: result.read, unread: input.order.filter((part) => !reached.has(part)), reason: 'chatRead',
-      ended: result.ended, requests: result.requests, segments: result.segments };
+      ended: result.ended, requests: result.requests, segments: result.segments, units: result.units };
   };
 }

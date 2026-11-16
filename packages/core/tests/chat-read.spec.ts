@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { conversationRead, pick, type MemoryCandidate, type PickCascade, type PickDecide } from '../src/index.js';
-import { chatRead, topicShifts } from '../src/chat-read.js';
+import { agentUnits, chatRead, topicShifts, unitDescriptors } from '../src/chat-read.js';
 import { modesOf } from './fixtures/modes.js';
 
 type Author = 'person' | 'agent';
@@ -459,9 +459,81 @@ describe('the chat read under a caller\'s limits', () => {
       return Object.fromEntries(questions.map((question) => [question.key, { status: 'answered', probability: 0.9 }]));
     };
     const read = await pick(parts, { task, decide, ...agentRead, limits, signal: controller.signal });
-    expect(read.record.pick?.chatRead).toEqual({ requests: 1, segments: 0, rated, unread: 336 - rated, ended });
+    expect(read.record.pick?.chatRead).toEqual({ requests: 1, segments: 0, units: 0, rated, unread: 336 - rated, ended });
     expect(read.record.candidates.filter((entry) => entry.status === 'selected')).toHaveLength(rated);
     expect(read.record.candidates.filter((entry) => entry.status === 'unassessed')
       .every((entry) => entry.status === 'unassessed' && entry.reason === ended)).toBe(true);
+  });
+});
+
+describe('the units of agent work as one more start', () => {
+  /** A part of a subagent's transcript, marked as its prompt or its report. */
+  const agentPart = (agent: string, line: number, piece: number, unit: 'prompt' | 'report', text: string): MemoryCandidate => ({
+    sourceId: 'chat', role: 'reference', id: `claude-code:/home/me/.claude/projects:app/s/subagents/agent-${agent}.jsonl:${line}:1:${piece}`,
+    title: `claude-code s ${unit === 'prompt' ? 'user' : 'assistant'} (agent)`, text,
+    date: { value: new Date(Date.UTC(2026, 9, 1, 1, line)).toISOString(), meaning: 'recorded' },
+    author: 'agent', place: { container: `claude-code:/home/me/.claude/projects:app/s/subagents/agent-${agent}.jsonl`, at: [line, 1, piece] },
+    chat: { provider: 'claude-code', sessionId: 's', role: unit === 'prompt' ? 'user' : 'assistant', unit },
+    signals: {}, poolOnly: true,
+  });
+  /** Twelve subagents, each a one-part prompt and a six-part report;
+   *  agent a7 was asked about the database and its fourth report part
+   *  says which one was chosen. */
+  const agents = Array.from({ length: 12 }, (_, n) => {
+    const name = `a${n}`;
+    const topic = n === 7 ? 'postgres database transactions' : `module${n} refactor cleanup`;
+    return [agentPart(name, 1, 1, 'prompt', `Look into the ${topic} question for the team.`),
+      ...Array.from({ length: 6 }, (_, k) => agentPart(name, 9, k + 1, 'report',
+        n === 7 && k === 3 ? 'We chose Postgres for its transactions.' : `Report on ${topic}, part ${k + 1}.`))];
+  }).flat();
+  const answer = agents.find((part) => part.text === 'We chose Postgres for its transactions.')!;
+  const ratings = { [idOf('s0', 1)]: 0.9, [answer.id]: 0.8,
+    ...Object.fromEntries(agents.filter((part) => part.place!.container.includes('agent-a7')).map((part) => [part.id, part === answer ? 0.8 : 0.5])) };
+  const embed = async (texts: readonly string[]) => texts.map((text) =>
+    [/postgres|database/i.test(text) ? 1 : 0, /module|refactor/i.test(text) ? 1 : 0, 0.1]);
+
+  it('ranks each kind of unit against the queries, opens those above the bend and finds the answer inside', async () => {
+    const { asked, decide } = rater(ratings);
+    const result = await pick([...personSessions(4), ...agents], { task, decide, ...agentRead,
+      queriesBySource: { chat: [task, 'postgres database decision'] }, embed });
+    expect(result.selected.map((part) => part.id)).toContain(answer.id);
+    expect(result.record.pick?.chatRead?.units).toBe(2);
+    // Only agent a7's prompt and report were read among the agents' parts.
+    const agentIds = new Set(agents.map((part) => part.id));
+    expect(new Set(asked.flat().filter((id) => agentIds.has(id)).map((id) => id.replace(/:\d+:1:\d+$/, ''))))
+      .toEqual(new Set(['claude-code:/home/me/.claude/projects:app/s/subagents/agent-a7.jsonl']));
+  });
+
+  it('ranks by keyword alone with no embedder, and opens no unit with no queries', async () => {
+    const keyword = await pick([...personSessions(4), ...agents], { task, decide: rater(ratings).decide, ...agentRead,
+      queriesBySource: { chat: [task, 'postgres database decision'] } });
+    expect(keyword.selected.map((part) => part.id)).toContain(answer.id);
+    const none = await pick([...personSessions(4), ...agents], { task, decide: rater(ratings).decide, ...agentRead, embed });
+    expect(none.record.pick?.chatRead?.units).toBe(0);
+    expect(none.selected.map((part) => part.id)).not.toContain(answer.id);
+  });
+
+  it('describes a unit by its first 600 characters, its headings, its rarest words and, for a report, its prompt', () => {
+    // The expected text is the one the measured script (climb13.py) makes from the same parts.
+    const prompt = agentPart('b', 1, 1, 'prompt', 'Find the cache code.');
+    const report = [agentPart('b', 5, 1, 'report', '# Findings\nThe cache lives in store.ts and expires hourly.'),
+      agentPart('b', 5, 2, 'report', '## Next\nNothing else touches the cache.')];
+    const other = [agentPart('c', 1, 1, 'prompt', 'Check the cache tests.')];
+    const units = agentUnits([...report, prompt, ...other]);
+    expect(units.map((unit) => [unit.kind, unit.parts.length])).toEqual([['report', 2], ['prompt', 1], ['prompt', 1]]);
+    // A line an agent wrote in the user's turn of a session that is not a
+    // subagent's counts as a summary when it holds three parts or more.
+    const said = (session: string, line: number, pieces: number): MemoryCandidate[] => Array.from({ length: pieces }, (_, k) => ({
+      ...part(session, line, 'agent', { text: `summary ${session} ${k}` }), id: `claude-code:/home/me/.claude/projects:app/${session}.jsonl:${line}:1:${k + 1}`,
+      place: { container: `claude-code:/home/me/.claude/projects:app/${session}.jsonl`, at: [line, 1, k + 1] },
+      chat: { provider: 'claude-code', sessionId: session, role: 'user' } }));
+    const sideNote = { ...agentPart('b', 3, 1, 'report', 'aside'), chat: { provider: 'claude-code' as const, sessionId: 's', role: 'user' as const } };
+    expect(agentUnits([...said('main', 4, 3), ...said('main', 9, 2), ...report, sideNote, ...said('b', 7, 3).map((item) =>
+      ({ ...item, place: { ...item.place!, container: report[0]!.place!.container } }))])
+      .map((unit) => [unit.kind, unit.parts.length])).toEqual([['summary', 3], ['report', 2]]);
+    expect(unitDescriptors(units)[0]).toBe('# Findings\nThe cache lives in store.ts and expires hourly. ## Next\nNothing else touches the cache.\n'
+      + '# Findings\n'
+      + 'else expires findings hourly lives next nothing store touches cache\n'
+      + 'Find the cache code.');
   });
 });

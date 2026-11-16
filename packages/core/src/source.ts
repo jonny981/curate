@@ -1234,8 +1234,13 @@ export async function pickFromSources(
     for (const id of Object.keys(read.historySize ?? {})) readsBySource[id] = sourceRead;
   }
   // A caller's findNames answers the pick from the names found above, so it is called once.
+  // Each source reads the call's task and search lines unless the
+  // caller names its own; the units of agent work are ranked against them.
+  const queries = [...new Set([request.task, ...(request.searchLines ?? [])].map((line) => line.trim()).filter(Boolean))];
   const result = await pick(combined, {
     ...options, taskDate: asOf, timeZone,
+    queriesBySource: Object.fromEntries(sources.map((source) => [source.id, options.queriesBySource?.[source.id] ?? queries])),
+    ...(options.embed ?? request.meaning?.embed ? { embed: options.embed ?? request.meaning!.embed } : {}),
     ...(options.findNames === undefined || found === undefined ? {} : { findNames: async () => found.found }),
     rulesEnumerationComplete, sourceKinds, labelKindsBySource, labelBarBySource,
     ruleBarBySource, modesBySource, readsBySource,

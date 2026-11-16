@@ -1,3 +1,5 @@
+import { cutScoreCurve } from './lanes.js';
+import type { EmbeddingFunction } from './meaning.js';
 import type { MemoryCandidate } from './pick.js';
 
 // The numbers below were measured on one history: about 116,000 parts of
@@ -33,6 +35,26 @@ const STARTS = 3;
  *  fewer than `TILE_MIN` parts stays whole. Taken as set, not tuned. */
 const TILE_SIDE = 5;
 const TILE_MIN = 40;
+/** A unit's descriptor: its first `UNIT_HEAD` characters, its Markdown
+ *  headings up to `UNIT_HEADINGS` characters, its `UNIT_RARE` rarest
+ *  words, and for a report the first `UNIT_HEAD` characters of its
+ *  prompt. The form that reached 15 of 16 agent-written answers in
+ *  Climb 13, taken as set, not tuned. */
+const UNIT_HEAD = 600;
+const UNIT_HEADINGS = 400;
+const UNIT_RARE = 12;
+/** Words a unit's descriptor and the keyword ranking ignore: at least
+ *  four letters or digits, none of these. */
+const UNIT_STOP = new Set(('the and that this with have from your what when will would there their about which they them '
+  + 'then than been were into also just more some could should these those only over very much such here other because '
+  + 'while where being does doing make made like want need user assistant').split(' '));
+/** A line an agent wrote in the user's turn counts as a summary when
+ *  it holds this many parts or more: 3, as measured. */
+const UNIT_SUMMARY_PARTS = 3;
+/** The kinds of unit ranked to open: a subagent's report and its
+ *  prompt. Summaries count only in the word statistics. */
+const UNIT_KINDS = ['report', 'prompt'] as const;
+
 /** Common words the topic split ignores. */
 const TILE_STOP = new Set(('about also aren assistant because been being could didn does doesn doing from have here into '
   + 'just like made make more much need only other over should some such than that their them then there these they '
@@ -62,6 +84,12 @@ export interface ChatReadInput {
   readonly kept: (parts: readonly MemoryCandidate[]) => boolean;
   /** True once a stopping dial has ended the call. */
   readonly stopped: () => boolean;
+  /** The call's search texts, the task first: the units of agent work
+   *  are ranked against them. None: no unit start. */
+  readonly queries?: readonly string[];
+  /** The call's local embedder, for the units' meaning ranking. None:
+   *  units are ranked by keyword only. */
+  readonly embed?: EmbeddingFunction;
   /** The read's decisions; each one absent is today's measured rule
    *  (`walksOn`, `opens`, `stops`). */
   readonly rules?: ConversationRules;
@@ -85,6 +113,8 @@ export interface ChatReadResult {
   readonly requests: number;
   /** Topic segments opened. */
   readonly segments: number;
+  /** Units of agent work opened. */
+  readonly units: number;
   /** 'fall' when the new warm parts fell, 'order' when the order ran
    *  out first, 'stopped' when a stopping dial ended the call. */
   readonly ended: 'fall' | 'order' | 'stopped';
@@ -158,6 +188,134 @@ const bestOf = (ratings: Iterable<number | undefined>) => {
   for (const rating of ratings) if (rating !== undefined && (top === undefined || rating > top)) top = rating;
   return top;
 };
+
+/** A unit of agent work: the parts the reader marked as one subagent's
+ *  prompt or report, or one message an agent wrote into the user's turn
+ *  of a session (a `summary`), in their order. */
+export interface AgentUnit {
+  readonly kind: 'prompt' | 'report' | 'summary';
+  readonly parts: readonly MemoryCandidate[];
+  /** The transcript it sits in. */
+  readonly container: string;
+}
+
+/** Every unit of agent work among `parts`: each transcript's prompt
+ *  parts and its report parts, as the reader marked them, and, in a
+ *  transcript with neither (not a subagent's), each line an agent
+ *  wrote in the user's turn holding `UNIT_SUMMARY_PARTS` parts or more,
+ *  compaction summaries among them. Summaries count only in the word
+ *  statistics, as they did where the start was measured. */
+export function agentUnits(parts: readonly MemoryCandidate[]): AgentUnit[] {
+  const containerOf = (part: MemoryCandidate) => JSON.stringify([part.sourceId, part.place?.container ?? part.id]);
+  const subagents = new Set(parts.filter((part) => part.chat?.unit === 'prompt' || part.chat?.unit === 'report').map(containerOf));
+  const units = new Map<string, { kind: AgentUnit['kind']; container: string; parts: MemoryCandidate[] }>();
+  for (const part of parts) {
+    const container = containerOf(part);
+    const marked = part.chat?.unit;
+    const kind = marked === 'prompt' || marked === 'report' ? marked
+      : part.author === 'agent' && part.chat?.role === 'user' && !subagents.has(container) ? 'summary' : undefined;
+    if (kind === undefined) continue;
+    const key = JSON.stringify([container, kind, kind === 'summary' ? part.place?.at[0] ?? part.id : null]);
+    const unit = units.get(key);
+    if (unit === undefined) units.set(key, { kind, container, parts: [part] });
+    else unit.parts.push(part);
+  }
+  return [...units.values()].filter((unit) => unit.kind !== 'summary' || unit.parts.length >= UNIT_SUMMARY_PARTS)
+    .map((unit) => ({ ...unit,
+      parts: [...unit.parts].sort((left, right) => compareAt(left.place?.at ?? [], right.place?.at ?? [])) }));
+}
+
+const unitWords = (text: string) => (text.toLowerCase().match(/[a-z0-9]+/g) ?? [])
+  .filter((word) => word.length >= 4 && !UNIT_STOP.has(word));
+/** The first `count` characters, counted as code points. */
+const head = (text: string, count: number) => Array.from(text).slice(0, count).join('');
+
+/** Each unit's descriptor, made by code: its first `UNIT_HEAD`
+ *  characters, its headings, its `UNIT_RARE` rarest words (fewest units
+ *  holding them, then alphabetical), and for a report the first
+ *  `UNIT_HEAD` characters of its transcript's prompt. */
+export function unitDescriptors(units: readonly AgentUnit[]): string[] {
+  const texts = units.map((unit) => unit.parts.map((part) => part.text || part.title || '').join(' '));
+  const holding = new Map<string, number>();
+  for (const text of texts) for (const word of new Set(unitWords(text))) holding.set(word, (holding.get(word) ?? 0) + 1);
+  const prompts = new Map(units.flatMap((unit, index) => unit.kind === 'prompt' ? [[unit.container, texts[index]!] as const] : []));
+  return units.map((unit, index) => {
+    const text = texts[index]!;
+    const headings = head((text.match(/^#+ .*$/gm) ?? []).join(' '), UNIT_HEADINGS);
+    const rare = [...new Set(unitWords(text))]
+      .sort((left, right) => holding.get(left)! - holding.get(right)! || (left < right ? -1 : left > right ? 1 : 0))
+      .slice(0, UNIT_RARE);
+    const asked = unit.kind === 'report' ? head(prompts.get(unit.container) ?? '', UNIT_HEAD) : '';
+    return [head(text, UNIT_HEAD), headings, rare.join(' '), asked].filter((line) => line !== '').join('\n');
+  });
+}
+
+/** Each descriptor's keyword score against the queries: BM25 (k1 1.2,
+ *  b 0.75) over the descriptors, summed over the queries' distinct
+ *  words. */
+export function unitKeywordScores(descriptors: readonly string[], queries: readonly string[]): number[] {
+  const docs = descriptors.map((descriptor) => {
+    const counts = new Map<string, number>();
+    for (const word of unitWords(descriptor)) counts.set(word, (counts.get(word) ?? 0) + 1);
+    return counts;
+  });
+  const holding = new Map<string, number>();
+  for (const doc of docs) for (const word of doc.keys()) holding.set(word, (holding.get(word) ?? 0) + 1);
+  const lengths = docs.map((doc) => [...doc.values()].reduce((sum, count) => sum + count, 0));
+  const average = lengths.reduce((sum, length) => sum + length, 0) / Math.max(1, docs.length) || 1;
+  const n = docs.length;
+  const lines = queries.map((query) => [...new Set(unitWords(query))]);
+  return docs.map((doc, index) => {
+    let score = 0;
+    for (const words of lines) {
+      for (const word of words) {
+        const count = doc.get(word) ?? 0;
+        if (count === 0) continue;
+        const held = holding.get(word)!;
+        score += Math.log(1 + (n - held + 0.5) / (held + 0.5)) * count * 2.2
+          / (count + 1.2 * (0.25 + 0.75 * lengths[index]! / average));
+      }
+    }
+    return score;
+  });
+}
+
+const unitVector = (vector: ArrayLike<number>) => {
+  const values = Array.from(vector);
+  const length = Math.hypot(...values) || 1;
+  return values.map((value) => value / length);
+};
+
+/** The units to open: for reports and for prompts, each ranked among
+ *  its own kind by keyword and, with an embedder, by meaning (its
+ *  descriptor's best cosine against the queries), each list cut at its
+ *  own bend (`cutScoreCurve`); every unit above either cut opens. */
+export async function unitStarts(units: readonly AgentUnit[], queries: readonly string[],
+  embed: EmbeddingFunction | undefined): Promise<AgentUnit[]> {
+  if (units.length === 0 || queries.length === 0) return [];
+  const descriptors = unitDescriptors(units);
+  const keyword = unitKeywordScores(descriptors, queries);
+  const ranked = units.flatMap((unit, index) => (UNIT_KINDS as readonly string[]).includes(unit.kind) ? [index] : []);
+  let meaning: number[] | undefined;
+  if (embed !== undefined && ranked.length > 0) {
+    const vectors = (await embed([...queries, ...ranked.map((index) => descriptors[index]!)])).map(unitVector);
+    const lines = vectors.slice(0, queries.length);
+    meaning = Array.from({ length: units.length }, () => 0);
+    ranked.forEach((index, at) => {
+      const vector = vectors[queries.length + at]!;
+      meaning![index] = Math.max(...lines.map((line) => line.reduce((sum, value, k) => sum + value * vector[k]!, 0)));
+    });
+  }
+  const open = new Set<number>();
+  for (const kind of UNIT_KINDS) {
+    const peers = ranked.filter((index) => units[index]!.kind === kind);
+    for (const scores of meaning === undefined ? [keyword] : [keyword, meaning]) {
+      const order = [...peers].sort((left, right) => scores[right]! - scores[left]!);
+      for (const index of order.slice(0, cutScoreCurve(order.map((at) => scores[at]!)))) open.add(index);
+    }
+  }
+  return units.filter((_, index) => open.has(index));
+}
 
 /** What the read knows when it decides whether a walk goes on from a
  *  part: the part's rating, the best rating the read has seen, and the
@@ -236,7 +394,7 @@ export function stops(facts: StopFacts): boolean {
 export async function chatRead(input: ChatReadInput): Promise<ChatReadResult> {
   const rules = { walksOn, opens, stops, ...input.rules };
   const { score, stopped } = input;
-  if (stopped()) return { read: [], requests: 0, segments: 0, ended: 'stopped' };
+  if (stopped()) return { read: [], requests: 0, segments: 0, units: 0, ended: 'stopped' };
   const members = new Set(input.parts);
   // Each transcript's parts in their order, and its topic segments.
   const transcripts = new Map<string, { part: MemoryCandidate; at: readonly number[] }[]>();
@@ -338,7 +496,7 @@ export async function chatRead(input: ChatReadInput): Promise<ChatReadResult> {
     }
   }
   const requests = log.length;
-  if (ended === 'stopped') return { read, requests, segments: 0, ended };
+  if (ended === 'stopped') return { read, requests, segments: 0, units: 0, ended };
 
   // The segments to open, in the order's ranking of their best part.
   const heads = new Set<readonly MemoryCandidate[]>();
@@ -358,14 +516,28 @@ export async function chatRead(input: ChatReadInput): Promise<ChatReadResult> {
   // still open, so the rounds in a row are the longest walk's, not their
   // sum. A walk ends at the segment's edges or after a ring with no warm
   // part.
-  let walks = segments.flatMap((segment) => segment.flatMap((part, at) =>
-    seen.has(part) && walkable(part) ? [{ segment, at, width: 1 }] : []));
-  while (walks.length > 0 && !stopped()) {
-    const rings = walks.map(({ segment, at, width }) =>
-      [segment[at - width], segment[at + width]].filter((part) => part !== undefined));
-    await rate(rings.flat());
-    walks = walks.flatMap((walk, index) =>
-      rings[index]!.some(walkable) ? [{ ...walk, width: walk.width + 1 }] : []);
-  }
-  return { read, requests, segments: segments.length, ended: stopped() ? 'stopped' : ended };
+  const walk = async (containers: readonly (readonly MemoryCandidate[])[]) => {
+    let walks = containers.flatMap((segment) => segment.flatMap((part, at) =>
+      seen.has(part) && walkable(part) ? [{ segment, at, width: 1 }] : []));
+    while (walks.length > 0 && !stopped()) {
+      const rings = walks.map(({ segment, at, width }) =>
+        [segment[at - width], segment[at + width]].filter((part) => part !== undefined));
+      await rate(rings.flat());
+      walks = walks.flatMap((walk, index) =>
+        rings[index]!.some(walkable) ? [{ ...walk, width: walk.width + 1 }] : []);
+    }
+  };
+  await walk(segments);
+  // Then the units of agent work the queries rank above their bends,
+  // read as the segments are: each unit's starts, its parts the order
+  // ranks first and then in its own order, and walks inside the unit.
+  const units = stopped() ? [] : await unitStarts(agentUnits(input.parts), input.queries ?? [], input.embed);
+  // A part the order does not rank comes after those it does.
+  const ordered = new Map(ranked.map((part, index) => [part, index]));
+  const rankOf = (part: MemoryCandidate) => ordered.get(part) ?? Number.MAX_SAFE_INTEGER;
+  const firstOf = (unit: AgentUnit) => Math.min(...unit.parts.map(rankOf));
+  const reading = [...units].sort((left, right) => firstOf(left) - firstOf(right));
+  await rate(reading.flatMap((unit) => [...unit.parts].sort((left, right) => rankOf(left) - rankOf(right)).slice(0, STARTS)));
+  await walk(reading.map((unit) => unit.parts));
+  return { read, requests, segments: segments.length, units: reading.length, ended: stopped() ? 'stopped' : ended };
 }

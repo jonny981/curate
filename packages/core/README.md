@@ -1420,6 +1420,24 @@ is rated at least 0.1 times the best rating this read has seen.
    every warm part while that ring holds a warm part. The walks of every
    opened segment advance together: each round rates the next ring of
    every walk still open, in as few requests as the size limits allow.
+6. **Units of agent work.** Last, it reads the work subagents did, which
+   is where the answers agents wrote sit. A unit is the parts a reader
+   marks as one subagent's prompt or its report (`chat.unit`). Each unit gets a descriptor made by code: its
+   first 600 characters, its Markdown headings, its 12 rarest words
+   (those the fewest units hold) and, for a report, the first 600
+   characters of its prompt. Reports are ranked among reports and
+   prompts among prompts, by keyword (BM25 of the descriptors against
+   the call's search texts, the task first, `queriesBySource`) and by
+   meaning (each descriptor's best cosine against them, with the call's
+   embedder); each list is cut at its own bend, and every unit above
+   either cut opens. In the word statistics a summary counts as a unit
+   too: each line an agent wrote in the user's turn of a transcript with
+   no prompt or report, of three parts or more, compaction summaries and
+   other agents' messages among them. The
+   opened units are read as the segments are: the 3 parts the order
+   ranks first in each, then walks from their warm parts inside the
+   unit. With no search texts no unit opens, and with no embedder they
+   are ranked by keyword alone.
 
 Selection keeps a rated part at its source's bar, as for any source. A
 chat part of the order that the read never reached records
@@ -1429,7 +1447,7 @@ only the parts some lane's slice admitted, and a batch limit, time
 limit or cancellation that ends a request leaves that request's
 unrated parts unread, with the stopping dial's reason. The
 record's `pick.chatRead` holds the requests read before the stop, the
-segments opened, the parts rated, the chat parts of the order left
+segments opened, the units of agent work opened, the parts rated, the chat parts of the order left
 unread, and what ended the read: `'fall'`, `'order'` when the order ran
 out first, or the stopping dial. The stop never fires before the read
 has kept a part on the bar selection keeps it at, so a call does not
@@ -1456,6 +1474,17 @@ a row are the crawl's requests and rings, one round of starts, and the
 longest single walk: the replay of those eight tasks made 14 to 37
 rating rounds a task, where walking one segment at a time made 55 to
 301, with the same parts rated.
+
+The units start was measured only on saved ratings. On 22 tasks of that
+history (the eight's seven sharing one history and 15 more, whose
+answers the person has not checked), the read without it found 39 of
+the person's 41 answers and 10 of the 16 answers agents wrote; with it,
+39 and 15, for 4,386 more parts read, 3,620 of them with no saved
+rating, so they were counted cold. Every agent-written answer's unit
+ranks in the top 13 of its kind by keyword or by meaning, where its
+best place in the fused order was 547 to 2,768. Opening only the units
+above both cuts instead found 12 of the 16 for about a fifth of the
+added parts in the measuring script's replay.
 
 ### Markdown candidate kinds
 
@@ -1676,7 +1705,7 @@ const sources = [
 const picked = await pickFromSources(sources, { task }, { task, decide });
 ```
 
-A direct `pick()` takes the same settings by source id: `labelKindsBySource`, `labelBarBySource`, `ruleBarBySource` and `modesBySource`.
+A direct `pick()` takes the same settings by source id: `labelKindsBySource`, `labelBarBySource`, `ruleBarBySource` and `modesBySource`. It also takes `queriesBySource`, each source's search texts with the task first, and `embed`, the call's embedder; `pickFromSources()` fills a source left out of `queriesBySource` with the call's task and search lines, and `embed` from the request's meaning lanes.
 
 ## What each setting did
 

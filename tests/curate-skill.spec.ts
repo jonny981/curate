@@ -1147,6 +1147,42 @@ describe('a run through core decision calls', () => {
     expect(await readFile(join(runFolder, 'log.md'), 'utf8')).toContain('2026-01-01');
   });
 
+  it('ranks the subagents\' reports and prompts against the source\'s own search lines', async () => {
+    // Every report and prompt speaks of the orchard and the task does not,
+    // so a unit opens only when the read ranks them against the real lines.
+    const directory = await folder();
+    const home = join(directory, 'home');
+    const transcripts = join(directory, 'transcripts');
+    await mkdir(home);
+    await mkdir(join(transcripts, 'main', 'subagents'), { recursive: true });
+    const lines = (records: readonly unknown[]) => records.map((record) => JSON.stringify(record)).join('\n') + '\n';
+    await writeFile(join(transcripts, 'main.jsonl'), lines([
+      { type: 'user', sessionId: 'main', timestamp: '2026-01-01T12:00:00Z', origin: { kind: 'human' }, message: { content: 'What happened?' } },
+    ]));
+    for (const n of [1, 2, 3]) {
+      const side = { isSidechain: true, agentId: `a${n}` };
+      await writeFile(join(transcripts, 'main', 'subagents', `agent-a${n}.jsonl`), lines([
+        { type: 'user', sessionId: 'main', timestamp: `2026-01-01T12:0${n}:00Z`, ...side, message: { content: `Look at orchard row ${n}.` } },
+        { type: 'assistant', sessionId: 'main', timestamp: `2026-01-01T12:0${n}:30Z`, ...side,
+          message: { content: [{ type: 'text', text: `Orchard row ${n} has fruit trees.` }] } },
+      ]));
+    }
+    const sourcesFile = join(directory, 'sources.json');
+    await writeFile(sourcesFile, JSON.stringify({ records: true, sources: [{ type: 'claude-code', path: transcripts }] }));
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
+    vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
+    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => new Response(JSON.stringify({
+      usage: null,
+      answers: Object.fromEntries(Object.keys(JSON.parse(String(init.body)).questions).map((key) => [key, { noul: 0.8 }])),
+    }))));
+    const { call } = subscriptionReply(searches());
+    const { folder: runFolder } = await run(['--sources', sourcesFile, 'What happened?'], call);
+    const record = JSON.parse(await readFile(join(runFolder, 'record.json'), 'utf8'));
+    expect(record.status).toBe('complete');
+    expect(record.pick?.pick?.chatRead?.units).toBeGreaterThan(0);
+  });
+
   it('runs the pick with the rating stop the sources file names', async () => {
     const directory = await folder();
     const home = join(directory, 'home');
