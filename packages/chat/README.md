@@ -49,7 +49,8 @@ const source = chat({ providers: ['claude-code', 'codex'], since: '14 days' });
   hard-cut. `maxQuestionText` and the request's text budget can tighten
   that limit. Joining the parts reproduces the scrubbed block.
 - **Metadata:** `candidate.chat` carries `provider`, `sessionId`, the
-  message `role` and, when the transcript names an agent, `authorName`.
+  message `role`, when the transcript names an agent, `authorName`, and,
+  for a part of an agent's work, `unit` (see below).
   `candidate.author` holds who wrote the part, and `candidate.place`
   its transcript and its line, block and piece there. The title names the author after the role, for
   example `claude-code <session> user (the person) <date>` or
@@ -143,6 +144,20 @@ typed into the terminal. The transcript cannot tell them apart, so it stays
 The author mark changes no search rank: keyword scores and phrase matches
 read the title without it. The decision score does read it: see
 **Questions** below.
+
+### The parts of an agent's work
+
+Three kinds of part carry `chat.unit`:
+
+- **`prompt`:** the first line of a Claude Code subagent's transcript
+  (`<session>/subagents/agent-<id>.jsonl`), the brief it was given.
+- **`report`:** the last line of that transcript holding assistant text,
+  the agent's last message. Its `authorName` is the agent's id, from the
+  file name, so its title reads `assistant (agent <id>)`.
+- **`summary`:** a Claude Code compaction summary (`isCompactSummary: true`).
+
+Codex sessions carry no `unit`. The marks add no part and change no
+search rank.
 
 ## Defaults and overrides
 

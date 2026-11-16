@@ -30,7 +30,7 @@ export interface StoredIndexReport {
 
 /** The stored layout's version. A file of another version is never
  *  opened: its name differs, so the source is indexed again. */
-export const STORED_INDEX_FORMAT = 6;
+export const STORED_INDEX_FORMAT = 7;
 
 /** Checks a reader's `index` option: a settings object or false. */
 export function checkIndexOption(option: unknown): void {

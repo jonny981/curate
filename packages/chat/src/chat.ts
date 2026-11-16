@@ -58,8 +58,9 @@ export interface ChatOptions {
 type Json = Record<string, unknown>;
 type MessageRole = NonNullable<MemoryCandidate['chat']>['role'];
 type Author = NonNullable<MemoryCandidate['author']>;
+type Unit = NonNullable<NonNullable<MemoryCandidate['chat']>['unit']>;
 interface Written { author: Author; authorName?: string }
-interface Part extends Written { role: MessageRole; text: string }
+interface Part extends Written { role: MessageRole; text: string; unit?: 'summary' }
 interface Decoded { sessionId?: string; date?: string; parts: Part[] }
 interface ProviderReader {
   readonly folder: string;
@@ -81,6 +82,8 @@ interface RawPart {
   readonly role: MessageRole;
   readonly author: Author;
   readonly authorName?: string;
+  /** What part of an agent's work it is, when it is one: see `withUnit`. */
+  readonly unit?: Unit;
   readonly date: number;
   readonly text: string;
 }
@@ -162,8 +165,9 @@ const READERS: Record<ChatProvider, ProviderReader> = {
       const parts: Part[] = [];
       if (role === 'user' || role === 'assistant') {
         const origin = object(queued ? attachment.origin : record.origin);
-        const said = (text: string) =>
-          parts.push({ role, text, ...(role === 'user' ? claudeAuthor(record, origin, text) : { author: 'agent' as const }) });
+        const said = (text: string) => parts.push({ role, text,
+          ...(role === 'user' ? claudeAuthor(record, origin, text) : { author: 'agent' as const }),
+          ...(role === 'user' && record.isCompactSummary === true ? { unit: 'summary' as const } : {}) });
         const content = !queued ? object(record.message).content : Array.isArray(attachment.prompt)
           ? attachment.prompt.map(object).filter((block) => block.type === 'text' && typeof block.text === 'string')
             .map((block) => block.text).join('\n')
@@ -262,7 +266,8 @@ const shownTitle = (part: RawPart, zone: string) =>
  *  piece) and its line, block and piece there. */
 const chatOf = (part: RawPart, id: string): Pick<MemoryCandidate, 'chat' | 'author' | 'place'> => ({
   chat: { provider: part.provider, sessionId: part.sessionId, role: part.role,
-    ...(part.authorName === undefined ? {} : { authorName: part.authorName }) },
+    ...(part.authorName === undefined ? {} : { authorName: part.authorName }),
+    ...(part.unit === undefined ? {} : { unit: part.unit }) },
   author: part.author,
   place: { container: id.split(':').slice(0, -3).join(':'), at: [part.line, part.block, part.piece] },
 });
@@ -310,12 +315,35 @@ function* decodeLines(
           line: firstLine + offset + 1, block: block + 1, piece: piece + 1,
           sessionId: state.sessionId, role: part.role, author: part.author,
           ...(part.authorName === undefined ? {} : { authorName: scrubChat(part.authorName) }),
+          ...(part.unit === undefined ? {} : { unit: part.unit }),
           date, text: textPart,
         };
       }
     }
   }
 }
+
+/** A Claude Code subagent's id, from its transcript's path
+ *  (`<session>/subagents/agent-<id>.jsonl`); undefined for any other
+ *  transcript. */
+const subagentOf = (provider: ChatProvider, file: string) => provider === 'claude-code'
+  ? /[\\/]subagents[\\/]agent-([^\\/]+)\.jsonl$/.exec(file)?.[1] : undefined;
+
+/** A part of a Claude Code subagent's transcript marked as what part of
+ *  the agent's work it is: the transcript's first line, the brief the
+ *  agent was given, is its `prompt`; the last line holding assistant text
+ *  (`report`, the transcript's highest such line) is its `report`, named
+ *  by the agent's id. Any other part keeps the mark it decoded with: a
+ *  compaction summary's `summary`, or none. */
+const withUnit = <P extends LinePart>(part: P, agent: string | undefined, report: number | undefined): P =>
+  agent === undefined ? part
+    : part.line === 1 && part.role === 'user' ? { ...part, unit: 'prompt' }
+      : part.line === report && part.role === 'assistant' ? { ...part, unit: 'report', authorName: scrubChat(agent) }
+        : part;
+
+/** The highest line holding an assistant part. */
+const lastAssistantLine = (parts: readonly LinePart[]) =>
+  parts.reduce<number | undefined>((last, part) => part.role === 'assistant' && (last === undefined || part.line > last) ? part.line : last, undefined);
 
 /** The parts of one transcript, decoded and split but never kept. Each
  *  pass over the history reads the file again rather than holding the
@@ -326,9 +354,12 @@ async function* fileParts(
   const raw = await readFile(file, { encoding: 'utf8', signal: walk.signal });
   const state: DecodeState = { sessionId: fileSessionId(file), session: {} };
   const undated = () => { if (walk.countSkips) walk.countSkips.n += 1; };
-  for (const part of decodeLines(provider, raw.split(/\r?\n/), 0, state, walk.includeTools, walk.size, walk.signal, undated)) {
+  const parts = [...decodeLines(provider, raw.split(/\r?\n/), 0, state, walk.includeTools, walk.size, walk.signal, undated)];
+  const agent = subagentOf(provider, file);
+  const report = agent === undefined ? undefined : lastAssistantLine(parts);
+  for (const part of parts) {
     if (part.date < walk.since || part.date > walk.until) continue;
-    yield { provider, root, file, ...part };
+    yield { provider, root, file, ...withUnit(part, agent, report) };
   }
 }
 
@@ -568,7 +599,7 @@ const CHAT_TABLES = `CREATE TABLE IF NOT EXISTS transcripts (id INTEGER PRIMARY 
     parts INTEGER NOT NULL, UNIQUE (provider, root, path));
   CREATE TABLE IF NOT EXISTS parts (transcript INTEGER NOT NULL, ordinal INTEGER NOT NULL, line INTEGER NOT NULL,
     block INTEGER NOT NULL, piece INTEGER NOT NULL, session TEXT NOT NULL, role TEXT NOT NULL, author TEXT NOT NULL,
-    author_name TEXT, date INTEGER NOT NULL, text TEXT NOT NULL, long INTEGER NOT NULL, stems TEXT NOT NULL,
+    author_name TEXT, unit TEXT, date INTEGER NOT NULL, text TEXT NOT NULL, long INTEGER NOT NULL, stems TEXT NOT NULL,
     short TEXT NOT NULL, vec TEXT, pid TEXT NOT NULL, PRIMARY KEY (transcript, ordinal)) WITHOUT ROWID;
   CREATE TABLE IF NOT EXISTS postings (term TEXT NOT NULL, transcript INTEGER NOT NULL,
     ordinal INTEGER NOT NULL, count INTEGER NOT NULL, PRIMARY KEY (term, transcript, ordinal)) WITHOUT ROWID;
@@ -611,8 +642,8 @@ async function syncChatIndex(
       const insertPhrase = database.prepare('INSERT INTO phrases (rowid, words) VALUES (?, ?)');
       const deletePostings = database.prepare('DELETE FROM postings WHERE transcript = ?');
       const insertPart = database.prepare(`INSERT INTO parts (transcript, ordinal, line, block, piece, session, role,
-        author, author_name, date, text, long, stems, short, vec, pid)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+        author, author_name, unit, date, text, long, stems, short, vec, pid)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
       const textAt = database.prepare('SELECT text FROM parts WHERE transcript = ? AND ordinal = ?');
       const insertPosting = database.prepare('INSERT OR IGNORE INTO postings (term, transcript, ordinal, count) VALUES (?, ?, ?, ?)');
       // A part's posting list is its stored words with their counts:
@@ -685,7 +716,7 @@ async function syncChatIndex(
           for (const part of decodeLines(provider, lines, firstLine, state, includeTools, size, signal, () => { undated += 1; })) {
             const words = storedChatWords(part.text, keyword);
             insertPart.run(id, ordinal, part.line, part.block, part.piece, part.sessionId, part.role, part.author,
-              part.authorName ?? null, part.date, part.text, words.long, words.stems, words.short,
+              part.authorName ?? null, part.unit ?? null, part.date, part.text, words.long, words.stems, words.short,
               vectorKey(part.text, before, ordinal), partId({ provider, root, file, ...part }));
             insertPostings(id, ordinal, words.stems, words.short);
             insertPhrase.run(id * PHRASE_ROW + ordinal, phraseWords(part.text));
@@ -737,11 +768,14 @@ function* storedParts(
   light = false,
 ): Generator<StoredPart> {
   const rows = database.prepare(`SELECT ordinal, line, block, piece, session, role,
-    ${light ? "'unmarked' AS author, NULL AS author_name" : 'author, author_name'}, date,
+    ${light ? "'unmarked' AS author, NULL AS author_name, NULL AS unit" : 'author, author_name, unit'}, date,
     ${withText ? 'text' : "'' AS text"}, long,
     ${light ? "'' AS stems, '' AS short, NULL AS vec" : 'stems, short, vec'}, pid FROM parts WHERE transcript = ? ORDER BY ordinal`)
     .all(transcript.id) as Record<string, unknown>[];
-  for (const row of rows) yield storedPart(provider, root, transcript, row);
+  const agent = light ? undefined : subagentOf(provider, transcript.file);
+  const report = agent === undefined ? undefined : rows.reduce<number | undefined>((last, row) =>
+    row.role === 'assistant' && (last === undefined || (row.line as number) > last) ? row.line as number : last, undefined);
+  for (const row of rows) yield withUnit(storedPart(provider, root, transcript, row), agent, report);
 }
 
 function storedPart(provider: ChatProvider, root: string, transcript: StoredTranscript, row: Record<string, unknown>): StoredPart {
@@ -753,6 +787,7 @@ function storedPart(provider: ChatProvider, root: string, transcript: StoredTran
     line: row.line as number, block: row.block as number, piece: row.piece as number,
     sessionId: row.session as string, role: row.role as MessageRole, author: row.author as Author,
     ...(row.author_name === null ? {} : { authorName: row.author_name as string }),
+    ...(row.unit === null || row.unit === undefined ? {} : { unit: row.unit as Unit }),
     date: row.date as number, text: row.text as string,
     words: { long: row.long as number, stems: row.stems as string, short: row.short as string },
   };
@@ -764,10 +799,13 @@ function storedPart(provider: ChatProvider, root: string, transcript: StoredTran
 function storedRows(
   database: IndexDatabase, provider: ChatProvider, root: string, transcript: StoredTranscript, ordinals: readonly number[],
 ): StoredPart[] {
-  const rows = database.prepare(`SELECT ordinal, line, block, piece, session, role, author, author_name, date, text,
+  const rows = database.prepare(`SELECT ordinal, line, block, piece, session, role, author, author_name, unit, date, text,
     long, stems, short, vec, pid FROM parts WHERE transcript = ? AND ordinal IN (SELECT value FROM json_each(?)) ORDER BY ordinal`)
     .all(transcript.id, JSON.stringify(ordinals)) as Record<string, unknown>[];
-  return rows.map((row) => storedPart(provider, root, transcript, row));
+  const agent = subagentOf(provider, transcript.file);
+  const report = agent === undefined ? undefined : (database.prepare(
+    "SELECT MAX(line) AS line FROM parts WHERE transcript = ? AND role = 'assistant'").get(transcript.id) as { line: number | null }).line ?? undefined;
+  return rows.map((row) => withUnit(storedPart(provider, root, transcript, row), agent, report));
 }
 
 /** Local JSONL transcripts. Each provider decodes its own message format;

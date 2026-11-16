@@ -67,6 +67,10 @@ export interface MemoryCandidate {
     readonly role: 'user' | 'assistant' | 'tool-call' | 'tool-result';
     /** The agent's name or id, when the transcript gives one. */
     readonly authorName?: string;
+    /** What part of an agent's work it is, when the reader marks one: a
+     *  subagent's brief (`prompt`), its last message (`report`) or a
+     *  compaction summary (`summary`). */
+    readonly unit?: 'prompt' | 'report' | 'summary';
   };
   /** Repository paths this candidate changed. For a commit: the files in
    *  its diff, not paths the text mentions. */
