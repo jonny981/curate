@@ -2149,6 +2149,9 @@ export async function pick(
   let openRequests = 0;
   const slotWaits: (() => void)[] = [];
   let packedBatches = 0;
+  // Set by the first request that failed, timed out or was cancelled: no
+  // read of the call starts another, while requests already sent settle.
+  let halted = false;
   // A part with no text is judged by its title, as a title-only
   // commit's subject is, so the title stands in for the text in the
   // sharing key. With text present the title is a byline or locator,
@@ -2342,13 +2345,12 @@ export async function pick(
     // At most `maxInFlight` requests of the call are open at once, across
     // every read; unbounded, every slice goes out together. A queued slice starts
     // only when an earlier one settles, in dispatch order — and only
-    // while no settled outcome would have stopped a sequential round:
-    // a rejection, a deadline or a cancellation keeps later queued
-    // batches from starting, while batches already running still
-    // settle and apply.
+    // while no settled outcome, of this read or another, would have
+    // stopped a sequential run: a rejection, a deadline or a
+    // cancellation keeps every later queued batch from starting, while
+    // batches already running still settle and apply.
     const outcomes: (BatchOutcome | undefined)[] = new Array(slices.length);
     let next = 0;
-    let halted = false;
     await Promise.all(Array.from({ length: Math.min(slices.length, limits.maxInFlight) },
       async () => {
         while (!halted && next < slices.length) {
@@ -2362,10 +2364,12 @@ export async function pick(
           next += 1;
           openRequests += 1;
           const outcome = await dispatch(slices[at]!);
+          outcomes[at] = outcome;
+          // The halt is set before any queued sender wakes, so no read
+          // starts a request after another read's failed.
+          if (!outcome.sent || outcome.timedOut || outcome.decideError !== undefined) halted = true;
           openRequests -= 1;
           for (const wake of slotWaits.splice(0)) wake();
-          outcomes[at] = outcome;
-          if (!outcome.sent || outcome.timedOut || outcome.decideError !== undefined) halted = true;
         }
       }));
     for (const outcome of outcomes) {

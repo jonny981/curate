@@ -285,6 +285,26 @@ describe('reads of several modes in one call', () => {
     expect(capped.record.candidates.some((entry) => entry.status === 'unassessed' && entry.reason === 'limits')).toBe(true);
   });
 
+  it('sends no queued request of another read once a request has failed', async () => {
+    // Three modes, each with a conversation read of its own; one request
+    // open at a time, and the first request fails.
+    const own = (source: string) => Array.from({ length: 6 }, (_, i): MemoryCandidate => ({ sourceId: source, id: `${source}${i}`,
+      role: 'reference', title: 'Part', text: `unique ${source} item ${i}`, author: 'person',
+      place: { container: `${source}${i}`, at: [1] }, searchRanks: [i], signals: { keyword: 1 } }));
+    let failed = false;
+    const after: string[] = [];
+    const decide: PickDecide = async (batch) => {
+      if (failed) after.push(...batch.questions.map((item) => item.id));
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      if (batch.questions[0]!.sourceId === 'a') { failed = true; throw new Error('synthetic refusal'); }
+      return Object.fromEntries(batch.questions.map((item) => [item.key, { status: 'answered', probability: 0.9 }]));
+    };
+    const modes = Object.fromEntries(['a', 'b', 'c'].map((source) => [source, { name: source, questions: agentSet, read: conversationRead() }]));
+    await expect(pick(['a', 'b', 'c'].flatMap(own), { task, decide, modesBySource: modes, limits: { maxPerBatch: 2, maxInFlight: 1 } }))
+      .rejects.toThrow('synthetic refusal');
+    expect(after).toEqual([]);
+  });
+
   it('asks a text once when two reads reach it at the same time, and both parts take its answer', async () => {
     // A ranked source with the agent set holds the person's first message
     // word for word. Whichever read asks it first, its request is still
