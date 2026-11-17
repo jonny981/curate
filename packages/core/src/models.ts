@@ -66,15 +66,18 @@ function wait(ms: number, signal: AbortSignal): Promise<void> {
 const JEV_TOKENS_PER_SECOND = 100_000;
 const JEV_REQUESTS_PER_SECOND = 80;
 
-/** The longest a request waits on HTTP 429 replies, from the first one.
- *  The allowance above is counted per one-second window, each window
- *  refills it whole, and one window holds the largest request this
- *  adapter sends (64,000 estimated tokens of 100,000). This adapter's
- *  own sends keep inside the allowance, so a 429 means other sends on
- *  the same key spent the window, and the request gets through in the
- *  first window they leave room in. Sixty windows in a row with no room
- *  is a limit the published rates do not describe, such as a spent
- *  quota or a fault at the service, and waiting longer only hides it. */
+/** The retry budget for HTTP 429 replies: the longest a request waits
+ *  on them, from the first one. The allowance above is counted per
+ *  one-second window, each window refills it whole, and one window holds
+ *  the largest request this adapter sends (64,000 estimated tokens of
+ *  100,000). This adapter's own sends keep inside the allowance, so a
+ *  429 means other sends on the same key spent the window, and the
+ *  request gets through in the first window they leave room in. Sixty
+ *  windows is a chosen budget, not a proof of anything: sustained
+ *  traffic on a shared key can fill the windows for longer, as can a
+ *  spent quota or a fault at the service. Past the budget the call fails
+ *  and names the last reply, rather than waiting on with nothing on
+ *  screen. */
 const JEV_RATE_LIMITED_MS = 60 * 1000;
 
 /** A pick's failure state inside the allowance queue: `stop` marks it
