@@ -15,7 +15,7 @@ The last line installs the `/curate` skill for Claude Code and Codex. The skill 
 ## Requirements
 
 - **Node.js 22.20 or later.** Tested on macOS and Linux; Windows is untested.
-- **A paid decision key.** Curate asks TypeSafe's Jev to rate the parts of your history, at a few pence a call. Get a key at [typesafe.ai](https://typesafe.ai) and set `TYPESAFE_API_KEY`, or put it in the private file `curate setup` creates.
+- **A paid decision key.** Curate asks TypeSafe's Jev to rate the parts of your history, at about $0.00002 a part; a call rates them from the top of its ranked list and stops where the ratings go cold. Get a key at [typesafe.ai](https://typesafe.ai) and set `TYPESAFE_API_KEY`, or put it in the private file `curate setup` creates.
 - **A Claude or ChatGPT login.** One small call writes the search lines, through `claude auth login` or `codex login`.
 - **An embedding model file.** `curate setup` offers to download EmbeddingGemma 300M (about 330 MB).
 

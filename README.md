@@ -7,13 +7,13 @@ A TypeScript library that finds what your agent needs from past chats, notes and
 Curate gives an agent the context it needs for a task, drawn from chat transcripts, Markdown and git history.
 It chooses the evidence a task needs and lays it out in its own words, headed by where and when it was said, for the agent to read before starting work.
 
-**Needs a paid key.** Curate asks a decision model, TypeSafe's Jev, to rate the parts of your history. A `/curate` call costs a few pence. Get a key at [typesafe.ai](https://typesafe.ai) and set `TYPESAFE_API_KEY`.
-The library can also decide with a model on your own machine: see [Run it on your own machine](#run-it-on-your-own-machine).
+**Needs a paid key.** Curate asks a decision model, TypeSafe's Jev, to rate the parts of your history, at about $0.00002 a part; a `curate` call rates them from the top of its ranked list and stops where the ratings go cold. Get a key at [typesafe.ai](https://typesafe.ai) and set `TYPESAFE_API_KEY`.
+The library, though not the `curate` command, can also decide with a model on your own machine: see [Run it on your own machine](#run-it-on-your-own-machine).
 
 ## Results at a glance
 
 On LongMemEval, Curate's answering model reads 1,577 tokens a question on average, and every other token figure in the table is higher.
-Curate keeps local index files and needs no database, no server to run and no model that writes or rewrites memory in advance.
+Curate keeps local index files and needs no database server, no other server to run and no model that writes or rewrites memory in advance.
 
 LongMemEval S, all 500 questions:
 
@@ -64,6 +64,7 @@ npx skills add jonny981/curate -g -a claude-code -a codex -y
 ```
 
 `curate setup` lists what is missing and, in a terminal, offers to download the embedding model (about 330 MB), to create the settings file that names a private file for the decision key, and to prepare the project you are in.
+A call also needs a Claude or ChatGPT login, which `curate setup` does not make: one small call on that subscription writes the search lines. Run `claude auth login` or `codex login`.
 Then ask from a folder inside a project: `curate "What did we decide about retries, and why?"`.
 
 To use the library in your own code:
@@ -472,7 +473,7 @@ A call then needs each of the following, in this order. `curate check` lists eac
 1. **Node.js 22.20 or later.** Curate's packages support Node.js 22.20 and later. Fix: Install it, for example with `nvm install 22 && nvm alias default 22`.
 2. **The embedding engine (`node-llama-cpp`).** It runs the local embedding model that ranks the history by meaning. Fix: Install the command with `npm install -g @curatejs/cli`, which installs `node-llama-cpp` with it. In a Curate checkout, run `pnpm install --frozen-lockfile`.
 3. **An embedding model file.** A call downloads none, and any embedding model in GGUF form works. Stored vectors are kept per model, so a different model embeds the history again. Fix: Put EmbeddingGemma 300M in 8-bit GGUF (about 330 MB) at `~/.cache/curate/models/embeddinggemma-300M-Q8_0.gguf`, or under `$XDG_CACHE_HOME/curate/models` when `XDG_CACHE_HOME` is set: `curate setup` offers to download it, or run `mkdir -p ~/.cache/curate/models && curl -L -o ~/.cache/curate/models/embeddinggemma-300M-Q8_0.gguf https://huggingface.co/ggml-org/embeddinggemma-300M-GGUF/resolve/main/embeddinggemma-300M-Q8_0.gguf`. Or name the model file you chose with `embeddingModel` in `~/.curate/sources.json`.
-4. **The decision key (`TYPESAFE_API_KEY`).** It is a paid Jev key from TypeSafe. Jev decides which parts of the history answer the question, at a few pence a call. Fix: Get a key from TypeSafe (https://typesafe.ai), then set `TYPESAFE_API_KEY` in the environment, or put `TYPESAFE_API_KEY=<key>` in a private file and name that file with `envFile` in `~/.curate/sources.json`. Never put the key in `curate.json`.
+4. **The decision key (`TYPESAFE_API_KEY`).** It is a paid Jev key from TypeSafe. Jev decides which parts of the history answer the question, at about $0.00002 for each part it rates. Fix: Get a key from TypeSafe (https://typesafe.ai), then set `TYPESAFE_API_KEY` in the environment, or put `TYPESAFE_API_KEY=<key>` in a private file and name that file with `envFile` in `~/.curate/sources.json`. Never put the key in `curate.json`.
 5. **A login for the search lines.** One small call on a subscription writes the search lines: Claude Haiku on the Claude login, or GPT-6 Luna through Codex on the ChatGPT login. `searchModel` picks one. Fix: Run `claude auth login` to use Claude Haiku, or `codex login` to use GPT-6 Luna.
 6. **History to read.** A call searches the git repository it runs in and the sources its settings list. Fix: Run inside a git repository, put a `curate.json` in or above the working folder, or list sources in `~/.curate/sources.json`.
 
@@ -511,7 +512,7 @@ Inside a git repository, the script reads the project's own commits, Markdown, C
 A `claude-code` or `codex` entry with no `path`, as in the example, reads only the transcripts of the project the call runs in, with that entry's settings, in place of the ones the script reads on its own; outside a repository it reads nothing and says so on standard error.
 Optional `related`, such as `[["~/work/app", "~/work/docs"]]`, lists groups of related projects: a call in one also reads the others' Claude Code transcripts and Codex sessions, never their commits or Markdown.
 The nearest `curate.json` above the working folder adds sources for every call under it, such as a knowledge base beside a code repository; it holds no secret, and its paths may be relative to it.
-`curate prepare` brings the stored index and embeddings of those sources up to date and exits, with no model call; it needs no decision key or login.
+`curate prepare` brings the stored index and embeddings of those sources up to date, removes the index and vector files an earlier version of Curate kept for them and names each, and exits, with no model call; it needs no decision key or login. Run it when no call from an older version of Curate is in flight: it cannot tell whether one still reads those files.
 Optional `answerTokens` and `sentenceCutoff` set the layout's budget and sentence cutoff, as in [Curate](#curate).
 The decision model reads the ranked history from the top, two batches of parts at a time, and stops at the first batch whose best rating is under `floor` (0.1), or under `share` (0.2) times the best rating before it. It never stops before the read has kept a part, so a question the history holds nothing for reads the whole order. When it stops with ranked parts unread, standard error says how many.
 `stopWhenCold` sets the stop: `{ "share": 0.1 }` and the like change those numbers, where a higher one stops sooner and costs less, and a lower one reads further and finds more. `false` turns it off: the decision model then rates every part the search lanes keep, so a call's cost grows with that number: about $0.00002 a part, $0.0033 for a 170-part LoCoMo conversation and $0.053 for the 2,361 parts a DolphinBench test rated on average. The library leaves the stop off unless a caller sets `pick.stopWhenCold`.
@@ -519,7 +520,7 @@ On three benchmark runs' saved scores, `{}` rated 64% (LoCoMo), 55% (DolphinBenc
 Each source can also set `since` (an ISO date or a duration such as `"14 days"`, counted back from the task date), `exclude` (paths that source alone refuses, resolved inside `path`), and, for `git` only, `include` (only commits that changed one of the paths).
 The skill combines keyword and meaning lanes, and disables label admission and the rare-word round.
 Saved embeddings are reused when the model file and input text match. Identical text shares matching decision answers within each pick.
-It prints the laid-out parts. Curate keeps no files of its own outside its caches under `~/.cache/curate`. Set `records` to `true` in the sources file to also save the printed text, source reads, model usage and timings under `~/.curate/runs/`.
+It prints the laid-out parts. A call keeps no files of its own outside its caches under `~/.cache/curate`; outside those caches, `curate setup` writes only what it offers and you accept: the settings and key files under `~/.curate`, and the embedding model when `embeddingModel` names a path outside them. Set `records` to `true` in the sources file to also save the printed text, source reads, model usage and timings under `~/.curate/runs/`.
 Subscription route failures never fall back to an API.
 
 ## What leaves your machine

@@ -60,7 +60,7 @@ export const SETUP = [
     why: 'A call downloads none, and any embedding model in GGUF form works. Stored vectors are kept per model, so a different model embeds the history again.',
     fix: `Put EmbeddingGemma 300M in 8-bit GGUF (about 330 MB) at \`~/.cache/curate/models/embeddinggemma-300M-Q8_0.gguf\`, or under \`$XDG_CACHE_HOME/curate/models\` when \`XDG_CACHE_HOME\` is set: \`curate setup\` offers to download it, or run \`mkdir -p ~/.cache/curate/models && curl -L -o ~/.cache/curate/models/embeddinggemma-300M-Q8_0.gguf ${MODEL_URL}\`. Or name the model file you chose with \`embeddingModel\` in \`~/.curate/sources.json\`.` },
   { id: 'key', need: 'The decision key (`TYPESAFE_API_KEY`)',
-    why: 'It is a paid Jev key from TypeSafe. Jev decides which parts of the history answer the question, at a few pence a call.',
+    why: 'It is a paid Jev key from TypeSafe. Jev decides which parts of the history answer the question, at about $0.00002 for each part it rates.',
     fix: 'Get a key from TypeSafe (https://typesafe.ai), then set `TYPESAFE_API_KEY` in the environment, or put `TYPESAFE_API_KEY=<key>` in a private file and name that file with `envFile` in `~/.curate/sources.json`. Never put the key in `curate.json`.' },
   { id: 'login', need: 'A login for the search lines',
     why: 'One small call on a subscription writes the search lines: Claude Haiku on the Claude login, or GPT-6 Luna through Codex on the ChatGPT login. `searchModel` picks one.',
