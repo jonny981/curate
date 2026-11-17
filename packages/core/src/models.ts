@@ -66,6 +66,17 @@ function wait(ms: number, signal: AbortSignal): Promise<void> {
 const JEV_TOKENS_PER_SECOND = 100_000;
 const JEV_REQUESTS_PER_SECOND = 80;
 
+/** The longest a request waits on HTTP 429 replies, from the first one.
+ *  The allowance above is counted per one-second window, each window
+ *  refills it whole, and one window holds the largest request this
+ *  adapter sends (64,000 estimated tokens of 100,000). This adapter's
+ *  own sends keep inside the allowance, so a 429 means other sends on
+ *  the same key spent the window, and the request gets through in the
+ *  first window they leave room in. Sixty windows in a row with no room
+ *  is a limit the published rates do not describe, such as a spent
+ *  quota or a fault at the service, and waiting longer only hides it. */
+const JEV_RATE_LIMITED_MS = 60 * 1000;
+
 /** A pick's failure state inside the allowance queue: `stop` marks it
  *  once with the failure's own reason. */
 interface AllowanceDomain {
@@ -306,6 +317,8 @@ export function jev({ apiKey, model = 'jev-latest', url = JEV_URL, onCall }: {
   const send = async (part: PickBatch, signal: AbortSignal): Promise<[string, PickAnswer][]> => {
     const text = JSON.stringify(jevRequest(part, model));
     const domain = domainFor(signal);
+    // When the service first answered this request 429.
+    let limitedSince: number | undefined;
     for (;;) {
       try {
         await allow.wait(text.length, domain, signal);
@@ -338,10 +351,24 @@ export function jev({ apiKey, model = 'jev-latest', url = JEV_URL, onCall }: {
         };
         // A rate-limited request waits as the reply directs, then sends the
         // same request unchanged: it is never split, dropped or counted as
-        // a size rejection, and every attempt stays in the record.
+        // a size rejection, and every attempt stays in the record. A wait
+        // that would end past JEV_RATE_LIMITED_MS from the first 429 fails
+        // the request with the last reply instead.
         if (reply.status === 429) {
+          const now = Date.now();
+          const pause = retryAfterMs(reply.retryAfter);
+          limitedSince ??= now;
+          if (now - limitedSince + pause > JEV_RATE_LIMITED_MS) {
+            const seconds = (ms: number) => Math.round(ms / 1000);
+            const error = new Error(`Model request failed: HTTP 429 for ${seconds(now - limitedSince)} s. `
+              + `A rate-limited request waits at most ${seconds(JEV_RATE_LIMITED_MS)} s, and the last reply asked for `
+              + `${seconds(pause)} s more (${reply.retryAfter === null ? 'no Retry-After' : `Retry-After: ${reply.retryAfter}`}). ${reply.text}`);
+            allow.stop(domain, error);
+            await onCall?.(call);
+            throw error;
+          }
           await onCall?.(call);
-          await wait(retryAfterMs(reply.retryAfter), signal);
+          await wait(pause, signal);
           continue;
         }
         if (!reply.ok) return await fail(part, signal, call, reply.text, domain);
