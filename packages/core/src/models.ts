@@ -291,16 +291,18 @@ function jevBatches(batch: PickBatch, model: string, maxChars = JEV_REQUEST_CHAR
     const key = `${question.sourceId}\n${question.id}`;
     items.set(key, [...(items.get(key) ?? []), question]);
   }
+  // Every request keeps the batch's own fields (the facts the answer
+  // needs), and is measured with them.
   const batches: PickBatch[] = [];
   let questions: PickQuestion[] = [];
   for (const own of items.values()) {
-    const next = { task: batch.task, questions: [...questions, ...own] };
+    const next = { ...batch, questions: [...questions, ...own] };
     if (questions.length > 0 && !fitsJev(jevRequest(next, model), maxChars)) {
-      batches.push({ task: batch.task, questions });
+      batches.push({ ...batch, questions });
       questions = own;
     } else questions = next.questions;
   }
-  if (questions.length > 0) batches.push({ task: batch.task, questions });
+  if (questions.length > 0) batches.push({ ...batch, questions });
   return batches;
 }
 
@@ -470,7 +472,7 @@ export function jev({ apiKey, model = 'jev-latest', url = JEV_URL, onCall }: {
         // half has settled and reported, so its request is never
         // missing from the record.
         for (const half of await Promise.allSettled([groups.slice(0, middle), groups.slice(middle)]
-          .map((half) => send({ task: part.task, questions: half.flat() }, signal)))) {
+          .map((half) => send({ ...part, questions: half.flat() }, signal)))) {
           if (half.status === 'rejected') throw half.reason;
           halves.push(...half.value);
         }
@@ -484,7 +486,7 @@ export function jev({ apiKey, model = 'jev-latest', url = JEV_URL, onCall }: {
         await onCall?.(call);
         const points = [...current];
         const half = points.slice(0, Math.floor(points.length / 2)).join('');
-        const answers = await send({ task: part.task,
+        const answers = await send({ ...part,
           questions: part.questions.map((q) => ({ ...q, text: half })) }, signal);
         return answers.map(([key, answer]): [string, PickAnswer] => [key, { ...answer, truncated: true }]);
       }
