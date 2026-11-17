@@ -34,6 +34,11 @@ jobs:
         run: pnpm check:boundaries
       - name: Check tarball contents
         run: pnpm check:tarballs
+      # Calls at once in one process must each return what they return
+      # alone. No timing is checked; the memory bound is about nine times a
+      # call's own heap at this size.
+      - name: Check concurrent calls
+        run: pnpm check:concurrency --max-own-mb 100
       - name: Pack all packages
         run: |
           for package in core chat git markdown cli; do

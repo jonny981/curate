@@ -12,7 +12,8 @@
     "typecheck": "pnpm --recursive run typecheck && tsc --noEmit -p tsconfig.json",
     "test": "pnpm --recursive --workspace-concurrency=1 run test && vitest run",
     "check:tarballs": "node scripts/check-tarballs.mjs",
-    "check:boundaries": "node scripts/check-boundaries.mjs"
+    "check:boundaries": "node scripts/check-boundaries.mjs",
+    "check:concurrency": "node scripts/check-concurrency.mjs"
   },
   "devDependencies": {
     "@types/node": "22.12.0",
