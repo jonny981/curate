@@ -1499,6 +1499,15 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
     if (error?.record?.decideError !== undefined) {
       error.message = decisionFailure(error, records ? join(folder, 'record.json') : undefined);
       error.exitCode = DECISION_EXIT;
+      // The service's words also sit in the record, on the failure and on
+      // each part and question it left unanswered: masked there too.
+      const raw = error.record.decideError.message;
+      const hide = (value) => typeof value === 'string' ? value.split(raw).join(masked(raw))
+        : Array.isArray(value) ? value.map(hide)
+          : value !== null && typeof value === 'object' ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, hide(item)]))
+            : value;
+      record.pick = hide(error.record);
+      record.jev = record.jev?.map((call) => call.error === undefined ? call : { ...call, error: masked(call.error) });
     }
     record.status = 'failed'; record.error = error.message; throw error;
   }
@@ -1518,21 +1527,29 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
   return { memory, record, folder: records ? folder : null };
 }
 
+// Text from the decision service, or a network error, as the command shows
+// and records it: the configured key's exact value and anything shaped like
+// a credential are masked, since a reply can echo what the request sent.
+const masked = (text) => {
+  const key = process.env.TYPESAFE_API_KEY;
+  return scrubChat(key ? String(text).split(key).join('[redacted]') : String(text));
+};
+
 // What a call the decision service refused prints: why and what to do
 // first, then how many parts went undecided and where their ids are.
 function decisionFailure(error, recordFile) {
   const cause = error.cause;
   const stopped = 'so Curate stopped before deciding which parts answer the question.';
-  const said = cause?.said === undefined || cause.said === '' ? '' : ` The service said: ${cause.said}`;
+  const said = cause?.said === undefined || cause.said === '' ? '' : ` The service said: ${masked(cause.said)}`;
   const lead = cause?.reason === 'credit'
     ? `The decision service has no credit, ${stopped} Add credit to the TypeSafe account, then ask again.${said}`
     : cause?.reason === 'key'
       ? `The decision service refused the key in \`TYPESAFE_API_KEY\` (HTTP ${cause.status}), ${stopped} Set a current key from TypeSafe (https://typesafe.ai), then ask again.${said}`
       : cause?.reason === 'unreachable'
-        ? `Curate could not reach the decision service (${cause.said}), ${stopped.replace('Curate ', 'it ')} Check the network connection, then ask again.`
+        ? `Curate could not reach the decision service (${masked(cause.said)}), ${stopped.replace('Curate ', 'it ')} Check the network connection, then ask again.`
         : cause?.reason === 'refused'
           ? `The decision service refused a request (HTTP ${cause.status}), ${stopped}${said}`
-          : `The decision step failed (${error.record.decideError.message}), ${stopped}`;
+          : `The decision step failed (${masked(error.record.decideError.message)}), ${stopped}`;
   const count = error.record.decideError.candidates.length;
   return `${lead}\n${count === 1 ? 'One part was' : `${count} parts were`} left undecided; `
     + (recordFile === undefined ? 'set `records` to true to keep their ids.' : `${recordFile} lists them under pick.decideError.`);

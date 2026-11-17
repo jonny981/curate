@@ -943,7 +943,8 @@ describe('the sentence cutoff, and what the skill tells the caller', () => {
 /** A call on a notes folder whose decision requests get `reply`; the
  *  search-line and label requests are answered. Resolves to the call's
  *  result or failure, and the home folder its records go under. */
-async function decisionCall(reply: (payload: { questions: Record<string, unknown> }) => Response | Promise<Response>, records = false) {
+async function decisionCall(reply: (payload: { questions: Record<string, unknown> }) => Response | Promise<Response>, records = false,
+  key = 'test-key') {
   const directory = await folder();
   const home = join(directory, 'home');
   const notes = join(directory, 'notes');
@@ -956,7 +957,7 @@ async function decisionCall(reply: (payload: { questions: Record<string, unknown
   await writeFile(sourcesFile, JSON.stringify({ records, sources: [{ type: 'markdown', path: notes }] }));
   vi.stubEnv('HOME', home);
   vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
-  vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
+  vi.stubEnv('TYPESAFE_API_KEY', key);
   vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => {
     const payload = JSON.parse(String(init.body));
     if (payload.state.task.startsWith('Label short excerpts') || payload.state.task.startsWith('QUESTION the user asked:')) {
@@ -1025,6 +1026,32 @@ describe('a call the decision service refuses', () => {
     expect(error!.message.split('\n')[0]).toBe('The decision service refused a request (HTTP 503), so Curate stopped before '
       + 'deciding which parts answer the question. The service said: upstream overloaded');
   });
+
+  // A reply can echo the key the call sent or other credentials; what the
+  // command prints and records keeps the cause and masks them.
+  const KEY = 'fake-review-secret-937';
+  const secrets = [['the configured key', `Invalid key: ${KEY}`, KEY],
+    ['a bearer token', 'Authorization: Bearer sk-fakeReviewOnlyABCDEFGHIJKLMNOPQRSTUVWXYZ', 'sk-fakeReviewOnly'],
+    ['a password', 'password=tinyFakePassword', 'tinyFakePassword']] as const;
+  const paths = [
+    ['no credit', (said: string) => new Response(JSON.stringify({ detail: { error_type: 'billing_error',
+      message: `${said}. Please add more credits at https://console.typesafe.ai/settings/billing` } }), { status: 402 }),
+    ['The decision service has no credit', 'https://console.typesafe.ai/settings/billing']],
+    ['a refused key', (said: string) => Response.json({ detail: said }, { status: 401 }), ['(HTTP 401)', 'TYPESAFE_API_KEY']],
+    ['no reply', (said: string) => { throw new TypeError('fetch failed', { cause: new Error(said) }); }, ['could not reach the decision service']],
+    ['another refusal', (said: string) => new Response(said, { status: 503 }), ['(HTTP 503)']],
+  ] as const;
+  it.each(paths.flatMap(([path, reply, kept]) => secrets.map(([what, said, secret]) => [path, what, reply, kept, said, secret] as const)))(
+    'on %s, masks %s in what it prints and records, and keeps the cause', async (_path, _what, reply, kept, said, secret) => {
+      const { error, home } = await decisionCall(() => reply(said), true, KEY);
+      expect(error?.exitCode).toBe(DECISION_EXIT);
+      expect(error!.message).not.toContain(secret);
+      for (const words of kept) expect(error!.message.split('\n')[0]).toContain(words);
+      const folders = await readdir(join(home, '.curate', 'runs'));
+      const saved = await readFile(join(home, '.curate', 'runs', folders[0]!, 'record.json'), 'utf8');
+      expect(saved).not.toContain(secret);
+      expect(saved).not.toContain(KEY);
+    });
 
   it('waits out a 429 and answers as usual', async () => {
     let calls = 0;
