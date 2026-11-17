@@ -2101,19 +2101,31 @@ export async function pick(
       : [{ key: candidate.role, ...(candidate.kind === undefined || (candidate.role === 'rule' && candidate.kind !== 'instructions')
         ? PICK_QUESTIONS[candidate.role] : KIND_QUESTIONS[candidate.kind]) }];
   };
+  // An ask holds its part and question spec; the question it sends is
+  // made from them when a batch packs or sends it and dropped after, so
+  // a call never holds a question for every part it will rate. Label,
+  // route and answer-type asks carry a question made by hand.
   type Pending = {
     candidate: MemoryCandidate;
     spec: ReturnType<typeof specsFor>[number];
-    question: PickQuestion;
+    tagSet?: string;
+    question?: PickQuestion;
     cacheKey?: string;
+    /** The ask's counted sizes, `questionChars` and `itemChars`. */
+    questionSize?: number;
+    itemSize?: number;
   };
-  const pending = (candidate: MemoryCandidate, spec: ReturnType<typeof specsFor>[number], tagSet?: string): Pending => {
+  const pending = (candidate: MemoryCandidate, spec: ReturnType<typeof specsFor>[number], tagSet?: string): Pending =>
+    ({ candidate, spec, ...(tagSet === undefined ? {} : { tagSet }) });
+  const questionOf = (item: Pending): PickQuestion => {
+    if (item.question !== undefined) return item.question;
+    const { candidate, spec, tagSet } = item;
     const shown = Number.isFinite(limits.maxQuestionText)
       ? takeCharacters(candidate.text, limits.maxQuestionText)
       : { text: candidate.text, truncated: false };
     const fitted = tagSet !== undefined
       || (candidate.role === 'reference' && (cascadeFor(candidate) !== undefined || spec.key !== 'reference'));
-    return { candidate, spec, question: {
+    return {
       key: fitted ? JSON.stringify([candidate.sourceId, candidate.id, spec.key]) : questionKey(candidate),
       ...(fitted ? { questionKey: spec.key } : {}),
       ...(tagSet === undefined ? {} : { tagSet }),
@@ -2130,7 +2142,11 @@ export async function pick(
         ? { anonymous: true as const } : {}),
       sourceId: candidate.sourceId, id: candidate.id,
       title: candidate.title, text: shown.text,
-    } };
+    };
+  };
+  const sized = (item: Pending, question = questionOf(item)) => {
+    item.questionSize ??= questionChars(question);
+    item.itemSize ??= itemChars(question);
   };
   let batches = 0;
   let stop: 'limits' | 'time' | 'cancelled' | 'error' | undefined;
@@ -2139,24 +2155,31 @@ export async function pick(
   /** Candidates in a rejected decision batch: their verdicts are not
    *  trusted even when an earlier batch answered some questions. */
   const decideFailed = new Set<MemoryCandidate>();
-  const decisionsByText = new Map<string, Pending>();
-  // When each first ask's answer has applied: a copy of a text another
-  // read has in flight waits for it.
-  const settling = new Map<Pending, Promise<void>>();
+  // The first ask of each text: its part, its question's key, and when
+  // its answer has applied, so a copy of a text another read has in
+  // flight waits for it. Held by everything else the answer depends on
+  // (`askedWith`), then by the part's own text, so no key copies a text.
+  interface FirstAsk {
+    readonly candidate: MemoryCandidate;
+    readonly key: string;
+    readonly settled: Promise<void>;
+  }
+  const decisionsByText = new Map<string, Map<string, FirstAsk>>();
   // Requests open, and batches packed whose answers have not applied:
   // reads that run at once share the caller's `maxInFlight` and
   // `maxBatches`.
   let openRequests = 0;
   const slotWaits: (() => void)[] = [];
   let packedBatches = 0;
-  // A part with no text is judged by its title, as a title-only
-  // commit's subject is, so the title stands in for the text in the
-  // sharing key. With text present the title is a byline or locator,
-  // and identical texts keep sharing one answer. The decider sees the
-  // author, so two authors' identical texts are asked apart, and the
-  // facts the answer needs, so a text asked with them is asked apart from
-  // the same text asked without them.
-  const sharingKey = ({ candidate, question }: Pending) => JSON.stringify([candidate.text,
+  // Two asks share one answer when their texts and everything else
+  // here are equal. A part with no text is judged by its title, as a
+  // title-only commit's subject is, so the title stands in for the text.
+  // With text present the title is a byline or locator, and identical
+  // texts keep sharing one answer. The decider sees the author, so two
+  // authors' identical texts are asked apart, and the facts the answer
+  // needs, so a text asked with them is asked apart from the same text
+  // asked without them.
+  const askedWith = ({ candidate }: Pending, question: PickQuestion) => JSON.stringify([
     candidate.text === '' ? candidate.title : null,
     question.role, question.kind, question.questionKey, question.question,
     question.trueCriterion ?? null, question.falseCriterion ?? null,
@@ -2183,8 +2206,9 @@ export async function pick(
           while (end < fresh.length && fresh[end]!.candidate === item.candidate) end += 1;
         }
         const group = fresh.slice(at, end);
-        const size = group.reduce((sum, entry) => sum + questionChars(entry.question), 0)
-          + (counted.has(item.candidate) ? 0 : itemChars(item.question));
+        for (const entry of group) sized(entry);
+        const size = group.reduce((sum, entry) => sum + entry.questionSize!, 0)
+          + (counted.has(item.candidate) ? 0 : item.itemSize!);
         if (slice.length > 0 && !whole
           && (batchChars + size > limits.maxBatchChars
             || slice.length + group.length > limits.maxPerBatch)) break;
@@ -2199,16 +2223,19 @@ export async function pick(
     return slices;
   };
   const ask = async (asks: Pending[], sink = answered, task = options.task, whole = false) => {
-    const copies: { item: Pending; first: Pending }[] = [];
+    const copies: { item: Pending; first: FirstAsk }[] = [];
     let settle!: () => void;
     const settled = new Promise<void>((resolve) => { settle = resolve; });
     if (sink === answered) {
       asks = asks.filter((item) => {
-        const key = sharingKey(item);
-        const first = decisionsByText.get(key);
+        const question = questionOf(item);
+        sized(item, question);
+        const like = askedWith(item, question);
+        let texts = decisionsByText.get(like);
+        if (texts === undefined) decisionsByText.set(like, texts = new Map());
+        const first = texts.get(item.candidate.text);
         if (first !== undefined) { copies.push({ item, first }); return false; }
-        decisionsByText.set(key, item);
-        settling.set(item, settled);
+        texts.set(item.candidate.text, { candidate: item.candidate, key: item.spec.key, settled });
         return true;
       });
     }
@@ -2222,7 +2249,7 @@ export async function pick(
     // facts asks with them, so its answers are stored under them.
     const cacheKeyOf = (item: Pending) => decisionKey(
       sink === answered && carriesNeeded(item.candidate) ? JSON.stringify([task, needed]) : task,
-      cacheVersion, cache!.deciderId, limits.maxQuestionText, item.question, item.candidate.text);
+      cacheVersion, cache!.deciderId, limits.maxQuestionText, questionOf(item), item.candidate.text);
     // Only a fully answered result is stored: a refusal, a missing
     // answer, an error or a cancelled call is never written, so the store
     // can never hold one. A failed write keeps the answer and the record
@@ -2300,14 +2327,15 @@ export async function pick(
       readonly sent: boolean;
       readonly stop?: 'time' | 'cancelled';
       readonly timedOut: boolean;
-      readonly answers?: Record<string, PickAnswer>;
+      /** Each ask's checked answer, in slice order, once the batch returned answers. */
+      readonly checked?: CheckedAnswer[];
       readonly decideError?: unknown;
     }
     const dispatch = async (slice: Pending[]): Promise<BatchOutcome> => {
       if (signal.aborted) return { slice, sent: false, stop: 'cancelled', timedOut: false };
       const remaining = limits.maxElapsedMs - (Date.now() - started);
       if (remaining <= 0) return { slice, sent: false, stop: 'time', timedOut: false };
-      const questions = slice.map((item) => item.question);
+      const questions = slice.map(questionOf);
       if (cacheable) cacheAsked += slice.length;
       // The decide port was asked these task questions about these
       // parts; copies and cache hits never reached it, so they do not
@@ -2333,8 +2361,12 @@ export async function pick(
           await sent.then(() => {}, () => {});
           return { slice, sent: true, timedOut: true };
         }
+        // The answers are checked as the batch returns, so its questions
+        // are not held until the round's batches all settle.
+        const answers = returned as Record<string, PickAnswer>;
         return { slice, sent: true, timedOut: false,
-          ...(isRecord(returned) ? { answers: returned as Record<string, PickAnswer> } : {}) };
+          ...(isRecord(returned) ? { checked: questions.map((question) =>
+            checkAnswer(answers[question.key], question.levels?.length)) } : {}) };
       } catch (decideError) {
         return { slice, sent: true, timedOut: decideDeadline?.aborted === true, decideError };
       }
@@ -2373,7 +2405,7 @@ export async function pick(
       // A batch the halt left queued stays unasked like the tail of a
       // stopped sequential run.
       if (outcome === undefined) continue;
-      const { slice, sent, stop: unsent, timedOut, answers, decideError } = outcome;
+      const { slice, sent, stop: unsent, timedOut, checked, decideError } = outcome;
       if (!sent) { stop ??= unsent; continue; }
       batches += 1;
       // A rejected batch is reported, not swallowed: the record names
@@ -2383,19 +2415,19 @@ export async function pick(
       const failed = decideError !== undefined && !timedOut && !signal.aborted;
       if (failed) {
         decideFailure ??= {
-          ids: [...new Set(slice.map(({ question }) => question.id))],
+          ids: [...new Set(slice.map((item) => questionOf(item).id))],
           message: decideError instanceof Error ? decideError.message : String(decideError),
           error: decideError,
         };
         if (sink === answered) for (const item of slice) decideFailed.add(item.candidate);
       }
-      for (const { candidate, spec, question, cacheKey } of slice) {
+      for (const [at, { candidate, spec, cacheKey }] of slice.entries()) {
         const answer: CheckedAnswer = timedOut
           ? { status: 'error', detail: 'The decide call did not finish before the elapsed limit.' }
-          : answers === undefined
+          : checked === undefined
             ? { status: 'error', detail: decideError instanceof Error ? decideError.message
                 : decideError === undefined ? 'The decide call failed.' : String(decideError) }
-            : checkAnswer(answers[question.key], question.levels?.length);
+            : checked[at]!;
         let got = sink.get(candidate);
         if (!got) { got = new Map(); sink.set(candidate, got); }
         got.set(spec.key, answer);
@@ -2422,10 +2454,10 @@ export async function pick(
     // Copies keep their source identity and score with their own question set.
     // Only the answer to the identical text and question is shared.
     for (const { item, first } of copies) {
-      let answer = sink.get(first.candidate)?.get(first.spec.key);
-      if (answer === undefined && settling.get(first) !== settled) {
-        await settling.get(first);
-        answer = sink.get(first.candidate)?.get(first.spec.key);
+      let answer = sink.get(first.candidate)?.get(first.key);
+      if (answer === undefined && first.settled !== settled) {
+        await first.settled;
+        answer = sink.get(first.candidate)?.get(first.key);
       }
       if (answer === undefined) continue;
       let got = sink.get(item.candidate);
@@ -2561,7 +2593,7 @@ export async function pick(
       const askParts = (partMisses: typeof misses) => ask(partMisses.flatMap(({ items }) => set.kinds.map((kind) => {
         const candidate = items[0]!;
         const item = pending(candidate, { key: kind.key, ...labelPartQuestion(kind) });
-        return { ...item, question: { ...item.question,
+        return { ...item, question: { ...questionOf(item),
           key: JSON.stringify([candidate.sourceId, candidate.id, kind.key]),
           questionKey: kind.key, text: candidate.text } };
       })), labelAnswers, chat ? LABEL_PARTS_TASK
@@ -2949,15 +2981,20 @@ export async function pick(
   // past the wave's last batch waits for the next wave, unless it is
   // the wave's first part.
   const nextWave = (order: readonly MemoryCandidate[], from: number): MemoryCandidate[][] => {
-    const shared = new Set<string>();
+    const shared = new Map<string, Set<string>>();
     const items: Pending[] = [];
     const owners: { readonly candidate: MemoryCandidate; readonly start: number; readonly end: number }[] = [];
     for (let at = from; at < order.length && items.length < WAVE_BATCHES * limits.maxPerBatch; at += 1) {
       const start = items.length;
       for (const item of firstAsks(order[at]!)) {
-        const key = sharingKey(item);
-        if (decisionsByText.has(key) || shared.has(key)) continue;
-        shared.add(key);
+        const question = questionOf(item);
+        sized(item, question);
+        const like = askedWith(item, question);
+        const text = item.candidate.text;
+        if (decisionsByText.get(like)?.has(text) || shared.get(like)?.has(text)) continue;
+        let texts = shared.get(like);
+        if (texts === undefined) shared.set(like, texts = new Set());
+        texts.add(text);
         items.push(item);
       }
       owners.push({ candidate: order[at]!, start, end: items.length });
