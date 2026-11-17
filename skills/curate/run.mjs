@@ -1320,10 +1320,12 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
     const pickStart = Date.now();
     const request = { task: options.task, searchLines: Array.from({ length: count }, (_, i) => `curate-search:${i}`),
       meaning: { embed: local.embed } };
+    // A call stops where the ratings go cold, at the library's own levels,
+    // unless the settings turn the stop off with false or set its levels.
     const pickOptions = { task: options.task, decide,
       limits: { maxBatchChars,
         ...(settings.maxInFlight === undefined ? {} : { maxInFlight: settings.maxInFlight }) },
-      ...(settings.stopWhenCold === undefined ? {} : { stopWhenCold: settings.stopWhenCold }),
+      stopWhenCold: settings.stopWhenCold ?? {},
       ...(settings.feed === undefined ? {} : { feed: settings.feed }),
       ...(settings.threshold === undefined ? {} : { everyScored: { bar: settings.threshold } }) };
     const picked = await pickFullSources(sources.map((source) => {
@@ -1339,6 +1341,11 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
       ...(read.noSearchMatch === true ? { noSearchMatch: true } : {}),
       ...(read.lanes === undefined ? {} : { lanes: read.lanes }) }));
     for (const read of record.sourcesRead) if (readWarning(read) !== undefined) console.error(readWarning(read));
+    // The parts the rating stop left unread are said here too, since records are off by default.
+    const stop = picked.record.pick?.stopWhenCold;
+    if (stop?.ended === 'cold' && stop.unread > 0) {
+      console.error(`The rating stop ended the read where the ratings went cold, with ${stop.unread} of ${stop.rated + stop.unread} ranked parts unread; set "stopWhenCold": false in ${configFile ?? options.sources} to read them all.`);
+    }
     record.timings.rankAndDecideMs = Date.now() - pickStart;
     // Reads and decisions never overlap in a pick: every read ends before
     // the first decision starts. Ranking is the rest.

@@ -1115,6 +1115,70 @@ describe('a run through core decision calls', () => {
     expect(record.pick?.levers).not.toHaveProperty('everyRanked');
   });
 
+  it.each([[{}, { floor: 0.1, share: 0.2 }], [{ stopWhenCold: false }, false]] as const)(
+    'stops where the ratings go cold at the library\'s own levels unless the settings say false: %j', async (setting, levers) => {
+      const directory = await folder();
+      const home = join(directory, 'home');
+      const notes = join(directory, 'notes');
+      await mkdir(home);
+      await mkdir(notes);
+      await writeFile(join(notes, 'orchard.md'), '# Orchard\n\nThe orchard has trees. Fruit trees grow here.\n');
+      const sourcesFile = join(directory, 'sources.json');
+      await writeFile(sourcesFile, JSON.stringify({ records: true, sources: [{ type: 'markdown', path: notes }], ...setting }));
+      vi.stubEnv('HOME', home);
+      vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
+      vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
+      vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => new Response(JSON.stringify({
+        usage: null,
+        answers: Object.fromEntries(Object.keys(JSON.parse(String(init.body)).questions).map((key) => [key, { noul: 0.8 }])),
+      }))));
+      const warned = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const { call } = subscriptionReply(searches());
+      const { record } = await run(['--sources', sourcesFile, 'orchard'], call);
+
+      expect(record.status).toBe('complete');
+      expect(record.pick.levers.stopWhenCold).toEqual(levers);
+      if (levers === false) expect(record.pick.pick).not.toHaveProperty('stopWhenCold');
+      // One small batch: the read reaches the end of the order and leaves nothing unread.
+      else expect(record.pick.pick.stopWhenCold).toMatchObject({ ...levers, ended: 'order', unread: 0 });
+      expect(warned.mock.calls.map(([line]) => String(line)).filter((line) => line.includes('stopWhenCold'))).toEqual([]);
+    });
+
+  it('says on standard error how many ranked parts the stop left unread, and which file turns it off', async () => {
+    const directory = await folder();
+    const home = join(directory, 'home');
+    const notes = join(directory, 'notes');
+    await mkdir(home);
+    await mkdir(notes);
+    // Enough parts for more than one wave of two batches.
+    await writeFile(join(notes, 'orchard.md'), Array.from({ length: 400 }, (_, index) =>
+      `## Orchard row ${index}\n\nRow ${index} of the orchard has fruit trees. ${'The trees grow here. '.repeat(30)}\n`).join('\n'));
+    const sourcesFile = join(directory, 'sources.json');
+    await writeFile(sourcesFile, JSON.stringify({
+      records: true, sentenceCutoff: false,
+      sources: [{ type: 'markdown', path: notes }], stopWhenCold: { floor: 0.9 },
+    }));
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
+    vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
+    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => new Response(JSON.stringify({
+      usage: null,
+      answers: Object.fromEntries(Object.keys(JSON.parse(String(init.body)).questions).map((key) => [key, { noul: 0.8 }])),
+    }))));
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const warned = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { call } = subscriptionReply(searches());
+    const { record } = await run(['--sources', sourcesFile, 'orchard'], call);
+
+    // Every answer is 0.8, under the floor of 0.9: the read stops after its first wave.
+    const stop = record.pick.pick.stopWhenCold;
+    expect(stop).toMatchObject({ ended: 'cold', waves: 1, cold: { batch: 1, under: 'floor' } });
+    expect(stop.unread).toBeGreaterThan(0);
+    expect(warned.mock.calls.map(([line]) => String(line)).filter((line) => line.includes('stopWhenCold'))).toEqual([
+      `The rating stop ended the read where the ratings went cold, with ${stop.unread} of ${stop.rated + stop.unread} ranked parts unread; set "stopWhenCold": false in ${sourcesFile} to read them all.`,
+    ]);
+  });
+
   it('carries each entry\'s since, include and exclude into the recorded source settings', async () => {
     const directory = await folder();
     const home = join(directory, 'home');
