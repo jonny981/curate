@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { conversationRead, pick, type MemoryCandidate, type PickCascade, type PickDecide } from '../src/index.js';
-import { agentUnits, chatRead, topicShifts, unitDescriptors } from '../src/chat-read.js';
+import { agentUnits, chatRead, topicShifts, unitDescriptors, unitStarts } from '../src/chat-read.js';
 import { modesOf } from './fixtures/modes.js';
 
 type Author = 'person' | 'agent';
@@ -533,8 +533,23 @@ describe('the units of agent work as one more start', () => {
     expect(none.selected.map((part) => part.id)).not.toContain(answer.id);
   });
 
+  it('finds a heading that starts a later part of a unit', async () => {
+    // A report the reader cut into two parts: the first 624 characters of
+    // shared words end on a line break, and the second opens with a heading.
+    // Words of its own, rarer than "outage", fill the twelve rarest.
+    const own = Array.from({ length: 20 }, (_, n) => `ownword${String.fromCharCode(97 + n)}`).join(' ');
+    const filler = `${own} ${'shared words of a long report '.repeat(21)}`.slice(0, 623) + '\n';
+    const target = [agentPart('t', 9, 1, 'report', filler), agentPart('t', 9, 2, 'report', `## Outage ${'and what followed it '.repeat(40)}`)];
+    // Twelve other reports name the outage in their first 600 characters.
+    const others = Array.from({ length: 12 }, (_, n) => agentPart(`o${n}`, 9, 1, 'report', `An outage was noted in report ${n}.`));
+    const opened = await unitStarts(agentUnits([...target, ...others]), ['outage'], undefined);
+    expect(opened.some((unit) => unit.parts.includes(target[1]!))).toBe(true);
+    expect(unitDescriptors(agentUnits(target))[0]!.split('\n')).toContain(`## Outage ${'and what followed it '.repeat(40)}`.trim().slice(0, 400));
+  });
+
   it('describes a unit by its first 600 characters, its headings, its rarest words and, for a report, its prompt', () => {
-    // The expected text is the one the measured script (climb13.py) makes from the same parts.
+    // The text the measured script (climb13.py) makes from the same parts,
+    // with the heading that starts the second part, which the script lost.
     const prompt = agentPart('b', 1, 1, 'prompt', 'Find the cache code.');
     const report = [agentPart('b', 5, 1, 'report', '# Findings\nThe cache lives in store.ts and expires hourly.'),
       agentPart('b', 5, 2, 'report', '## Next\nNothing else touches the cache.')];
@@ -552,7 +567,7 @@ describe('the units of agent work as one more start', () => {
       ({ ...item, place: { ...item.place!, container: report[0]!.place!.container } }))])
       .map((unit) => [unit.kind, unit.parts.length])).toEqual([['summary', 3], ['report', 2]]);
     expect(unitDescriptors(units)[0]).toBe('# Findings\nThe cache lives in store.ts and expires hourly. ## Next\nNothing else touches the cache.\n'
-      + '# Findings\n'
+      + '# Findings ## Next\n'
       + 'else expires findings hourly lives next nothing store touches cache\n'
       + 'Find the cache code.');
   });

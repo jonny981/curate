@@ -231,7 +231,7 @@ const unitWords = (text: string) => (text.toLowerCase().match(/[a-z0-9]+/g) ?? [
 const head = (text: string, count: number) => Array.from(text).slice(0, count).join('');
 
 /** Each unit's descriptor, made by code: its first `UNIT_HEAD`
- *  characters, its headings, its `UNIT_RARE` rarest words (fewest units
+ *  characters, the headings that start a line of any of its parts, its `UNIT_RARE` rarest words (fewest units
  *  holding them, then alphabetical), and for a report the first
  *  `UNIT_HEAD` characters of its transcript's prompt. */
 export function unitDescriptors(units: readonly AgentUnit[]): string[] {
@@ -241,7 +241,10 @@ export function unitDescriptors(units: readonly AgentUnit[]): string[] {
   const prompts = new Map(units.flatMap((unit, index) => unit.kind === 'prompt' ? [[unit.container, texts[index]!] as const] : []));
   return units.map((unit, index) => {
     const text = texts[index]!;
-    const headings = head((text.match(/^#+ .*$/gm) ?? []).join(' '), UNIT_HEADINGS);
+    // Headings are found in each part's own text, so one that starts a
+    // part the reader cut off its message is found too.
+    const headings = head(unit.parts.flatMap((part) => (part.text || part.title || '').match(/^#+ .*$/gm) ?? []).join(' '),
+      UNIT_HEADINGS);
     const rare = [...new Set(unitWords(text))]
       .sort((left, right) => holding.get(left)! - holding.get(right)! || (left < right ? -1 : left > right ? 1 : 0))
       .slice(0, UNIT_RARE);
