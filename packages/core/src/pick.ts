@@ -611,6 +611,11 @@ export interface PickRecord {
    *  this call, whether the file was built again and the milliseconds
    *  the update took. */
   readonly index?: Readonly<Record<string, StoredIndexReport>>;
+  /** Present when another call re-indexed a file while this call read
+   *  it: by source id, the parts this call's reads left out because
+   *  their stored row no longer held the part the call's one walk found
+   *  there. A read takes what the index holds when it runs. */
+  readonly changed?: Readonly<Record<string, number>>;
   /** Present on every pick: the history's size N in reference parts
    *  (every reference part the pick received, including pool members
    *  the keyword lanes never held), how many of the feed's reference

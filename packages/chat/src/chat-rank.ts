@@ -54,8 +54,8 @@ export interface ChatRankSession {
    *  document frequencies exactly as `storedBag` folds them) and its
    *  stored word total. */
   observeIndexed(index: number, title: string, long: number): void;
-  /** `observeIndexed` for every part of a postings read at once, from its
-   *  titles' words indexed once for the whole call: the parts count, each
+  /** `observeIndexed` for every part of a postings read at once, from the
+   *  titles' words its query terms need: the parts count, each
    *  title's words count into the totals, and each query term's title
    *  words count for the parts that hold them, exactly as `observeIndexed`
    *  counts them part by part. */
@@ -88,11 +88,12 @@ export interface StoredChatWords {
   readonly short: string;
 }
 
-/** Each part's title words, indexed once for a whole call so that a
- *  postings read finds the titles holding a query term without visiting
- *  every title. A word of three characters or more is kept under its
- *  stem, when the settings stem, and a shorter one as written. Each entry
- *  of a list is one occurrence. */
+/** The parts' title words a postings read needs: the titles holding
+ *  each query term, so that it never visits every title. A title is split
+ *  on everything but ASCII letters and digits, lower-cased; a word of
+ *  three characters or more is kept under its stem, when the settings
+ *  stem, and a shorter one as written. Each entry of a list is one
+ *  occurrence. */
 export interface ChatTitleIndex {
   readonly parts: number;
   /** Every part's title words of three characters or more and its long
@@ -103,40 +104,6 @@ export interface ChatTitleIndex {
   readonly lengths: Uint32Array;
   readonly stems: ReadonlyMap<string, readonly number[]>;
   readonly shorts: ReadonlyMap<string, readonly number[]>;
-}
-
-/** The title index of parts whose titles are `titles` and whose stored
- *  long-word totals are `longs`, under these keyword settings. */
-export function chatTitleIndex(
-  titles: readonly string[], longs: ArrayLike<number>, settings: Partial<ChatKeywordSettings> = {},
-): ChatTitleIndex {
-  const stem = ({ ...CHAT_KEYWORD_SETTINGS, ...settings }).stem;
-  const stemmed = new Map<string, string>();
-  const stems = new Map<string, number[]>();
-  const shorts = new Map<string, number[]>();
-  const lengths = new Uint32Array(titles.length);
-  let length = 0;
-  const add = (map: Map<string, number[]>, key: string, index: number) => {
-    const list = map.get(key);
-    if (list === undefined) map.set(key, [index]);
-    else list.push(index);
-  };
-  titles.forEach((title, index) => {
-    let kept = 0;
-    for (const word of title.toLowerCase().split(/[^a-z0-9]+/)) {
-      if (word.length > 2) {
-        kept += 1;
-        let value = stemmed.get(word);
-        if (value === undefined) stemmed.set(word, value = stem ? porterStem(word) : word);
-        add(stems, value, index);
-      } else if (word !== '') {
-        add(shorts, word, index);
-      }
-    }
-    lengths[index] = kept + longs[index]!;
-    length += kept + longs[index]!;
-  });
-  return { parts: titles.length, length, lengths, stems, shorts };
 }
 
 /** The stored form of a part's text under these keyword settings. */

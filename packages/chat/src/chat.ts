@@ -9,10 +9,11 @@ import {
   removeEarlierFormats, textKey, updateIndex, type IndexDatabase, type StoredIndexOptions, type StoredIndexReport,
 } from '@curatejs/core/internal';
 import {
-  chatTitleIndex, startChatRank, storedChatWords, CHAT_KEYWORD_SETTINGS, type ChatKeywordSettings, type ChatRankSession,
+  startChatRank, storedChatWords, CHAT_KEYWORD_SETTINGS, type ChatKeywordSettings, type ChatRankSession,
   type ChatTitleIndex, type StoredChatWords,
 } from './chat-rank.js';
 import { scrubChat } from './chat-scrub.js';
+import { porterStem } from './porter.js';
 import { DEFAULT_MAX_QUESTION_TEXT, type MemoryCandidate } from '@curatejs/core';
 import {
   historySource, SourceReadError, type CandidateReadContext, type CandidateReadRequest, type CandidateSource,
@@ -418,11 +419,13 @@ function vectorKey(text: string, before: string | undefined, ordinal: number): s
  *  the scores align to. */
 interface Lite {
   queries: readonly string[];
-  similarities: number[][];
+  /** Each part's similarity to each query, the part's queries side by
+   *  side: part `i`'s to query `q` is at `i * queries.length + q`. */
+  similarities: Float64Array;
   ids: string[];
-  /** Each part's row in the stored index, empty on a direct read. */
-  refs: string[];
-  partFile: number[];
+  /** Each part's row in the stored index; none on a direct read. */
+  refOf: (index: number) => string;
+  partFile: ArrayLike<number>;
   fileRanges: { provider: ChatProvider; root: string; file: string; start: number }[];
 }
 
@@ -431,11 +434,11 @@ interface Lite {
  *  and the skips the first pass counted. */
 interface ChatKeywordEnum {
   ids: string[];
-  refs: string[];
-  partFile: number[];
+  refOf: (index: number) => string;
+  partFile: ArrayLike<number>;
   fileRanges: { provider: ChatProvider; root: string; file: string; start: number }[];
-  titles: string[];
-  longs: number[];
+  titleOf: (index: number) => string;
+  longs: ArrayLike<number>;
   skips: number;
 }
 
@@ -445,32 +448,50 @@ interface ChatKeywordEnum {
 export const onePass = { on: true, served: 0 };
 
 /** What one call knows about the whole stored history, read once and
- *  shared by every lane of the call: each in-window part as stored, and
- *  what every lane would otherwise work out from it again. It holds
- *  nothing a request's task sets. */
+ *  shared by every lane of the call: each in-window part's stored fields,
+ *  as columns, and what every lane would otherwise work out from them
+ *  again. It holds no part's text, words or vector key, and no title: a
+ *  lane reads those by key, or makes them, for the parts it needs. It
+ *  holds nothing a request's task sets. */
 interface ChatCorpus {
   /** What decides which parts are in it. */
   readonly key: string;
-  readonly parts: readonly StoredPart[];
+  /** How many parts it holds. */
+  readonly count: number;
   readonly ids: string[];
-  readonly refs: string[];
-  readonly partFile: number[];
+  readonly partFile: Int32Array;
   readonly fileRanges: { provider: ChatProvider; root: string; file: string; start: number }[];
-  /** Each part's date as its titles and its candidate show it. */
-  readonly iso: string[];
-  readonly titles: string[];
-  /** The titles' words indexed once, when a keyword lane first asks. */
-  titleIndex?: ChatTitleIndex;
-  /** The parts whose title holds each word `phraseCount` compares,
-   *  indexed once, when a phrase lane first asks. */
-  titlePhraseWords?: Map<string, number[]>;
-  readonly longs: number[];
+  /** Each part's provider, as a place in `strings`, and its transcript
+   *  row in the stored index. */
+  readonly providers: Int32Array;
+  readonly transcripts: Int32Array;
+  /** Each transcript's parts, from the first to past the last, by its row. */
+  readonly spans: ReadonlyMap<number, readonly [number, number]>;
+  readonly ordinals: Int32Array;
+  readonly lines: Int32Array;
+  readonly blocks: Int32Array;
+  readonly pieces: Int32Array;
+  readonly dates: Float64Array;
+  /** Each part's session id, role, author, author name and unit, as a
+   *  place in `strings`; -1 where it has none. */
+  readonly sessions: Int32Array;
+  readonly roles: Int32Array;
+  readonly authors: Int32Array;
+  readonly names: Int32Array;
+  readonly marks: Int32Array;
+  readonly strings: readonly string[];
+  /** The parts whose title holds a word `phraseCount` compares, found
+   *  once per word, when a phrase lane first asks. */
+  readonly titlePhraseWords: Map<string, number[]>;
+  /** Each part's title words of three characters or more and long text
+   *  words, as a title index counts them; made when a keyword lane
+   *  first asks. */
+  titleLengths?: { readonly lengths: Uint32Array; readonly length: number };
+  readonly longs: Uint32Array;
   /** Each part's place in id order; equal ids share a place. */
   readonly places: Uint32Array;
   /** The parts in id order, equal ids in walk order. */
   readonly byPlace: Uint32Array;
-  /** Each part's index by its row in the stored index. */
-  readonly indexOf: ReadonlyMap<string, number>;
   /** The index's `indexVersion` the parts were read at; unset when an
    *  update landed while they were read. */
   readonly version: number | undefined;
@@ -490,6 +511,9 @@ interface Shared {
   ids?: Map<string, string>;
   keyword?: ChatKeywordEnum;
   corpus?: ChatCorpus;
+  /** The parts of the call's one walk its reads have left out because
+   *  their stored row no longer held them, by place in the walk. */
+  changed?: Set<number>;
 }
 
 /** One transcript the stored index holds. */
@@ -762,15 +786,17 @@ async function syncChatIndex(
 }
 
 /** One stored transcript's parts, in file order. The rows of one
- *  transcript are read at once, as the direct read holds one file. */
+ *  transcript are read at once, as the direct read holds one file. A
+ *  `light` read leaves out the author and unit; one without `withWords`
+ *  leaves out the stored words and vector key. */
 function* storedParts(
   database: IndexDatabase, provider: ChatProvider, root: string, transcript: StoredTranscript, withText: boolean,
-  light = false,
+  light = false, withWords = !light,
 ): Generator<StoredPart> {
   const rows = database.prepare(`SELECT ordinal, line, block, piece, session, role,
     ${light ? "'unmarked' AS author, NULL AS author_name, NULL AS unit" : 'author, author_name, unit'}, date,
     ${withText ? 'text' : "'' AS text"}, long,
-    ${light ? "'' AS stems, '' AS short, NULL AS vec" : 'stems, short, vec'}, pid FROM parts WHERE transcript = ? ORDER BY ordinal`)
+    ${withWords ? 'stems, short, vec' : "'' AS stems, '' AS short, NULL AS vec"}, pid FROM parts WHERE transcript = ? ORDER BY ordinal`)
     .all(transcript.id) as Record<string, unknown>[];
   const agent = light ? undefined : subagentOf(provider, transcript.file);
   const report = agent === undefined ? undefined : rows.reduce<number | undefined>((last, row) =>
@@ -959,13 +985,13 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           transcripts.map((transcript) => [`${provider}\0${transcript.file}`, transcript] as const)));
         /** Every part, counting skips on the read's first pass. A stored
          *  part's text is read only when `withText` asks for it. */
-        const eachStored = function* (counting: boolean, withText: boolean, light: boolean): Generator<StoredPart> {
+        const eachStored = function* (counting: boolean, withText: boolean, light: boolean, withWords = !light): Generator<StoredPart> {
           for (const { provider, root, transcripts, symlinks } of storedRoots!) {
             if (counting) skips.n += symlinks;
             for (const transcript of transcripts) {
               cancelled(request.signal);
               if (counting) skips.n += transcript.undated;
-              for (const part of storedParts(database!, provider, root, transcript, withText, light)) {
+              for (const part of storedParts(database!, provider, root, transcript, withText, light, withWords)) {
                 if (inDates(part)) yield part;
               }
             }
@@ -994,7 +1020,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
         const keptParts = async function* (
           wanted: ReadonlyMap<number, ReadonlySet<number>>,
           fileRanges: readonly { provider: ChatProvider; root: string; file: string; start: number }[],
-          refs: readonly string[],
+          refOf: (index: number) => string,
         ): AsyncGenerator<readonly [number, RawPart]> {
           for (const [fileIndex, indexes] of wanted) {
             const range = fileRanges[fileIndex]!;
@@ -1002,7 +1028,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
             if (storedRoots !== undefined) {
               if (transcript === undefined) continue;
               cancelled(request.signal);
-              const indexOf = new Map([...indexes].map((index) => [refs[index]!, index] as const));
+              const indexOf = new Map([...indexes].map((index) => [refOf(index), index] as const));
               const ordinals = [...indexOf.keys()].map((ref) => Number(ref.slice(ref.indexOf(':') + 1)));
               for (const part of storedRows(database!, range.provider, range.root, transcript, ordinals)) {
                 // A transcript another call re-indexed mid-read can hold a
@@ -1052,29 +1078,56 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           if (shared.corpus === undefined) {
             const before = skips.n;
             const version = indexVersion(database!);
-            const parts: StoredPart[] = [];
+            // A session id, role, author, author name or unit is held once
+            // however many parts carry it.
+            const strings: string[] = [];
+            const interned = new Map<string, number>();
+            const intern = (value: string | undefined) => {
+              if (value === undefined) return -1;
+              let at = interned.get(value);
+              if (at === undefined) {
+                interned.set(value, at = strings.length);
+                strings.push(value);
+              }
+              return at;
+            };
             const ids: string[] = [];
-            const refs: string[] = [];
-            const partFile: number[] = [];
             const fileRanges: ChatCorpus['fileRanges'] = [];
-            const iso: string[] = [];
-            const titles: string[] = [];
-            const longs: number[] = [];
-            for (const part of eachStored(true, true, false)) {
+            const spans = new Map<number, readonly [number, number]>();
+            const column = {
+              providers: [] as number[], transcripts: [] as number[], partFile: [] as number[], ordinals: [] as number[],
+              lines: [] as number[], blocks: [] as number[], pieces: [] as number[], dates: [] as number[],
+              sessions: [] as number[], roles: [] as number[], authors: [] as number[], names: [] as number[],
+              marks: [] as number[], longs: [] as number[],
+            };
+            let spanStart = 0;
+            for (const part of eachStored(true, false, false, false)) {
               const last = fileRanges.at(-1);
               if (last === undefined || last.file !== part.file) {
                 fileRanges.push({ provider: part.provider, root: part.root, file: part.file, start: ids.length });
               }
-              partFile.push(fileRanges.length - 1);
-              parts.push(part);
+              const previous = column.transcripts.at(-1);
+              if (previous !== part.transcript) {
+                if (previous !== undefined) spans.set(previous, [spanStart, ids.length]);
+                spanStart = ids.length;
+              }
+              column.providers.push(intern(part.provider));
+              column.transcripts.push(part.transcript);
+              column.partFile.push(fileRanges.length - 1);
+              column.ordinals.push(part.ordinal);
+              column.lines.push(part.line);
+              column.blocks.push(part.block);
+              column.pieces.push(part.piece);
+              column.dates.push(part.date);
+              column.sessions.push(intern(part.sessionId));
+              column.roles.push(intern(part.role));
+              column.authors.push(intern(part.author));
+              column.names.push(intern(part.authorName));
+              column.marks.push(intern(part.unit));
+              column.longs.push(part.words.long);
               ids.push(idOf(part));
-              refs.push(part.at);
-              const date = zonedIso(part.date, zone);
-              const title = `${part.provider} ${part.sessionId} ${part.role} ${date}`;
-              iso.push(date);
-              titles.push(title);
-              longs.push(part.words.long);
             }
+            if (column.transcripts.length > 0) spans.set(column.transcripts.at(-1)!, [spanStart, ids.length]);
             // Ties in a lane order by id; each part's place in id order
             // stands in for the comparison.
             const byId = ids.map((_, index) => index).sort((a, b) => ids[a]!.localeCompare(ids[b]!));
@@ -1084,8 +1137,14 @@ export function chat(options: ChatOptions = {}): CandidateSource {
                 ? places[byId[place - 1]!]! : place;
             }
             shared.corpus = {
-              key, parts, ids, refs, partFile, fileRanges, iso, titles, longs, places, byPlace: Uint32Array.from(byId),
-              indexOf: new Map(refs.map((ref, index) => [ref, index] as const)), postings: new Map(),
+              key, count: ids.length, ids, fileRanges, spans, strings,
+              providers: Int32Array.from(column.providers), transcripts: Int32Array.from(column.transcripts),
+              partFile: Int32Array.from(column.partFile), ordinals: Int32Array.from(column.ordinals),
+              lines: Int32Array.from(column.lines), blocks: Int32Array.from(column.blocks), pieces: Int32Array.from(column.pieces),
+              dates: Float64Array.from(column.dates), sessions: Int32Array.from(column.sessions), roles: Int32Array.from(column.roles),
+              authors: Int32Array.from(column.authors), names: Int32Array.from(column.names), marks: Int32Array.from(column.marks),
+              longs: Uint32Array.from(column.longs), titlePhraseWords: new Map(),
+              places, byPlace: Uint32Array.from(byId), postings: new Map(),
               version: indexVersion(database!) === version ? version : undefined,
               skips: skips.n - before,
             };
@@ -1097,6 +1156,105 @@ export function chat(options: ChatOptions = {}): CandidateSource {
             onePass.served += 1;
           }
         }
+        /** A part of the call's one walk at its stored row, or undefined. */
+        const indexAt = (transcript: number, ordinal: number): number | undefined => {
+          const span = corpus!.spans.get(transcript);
+          if (span === undefined) return undefined;
+          let [low, high] = span;
+          while (low < high) {
+            const middle = (low + high) >>> 1;
+            const at = corpus!.ordinals[middle]!;
+            if (at === ordinal) return middle;
+            if (at < ordinal) low = middle + 1;
+            else high = middle;
+          }
+          return undefined;
+        };
+        /** A part of the call's one walk, from its stored fields; its text
+         *  is not read. */
+        const fieldsOf = (index: number): RawPart => {
+          const c = corpus!;
+          const range = c.fileRanges[c.partFile[index]!]!;
+          const name = c.names[index]!;
+          const mark = c.marks[index]!;
+          return {
+            provider: c.strings[c.providers[index]!]! as ChatProvider, root: range.root, file: range.file,
+            line: c.lines[index]!, block: c.blocks[index]!, piece: c.pieces[index]!,
+            sessionId: c.strings[c.sessions[index]!]!, role: c.strings[c.roles[index]!]! as MessageRole,
+            author: c.strings[c.authors[index]!]! as Author,
+            ...(name < 0 ? {} : { authorName: c.strings[name]! }),
+            ...(mark < 0 ? {} : { unit: c.strings[mark]! as Unit }),
+            date: c.dates[index]!, text: '',
+          };
+        };
+        /** A part's title as ranks and phrase matches read it (`partTitle`). */
+        const titleIn = (c: ChatCorpus, index: number) =>
+          `${c.strings[c.providers[index]!]!} ${c.strings[c.sessions[index]!]!} ${c.strings[c.roles[index]!]!} ${zonedIso(c.dates[index]!, zone)}`;
+        const titleOf = (index: number) => titleIn(corpus!, index);
+        // A part whose stored row no longer holds it is left out of every
+        // read of the call, and the record counts it.
+        const leftOut = (index: number) => { (shared!.changed ??= new Set()).add(index); };
+        const changed = () => (shared?.changed?.size ?? 0) === 0 ? {} : { changed: shared!.changed!.size };
+        /** Parts of the walk's stored rows, read by key a transcript at a
+         *  time, with the columns `select` names. A part whose row no
+         *  longer holds it, because another call re-indexed its transcript
+         *  since the walk, has none. */
+        const rowsOf = (indexes: Iterable<number>, select: string): Map<number, Record<string, unknown>> => {
+          const c = corpus!;
+          const byTranscript = new Map<number, Map<number, number>>();
+          for (const index of indexes) {
+            const transcript = c.transcripts[index]!;
+            let wanted = byTranscript.get(transcript);
+            if (wanted === undefined) byTranscript.set(transcript, wanted = new Map());
+            wanted.set(c.ordinals[index]!, index);
+          }
+          const found = new Map<number, Record<string, unknown>>();
+          if (byTranscript.size === 0) return found;
+          const statement = database!.prepare(`SELECT ordinal, line, block, piece, ${select} FROM parts
+            WHERE transcript = ? AND ordinal IN (SELECT value FROM json_each(?))`);
+          for (const [transcript, wanted] of byTranscript) {
+            cancelled(request.signal);
+            for (const row of statement.iterate(transcript, JSON.stringify([...wanted.keys()])) as Iterable<Record<string, unknown>>) {
+              const index = wanted.get(row.ordinal as number);
+              if (index === undefined || row.line !== c.lines[index] || row.block !== c.blocks[index]
+                || row.piece !== c.pieces[index]) continue;
+              found.set(index, row);
+            }
+            for (const index of wanted.values()) if (!found.has(index)) leftOut(index);
+          }
+          return found;
+        };
+        const textsOf = (indexes: Iterable<number>): Map<number, string> => {
+          const texts = new Map<number, string>();
+          for (const [index, row] of rowsOf(indexes, 'text')) texts.set(index, row.text as string);
+          return texts;
+        };
+        const wordsOf = (indexes: Iterable<number>): Map<number, StoredChatWords> => {
+          const words = new Map<number, StoredChatWords>();
+          for (const [index, row] of rowsOf(indexes, 'long, stems, short')) {
+            words.set(index, { long: row.long as number, stems: row.stems as string, short: row.short as string });
+          }
+          return words;
+        };
+        /** Every part of the walk's stored row, a transcript at a time in
+         *  walk order, with the columns `select` names; a part whose row no
+         *  longer holds it is visited with none. */
+        const eachRow = (select: string, visit: (index: number, row: Record<string, unknown> | undefined) => void) => {
+          const c = corpus!;
+          const statement = database!.prepare(`SELECT ordinal, line, block, piece, ${select} FROM parts WHERE transcript = ?`);
+          for (const [transcript, [start, end]] of c.spans) {
+            cancelled(request.signal);
+            const rows = new Map<number, Record<string, unknown>>();
+            for (const row of statement.iterate(transcript) as Iterable<Record<string, unknown>>) rows.set(row.ordinal as number, row);
+            for (let index = start; index < end; index += 1) {
+              const row = rows.get(c.ordinals[index]!);
+              const same = row !== undefined && row.line === c.lines[index] && row.block === c.blocks[index]
+                && row.piece === c.pieces[index];
+              if (!same) leftOut(index);
+              visit(index, same ? row : undefined);
+            }
+          }
+        };
         /** The parts of the call's one walk whose text or title can hold
          *  `phrase`, in walk order: the phrase index names the texts that
          *  hold it, and the titles holding its first word are added. Each
@@ -1108,40 +1266,151 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           if (query === undefined) return [];
           const found = new Set<number>();
           for (const row of database!.prepare('SELECT rowid AS id FROM phrases WHERE phrases MATCH ?').iterate(query) as Iterable<{ id: number }>) {
-            const index = corpus!.indexOf.get(`${Math.floor(row.id / PHRASE_ROW)}:${row.id % PHRASE_ROW}`);
+            const index = indexAt(Math.floor(row.id / PHRASE_ROW), row.id % PHRASE_ROW);
             if (index !== undefined) found.add(index);
           }
           // The rows of an index another update changed since the walk do
           // not describe the texts it holds.
-          if (indexVersion(database!) !== corpus!.version) return corpus!.parts.map((_, index) => index);
-          if (corpus!.titlePhraseWords === undefined) {
-            const titles = new Map<string, number[]>();
-            corpus!.titles.forEach((title, index) => {
-              for (const word of new Set(phraseWords(title).split(' '))) {
-                const list = titles.get(word);
-                if (list === undefined) titles.set(word, [index]);
-                else list.push(index);
-              }
-            });
-            corpus!.titlePhraseWords = titles;
+          if (indexVersion(database!) !== corpus!.version) return Array.from({ length: corpus!.count }, (_, index) => index);
+          const first = phraseWords(phrase).split(' ')[0]!;
+          let holders = corpus!.titlePhraseWords.get(first);
+          if (holders === undefined) {
+            // A title's words are its provider's, session id's and role's,
+            // found once a string, and its date's, which are digits, or a
+            // day and hour joined by a `t`: read only for a word like them.
+            const c = corpus!;
+            const holds = new Map<number, boolean>();
+            const has = (at: number) => {
+              let found = holds.get(at);
+              if (found === undefined) holds.set(at, found = phraseWords(c.strings[at]!).split(' ').includes(first));
+              return found;
+            };
+            const dated = /^(?:\d+|\d\dt\d\d)$/.test(first);
+            holders = [];
+            for (let index = 0; index < c.count; index += 1) {
+              if (has(c.providers[index]!) || has(c.sessions[index]!) || has(c.roles[index]!)
+                || (dated && phraseWords(zonedIso(c.dates[index]!, zone)).split(' ').includes(first))) holders.push(index);
+            }
+            c.titlePhraseWords.set(first, holders);
           }
-          for (const index of corpus!.titlePhraseWords.get(phraseWords(phrase).split(' ')[0]!) ?? []) found.add(index);
+          for (const index of holders) found.add(index);
           return [...found].sort((left, right) => left - right);
         };
-        /** A part of the call's one walk as a lane hands it on. */
-        const held = (index: number, extra: Pick<MemoryCandidate, 'signals' | 'laneScore' | 'pastLaneCut'>): MemoryCandidate => {
-          const part = corpus!.parts[index]!;
+        /** A part of the call's one walk as a lane hands it on, with its
+         *  stored text. */
+        const held = (index: number, text: string, extra: Pick<MemoryCandidate, 'signals' | 'laneScore' | 'pastLaneCut'>): MemoryCandidate => {
+          const part = fieldsOf(index);
+          const iso = zonedIso(part.date, zone);
           return {
             sourceId: id, role: 'reference',
             id: corpus!.ids[index]!,
             title: `${part.provider} ${part.sessionId} ${part.role}${part.authorName === undefined ? AUTHOR_TITLES[part.author]
-              : ` (${part.author} ${part.authorName})`} ${corpus!.iso[index]!}`,
-            text: part.text,
+              : ` (${part.author} ${part.authorName})`} ${iso}`,
+            text,
             contentRef: `${part.provider}:${part.sessionId}:${part.line}:${part.block}:${part.piece}`,
             ...chatOf(part, corpus!.ids[index]!),
-            date: { value: corpus!.iso[index]!, meaning: 'recorded' as const },
+            date: { value: iso, meaning: 'recorded' as const },
             ...extra,
           };
+        };
+        /** The title index of every title of the walk, holding only these
+         *  stems and short words (see `ChatTitleIndex`). A title is
+         *  `${provider} ${sessionId} ${role} ${date}` (`partTitle`): the
+         *  first three are a few strings many parts share, so their words
+         *  are found once a string, and a date's words are made from each
+         *  part's date only when one of the terms could be one of them. */
+        const titleTerms = (stems: readonly string[], shorts: readonly string[]): ChatTitleIndex => {
+          const c = corpus!;
+          const stemOn = ({ ...CHAT_KEYWORD_SETTINGS, ...options.keyword }).stem;
+          const words = (text: string) => text.toLowerCase().split(/[^a-z0-9]+/);
+          const known = new Map<number, { long: number; stems: Map<string, number>; shorts: Map<string, number> }>();
+          const wordsOfString = (at: number) => {
+            let found = known.get(at);
+            if (found === undefined) {
+              found = { long: 0, stems: new Map(), shorts: new Map() };
+              for (const word of words(c.strings[at]!)) {
+                if (word.length > 2) {
+                  found.long += 1;
+                  const stem = stemOn ? porterStem(word) : word;
+                  found.stems.set(stem, (found.stems.get(stem) ?? 0) + 1);
+                } else if (word !== '') {
+                  found.shorts.set(word, (found.shorts.get(word) ?? 0) + 1);
+                }
+              }
+              known.set(at, found);
+            }
+            return found;
+          };
+          // Every date's words, as `zonedIso` writes it, are a four-digit
+          // year, the day and hour joined by a `t`, three digits of
+          // milliseconds, and two-digit month, minutes, seconds and offset:
+          // three long words a date, which stem to themselves.
+          const dateLong = /^(?:\d{4}|\d\dt\d\d|\d{3})$/;
+          const dateShort = /^\d\d$/;
+          const datedStems = stems.filter((term) => dateLong.test(term));
+          const datedShorts = shorts.filter((word) => dateShort.test(word));
+          if (c.titleLengths === undefined) {
+            const lengths = new Uint32Array(c.count);
+            let length = 0;
+            for (let index = 0; index < c.count; index += 1) {
+              const date = c.dates[index]!;
+              const year = new Date(date).getUTCFullYear();
+              const dateWords = year > 0 && year < 9999 ? 3
+                : words(zonedIso(date, zone)).filter((word) => word.length > 2).length;
+              const kept = dateWords + wordsOfString(c.providers[index]!).long + wordsOfString(c.sessions[index]!).long
+                + wordsOfString(c.roles[index]!).long;
+              lengths[index] = kept + c.longs[index]!;
+              length += kept + c.longs[index]!;
+            }
+            c.titleLengths = { lengths, length };
+          }
+          const stemLists = new Map<string, number[]>(stems.map((term) => [term, []]));
+          const shortLists = new Map<string, number[]>(shorts.map((word) => [word, []]));
+          // Each string's occurrences of the terms, found once a string.
+          const hitsOf = new Map<number, (readonly [number[], number])[]>();
+          const hits = (at: number) => {
+            let found = hitsOf.get(at);
+            if (found === undefined) {
+              const own = wordsOfString(at);
+              found = [];
+              for (const [term, list] of stemLists) {
+                const count = own.stems.get(term);
+                if (count !== undefined) found.push([list, count]);
+              }
+              for (const [word, list] of shortLists) {
+                const count = own.shorts.get(word);
+                if (count !== undefined) found.push([list, count]);
+              }
+              hitsOf.set(at, found);
+            }
+            return found;
+          };
+          const dated = datedStems.length > 0 || datedShorts.length > 0;
+          for (let index = 0; index < c.count; index += 1) {
+            for (const at of [c.providers[index]!, c.sessions[index]!, c.roles[index]!]) {
+              for (const [list, count] of hits(at)) for (let n = 0; n < count; n += 1) list.push(index);
+            }
+            if (!dated) continue;
+            for (const word of words(zonedIso(c.dates[index]!, zone))) {
+              const list = word.length > 2 ? datedStems.includes(word) ? stemLists.get(word) : undefined
+                : datedShorts.includes(word) ? shortLists.get(word) : undefined;
+              list?.push(index);
+            }
+          }
+          return { parts: c.count, length: c.titleLengths.length, lengths: c.titleLengths.lengths, stems: stemLists, shorts: shortLists };
+        };
+        /** These parts of the walk as a lane hands them on, their texts read
+         *  by key; a part whose row no longer holds it is left out. */
+        const heldAll = (
+          indexes: readonly number[], extra: (index: number) => Pick<MemoryCandidate, 'signals' | 'laneScore' | 'pastLaneCut'>,
+        ): MemoryCandidate[] => {
+          const texts = textsOf(indexes);
+          const candidates: MemoryCandidate[] = [];
+          for (const index of indexes) {
+            const text = texts.get(index);
+            if (text !== undefined) candidates.push(held(index, text, extra(index)));
+          }
+          return candidates;
         };
 
         // A meaning lane embeds each part in bounded batches and keeps
@@ -1162,9 +1431,16 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           }
           const compute = async (list: readonly string[]): Promise<Lite> => {
             const queryVectors = (await embed(list, request.signal)).map((vector) => normalized(vector));
-            const lite: Lite = corpus === undefined
-              ? { queries: list, similarities: [], ids: [], refs: [], partFile: [], fileRanges: [] }
-              : { queries: list, similarities: [], ids: corpus.ids, refs: corpus.refs, partFile: corpus.partFile, fileRanges: corpus.fileRanges };
+            const refs: string[] = [];
+            const partFile: number[] = [];
+            const walked = corpus;
+            const lite: Lite = walked === undefined
+              ? { queries: list, similarities: new Float64Array(0), ids: [], refOf: (index) => refs[index]!, partFile, fileRanges: [] }
+              : { queries: list, similarities: new Float64Array(0), ids: walked.ids, partFile: walked.partFile,
+                fileRanges: walked.fileRanges, refOf: (index) => `${walked.transcripts[index]!}:${walked.ordinals[index]!}` };
+            // A walk without the corpus does not know its length: its
+            // similarities gather here and are packed at its end.
+            const gathered: number[] = [];
             let pending: string[] = [];
             let previous: { file: string; text: string } | undefined;
             const flush = async () => {
@@ -1173,42 +1449,60 @@ export function chat(options: ChatOptions = {}): CandidateSource {
               if (vectors.length !== pending.length) throw new TypeError('embed must return one vector per input text.');
               for (const vector of vectors) {
                 const unit = normalized(vector, queryVectors[0]!.length);
-                lite.similarities.push(queryVectors.map((query) => similarity(unit, query)));
+                for (const query of queryVectors) gathered.push(similarity(unit, query));
               }
               pending = [];
             };
             if (corpus !== undefined) {
               skips.n += corpus.skips;
-              const { parts } = corpus;
+              const { count, transcripts, ordinals } = corpus;
               // A store hands its vectors out again by key, so only an
               // embedder with no store has each part's unit vector kept
               // for the call, for a later query list to score.
               const stored = 'eachVector' in embed;
               if (!stored && corpus.units !== undefined
                 && (corpus.units[0]?.length ?? queryVectors[0]!.length) === queryVectors[0]!.length) {
-                for (const unit of corpus.units) lite.similarities.push(queryVectors.map((query) => similarity(unit, query)));
+                lite.similarities = new Float64Array(corpus.units.length * queryVectors.length);
+                corpus.units.forEach((unit, index) => queryVectors.forEach((query, at) => {
+                  lite.similarities[index * queryVectors.length + at] = similarity(unit, query);
+                }));
                 return lite;
               }
               const units: Float64Array[] | undefined = stored ? undefined : [];
+              // Each part's stored vector key, read a transcript at a time
+              // for this pass only.
+              const vecs: (string | null)[] = new Array<string | null>(count).fill(null);
+              eachRow('vec', (index, row) => { if (row !== undefined) vecs[index] = (row.vec as string | null) ?? null; });
+              // A text is read by key only for a part whose vector must be
+              // made: the store holds the rest.
+              const textAt = database!.prepare('SELECT line, block, piece, text FROM parts WHERE transcript = ? AND ordinal = ?');
+              const storedText = (index: number) => {
+                const row = textAt.get(transcripts[index]!, ordinals[index]!) as Record<string, unknown> | undefined;
+                return row !== undefined && row.line === corpus!.lines[index] && row.block === corpus!.blocks[index]
+                  && row.piece === corpus!.pieces[index] ? row.text as string : '';
+              };
               // A part embeds with the part before it in the walk when
               // both are in one file.
-              const own = (index: number) => embeddable(parts[index]!.text) ? parts[index]!.text : corpus!.titles[index]!;
-              const follows = (index: number) => index > 0 && parts[index - 1]!.file === parts[index]!.file;
+              const own = (index: number) => {
+                const stored = storedText(index);
+                return embeddable(stored) ? stored : titleOf(index);
+              };
+              const follows = (index: number) => index > 0 && corpus!.partFile[index - 1] === corpus!.partFile[index];
               const text = (index: number) => follows(index) ? `${own(index - 1)}\n${own(index)}` : own(index);
               // The stored key holds when the part before it in the walk
               // is the one before it in its transcript.
               const key = (index: number) => {
-                const part = parts[index]!;
-                const before = follows(index) ? parts[index - 1]! : undefined;
-                const holds = before === undefined ? part.ordinal === 0
-                  : before.transcript === part.transcript && before.ordinal === part.ordinal - 1;
-                return holds && part.vec !== null ? part.vec : textKey(text(index));
+                const before = follows(index) ? index - 1 : undefined;
+                const holds = before === undefined ? ordinals[index] === 0
+                  : transcripts[before] === transcripts[index] && ordinals[before] === ordinals[index]! - 1;
+                const vec = vecs[index]!;
+                return holds && vec !== null ? vec : textKey(text(index));
               };
-              lite.similarities = Array.from({ length: parts.length });
-              await eachPartVector(embed, parts.length, key, text, (index, vector) => {
+              lite.similarities = new Float64Array(count * queryVectors.length);
+              await eachPartVector(embed, count, key, text, (index, vector) => {
                 const unit = normalized(vector, queryVectors[0]!.length);
                 if (units !== undefined) units[index] = unit;
-                lite.similarities[index] = queryVectors.map((query) => similarity(unit, query));
+                queryVectors.forEach((query, at) => { lite.similarities[index * queryVectors.length + at] = similarity(unit, query); });
               }, request.signal);
               corpus.units = units;
               return lite;
@@ -1218,15 +1512,16 @@ export function chat(options: ChatOptions = {}): CandidateSource {
               if (last === undefined || last.file !== part.file) {
                 lite.fileRanges.push({ provider: part.provider, root: part.root, file: part.file, start: lite.ids.length });
               }
-              lite.partFile.push(lite.fileRanges.length - 1);
+              partFile.push(lite.fileRanges.length - 1);
               lite.ids.push(idOf(part));
-              if ('at' in part) lite.refs.push((part as StoredPart).at);
+              if ('at' in part) refs.push((part as StoredPart).at);
               const text = /[^\s\p{Cf}]/u.test(part.text) ? part.text : partTitle(part, zone);
               pending.push(previous?.file === part.file ? `${previous.text}\n${text}` : text);
               previous = { file: part.file, text };
               if (pending.length === 32) await flush();
             }
             await flush();
+            lite.similarities = Float64Array.from(gathered);
             return lite;
           };
           let lite = shared?.meaning;
@@ -1237,8 +1532,9 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           }
           let at = lite.queries.indexOf(request.task);
           if (at === -1) { lite = await compute([request.task]); at = 0; }
-          const similarities = lite.similarities.map((row) => row[at]!);
-          const { ids, refs, partFile, fileRanges } = lite;
+          const stride = lite.queries.length;
+          const similarities = Array.from({ length: lite.ids.length }, (_, index) => lite!.similarities[index * stride + at]!);
+          const { ids, refOf, partFile, fileRanges } = lite;
           const places = corpus?.places;
           const order = ids.map((_, index) => index)
             .sort(places === undefined
@@ -1272,7 +1568,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
             else bucket.add(index);
           }
           const byIndex = new Map<number, MemoryCandidate>();
-          for await (const [index, part] of corpus === undefined ? keptParts(wanted, fileRanges, refs) : []) {
+          for await (const [index, part] of corpus === undefined ? keptParts(wanted, fileRanges, refOf) : []) {
             byIndex.set(index, {
               sourceId: id, role: 'reference',
               id: ids[index]!, title: shownTitle(part, zone), text: part.text,
@@ -1284,7 +1580,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
             });
           }
           const candidates = corpus !== undefined
-            ? bodies.map((index) => held(index, {
+            ? heldAll(bodies, (index) => ({
               signals: { similarity: similarities[index]! }, laneScore: similarities[index]!,
               ...(mark && !passes(index) ? { pastLaneCut: true as const } : {}),
             }))
@@ -1295,7 +1591,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
             reasons.push(`the limit kept ${limited.length} of ${order.length} candidates`);
           }
           return {
-            status: 'read' as const, candidates, meaningLane: true, ...indexed,
+            status: 'read' as const, candidates, meaningLane: true, ...indexed, ...changed(),
             meaningScores: (mark ? order : limited).map((index) => ({
               id: ids[index]!, similarity: similarities[index]!,
               ...(mark && !passes(index) ? { pastLaneCut: true as const } : {}),
@@ -1316,16 +1612,24 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           const rank = startChatRank([request.topic, ...(request.paths ?? [])].join(' '), options.keyword);
           const matchOf = new Map<number, number>();
           const ids: string[] = corpus?.ids ?? [];
-          const refs: string[] = corpus?.refs ?? [];
-          const partFile: number[] = corpus?.partFile ?? [];
+          const refs: string[] = [];
+          const walkedFiles: number[] = [];
+          const partFile: ArrayLike<number> = corpus?.partFile ?? walkedFiles;
           const fileRanges: { provider: ChatProvider; root: string; file: string; start: number }[] = corpus?.fileRanges ?? [];
           if (corpus !== undefined) {
             skips.n += corpus.skips;
-            for (const [index, part] of corpus.parts.entries()) rank.observeStored(corpus.titles[index]!, part.words);
-            for (const index of phraseCandidates(request.task)) {
-              const part = corpus.parts[index]!;
-              const count = phraseCount(part.text, request.task) + phraseCount(corpus.titles[index]!, request.task);
-              if (count > 0 && (request.speakerOnly !== true || part.role === 'user')) matchOf.set(index, count);
+            // Every part's stored words count toward the topic's
+            // statistics, read a transcript at a time.
+            eachRow('long, stems, short', (index, row) => rank.observeStored(titleOf(index), row === undefined
+              ? { long: corpus!.longs[index]!, stems: '', short: '' }
+              : { long: row.long as number, stems: row.stems as string, short: row.short as string }));
+            const indexes = phraseCandidates(request.task);
+            const texts = textsOf(indexes);
+            for (const index of indexes) {
+              const text = texts.get(index);
+              if (text === undefined) continue;
+              const count = phraseCount(text, request.task) + phraseCount(titleOf(index), request.task);
+              if (count > 0 && (request.speakerOnly !== true || corpus.strings[corpus.roles[index]!] === 'user')) matchOf.set(index, count);
             }
           }
           for await (const part of corpus === undefined ? each(true, true) : []) {
@@ -1333,7 +1637,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
             if (last === undefined || last.file !== part.file) {
               fileRanges.push({ provider: part.provider, root: part.root, file: part.file, start: ids.length });
             }
-            partFile.push(fileRanges.length - 1);
+            walkedFiles.push(fileRanges.length - 1);
             ids.push(idOf(part));
             if ('at' in part) refs.push((part as StoredPart).at);
             observe(rank, part);
@@ -1350,8 +1654,10 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           const filesWithMatches = new Set([...matchOf.keys()].map((index) => partFile[index]!));
           if (corpus !== undefined) {
             // The matches score in the order the walk met them.
+            const words = wordsOf(matchOf.keys());
             for (const index of matchOf.keys()) {
-              rank.scoreStored(corpus.titles[index]!, corpus.parts[index]!.words, { heading: '', name: '', front: '' });
+              rank.scoreStored(titleOf(index), words.get(index) ?? { long: corpus.longs[index]!, stems: '', short: '' },
+                { heading: '', name: '', front: '' });
               matchedIndexes.push(index);
               matchedIds.push(ids[index]!);
             }
@@ -1392,7 +1698,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
             else bucket.add(index);
           }
           const byIndex = new Map<number, MemoryCandidate>();
-          for await (const [index, part] of corpus === undefined ? keptParts(wanted, fileRanges, refs) : []) {
+          for await (const [index, part] of corpus === undefined ? keptParts(wanted, fileRanges, (index) => refs[index]!) : []) {
             const position = at.get(index)!;
             byIndex.set(index, {
               sourceId: id, role: 'reference',
@@ -1406,7 +1712,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
             });
           }
           const candidates = corpus !== undefined
-            ? kept.map((index) => held(index, {
+            ? heldAll(kept, (index) => ({
               signals: { keyword: scores[at.get(index)!]!, phrase: matchOf.get(index)! },
               laneScore: base[at.get(index)!]!,
               ...(mark && !passes(index) ? { pastLaneCut: true as const } : {}),
@@ -1418,7 +1724,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
             reasons.push(`the limit kept ${request.limit} of ${curveKept.length} candidates`);
           }
           return {
-            status: 'read' as const, candidates, ...indexed,
+            status: 'read' as const, candidates, ...indexed, ...changed(),
             complete: reasons.length === 0,
             ...(reasons.length ? { partial: reasons.join('; ') } : {}),
             ...(cut ? { laneCutApplied: true as const, matched: order.length } : {}),
@@ -1431,9 +1737,13 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           const matched: MemoryCandidate[] = [];
           if (corpus !== undefined) {
             skips.n += corpus.skips;
-            for (const index of phraseCandidates(request.task)) {
-              const count = phraseCount(corpus.parts[index]!.text, request.task) + phraseCount(corpus.titles[index]!, request.task);
-              if (count > 0) matched.push(held(index, { signals: { phrase: count }, laneScore: count }));
+            const indexes = phraseCandidates(request.task);
+            const texts = textsOf(indexes);
+            for (const index of indexes) {
+              const text = texts.get(index);
+              if (text === undefined) continue;
+              const count = phraseCount(text, request.task) + phraseCount(titleOf(index), request.task);
+              if (count > 0) matched.push(held(index, text, { signals: { phrase: count }, laneScore: count }));
             }
           }
           for await (const part of corpus === undefined ? each(true, true) : []) {
@@ -1455,7 +1765,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           if (skips.n) reasons.push(`skipped ${skips.n} symbolic links or undated messages`);
           if (kept.length < matched.length) reasons.push(`the phrase limit kept ${kept.length} of ${matched.length} candidates`);
           return {
-            status: 'read', candidates: kept, ...indexed,
+            status: 'read', candidates: kept, ...indexed, ...changed(),
             complete: reasons.length === 0,
             ...(reasons.length ? { partial: reasons.join('; ') } : {}),
           };
@@ -1465,8 +1775,8 @@ export function chat(options: ChatOptions = {}): CandidateSource {
         // third pass reads back only the files that kept a part.
         const rank = startChatRank([request.task, ...(request.paths ?? [])].join(' '), options.keyword);
         let ids: string[];
-        let refs: string[] = [];
-        let partFile: number[];
+        let refOf: (index: number) => string = () => '';
+        let partFile: ArrayLike<number>;
         let fileRanges: { provider: ChatProvider; root: string; file: string; start: number }[];
         // An enumeration a per-lane read of this call left behind is not
         // the walk's: this lane then shares it as the per-lane path does.
@@ -1492,9 +1802,11 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           skips.n += corpus.skips;
           // A later keyword lane on the per-lane path shares the call's
           // first enumeration, whatever its own window: it finds this one.
-          shared!.keyword ??= { ids: corpus.ids, refs: corpus.refs, partFile: corpus.partFile, fileRanges: corpus.fileRanges,
-            titles: corpus.titles, longs: corpus.longs, skips: corpus.skips };
-          ({ ids, refs, partFile, fileRanges } = corpus);
+          const walked = corpus;
+          refOf = (index) => `${walked.transcripts[index]!}:${walked.ordinals[index]!}`;
+          shared!.keyword ??= { ids: corpus.ids, refOf, partFile: corpus.partFile, fileRanges: corpus.fileRanges,
+            titleOf: (index) => titleIn(walked, index), longs: corpus.longs, skips: corpus.skips };
+          ({ ids, partFile, fileRanges } = corpus);
           const { stems, shorts } = rank.postingTerms();
           let postingOf: ReturnType<IndexDatabase['prepare']> | undefined;
           const fold = (term: string, word: string, short: boolean) => {
@@ -1503,7 +1815,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
               postingOf ??= database!.prepare('SELECT transcript, ordinal, count FROM postings WHERE term = ?');
               posting = { index: [], count: [] };
               for (const row of postingOf.all(term) as { transcript: number; ordinal: number; count: number }[]) {
-                const index = corpus.indexOf.get(`${row.transcript}:${row.ordinal}`);
+                const index = indexAt(row.transcript, row.ordinal);
                 if (index === undefined) continue;
                 posting.index.push(index);
                 posting.count.push(row.count);
@@ -1514,18 +1826,19 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           };
           for (const term of stems) fold(term, term, false);
           for (const word of shorts) fold(`!${word}`, word, true);
-          rank.observeTitles(corpus.titleIndex ??= chatTitleIndex(corpus.titles, corpus.longs, options.keyword));
+          rank.observeTitles(titleTerms(stems, shorts));
           rank.scoreIndexed({ heading: '', name: '', front: '' });
         } else if (storedRoots === undefined) {
           ids = [];
-          partFile = [];
+          const walkedFiles: number[] = [];
+          partFile = walkedFiles;
           fileRanges = [];
           for await (const part of each(true, false)) {
             const last = fileRanges.at(-1);
             if (last === undefined || last.file !== part.file) {
               fileRanges.push({ provider: part.provider, root: part.root, file: part.file, start: ids.length });
             }
-            partFile.push(fileRanges.length - 1);
+            walkedFiles.push(fileRanges.length - 1);
             ids.push(idOf(part));
             observe(rank, part);
           }
@@ -1549,27 +1862,33 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           // same numbers a stored word bag rescan would read.
           let held = shared?.keyword;
           if (held === undefined) {
-            held = { ids: [], refs: [], partFile: [], fileRanges: [], titles: [], longs: [], skips: 0 };
+            const walkedIds: string[] = [];
+            const walkedRefs: string[] = [];
+            const walkedFiles: number[] = [];
+            const walkedRanges: { provider: ChatProvider; root: string; file: string; start: number }[] = [];
+            const titles: string[] = [];
+            const longs: number[] = [];
             const before = skips.n;
             for await (const part of each(true, false, true)) {
-              const last = held.fileRanges.at(-1);
+              const last = walkedRanges.at(-1);
               if (last === undefined || last.file !== part.file) {
-                held.fileRanges.push({ provider: part.provider, root: part.root, file: part.file, start: held.ids.length });
+                walkedRanges.push({ provider: part.provider, root: part.root, file: part.file, start: walkedIds.length });
               }
-              held.partFile.push(held.fileRanges.length - 1);
-              held.refs.push((part as StoredPart).at);
-              held.titles.push(partTitle(part, zone));
-              held.longs.push((part as StoredPart).words.long);
-              held.ids.push(idOf(part));
+              walkedFiles.push(walkedRanges.length - 1);
+              walkedRefs.push((part as StoredPart).at);
+              titles.push(partTitle(part, zone));
+              longs.push((part as StoredPart).words.long);
+              walkedIds.push(idOf(part));
             }
-            held.skips = skips.n - before;
+            held = { ids: walkedIds, refOf: (index) => walkedRefs[index]!, partFile: walkedFiles, fileRanges: walkedRanges,
+              titleOf: (index) => titles[index]!, longs, skips: skips.n - before };
             if (shared !== undefined) shared.keyword = held;
           } else {
             skips.n += held.skips;
           }
-          ({ ids, refs, partFile, fileRanges } = held);
+          ({ ids, refOf, partFile, fileRanges } = held);
           const { stems, shorts } = rank.postingTerms();
-          const indexOf = new Map(held.refs.map((ref, index) => [ref, index] as const));
+          const indexOf = new Map(ids.map((_, index) => [held!.refOf(index), index] as const));
           const postingOf = database!.prepare('SELECT transcript, ordinal, count FROM postings WHERE term = ?');
           const fold = (term: string, word: string, short: boolean) => {
             for (const row of postingOf.all(term) as { transcript: number; ordinal: number; count: number }[]) {
@@ -1579,7 +1898,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           };
           for (const term of stems) fold(term, term, false);
           for (const word of shorts) fold(`!${word}`, word, true);
-          held.titles.forEach((title, index) => rank.observeIndexed(index, title, held.longs[index]!));
+          for (let index = 0; index < ids.length; index += 1) rank.observeIndexed(index, held.titleOf(index), held.longs[index]!);
           rank.scoreIndexed({ heading: '', name: '', front: '' });
         }
         const places = corpus?.places;
@@ -1627,7 +1946,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           else bucket.add(index);
         }
         const byIndex = new Map<number, MemoryCandidate>();
-        for await (const [index, part] of corpus === undefined ? keptParts(wanted, fileRanges, refs) : []) {
+        for await (const [index, part] of corpus === undefined ? keptParts(wanted, fileRanges, refOf) : []) {
           byIndex.set(index, {
             sourceId: id, role: 'reference',
             id: ids[index]!, title: shownTitle(part, zone), text: part.text,
@@ -1641,7 +1960,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
         // A transcript that shrank mid-read leaves a kept index with no
         // part to materialize; it simply emits fewer.
         const candidates = corpus !== undefined
-          ? kept.map((index) => held(index, {
+          ? heldAll(kept, (index) => ({
             signals: { keyword: scores[index]! }, laneScore: base[index]!,
             ...(mark && !passes(index) ? { pastLaneCut: true as const } : {}),
           }))
@@ -1652,7 +1971,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           reasons.push(`the limit kept ${request.limit} of ${order.length} candidates`);
         }
         return {
-          status: 'read', candidates, ...indexed,
+          status: 'read', candidates, ...indexed, ...changed(),
           complete: reasons.length === 0,
           ...(reasons.length ? { partial: reasons.join('; ') } : {}),
           ...(cut ? { laneCutApplied: true, matched: limited.length } : {}),

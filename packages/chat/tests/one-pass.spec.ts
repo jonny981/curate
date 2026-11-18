@@ -310,7 +310,7 @@ describe('one-pass chat read', () => {
     await agree(() => chat({ paths: [root], index: { directory: cache } }), list, served);
   });
 
-  it('keeps a phrase lane to the parts the call holds when another call indexes an edit between its lanes', { timeout: 60_000 }, async () => {
+  it('reads a phrase lane\'s texts as the index holds them when another call indexes an edit between its lanes', { timeout: 60_000 }, async () => {
     const root = await folder();
     const cache = await folder();
     const said = (text: string) => transcript('claude-code', [message('claude-code', 'user', text)], root, 'session');
@@ -319,13 +319,33 @@ describe('one-pass chat read', () => {
     const held = source();
     const context = { files: new Map<string, Promise<string>>(), shared: new Map<object, unknown>() };
     await held.read({ task: 'orchard', wholeLanes: true }, context);
-    // Another call indexes an edit while this call holds the old text.
+    // Another call indexes an edit after this call's walk. The walk holds
+    // no text, so a later lane reads the edited part's text as it stands.
     await said('The orchard grows apples and pears instead.');
     await source().read({ task: 'apples' }, { files: new Map(), shared: new Map() });
-    for (const [phrase, texts] of [['quince', ['The orchard grows quince.']], ['apples', []]] as const) {
+    for (const [phrase, texts] of [['quince', []], ['apples', ['The orchard grows apples and pears instead.']]] as const) {
       const read = await held.read({ task: phrase, phraseLane: true }, context);
       expect(read.status === 'read' ? read.candidates.map((candidate) => candidate.text) : undefined, phrase).toEqual(texts);
     }
+  });
+
+  it('leaves out and counts a part whose row another call re-indexed as a different part', { timeout: 60_000 }, async () => {
+    const root = await folder();
+    const cache = await folder();
+    const said = (...texts: string[]) => transcript('claude-code', texts.map((text) => message('claude-code', 'user', text)), root, 'session');
+    await said('The orchard grows quince.', 'The quince needs pruning.');
+    const source = () => chat({ providers: ['claude-code'], paths: [root], index: { directory: cache } });
+    const held = source();
+    const context = { files: new Map<string, Promise<string>>(), shared: new Map<object, unknown>() };
+    await held.read({ task: 'orchard', wholeLanes: true }, context);
+    // Another call indexes the transcript cut to one line: the walk's
+    // second part has no row in the index any more.
+    await said('The quince orchard was sold.');
+    await source().read({ task: 'quince' }, { files: new Map(), shared: new Map() });
+    const read = await held.read({ task: 'quince', phraseLane: true }, context);
+    expect(read.status === 'read' ? read.candidates.map((candidate) => candidate.text) : undefined)
+      .toEqual(['The quince orchard was sold.']);
+    expect(read.status === 'read' ? read.changed : undefined).toBe(1);
   });
 
   it('serves a history with one part', { timeout: 60_000 }, async () => {

@@ -349,3 +349,18 @@ describe('the fused order', () => {
     await expect(limited.recall('recall the plan')).rejects.toThrow('did not finish');
   });
 });
+
+describe('parts a read left out because another call re-indexed them', () => {
+  it('counts them by source in the record, and only when there are some', async () => {
+    const source = (id: string, changed?: number): CandidateSource => ({ id, kind: 'markdown', role: 'reference',
+      async read() {
+        return { status: 'read', complete: true, candidates: [candidate({ sourceId: id, id: 'p0', signals: { keyword: 1 } })],
+          ...(changed === undefined ? {} : { changed }) };
+      } });
+    const { decide } = stubDecide((batch) => allAnswered(batch, 0.9));
+    const counted = await pickFromSources([source('notes', 2), source('docs')], { task: 'task' }, { task: 'task', decide });
+    expect(counted.record.changed).toEqual({ notes: 2 });
+    const none = await pickFromSources([source('docs')], { task: 'task' }, { task: 'task', decide });
+    expect('changed' in none.record).toBe(false);
+  });
+});

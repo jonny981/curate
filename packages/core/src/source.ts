@@ -243,6 +243,10 @@ export type CandidateReadResult =
       /** Files a rule read skipped because the agent's harness loads
        *  them every session itself, each with the reason. */
       readonly alwaysOnSkipped?: readonly { readonly file: string; readonly reason: string }[];
+      /** How many parts of the call's one walk the source's reads have
+       *  left out so far, because another call re-indexed their file and
+       *  their stored row no longer holds them. */
+      readonly changed?: number;
       /** Set by a reader that ranked with `decayHalfLife`: how many dated
        *  parts it ranked, and the ids of the parts its limit and lane cut
        *  kept (`added`) or left out (`dropped`) only because of decay. A
@@ -581,6 +585,7 @@ async function readKeywordSearches(
   let complete = true;
   let readAny = false;
   let alwaysOnSkipped: Extract<CandidateReadResult, { status: 'read' }>['alwaysOnSkipped'];
+  let changed = 0;
   let index: StoredIndexReport | undefined;
   // Decay's ranked count is the task's own lane's; `plainKept` holds the
   // parts the lanes keep without decay, so the source's added and
@@ -617,6 +622,7 @@ async function readKeywordSearches(
     readAny = true;
     alwaysOnSkipped ??= read.alwaysOnSkipped;
     index ??= read.index;
+    changed = Math.max(changed, read.changed ?? 0);
     if (lane === 0) decayRanked = read.decay?.actedOn;
     if (resolvedRevision === undefined && read.revision !== undefined) resolvedRevision = read.revision;
     if (resolvedRevision !== undefined && (request.revision !== undefined
@@ -689,6 +695,7 @@ async function readKeywordSearches(
       ({ ...unmarked(candidate), searchRanks: ranks, ...(past ? { pastLaneCut: true as const } : {}) })),
     lanes: reports,
     ...(alwaysOnSkipped === undefined ? {} : { alwaysOnSkipped }),
+    ...(changed === 0 ? {} : { changed }),
     ...(index === undefined ? {} : { index }),
     ...(decay === undefined ? {} : { decay }),
     ...(noSearchMatch ? { noSearchMatch: true } : {}),
@@ -962,8 +969,10 @@ async function readSearches(
     // The flag reads the combined read: a meaning lane that matched
     // rescues a keyword miss, and only a read that kept nothing is one.
     const { noSearchMatch: _keywordMiss, ...rest } = read;
+    // Each read counts every part its source has left out so far.
+    const changed = Math.max(read.changed ?? 0, ...meaningReads.map(({ read: laneRead }) => laneRead.changed ?? 0));
     // A part a meaning lane keeps is kept with or without decay.
-    return withSize({ ...rest, complete: read.complete && reasons.length === 0,
+    return withSize({ ...rest, ...(changed === 0 ? {} : { changed }), complete: read.complete && reasons.length === 0,
       candidates: combined, lanes,
       ...(rest.decay === undefined ? {} : { decay: { actedOn: rest.decay.actedOn,
         added: rest.decay.added.filter((id) => !meaningKept.has(id)),
@@ -1293,8 +1302,10 @@ export async function pickFromSources(
       : { keyword: keywordWhole, meaning: meaningWhole } };
   // What each source's stored index update did, by source id.
   const index: Record<string, StoredIndexReport> = Object.create(null);
+  const changed: Record<string, number> = Object.create(null);
   for (const [at, read] of reads.entries()) {
     if (read.status === 'read' && read.index !== undefined) index[sources[at]!.id] = read.index;
+    if (read.status === 'read' && (read.changed ?? 0) > 0) changed[sources[at]!.id] = read.changed!;
   }
   // The names found above, also when every source with name lanes on was absent.
   // A history's size went to the pick and stays out of the reads.
@@ -1303,5 +1314,6 @@ export async function pickFromSources(
     const { historySize: _size, ...rest } = read;
     return rest;
   }), record: { ...result.record, ...(found === undefined ? {} : { names: found }),
-    ...(Object.keys(index).length === 0 ? {} : { index }), levers, effects } };
+    ...(Object.keys(index).length === 0 ? {} : { index }),
+    ...(Object.keys(changed).length === 0 ? {} : { changed }), levers, effects } };
 }
