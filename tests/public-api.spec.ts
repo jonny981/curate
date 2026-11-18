@@ -2,10 +2,10 @@ import { asSourceReadError } from '@curatejs/core/internal';
 import { describe, expect, it } from 'vitest';
 
 import { curate, decisionFileStore, DEFAULT_MAX_QUESTION_TEXT, historySource, LABEL_KINDS, LABEL_LANE_BAR, LABEL_QUESTION_VERSION, pick, PICK_QUESTION_VERSION, pickFromSources, SourceReadError, type CandidateSource, type CurateOptions, type CurateRecord, type CurateResult, type DecisionStore, type HistorySettings, type LeverStates, type MemoryCandidate, type PickCache, type PickLabels, type PickOptions, type PickThresholds, type SourceSettings } from '@curatejs/core';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { chat, AGENT_CHAT_CASCADE, CHAT_CASCADE, chatSettings, type ChatOptions, type ChatProvider } from '@curatejs/chat';
+import { chat, AGENT_CHAT_CASCADE, CHAT_CASCADE, chatSettings, firstSessionLine, type ChatOptions, type ChatProvider } from '@curatejs/chat';
 import { git, GIT_HISTORY_CASCADE, gitSettings, type GitOptions } from '@curatejs/git';
 import { markdown, MARKDOWN_CASCADE, markdownSettings, knowledgeBase, rules, rulesSettings, type MarkdownOptions, type KnowledgeBaseOptions } from '@curatejs/markdown';
 
@@ -121,6 +121,16 @@ describe('package exports', () => {
     expect(historySource({ reader: unlabelled, ...chatSettings }).labelKinds).toEqual(LABEL_KINDS);
     expect(rules('/nonexistent')).toMatchObject({ rare: true, names: false, bar: 0.0146, ruleBar: 0.5 });
     expect(historySource({ reader: rules('/nonexistent'), ...markdownSettings }).ruleBar).toBeUndefined();
+  });
+
+  it('exports the first-line reader the skill admits sessions by', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'curate-first-line-'));
+    try {
+      writeFileSync(join(directory, 'session.jsonl'), '{"type":"session_meta"}\n{"type":"response_item"}\n');
+      expect(await firstSessionLine(join(directory, 'session.jsonl'))).toBe('{"type":"session_meta"}');
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it('exports the label gate, its kind questions and its option type', async () => {

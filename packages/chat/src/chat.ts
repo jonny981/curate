@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { createReadStream, type Dirent } from 'node:fs';
-import { lstat, open, readdir, readFile, realpath, stat } from 'node:fs/promises';
+import { type FileHandle, lstat, open, readdir, readFile, realpath, stat } from 'node:fs/promises';
 import type { Transform } from 'node:stream';
 import * as zlib from 'node:zlib';
 import { homedir } from 'node:os';
@@ -130,62 +130,135 @@ const isTranscript = (entry: Dirent, names: ReadonlySet<string>) => entry.isFile
  *  its compressed form, or removed, after the folder was listed. */
 const missing = (error: unknown) => (error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT';
 
-/** The data frames of a zstd file, found from their headers and block
- *  headers without decompressing: each frame's byte range and the content
- *  size it states, if any. Node's decompressor reads only a file's first
- *  frame, and ends a cut-off frame without an error, so the file's own
- *  structure is what tells a damaged session from a whole one. It throws
- *  unless the bytes are whole frames end to end: an empty file, a cut
- *  header, a block that runs past the end, a frame whose last block or
- *  checksum is missing, or bytes after the last frame. A file cut exactly
- *  between two frames still reads as whole: nothing in it says more
- *  followed. */
+/** One zstd frame of the open file `handle`, starting at `at`, found from
+ *  its header and block headers without decompressing: its byte range, the
+ *  content size it states, if any, and whether it is a skippable frame.
+ *  It throws unless the bytes from `at` hold one whole frame: a cut header,
+ *  a block that runs past the end, a missing last block or checksum, or
+ *  bytes that are not a frame. */
+async function frameAt(handle: FileHandle, file: string, at: number, total: number,
+): Promise<{ readonly start: number; readonly end: number; readonly size?: number; readonly skippable: boolean }> {
+  const read = async (from: number, length: number) => {
+    const buffer = Buffer.alloc(length);
+    const { bytesRead } = await handle.read(buffer, 0, length, from);
+    if (bytesRead !== length) throw new Error(`${file} is cut off at byte ${from + bytesRead}`);
+    return buffer;
+  };
+  const magic = (await read(at, 4)).readUInt32LE(0);
+  if ((magic & 0xfffffff0) === 0x184d2a50) {
+    // A skippable frame: its length, then bytes no decompressor reads.
+    const end = at + 8 + (await read(at + 4, 4)).readUInt32LE(0);
+    if (end > total) throw new Error(`${file} is cut off inside a skippable frame`);
+    return { start: at, end, skippable: true };
+  }
+  if (magic !== 0xfd2fb528) throw new Error(`${file} holds bytes that are not a zstd frame at byte ${at}`);
+  const descriptor = (await read(at + 4, 1))[0]!;
+  if ((descriptor & 0x08) !== 0) throw new Error(`${file} has a frame header with its reserved bit set at byte ${at}`);
+  const single = (descriptor & 0x20) !== 0;
+  const sizeField = [single ? 1 : 0, 2, 4, 8][descriptor >> 6]!;
+  const sizeAt = 5 + (single ? 0 : 1) + [0, 1, 2, 4][descriptor & 0x03]!;
+  const head = await read(at, sizeAt + sizeField);
+  const size = sizeField === 0 ? undefined : sizeField === 1 ? head[sizeAt]! : sizeField === 2 ? head.readUInt16LE(sizeAt) + 256
+    : sizeField === 4 ? head.readUInt32LE(sizeAt) : Number(head.readBigUInt64LE(sizeAt));
+  let end = at + sizeAt + sizeField;
+  for (let last = false; !last;) {
+    const block = await read(end, 3);
+    const value = block[0]! | (block[1]! << 8) | (block[2]! << 16);
+    last = (value & 1) === 1;
+    const type = (value >> 1) & 3;
+    if (type === 3) throw new Error(`${file} has a block of the reserved type at byte ${end}`);
+    end += 3 + (type === 1 ? 1 : value >>> 3);
+    if (end > total) throw new Error(`${file} is cut off inside a frame that starts at byte ${at}`);
+  }
+  if ((descriptor & 0x04) !== 0) end += 4;
+  if (end > total) throw new Error(`${file} is cut off before the checksum of a frame that starts at byte ${at}`);
+  return { start: at, end, ...(size === undefined ? {} : { size }), skippable: false };
+}
+
+/** The data frames of a zstd file, by `frameAt`, end to end. Node's
+ *  decompressor reads only a file's first frame, and ends a cut-off frame
+ *  without an error, so the file's own structure is what tells a damaged
+ *  session from a whole one. It throws unless the bytes are whole frames
+ *  end to end with at least one data frame: an empty file, a cut frame,
+ *  or bytes after the last frame. A file cut exactly between two frames
+ *  still reads as whole: nothing in it says more followed. */
 async function zstdFrames(file: string): Promise<{ readonly start: number; readonly end: number; readonly size?: number }[]> {
   const handle = await open(file, 'r');
   try {
     const total = (await handle.stat()).size;
-    const read = async (at: number, length: number) => {
-      const buffer = Buffer.alloc(length);
-      const { bytesRead } = await handle.read(buffer, 0, length, at);
-      if (bytesRead !== length) throw new Error(`${file} is cut off at byte ${at + bytesRead}`);
-      return buffer;
-    };
     const frames: { start: number; end: number; size?: number }[] = [];
-    if (total === 0) throw new Error(`${file} is empty`);
     for (let at = 0; at < total;) {
-      const magic = (await read(at, 4)).readUInt32LE(0);
-      if ((magic & 0xfffffff0) === 0x184d2a50) {
-        // A skippable frame: its length, then bytes no decompressor reads.
-        at += 8 + (await read(at + 4, 4)).readUInt32LE(0);
-        if (at > total) throw new Error(`${file} is cut off inside a skippable frame`);
+      const frame = await frameAt(handle, file, at, total);
+      if (!frame.skippable) frames.push({ start: frame.start, end: frame.end, ...(frame.size === undefined ? {} : { size: frame.size }) });
+      at = frame.end;
+    }
+    if (frames.length === 0) throw new Error(total === 0 ? `${file} is empty` : `${file} holds no zstd data frame`);
+    return frames;
+  } finally {
+    await handle.close();
+  }
+}
+
+/** The first line of a session file, plain (`.jsonl`) or compressed by
+ *  Codex (`.jsonl.zst`), without its line ending, or the whole text when
+ *  it has no newline. Nothing past that line is decoded: a plain file is
+ *  read in fixed-size chunks through one buffer, wiped when released; a
+ *  compressed one is decompressed frame by frame, by the same frame walk
+ *  the reader uses, only until the line ends, so it reads a line split
+ *  across frames, or after an empty or skippable frame. It throws when a
+ *  compressed file is empty, holds no data frame, or is damaged before the
+ *  line ends, and with the missing file's error when the file is gone. */
+export async function firstSessionLine(file: string): Promise<string> {
+  const handle = await open(file, 'r');
+  const kept: Buffer[] = [];
+  const line = () => Buffer.concat(kept).toString('utf8').replace(/\r$/, '');
+  try {
+    if (!file.endsWith(COMPRESSED)) {
+      const chunk = Buffer.alloc(65536);
+      try {
+        for (let at = 0; ;) {
+          const { bytesRead } = await handle.read(chunk, 0, chunk.length, at);
+          if (bytesRead === 0) return line();
+          const end = chunk.subarray(0, bytesRead).indexOf(10);
+          kept.push(Buffer.from(chunk.subarray(0, end >= 0 ? end : bytesRead)));
+          if (end >= 0) return line();
+          at += bytesRead;
+        }
+      } finally { chunk.fill(0); }
+    }
+    const total = (await handle.stat()).size;
+    let data = false;
+    for (let at = 0; at < total;) {
+      const magic = Buffer.alloc(4);
+      const { bytesRead } = await handle.read(magic, 0, 4, at);
+      if (bytesRead === 4 && (magic.readUInt32LE(0) & 0xfffffff0) === 0x184d2a50) {
+        at = (await frameAt(handle, file, at, total)).end;
         continue;
       }
-      if (magic !== 0xfd2fb528) throw new Error(`${file} holds bytes that are not a zstd frame at byte ${at}`);
-      const descriptor = (await read(at + 4, 1))[0]!;
-      if ((descriptor & 0x08) !== 0) throw new Error(`${file} has a frame header with its reserved bit set at byte ${at}`);
-      const single = (descriptor & 0x20) !== 0;
-      const sizeField = [single ? 1 : 0, 2, 4, 8][descriptor >> 6]!;
-      const sizeAt = 5 + (single ? 0 : 1) + [0, 1, 2, 4][descriptor & 0x03]!;
-      const head = await read(at, sizeAt + sizeField);
-      const size = sizeField === 0 ? undefined : sizeField === 1 ? head[sizeAt]! : sizeField === 2 ? head.readUInt16LE(sizeAt) + 256
-        : sizeField === 4 ? head.readUInt32LE(sizeAt) : Number(head.readBigUInt64LE(sizeAt));
-      let end = at + sizeAt + sizeField;
-      for (let last = false; !last;) {
-        const block = await read(end, 3);
-        const value = block[0]! | (block[1]! << 8) | (block[2]! << 16);
-        last = (value & 1) === 1;
-        const type = (value >> 1) & 3;
-        if (type === 3) throw new Error(`${file} has a block of the reserved type at byte ${end}`);
-        end += 3 + (type === 1 ? 1 : value >>> 3);
-        if (end > total) throw new Error(`${file} is cut off inside a frame that starts at byte ${at}`);
+      data = true;
+      // Node's decompressor stops at the end of the frame it starts in.
+      const input = createReadStream(file, { start: at });
+      const output = input.pipe(createZstdDecompress());
+      input.on('error', (error) => output.destroy(error));
+      let length = 0;
+      try {
+        for await (const chunk of output as AsyncIterable<Buffer>) {
+          const end = chunk.indexOf(10);
+          kept.push(Buffer.from(chunk.subarray(0, end >= 0 ? end : chunk.length)));
+          length += chunk.length;
+          chunk.fill(0);
+          if (end >= 0) return line();
+        }
+      } finally { output.destroy(); input.destroy(); }
+      // The frame ended before the line did: it must be whole, and give the size it states.
+      const frame = await frameAt(handle, file, at, total);
+      if (frame.size !== undefined && length !== frame.size) {
+        throw new Error(`${file} gives ${length} bytes from a frame that states ${frame.size}`);
       }
-      if ((descriptor & 0x04) !== 0) end += 4;
-      if (end > total) throw new Error(`${file} is cut off before the checksum of a frame that starts at byte ${at}`);
-      frames.push({ start: at, end, ...(size === undefined ? {} : { size }) });
-      at = end;
+      at = frame.end;
     }
-    if (frames.length === 0) throw new Error(`${file} holds no zstd data frame`);
-    return frames;
+    if (!data) throw new Error(total === 0 ? `${file} is empty` : `${file} holds no zstd data frame`);
+    return line();
   } finally {
     await handle.close();
   }

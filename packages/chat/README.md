@@ -43,6 +43,10 @@ const source = chat({ providers: ['claude-code', 'codex'], since: '14 days' });
   a whole one. A session Codex compresses after a read lists the folder
   is read in its compressed form; one gone in both forms is counted the
   same way.
+- **`firstSessionLine(path)`:** the first line of a session file, plain
+  (`.jsonl`) or compressed (`.jsonl.zst`), read no further than that line.
+  It rejects an empty or damaged compressed file, so a caller can admit a
+  session by its header with the same frame walk the reader uses.
 - **Dates:** `since` accepts an ISO date or a duration such as `'14 days'`
   or `'12 hours'`. An ISO date is the cutoff itself. A duration counts
   back from the task date: the read request's `taskDate`, else its `asOf`,

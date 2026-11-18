@@ -376,6 +376,38 @@ describe('Codex session folder restrictions', () => {
     expect(result.partial).toContain('could not decompress 3 compressed sessions');
   });
 
+  it('admits a compressed session whose first line spans frames or follows an empty or skippable frame', async () => {
+    const zstd = (bytes: Buffer) => (zlib as unknown as { zstdCompressSync(data: Buffer): Buffer }).zstdCompressSync(bytes);
+    const directory = await folder();
+    const root = join(directory, 'projects');
+    const sessions = join(directory, 'sessions', '2026', '01');
+    await Promise.all([root, sessions].map((path) => mkdir(path, { recursive: true })));
+    const body = Buffer.from(`${JSON.stringify(metadata(root))}\n${JSON.stringify(message)}\n`);
+    const half = Math.floor(JSON.stringify(metadata(root)).length / 2);
+    // A skippable frame: its marker, its length, then bytes no decompressor reads.
+    const skippable = Buffer.alloc(11);
+    skippable.writeUInt32LE(0x184d2a50);
+    skippable.writeUInt32LE(3, 4);
+    skippable.write('abc', 8);
+    const files = {
+      split: Buffer.concat([zstd(body.subarray(0, half)), zstd(body.subarray(half))]),
+      empty: Buffer.concat([zstd(Buffer.alloc(0)), zstd(body)]),
+      skipped: Buffer.concat([skippable, zstd(body)]),
+    };
+    for (const [name, bytes] of Object.entries(files)) {
+      await writeFile(join(sessions, `${name}.jsonl.zst`), bytes);
+      expect(await sessionHeader(join(sessions, `${name}.jsonl.zst`))).toEqual(metadata(root));
+    }
+    const { filter, source }: { filter: { admitted: string[]; unreadable: string[] }; source: CandidateSource } =
+      await snapshotCodex({ type: 'codex', path: join(directory, 'sessions'), allowedCwd: root }, join(directory, 'snapshot'));
+    expect(filter.admitted).toHaveLength(3);
+    expect(filter.unreadable).toEqual([]);
+    const result = await source.read({ task: 'orchard evidence' });
+    if (result.status !== 'read') throw new Error('Expected the admitted sessions to be read.');
+    expect(result.candidates.map((candidate) => candidate.text)).toEqual(Array(3).fill('Useful orchard evidence.'));
+    expect(result.complete).toBe(true);
+  });
+
   it('reads only admitted snapshot copies despite new sessions and changed originals', async () => {
     const directory = await folder();
     const root = join(directory, 'projects');

@@ -1,14 +1,13 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { closeSync, constants, createReadStream, existsSync, openSync, readSync, realpathSync, rmSync } from 'node:fs';
+import { closeSync, constants, existsSync, openSync, readSync, realpathSync, rmSync } from 'node:fs';
 import { copyFile, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createZstdDecompress } from 'node:zlib';
 import { curate, DEFAULT_MAX_QUESTION_TEXT, levelDistribution, pickFromSources, sinceCutoff, taskPeriod } from '@curatejs/core';
 import { jev } from '@curatejs/core/models';
-import { chat, scrubChat, AGENT_CHAT_CASCADE, CHAT_SEARCH_LINE_REGISTER, JUDGMENT_CHAT_CASCADE } from '@curatejs/chat';
+import { chat, firstSessionLine, scrubChat, AGENT_CHAT_CASCADE, CHAT_SEARCH_LINE_REGISTER, JUDGMENT_CHAT_CASCADE } from '@curatejs/chat';
 import { git, GIT_HISTORY_CASCADE, GIT_SEARCH_LINE_REGISTER } from '@curatejs/git';
 import { knowledgeBase, markdown, MARKDOWN_CASCADE, MARKDOWN_SEARCH_LINE_REGISTER } from '@curatejs/markdown';
 
@@ -389,30 +388,14 @@ export function sessionHeader(path) {
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { return null; }
 }
 
-// A compressed Codex session's header: its first line, decompressed as a
-// stream that stops at the first newline, so admission never decompresses
-// a whole session. It rejects when the start of the file does not
-// decompress, and when the file ends before its first line does and what
-// came out is not JSON: Node's decompressor ends an empty or cut-off file
-// without an error, and that is a damaged session, not one to refuse. A
-// whole first line that is not JSON gives null, as above.
+// A compressed Codex session's header: its first line, read by the chat
+// package's own frame walk, frame by frame only until that line ends, so
+// admission never decompresses a whole session and reads what the reader
+// reads. It rejects when the file is empty or damaged before its first line
+// ends; a first line that is not JSON gives null, as above.
 async function compressedHeader(path) {
-  const input = createReadStream(path);
-  const output = input.pipe(createZstdDecompress());
-  input.on('error', (error) => output.destroy(error));
-  const chunks = [];
-  let ended = true;
-  try {
-    for await (const chunk of output) {
-      const end = chunk.indexOf(10);
-      if (end >= 0) { chunks.push(Buffer.from(chunk.subarray(0, end))); ended = false; break; }
-      chunks.push(Buffer.from(chunk));
-    }
-  } finally { output.destroy(); input.destroy(); }
-  try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch {
-    if (ended) throw new Error(`${path} ends before its first line does`);
-    return null;
-  }
+  const line = await firstSessionLine(path);
+  try { return JSON.parse(line); } catch { return null; }
 }
 
 export async function allowedSession(header, allowedCwd) {

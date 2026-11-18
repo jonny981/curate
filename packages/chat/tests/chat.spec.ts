@@ -6,7 +6,7 @@ import { join, sep } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { cachedEmbeddings, historySource, LABEL_KINDS, pickFromSources, type CandidateReadRequest, type CandidateSource, type PickDecide, type PickQuestion } from '@curatejs/core';
-import { chat, chatSettings, type ChatProvider } from '../src/index.js';
+import { chat, chatSettings, firstSessionLine, type ChatProvider } from '../src/index.js';
 import { indexFilePath, STORED_INDEX_FORMAT } from '@curatejs/core/internal';
 import { CHAT_KEYWORD_SETTINGS, rankChat } from '../src/chat-rank.js';
 import { porterStem } from '../src/porter.js';
@@ -459,6 +459,37 @@ describe('compressed Codex sessions', () => {
       expect(result.candidates.map((part) => part.text).sort()).toEqual(['orchard answer 0', 'orchard question 0']);
       expect(result).toMatchObject({ complete: false, partial: expect.stringContaining('could not find 1 sessions moved or deleted during the read') });
     }
+  });
+});
+
+describe('firstSessionLine', () => {
+  const zstd = (bytes: Buffer) => (zlib as unknown as { zstdCompressSync(data: Buffer): Buffer }).zstdCompressSync(bytes);
+  const header = '{"type":"session_meta"}';
+  const body = Buffer.from(`${header}\r\n{"type":"response_item"}\n`);
+  const skippable = Buffer.concat([Buffer.from([0x50, 0x2a, 0x4d, 0x18, 3, 0, 0, 0]), Buffer.from('abc')]);
+  const file = async (name: string, bytes: Buffer) => { const path = join(await folder(), name); await writeFile(path, bytes); return path; };
+
+  it.each([
+    ['a plain file', 'session.jsonl', body],
+    ['one frame', 'session.jsonl.zst', zstd(body)],
+    ['a line split across two frames', 'session.jsonl.zst', Buffer.concat([zstd(body.subarray(0, 9)), zstd(body.subarray(9))])],
+    ['an empty frame before the session', 'session.jsonl.zst', Buffer.concat([zstd(Buffer.alloc(0)), zstd(body)])],
+    ['a skippable frame before the session', 'session.jsonl.zst', Buffer.concat([skippable, zstd(body)])],
+  ])('gives the first line of %s', async (_, name, bytes) => {
+    expect(await firstSessionLine(await file(name, bytes))).toBe(header);
+  });
+
+  it.each([
+    ['an empty file', Buffer.alloc(0)],
+    ['the first five bytes of a frame', zstd(body).subarray(0, 5)],
+    ['a skippable frame alone', skippable],
+    ['bytes that are not zstd', Buffer.from('not zstd')],
+  ])('rejects %s', async (_, bytes) => {
+    await expect(firstSessionLine(await file('session.jsonl.zst', bytes))).rejects.toThrow();
+  });
+
+  it('rejects a missing file with its own error', async () => {
+    await expect(firstSessionLine(join(await folder(), 'gone.jsonl'))).rejects.toMatchObject({ code: 'ENOENT' });
   });
 });
 
