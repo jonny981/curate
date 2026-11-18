@@ -821,6 +821,38 @@ it('orders by keyword score, then newer matching sessions at equal scores, whoev
   expect(items.every((item) => !('rankOrder' in item.signals))).toBe(true);
 });
 
+describe('the read cache', () => {
+  const answer = async (batch: { questions: { key: string }[] }) =>
+    Object.fromEntries(batch.questions.map((question) => [question.key, { status: 'answered', probability: 0.8 }]));
+  const counted = (names = false) => {
+    const reads: { task: string; phrase: boolean; whole: boolean }[] = [];
+    const source: CandidateSource = { id: 'notes', kind: 'markdown', role: 'reference', ...(names ? { names: true } : {}),
+      async read(request) {
+        reads.push({ task: request.task, phrase: request.phraseLane === true, whole: request.wholeLanes === true });
+        return { status: 'read', complete: true, candidates: [{ id: `${request.task}-part`, sourceId: 'notes', role: 'reference',
+          title: request.task, text: `Notes on ${request.task}.`, signals: { keyword: 1 } }] };
+      } };
+    return { reads, source };
+  };
+
+  it('reads a name lane on the task\'s own text apart from the search lane, and the search lane once', async () => {
+    const { reads, source } = counted(true);
+    await pickFullSources([source], { task: 'Alice Smith', wholeLanes: false }, { task: 'Alice Smith', decide: answer });
+    // The search lane takes the read made before the pick; the name lane
+    // makes its own phrase read; neither is read twice.
+    expect(reads.filter((read) => read.task === 'Alice Smith' && !read.phrase && !read.whole)).toHaveLength(1);
+    expect(reads.filter((read) => read.task === 'Alice Smith' && read.phrase)).toHaveLength(1);
+  });
+
+  it('hands every read made before the pick to its lane and reads no lane again', async () => {
+    const { reads, source } = counted();
+    await pickFullSources([source], { task: 'orchard', searchLines: ['pear trees', 'quince'], wholeLanes: false },
+      { task: 'orchard', decide: answer });
+    const lanes = reads.filter((read) => !read.whole);
+    expect(lanes.map((read) => read.task).sort()).toEqual(['orchard', 'pear trees', 'quince']);
+  });
+});
+
 it('keeps the person\'s parts in score order', () => {
   const candidate = (id: string, role: 'user' | 'assistant', author: 'person' | 'agent' | 'unmarked', score: number): MemoryCandidate => ({
     sourceId: 'chat', id, role: 'reference', title: '', text: '',

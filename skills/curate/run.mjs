@@ -738,7 +738,12 @@ export async function pickFullSources(sources, call, options, context = { files:
     .map((line) => line.trim()).filter(Boolean))];
   const cached = await Promise.all(sources.map(async (source) => {
     const reads = new Map();
-    const key = (read) => JSON.stringify([read.task, read.meaningLane !== undefined, read.wholeLanes === true]);
+    // A slot holds one lane's read: the key names everything that tells
+    // one lane's read from another's, so a name, phrase, kind or period
+    // lane on the same text as a search lane never takes the search
+    // lane's read.
+    const key = (read) => JSON.stringify([read.task, read.meaningLane !== undefined, read.wholeLanes === true,
+      read.phraseLane === true, read.topic ?? null, read.taskPeriod ?? null]);
     let revision = request.revision;
     for (const task of new Set([request.task, ...(request.searchLines ?? [])])) {
       // Lane cuts narrow each task and search line inside the read, so the
@@ -760,7 +765,9 @@ export async function pickFullSources(sources, call, options, context = { files:
           ...(revision === undefined ? {} : { revision }) };
         const read = await source.read(readRequest, context);
         if (read.status === 'read' && read.revision !== undefined) revision ??= read.revision;
-        reads.set(key(readRequest), { request: readRequest, read });
+        // The pick asks each slot once: one search lane a task, one
+        // meaning lane a query, the task and its lines read once each.
+        reads.set(key(readRequest), { read, askers: 1 });
       }
     }
     // The fused order is read whenever everyRanked is unset, and it
@@ -780,18 +787,17 @@ export async function pickFullSources(sources, call, options, context = { files:
         }
         return pools.get(ids);
       }
-      const held = reads.get(key(readRequest));
+      const slot = key(readRequest);
+      const held = reads.get(slot);
       // A read the cache does not hold — a name lane, a task-period read —
       // goes to the wrapped source with the same request.
       if (held === undefined) return source.read({ wholeLanes: false, ...readRequest }, context);
-      // The pick merges each lane's read once, and the cache lets it go
-      // then: the call does not keep every lane's parts and meaning scores
-      // once they are merged. A second ask for a lane reads it again with
-      // the request the cache read it with.
-      const { read } = held;
-      if (read === undefined) return source.read(held.request, context);
-      held.read = undefined;
-      return read;
+      // The pick merges each lane's read once, and the cache lets the read
+      // go when its last asker has taken it: the call does not keep every
+      // lane's parts and meaning scores once they are merged.
+      held.askers -= 1;
+      if (held.askers === 0) reads.delete(slot);
+      return held.read;
     } };
   }));
   return pickFromSources(cached, request, options);
