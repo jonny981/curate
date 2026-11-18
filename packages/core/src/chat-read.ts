@@ -535,7 +535,7 @@ export async function chatRead(input: ChatReadInput): Promise<ChatReadResult> {
     }
   };
   await walk(segments);
-  // Then the units of agent work the queries rank above their bends,
+  // Then the units of agent work above the bend of either ranking,
   // read as the segments are: each unit's starts, its parts the order
   // ranks first and then in its own order, and walks inside the unit.
   const units = stopped() ? [] : await unitStarts(agentUnits(input.parts), input.queries ?? [], input.embed);

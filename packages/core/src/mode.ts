@@ -155,7 +155,8 @@ export const rankedRead: ModeRead = async (input) => {
  *  new warm parts fall, then the topic segments that hold a warm person
  *  part or a search lane's top part, walked out from their warm parts,
  *  then the units of agent work (a subagent's prompt or report) that
- *  the queries rank above their bends among their own kind, read the
+ *  rank above the bend of the keyword ranking or of the meaning ranking
+ *  against the queries, among their own kind, read the
  *  same way, each container read in the order its parts' `place` gives. `rules`
  *  replaces any of its three decisions; with none it is the read
  *  measured on coding-agent transcripts. Make it once per mode: modes
