@@ -409,6 +409,16 @@ describe('sentenceCutoff', () => {
     expect(log).toBe('### Most likely answer\n\n#### pond (said 2024-03-13)\n\n… user: Should I net the pond?\n… assistant: Herons took two fish last spring.\n');
   });
 
+  it('keeps the name of a speaker the part names, as it keeps user and assistant', async () => {
+    const chat = { ...part('pond', 'm', '2024-03-13', 'Caroline: The koi are fat. Should I net the pond?\nMelanie: Nets help. Herons took two fish last spring.'),
+      speakers: ['Caroline', 'Melanie'] };
+    const { log } = await curate(TASK, picked([[chat, 0.9, 0]]), { sentenceCutoff: 0.5, decide: judge(['fat', 'Nets']) });
+    expect(log).toBe('### Most likely answer\n\n#### pond (said 2024-03-13)\n\n… Caroline: Should I net the pond?\n… Melanie: Herons took two fish last spring.\n');
+    // A name the part does not list opens no turn.
+    const plain = await curate(TASK, picked([[{ ...chat, speakers: [] }, 0.9, 0]]), { sentenceCutoff: 0.5, decide: judge(['fat', 'Nets']) });
+    expect(plain.log).toContain('… Should I net the pond?');
+  });
+
   it('judges the strongest item like any other, and leaves out and counts an item with no sentence kept', async () => {
     const { log, record } = await curate(TASK, picked([[SHED, 0.9, 0], [DIARY, 0.6, 1], [FIG, 0.5, 2]]),
       { sentenceCutoff: 0.5, decide: judge(['shed', 'hinges']) });

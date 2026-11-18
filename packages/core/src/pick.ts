@@ -61,6 +61,10 @@ export interface MemoryCandidate {
    *  conversation read reads a source's parts with one container as one
    *  sequence; a part with no place is a container of its own. */
   readonly place?: { readonly container: string; readonly at: readonly number[] };
+  /** The names that open a line of this part's text as `<name>: ` to say
+   *  who said it, as a messaging reader writes its turns; the layout
+   *  keeps the name on a speaker's first kept sentence. */
+  readonly speakers?: readonly string[];
   /** Transcript metadata; separate from the candidate's reference role. */
   readonly chat?: {
     readonly provider: 'claude-code' | 'codex';

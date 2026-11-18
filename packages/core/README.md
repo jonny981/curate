@@ -1585,9 +1585,9 @@ user: Should refunds use today's rate?
   to a full stop, question mark or exclamation mark followed by a space,
   or to the line's end; blank lines go. Kept sentences stay in their own
   words and order under the same headings, and `…` marks each place text
-  was left out. A line that opens `user: ` or `assistant: ` names its
-  speaker, and the first kept sentence of that speaker's turn carries
-  the name. An item with no sentence kept is left out, the strongest
+  was left out. A line that opens `user: `, `assistant: ` or
+  `<name>: ` for a name in the item's `speakers` names its speaker, and
+  the first kept sentence of that speaker's turn carries the name. An item with no sentence kept is left out, the strongest
   included, so the text can be empty. A sentence `decide` gives no rating
   stays. When the request fails, the whole text is returned as if no
   sentence were rated, and `record.sentences.failed` holds the message;

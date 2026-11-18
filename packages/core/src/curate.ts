@@ -66,8 +66,9 @@ export interface CurateOptions {
    *  headings, and `…` marks each place text was left out. An item with
    *  no sentence kept is left out. A sentence is the text up to a full
    *  stop, question mark or exclamation mark followed by a space, or to
-   *  the line's end; blank lines go. A line that opens `user: ` or
-   *  `assistant: ` names its speaker, and the first kept sentence of
+   *  the line's end; blank lines go. A line that opens `user: `,
+   *  `assistant: ` or `<name>: ` for a name in the item's `speakers`
+   *  names its speaker, and the first kept sentence of
    *  that speaker's turn carries the name. A sentence `decide` gives no
    *  rating stays. When the request fails, the whole text is returned as
    *  if no sentence were rated, and `record.sentences.failed` says why.
@@ -191,12 +192,15 @@ interface Sentence {
   readonly speaker?: string;
 }
 
-/** A text as sentences, in order. Blank lines hold none. */
-function sentencesOf(text: string): Sentence[] {
+const escaped = (name: string) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/** A text as sentences, in order. Blank lines hold none. A line opening
+ *  `user: `, `assistant: ` or one of `speakers` and a colon names who said it. */
+function sentencesOf(text: string, speakers: readonly string[] = []): Sentence[] {
   const sentences: Sentence[] = [];
   let turn = 0;
+  const opener = new RegExp(`^(${['user', 'assistant', ...speakers.filter((name) => name.trim() !== '')].map(escaped).join('|')}): `);
   text.split('\n').forEach((line, index) => {
-    const named = /^(user|assistant): /.exec(line);
+    const named = opener.exec(line);
     if (named) turn += 1;
     let speaker = named?.[1];
     for (const sentence of (named ? line.slice(named[0].length) : line).split(/(?<=[.!?])\s+/)) {
@@ -288,7 +292,7 @@ export async function curate(task: string, picked: PickResult, options: CurateOp
   const cutoff = options.sentenceCutoff ?? (options.decide === undefined ? false : DEFAULT_SENTENCE_CUTOFF);
   if (cutoff === false) return { log, record };
 
-  const split = taken.map((item) => sentencesOf(body(item)));
+  const split = taken.map((item) => sentencesOf(body(item), item.candidate.speakers));
   const batch: PickBatch = { task, questions: split.flatMap((sentences, part) => sentences.map((sentence, index) => ({
     key: `p${part}u${index}`, sourceId: `p${part}`, id: `u${index}`, role: 'reference' as const, title: '', anonymous: true,
     text: sentence.speaker === undefined ? sentence.text : `${sentence.speaker}: ${sentence.text}`,
