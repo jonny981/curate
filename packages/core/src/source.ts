@@ -1,3 +1,4 @@
+import { copyPart, omitted } from './part-copy.js';
 import type {
   CandidateSourceKind, MemoryCandidate, PickOptions, PickResult, PickSourceRead, SearchLaneOrigin,
 } from './pick.js';
@@ -457,14 +458,20 @@ function markLaneCut(group: readonly MemoryCandidate[]): MemoryCandidate[] {
   const matched = group.some((candidate) => laneScoreOf(candidate) > 0);
   const bend = matched ? laneBend(group.map(laneScoreOf)) : undefined;
   return group.map((candidate) => !matched || (bend !== undefined && laneScoreOf(candidate) <= bend)
-    ? { ...candidate, pastLaneCut: true } : candidate);
+    ? copyPart(candidate, { pastLaneCut: true }) : candidate);
 }
 
 /** The candidate without a `pastLaneCut` mark. */
 function unmarked(candidate: MemoryCandidate): MemoryCandidate {
-  const { pastLaneCut: _pastLaneCut, ...rest } = candidate;
-  return rest;
+  return omitted(candidate, ['pastLaneCut']);
 }
+
+/** What a part that reads its text on demand answers once the pick ends:
+ *  itself as a plain part holding its text, checked against the text it
+ *  was made from (undefined when its source no longer holds that text);
+ *  and a way to let go of the connections its reader holds open. */
+const SETTLE_PART = Symbol.for('curate.settle');
+const CLOSE_PARTS = Symbol.for('curate.close');
 
 /** The read request option each `searchRanks` position of a source's
  *  read comes from: its search tasks, then one meaning lane per distinct
@@ -530,8 +537,7 @@ function phraseFilter(
     candidates: (limited ? matches.slice(0, request.limit) : matches)
       // The lane's match score is the reader's `laneScore` when it
       // carried one, else the phrase's occurrence count.
-      .map(({ candidate, count }) => ({
-        ...candidate,
+      .map(({ candidate, count }) => copyPart(candidate, {
         signals: { ...candidate.signals, phrase: count },
         laneScore: candidate.laneScore ?? count,
       })),
@@ -664,7 +670,7 @@ async function readKeywordSearches(
         const rank = ranked.size;
         ranked.add(key);
         const value = read.revision === undefined || candidate.sourceRevision !== undefined
-          ? candidate : { ...candidate, sourceRevision: read.revision };
+          ? candidate : copyPart(candidate, { sourceRevision: read.revision });
         const existing = union.get(key);
         const past = candidate.pastLaneCut === true;
         if (existing === undefined) {
@@ -696,7 +702,7 @@ async function readKeywordSearches(
     status: 'read', complete,
     ...(resolvedRevision === undefined ? {} : { revision: resolvedRevision }),
     candidates: [...union.values()].map(({ candidate, ranks, past }) =>
-      ({ ...unmarked(candidate), searchRanks: ranks, ...(past ? { pastLaneCut: true as const } : {}) })),
+      copyPart(unmarked(candidate), { searchRanks: ranks, ...(past ? { pastLaneCut: true as const } : {}) })),
     lanes: reports,
     ...(alwaysOnSkipped === undefined ? {} : { alwaysOnSkipped }),
     ...(changed === 0 ? {} : { changed }),
@@ -786,7 +792,7 @@ async function readSearches(
     for (const candidate of full.candidates) {
       const key = JSON.stringify([candidate.sourceId, candidate.id]);
       if (!union.has(key) && candidate.role === 'reference') {
-        union.set(key, { ...unmarked(candidate), searchRanks: undefined, poolOnly: true });
+        union.set(key, copyPart(unmarked(candidate), { searchRanks: undefined, poolOnly: true }));
       }
     }
     const partial = [read.partial, full.partial].filter(Boolean).join('; ');
@@ -823,7 +829,7 @@ async function readSearches(
       ).forEach((candidate, rank) => ranks.set(candidate, rank));
     }
     read = { ...read, candidates: read.candidates.map((candidate) =>
-      ranks.has(candidate) ? { ...candidate, searchRanks: [ranks.get(candidate)!] } : candidate) };
+      ranks.has(candidate) ? copyPart(candidate, { searchRanks: [ranks.get(candidate)!] }) : candidate) };
   }
   // The history's size by source ID on a 'size' read: the distinct parts
   // of the finished read and the pool together, as merging the pool
@@ -949,15 +955,14 @@ async function readSearches(
         existing?.searchRanks?.forEach((value, at) => { ranks[at] = value; });
         ranks[lane] = rank;
         const value = laneRead.revision === undefined || candidate.sourceRevision !== undefined
-          ? candidate : { ...candidate, sourceRevision: laneRead.revision };
+          ? candidate : copyPart(candidate, { sourceRevision: laneRead.revision });
         // Past the cut only while every lane holding it holds it past the cut; a pool member holds no lane.
         const past = marking && marked
           && (existing === undefined || existing.poolOnly === true || existing.pastLaneCut === true);
         const chosen = existing !== undefined && bestRank(existing.searchRanks) <= rank ? existing : value;
         // A lane rank ends pool-only membership, as `addMeaningRanks` does.
-        const { poolOnly: _poolOnly, ...rest } = unmarked(chosen);
-        union.set(key, { ...rest, searchRanks: ranks,
-          ...(past ? { pastLaneCut: true as const } : {}) });
+        union.set(key, copyPart(omitted(chosen, ['pastLaneCut', 'poolOnly']), { searchRanks: ranks,
+          ...(past ? { pastLaneCut: true as const } : {}) }));
         kept += 1;
         meaningKept.add(id);
       };
@@ -981,7 +986,7 @@ async function readSearches(
       const kept = candidate.searchRanks?.slice(tasks.length).some((rank) => rank !== null) === true;
       const slot = slotOf(candidate.sourceId, candidate.id, false);
       const sim = slot === undefined ? undefined : bestSims[slot];
-      return kept && sim !== undefined ? { ...candidate, meaningScore: sim } : candidate;
+      return kept && sim !== undefined ? copyPart(candidate, { meaningScore: sim }) : candidate;
     });
     const partial = [read.partial, ...reasons].filter(Boolean).join('; ');
     // The flag reads the combined read: a meaning lane that matched
@@ -1021,11 +1026,11 @@ async function readSearches(
       // lane rank, and stays here only so the pool read below is not
       // repeated for it.
       keyword.set(JSON.stringify([candidate.sourceId, candidate.id]),
-        candidate.poolOnly === true ? candidate : { ...candidate, searchRanks: candidate.searchRanks ?? [rank] });
+        candidate.poolOnly === true ? candidate : copyPart(candidate, { searchRanks: candidate.searchRanks ?? [rank] }));
     }
     for (const candidate of full.candidates) {
       const key = JSON.stringify([candidate.sourceId, candidate.id]);
-      if (!keyword.has(key)) keyword.set(key, { ...unmarked(candidate), searchRanks: Array(tasks.length).fill(null) });
+      if (!keyword.has(key)) keyword.set(key, copyPart(unmarked(candidate), { searchRanks: Array(tasks.length).fill(null) }));
     }
     candidates = [...keyword.values()];
     complete = read.complete && full.complete;
@@ -1081,8 +1086,8 @@ async function addTaskPeriod(
     const key = JSON.stringify([candidate.sourceId, candidate.id]);
     const existing = union.get(key);
     if (existing !== undefined && existing.poolOnly !== true) continue;
-    union.set(key, { ...unmarked(existing ?? candidate), searchRanks: undefined, poolOnly: true,
-      dateWindow: 'task-period' });
+    union.set(key, copyPart(unmarked(existing ?? candidate), { searchRanks: undefined, poolOnly: true,
+      dateWindow: 'task-period' }));
   }
   const partial = [found.partial, read.partial].filter(Boolean).join('; ');
   return { ...found, candidates: [...union.values()], complete: found.complete && read.complete,
@@ -1118,10 +1123,10 @@ function mergeCopies(candidates: readonly MemoryCandidate[]): MemoryCandidate[] 
       candidate.meaningScore ?? Number.NEGATIVE_INFINITY);
     // A merged candidate still needs at least one lane rank.
     unique.set(key, ranks.some((rank) => rank !== null)
-      ? { ...unmarked(chosen), searchRanks: ranks,
-          ...(Number.isFinite(meaningScore) ? { meaningScore } : {}), ...past }
-      : { ...unmarked(chosen), searchRanks: undefined,
-          ...(Number.isFinite(meaningScore) ? { meaningScore } : {}), ...past });
+      ? copyPart(unmarked(chosen), { searchRanks: ranks,
+          ...(Number.isFinite(meaningScore) ? { meaningScore } : {}), ...past })
+      : copyPart(unmarked(chosen), { searchRanks: undefined,
+          ...(Number.isFinite(meaningScore) ? { meaningScore } : {}), ...past }));
   }
   return [...unique.values()];
 }
@@ -1245,7 +1250,7 @@ export async function pickFromSources(
       candidates.push(
         read.revision === undefined || candidate.sourceRevision !== undefined
           ? candidate
-          : { ...candidate, sourceRevision: read.revision },
+          : copyPart(candidate, { sourceRevision: read.revision }),
       );
     }
   }
@@ -1271,10 +1276,20 @@ export async function pickFromSources(
   // Each source reads the call's task and search lines unless the
   // caller names its own; the units of agent work are ranked against them.
   const queries = [...new Set([request.task, ...(request.searchLines ?? [])].map((line) => line.trim()).filter(Boolean))];
-  // The lookups hand parts that read their text on demand: once the
-  // pick ends, the kept parts take their text, checked, and the lookups
-  // let go of their connections.
-  const closeLookups = () => { for (const parts of Object.values(partsBySource)) parts.close(); };
+  // A reader may hand parts that read their text on demand (they answer
+  // `SETTLE_PART` and `CLOSE_PARTS`). Once the pick ends, each kept one
+  // takes its text, checked against the text it was made from, and every
+  // such reader and lookup lets go of its connections.
+  // One part a class of such parts answers for all of them.
+  const closers = new Map<() => void, MemoryCandidate>();
+  for (const candidate of combined) {
+    const close = (candidate as unknown as Record<symbol, (() => void) | undefined>)[CLOSE_PARTS];
+    if (close !== undefined && !closers.has(close)) closers.set(close, candidate);
+  }
+  const closeLookups = () => {
+    for (const parts of Object.values(partsBySource)) parts.close();
+    for (const [close, part] of closers) close.call(part);
+  };
   let picked: Awaited<ReturnType<typeof pick>>;
   try {
     picked = await pick(combined, {
@@ -1291,12 +1306,14 @@ export async function pickFromSources(
     closeLookups();
     throw error;
   }
-  let selected = picked.selected;
+  const selected: MemoryCandidate[] = [];
   const settledChanged: Record<string, number> = Object.create(null);
-  for (const [sourceId, parts] of Object.entries(partsBySource)) {
-    const settled = parts.settle(selected);
-    selected = settled.kept;
-    if (settled.changed > 0) settledChanged[sourceId] = settled.changed;
+  for (const part of picked.selected) {
+    const settle = (part as unknown as Record<symbol, (() => MemoryCandidate | undefined) | undefined>)[SETTLE_PART];
+    if (settle === undefined) { selected.push(part); continue; }
+    const plain = settle.call(part);
+    if (plain === undefined) settledChanged[part.sourceId] = (settledChanged[part.sourceId] ?? 0) + 1;
+    else selected.push(plain);
   }
   closeLookups();
   const result = { ...picked, selected };

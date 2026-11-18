@@ -4,7 +4,7 @@ import { join, sep } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { cachedEmbeddings, historySource, LABEL_KINDS, pickFromSources, type CandidateReadRequest, type CandidateSource, type PickDecide, type PickQuestion } from '@curatejs/core';
+import { cachedEmbeddings, historySource, LABEL_KINDS, pickFromSources, type CandidateReadRequest, type CandidateSource, type MemoryCandidate, type PickDecide, type PickQuestion } from '@curatejs/core';
 import { chat, chatSettings, type ChatProvider } from '../src/index.js';
 import { indexFilePath, STORED_INDEX_FORMAT } from '@curatejs/core/internal';
 import { CHAT_KEYWORD_SETTINGS, rankChat } from '../src/chat-rank.js';
@@ -894,10 +894,14 @@ describe('stored index', () => {
     await transcript('claude-code', [message('claude-code', 'user', 'Alice runs the backup by hand on Fridays.')], directory, 'third');
     return directory;
   }
+  // A part the walk makes reads its title and text on demand; compared
+  // with its title and text as fields, as a direct read's part holds them.
+  const fieldsOf = (candidate: MemoryCandidate) => ({ ...Object.fromEntries(Object.entries(candidate)),
+    title: candidate.title, text: candidate.text });
   const withoutReport = (result: Awaited<ReturnType<CandidateSource['read']>>) => {
     if (result.status !== 'read') throw new Error('Expected a read');
     const { index: _index, ...rest } = result;
-    return rest;
+    return { ...rest, candidates: rest.candidates.map(fieldsOf) };
   };
 
   it('returns the same candidates and ranks from the stored index as from the transcripts, for every lane, on the first call and the second', { timeout: 60_000 }, async () => {

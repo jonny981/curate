@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { cachedEmbeddings, type CandidateReadRequest, type CandidateSource } from '@curatejs/core';
+import { cachedEmbeddings, type CandidateReadRequest, type CandidateSource, type MemoryCandidate } from '@curatejs/core';
 import { chat, type ChatProvider } from '../src/index.js';
 import { onePass } from '../src/chat.js';
 
@@ -100,10 +100,14 @@ async function history(root: string): Promise<void> {
 }
 
 type Read = Awaited<ReturnType<CandidateSource['read']>>;
+// A part the walk makes reads its title and text on demand; compared
+// with its title and text as fields, as the per-lane path's part holds them.
+const fieldsOf = (candidate: MemoryCandidate) => ({ ...Object.fromEntries(Object.entries(candidate)),
+  title: candidate.title, text: candidate.text });
 const bare = (result: Read) => {
   if (result.status !== 'read') throw new Error(`Expected a read, got ${result.status}`);
   const { index: _index, ...rest } = result;
-  return rest;
+  return { ...rest, candidates: rest.candidates.map(fieldsOf) };
 };
 
 /** Every lane of one call, in order or all at once. */

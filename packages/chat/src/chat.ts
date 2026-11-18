@@ -107,6 +107,25 @@ interface WalkContext {
  *  the call's walk. */
 const PART = Symbol('part');
 
+/** A part that reads its text on demand answers these, as core's
+ *  `pickFromSources` asks once a pick ends: `SETTLE` gives the part as a
+ *  plain part holding its text, checked against the text it was made
+ *  from (undefined when its row no longer holds it), and `CLOSE` lets go
+ *  of the index connection the call's parts read from. */
+const SETTLE = Symbol.for('curate.settle');
+const CLOSE = Symbol.for('curate.close');
+
+/** The parts of one call that read their text on demand, made from the
+ *  call's walk. */
+interface LazyParts {
+  /** A part from the walk, with the text it is made from and the fields
+   *  a lane adds; it holds neither its text nor its title. */
+  make(index: number, text: string, extra: Partial<MemoryCandidate>): MemoryCandidate;
+  /** A part whose row is gone: made with no text and counted as changed. */
+  gone(index: number, extra: Partial<MemoryCandidate>): MemoryCandidate;
+  close(): void;
+}
+
 /** A 32-bit FNV-1a hash of a text: whether a stored row still holds the
  *  text a part was made from. */
 function textHash(text: string): number {
@@ -547,6 +566,8 @@ interface Shared {
   corpus?: ChatCorpus;
   /** What this call works out from the walk for itself. */
   walkCache?: WalkCache;
+  /** The call's parts that read their text on demand. */
+  lazy?: LazyParts;
   /** The parts of the call's one walk its reads have left out because
    *  their stored row no longer held them, by place in the walk. */
   changed?: Set<number>;
@@ -1347,21 +1368,103 @@ export function chat(options: ChatOptions = {}): CandidateSource {
         };
         /** A part of the call's one walk as a lane hands it on, with its
          *  stored text. */
-        const held = (index: number, text: string, extra: Pick<MemoryCandidate, 'signals' | 'laneScore' | 'pastLaneCut'>): MemoryCandidate => {
-          const part = fieldsOf(index);
-          const iso = zonedIso(part.date, zone);
-          return {
-            sourceId: id, role: 'reference',
-            id: corpus!.ids[index]!,
-            title: `${part.provider} ${part.sessionId} ${part.role}${part.authorName === undefined ? AUTHOR_TITLES[part.author]
-              : ` (${part.author} ${part.authorName})`} ${iso}`,
-            text,
-            contentRef: `${part.provider}:${part.sessionId}:${part.line}:${part.block}:${part.piece}`,
-            ...chatOf(part, corpus!.ids[index]!),
-            date: { value: iso, meaning: 'recorded' as const },
-            ...extra,
+        // The call's parts made from the walk hold neither their text nor
+        // their title: both are made from the walk and the part's row when
+        // asked for. Every read of the call makes them with one class, so
+        // the pick settles and closes them together.
+        const lazyParts = (): LazyParts => {
+          if (shared!.lazy !== undefined) return shared!.lazy;
+          const c = corpus!;
+          const path = stored!.path;
+          let reader: IndexDatabase | undefined;
+          let textRow: ReturnType<IndexDatabase['prepare']> | undefined;
+          // A part's text, from its row; the hash of the text it was made
+          // from tells whether the row still holds that text.
+          const madeHash = new Map<number, number>();
+          const changedParts = new Set<number>();
+          const textAt = (index: number): string => {
+            textRow ??= (reader ??= openIndexFileNow(path)).prepare('SELECT line, block, piece, text FROM parts WHERE transcript = ? AND ordinal = ?');
+            const row = textRow.get(c.transcripts[index]!, c.ordinals[index]!) as
+              { line: number; block: number; piece: number; text: string } | undefined;
+            const same = row !== undefined && row.line === c.lines[index] && row.block === c.blocks[index]
+              && row.piece === c.pieces[index];
+            const text = same ? row.text : '';
+            if (!same || textHash(text) !== madeHash.get(index)) changedParts.add(index);
+            return text;
+          };
+          const titleAt = (index: number): string => {
+            const part = fieldsOf(index);
+            return `${part.provider} ${part.sessionId} ${part.role}${part.authorName === undefined ? AUTHOR_TITLES[part.author]
+              : ` (${part.author} ${part.authorName})`} ${zonedIso(part.date, zone)}`;
+          };
+          // A plain part with the same fields in the same order as one made
+          // with its text: the title and the text follow the id.
+          const plain = (part: LanePart, text: string): MemoryCandidate => {
+            const out: Record<string, unknown> = {};
+            for (const key of Object.keys(part)) {
+              out[key] = (part as unknown as Record<string, unknown>)[key];
+              if (key === 'id') {
+                out.title = titleAt(part[PART]);
+                out.text = text;
+              }
+            }
+            return out as unknown as MemoryCandidate;
+          };
+          const close = () => {
+            reader?.close();
+            reader = undefined;
+            textRow = undefined;
+          };
+          // A part: its fields and its place in the walk. A copy that keeps
+          // the prototype and the fields reads the same text and title.
+          class LanePart {
+            readonly [PART]: number;
+            constructor(fields: Partial<MemoryCandidate>, index: number) {
+              Object.assign(this, fields);
+              this[PART] = index;
+            }
+            get text(): string {
+              return textAt(this[PART]);
+            }
+            get title(): string {
+              return titleAt(this[PART]);
+            }
+            toJSON(): MemoryCandidate {
+              return plain(this, textAt(this[PART]));
+            }
+            [SETTLE](): MemoryCandidate | undefined {
+              const text = textAt(this[PART]);
+              return changedParts.has(this[PART]) ? undefined : plain(this, text);
+            }
+            [CLOSE](): void {
+              close();
+            }
+          }
+          const fieldsAt = (index: number, extra: Partial<MemoryCandidate>): Partial<MemoryCandidate> => {
+            const part = fieldsOf(index);
+            return {
+              sourceId: id, role: 'reference', id: c.ids[index]!,
+              contentRef: `${part.provider}:${part.sessionId}:${part.line}:${part.block}:${part.piece}`,
+              ...chatOf(part, c.ids[index]!),
+              date: { value: zonedIso(part.date, zone), meaning: 'recorded' as const },
+              ...extra,
+            };
+          };
+          return shared!.lazy = {
+            make(index, text, extra) {
+              madeHash.set(index, textHash(text));
+              return new LanePart(fieldsAt(index, extra), index) as unknown as MemoryCandidate;
+            },
+            gone(index, extra) {
+              madeHash.set(index, textHash(''));
+              changedParts.add(index);
+              return new LanePart(fieldsAt(index, extra), index) as unknown as MemoryCandidate;
+            },
+            close,
           };
         };
+        const held = (index: number, text: string, extra: Pick<MemoryCandidate, 'signals' | 'laneScore' | 'pastLaneCut'>): MemoryCandidate =>
+          lazyParts().make(index, text, extra);
         /** The title index of every title of the walk, holding only these
          *  stems and short words (see `ChatTitleIndex`). A title is
          *  `${provider} ${sessionId} ${role} ${date}` (`partTitle`): the
@@ -1833,39 +1936,27 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           const path = stored!.path;
           const made = new Map<number, MemoryCandidate>();
           const madeAt = new WeakMap<MemoryCandidate, number>();
-          // The lookup's own connection to the index, open until `close`.
-          let reader: IndexDatabase | undefined;
-          let textRow: ReturnType<IndexDatabase['prepare']> | undefined;
-          const own = () => reader ??= openIndexFileNow(path);
-          // A made part holds no text: it reads its text from its row each
-          // time it is asked for, and the hash of the text it was made from
-          // tells whether the row still holds that text.
-          const madeHash = new Map<number, number>();
-          const changedParts = new Set<number>();
-          const textAt = (index: number): string => {
-            textRow ??= own().prepare('SELECT line, block, piece, text FROM parts WHERE transcript = ? AND ordinal = ?');
-            const row = textRow.get(c.transcripts[index]!, c.ordinals[index]!) as
-              { line: number; block: number; piece: number; text: string } | undefined;
-            const same = row !== undefined && row.line === c.lines[index] && row.block === c.blocks[index]
-              && row.piece === c.pieces[index];
-            const text = same ? row.text : '';
-            if (!same || textHash(text) !== madeHash.get(index)) changedParts.add(index);
-            return text;
+          const lazy = lazyParts();
+          // The parts whose row still holds them. Apart from the transcript
+          // it serves, so the rows it reads are not kept by that
+          // transcript's functions.
+          const presentIn = (indexes: readonly number[]): Uint32Array => {
+            const previous = database;
+            database = own();
+            try {
+              const present = rowsOf(indexes, 'NULL AS none');
+              return Uint32Array.from(indexes.filter((index) => present.has(index)));
+            } finally {
+              database = previous;
+            }
           };
-          // A made part: its fields, its place in the walk, and its text
-          // read from its row whenever it is asked for (`textAt`). A copy
-          // that keeps the prototype and the fields reads the same text.
-          class MadePart {
-            readonly [PART]: number;
-            constructor(fields: Omit<MemoryCandidate, 'text'>, index: number) {
-              Object.assign(this, fields);
-              this[PART] = index;
-            }
-            get text(): string {
-              return textAt(this[PART]);
-            }
-          }
-          // The parts made, a few at a time, on the lookup's connection.
+          // The lookup's own connection to the index, for its reads by key,
+          // open until `close`.
+          let lookupDatabase: IndexDatabase | undefined;
+          const own = () => lookupDatabase ??= openIndexFileNow(path);
+          // The parts made, a few at a time, their texts read on a
+          // connection of the lookup's own.
+          const pooled = { signals: {}, searchRanks: undefined, poolOnly: true as const };
           const make = (indexes: readonly number[]): (MemoryCandidate | undefined)[] => {
             const wanted = indexes.filter((index) => !made.has(index));
             if (wanted.length > 0) {
@@ -1873,9 +1964,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
               database = own();
               try {
                 for (const [index, text] of textsOf(wanted)) {
-                  const { text: _text, ...fields } = held(index, text, { signals: {} });
-                  const candidate = new MadePart({ ...fields, searchRanks: undefined, poolOnly: true }, index) as unknown as MemoryCandidate;
-                  madeHash.set(index, textHash(text));
+                  const candidate = lazy.make(index, text, pooled);
                   made.set(index, candidate);
                   madeAt.set(candidate, index);
                 }
@@ -1889,10 +1978,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           // first found it: made from the walk with no text, and counted
           // as changed, so the call never keeps it.
           const gone = (index: number): MemoryCandidate => {
-            const { text: _text, ...fields } = held(index, '', { signals: {} });
-            const candidate = new MadePart({ ...fields, searchRanks: undefined, poolOnly: true }, index) as unknown as MemoryCandidate;
-            madeHash.set(index, textHash(''));
-            changedParts.add(index);
+            const candidate = lazy.gone(index, pooled);
             made.set(index, candidate);
             madeAt.set(candidate, index);
             return candidate;
@@ -2008,15 +2094,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
                 }
                 // The parts whose row still holds them, in place order; a
                 // part another call re-indexed away is left out and counted.
-                const previous = database;
-                database = own();
-                let present: Map<number, Record<string, unknown>>;
-                try {
-                  present = rowsOf(indexes, 'NULL AS none');
-                } finally {
-                  database = previous;
-                }
-                const rows = Uint32Array.from(indexes.filter((index) => present.has(index))).sort((left, right) =>
+                const rows = presentIn(indexes).sort((left, right) =>
                   c.lines[left]! - c.lines[right]! || c.blocks[left]! - c.blocks[right]! || c.pieces[left]! - c.pieces[right]!);
                 let ties = false;
                 for (let at = 1; at < rows.length && !ties; at += 1) {
@@ -2083,22 +2161,10 @@ export function chat(options: ChatOptions = {}): CandidateSource {
                   return own >= 0 ? own : position[(firsts ?? (first(at), firsts))!.get(c.places[at]!) ?? at]!;
                 };
               },
-              settle(selected) {
-                const kept: MemoryCandidate[] = [];
-                let changed = 0;
-                for (const part of selected) {
-                  if (!(part instanceof MadePart)) { kept.push(part); continue; }
-                  const { [PART]: at, ...fields } = part as unknown as MadePart & Omit<MemoryCandidate, 'text'>;
-                  const text = textAt(at);
-                  if (changedParts.has(at)) { changed += 1; continue; }
-                  kept.push({ ...fields, text } as MemoryCandidate);
-                }
-                return { kept, changed };
-              },
               close() {
-                reader?.close();
-                reader = undefined;
-                textRow = undefined;
+                lookupDatabase?.close();
+                lookupDatabase = undefined;
+                lazy.close();
               },
               ordered(compare) {
                 return withOrder(() => {

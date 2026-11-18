@@ -480,17 +480,6 @@ export async function snapshotCodex(entry, folder) {
     *person() { for (const part of parts.person()) yield shown(part); },
     units: () => parts.units().map(shown),
     place: (part) => parts.place(asked(part)),
-    settle: (selected) => {
-      const back = new Map();
-      const inner = selected.map((part) => {
-        if (part.sourceId !== source.id) return part;
-        const copy = asked(part);
-        back.set(copy, part);
-        return copy;
-      });
-      const { kept, changed } = parts.settle(inner);
-      return { kept: kept.map((part) => back.get(part) ?? (part.sourceId === source.id ? shown(part) : part)), changed };
-    },
     close: () => parts.close(),
     dealt: (laneIds) => {
       const dealt = parts.dealt(new Set([...laneIds].map((id) => id.replace(entry.path, folder))));
@@ -798,7 +787,9 @@ export function rankMatches(candidates, settings = {}) {
         || (Date.parse(b.date?.value ?? '') || 0) - (Date.parse(a.date?.value ?? '') || 0))
     || a.id.localeCompare(b.id));
   const step = candidates.reduce((maximum, candidate) => Math.max(maximum, Math.abs(score(candidate))), 0) + 1;
-  return sorted.map((candidate, index) => ({ ...candidate,
+  // Each copy keeps the part's prototype, as core's copies do: a part
+  // that reads its text on demand still holds none.
+  return sorted.map((candidate, index) => Object.assign(Object.create(Object.getPrototypeOf(candidate)), candidate, {
     signals: { ...candidate.signals, rankOrder: (sorted.length - index) * step },
   }));
 }

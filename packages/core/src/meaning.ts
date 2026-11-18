@@ -1,3 +1,4 @@
+import { copyPart, omitted } from './part-copy.js';
 import { existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import type { MemoryCandidate } from './pick.js';
@@ -416,14 +417,15 @@ export async function addMeaningRanks(
     }
     // A lane rank ends pool-only membership. A part is past the cut
     // while every lane holding it, keyword or meaning, holds it past.
-    const { poolOnly: _poolOnly, pastLaneCut: keywordPast, ...rest } = candidate;
+    const keywordPast = candidate.pastLaneCut;
+    const rest = omitted(candidate, ['poolOnly', 'pastLaneCut']);
     const keywordHeld = ranks[index]!.slice(0, keywordLanes).some((rank) => rank !== null);
     const past = keywordHeld ? keywordPast === true && pastMeaning[index] !== false : pastMeaning[index] === true;
     // A part a meaning lane kept holds its best similarity over the
     // queries, for the fused order the decide step reads.
     const meaningKept = ranks[index]!.slice(keywordLanes).some((rank) => rank !== null);
-    return [{ ...rest, searchRanks: ranks[index]!,
+    return [copyPart(rest, { searchRanks: ranks[index]!,
       ...(meaningKept ? { meaningScore: Math.max(...scores.map((lane) => lane[index]!)) } : {}),
-      ...(past ? { pastLaneCut: true as const } : {}) }];
+      ...(past ? { pastLaneCut: true as const } : {}) })];
   });
 }
