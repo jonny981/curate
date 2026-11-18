@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { conversationRead, pick, type MemoryCandidate, type PickCascade, type PickDecide } from '../src/index.js';
+import { conversationRead, pick, type MemoryCandidate, type PickBatch, type PickCascade, type PickDecide } from '../src/index.js';
 import { agentUnits, chatRead, topicShifts, unitDescriptors, unitStarts } from '../src/chat-read.js';
 import { modesOf } from './fixtures/modes.js';
 
@@ -85,6 +85,34 @@ describe('the chat read', () => {
     const unopened = await pick([...talk, part('talk', 5, 'agent', { ranks: [null, 0] }), ...agents(false)],
       { task, decide: rater(ratings).decide, ...agentRead });
     expect(unopened.record.candidates.find((entry) => entry.id === answer)?.status).toBe('unassessed');
+  });
+
+  it('judges a part an opened segment\'s walk reaches alone and whole, with the messages around it', async () => {
+    // A session no person part makes warm, opened by a lane's top part
+    // (line 5); the walk from it reaches line 6, which the person asked
+    // for (line 1) and answered (line 12).
+    const talk = [part('talk', 1, 'person', { ranks: [0, null] }), part('talk', 2, 'agent')];
+    const session = Array.from({ length: 12 }, (_, index) => {
+      const line = index + 1;
+      return line === 1 ? part('agents', 1, 'person', { text: 'Please check which database we use.' })
+        : line === 12 ? part('agents', 12, 'person', { text: 'Thanks, that settles it.' })
+          : part('agents', line, 'agent', line === 5 ? { ranks: [null, 0] } : {});
+    });
+    const ratings = { [idOf('talk', 1)]: 0.9, [idOf('agents', 5)]: 0.3, [idOf('agents', 6)]: 0.8 };
+    const requests: PickBatch[] = [];
+    const decide: PickDecide = async (batch) => {
+      requests.push(batch);
+      return rater(ratings).decide(batch, new AbortController().signal);
+    };
+    const opened = await pick([...talk, ...session], { task, decide, sourceKinds: chatKind,
+      modesBySource: { chat: { name: 'agent', questions: agentSet, read: conversationRead(),
+        wholeMessages: true, hardFacts: true, itemsPerRequest: 1 } } });
+    expect(opened.record.pick?.chatRead?.agent?.segments).toBe(2);
+    expect(requests.every((request) => request.alone === true && request.questions.length === 1)).toBe(true);
+    const reached = requests.flatMap((request) => request.questions).find((question) => question.id === idOf('agents', 6))!;
+    expect(reached.facts).toMatchObject({ kind: 'agent step', session: 'agents', position: 6, pieces: 1,
+      replies_to: { id: idOf('agents', 1), text: 'Please check which database we use.' },
+      answered_by: { id: idOf('agents', 12), text: 'Thanks, that settles it.' } });
   });
 
   it('stops when a request adds at most 0.3 times the most an earlier request added', async () => {
@@ -581,6 +609,23 @@ describe('the units of agent work as one more start', () => {
     const agentIds = new Set(agents.map((part) => part.id));
     expect(new Set(asked.flat().filter((id) => agentIds.has(id)).map((id) => id.replace(/:\d+:1:\d+$/, ''))))
       .toEqual(new Set(['claude-code:/home/me/.claude/projects:app/s/subagents/agent-a7.jsonl']));
+  });
+
+  it('judges an opened unit\'s report alone and whole, with the request that produced it', async () => {
+    const requests: PickBatch[] = [];
+    const { decide: rate } = rater(ratings);
+    const decide: PickDecide = async (batch, signal) => { requests.push(batch); return rate(batch, signal); };
+    await pick([...personSessions(4), ...agents], { task, decide, sourceKinds: chatKind,
+      modesBySource: { chat: { name: 'agent', questions: agentSet, read: conversationRead(),
+        wholeMessages: true, hardFacts: true, itemsPerRequest: 1 } },
+      queriesBySource: { chat: [task, 'postgres database decision'] }, embed });
+    expect(requests.every((request) => request.alone === true && request.questions.length === 1)).toBe(true);
+    const reports = requests.flatMap((request) => request.questions).filter((question) => question.id.includes('agent-a7') && question.id.includes(':9:'));
+    // The six-piece report is asked once, whole, with its request.
+    expect(reports).toHaveLength(1);
+    expect(reports[0]!.text).toContain('We chose Postgres for its transactions.');
+    expect(reports[0]!.facts).toMatchObject({ kind: 'subagent final report', pieces: 6,
+      asked: 'Look into the postgres database transactions question for the team.' });
   });
 
   it('opens the same units beside notes that outrank the chat in every lane and name the same topic', async () => {
