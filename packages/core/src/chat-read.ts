@@ -396,30 +396,44 @@ export async function chatRead(input: ChatReadInput): Promise<ChatReadResult> {
   const { score, stopped } = input;
   if (stopped()) return { read: [], requests: 0, segments: 0, units: 0, ended: 'stopped' };
   const members = new Set(input.parts);
-  // Each transcript's parts in their order, and its topic segments.
-  const transcripts = new Map<string, { part: MemoryCandidate; at: readonly number[] }[]>();
+  // Each transcript's parts. A part with no place is a container of its own.
+  const transcriptOf = (part: MemoryCandidate) => JSON.stringify([part.sourceId, part.place?.container ?? part.id]);
+  const transcripts = new Map<string, MemoryCandidate[]>();
   for (const part of input.parts) {
-    // A part with no place is a container of its own.
-    const transcript = JSON.stringify([part.sourceId, part.place?.container ?? part.id]);
-    const at = part.place?.at ?? [];
+    const transcript = transcriptOf(part);
     const list = transcripts.get(transcript);
-    if (list === undefined) transcripts.set(transcript, [{ part, at }]);
-    else list.push({ part, at });
+    if (list === undefined) transcripts.set(transcript, [part]);
+    else list.push(part);
   }
-  const where = new Map<MemoryCandidate, { readonly session: readonly MemoryCandidate[]; readonly at: number }>();
-  const segmentOf = new Map<MemoryCandidate, readonly MemoryCandidate[]>();
-  for (const list of transcripts.values()) {
-    const session = list.sort((left, right) => compareAt(left.at, right.at)).map(({ part }) => part);
-    session.forEach((part, at) => where.set(part, { session, at }));
-    const cuts = session.length < TILE_MIN ? []
-      : topicShifts(session.map((part) => /\S/.test(part.text) ? part.text : part.title));
-    let from = 0;
-    for (const to of [...cuts, session.length]) {
-      const segment = session.slice(from, to);
-      for (const part of segment) segmentOf.set(part, segment);
-      from = to;
+  // A transcript's parts in their order and its topic segments, worked
+  // out the first time the read reaches one of its parts: a transcript
+  // the read never touches is never ordered or split.
+  const sessions = new Map<string, { readonly session: readonly MemoryCandidate[];
+    readonly at: ReadonlyMap<MemoryCandidate, number>; readonly segments: ReadonlyMap<MemoryCandidate, readonly MemoryCandidate[]> }>();
+  const sessionOf = (part: MemoryCandidate) => {
+    const transcript = transcriptOf(part);
+    let found = sessions.get(transcript);
+    if (found === undefined) {
+      const session = [...transcripts.get(transcript)!]
+        .sort((left, right) => compareAt(left.place?.at ?? [], right.place?.at ?? []));
+      const segments = new Map<MemoryCandidate, readonly MemoryCandidate[]>();
+      const cuts = session.length < TILE_MIN ? []
+        : topicShifts(session.map((member) => /\S/.test(member.text) ? member.text : member.title));
+      let from = 0;
+      for (const to of [...cuts, session.length]) {
+        const segment = session.slice(from, to);
+        for (const member of segment) segments.set(member, segment);
+        from = to;
+      }
+      sessions.set(transcript, found = { session, at: new Map(session.map((member, at) => [member, at])), segments });
     }
-  }
+    return found;
+  };
+  const where = (part: MemoryCandidate) => {
+    const { session, at } = sessionOf(part);
+    return { session, at: at.get(part)! };
+  };
+  const segmentOf = (part: MemoryCandidate) => sessionOf(part).segments.get(part)!;
   // An order's parts, then every other part newest first.
   const listed = (order: readonly MemoryCandidate[]) => {
     const ranked = order.filter((part) => members.has(part));
@@ -449,11 +463,11 @@ export async function chatRead(input: ChatReadInput): Promise<ChatReadResult> {
   const rated = (part: MemoryCandidate) => seen.has(part) ? score(part) : undefined;
   // A walk decision about a part, with the facts the read has about it.
   const walkable = (part: MemoryCandidate) => {
-    const { session, at } = where.get(part)!;
+    const { session, at } = where(part);
     return rules.walksOn({ rating: score(part), best,
       neighbours: () => bestOf([session[at - 2], session[at - 1], session[at + 1], session[at + 2]]
         .map((next) => next === undefined ? undefined : rated(next))),
-      segment: () => bestOf(segmentOf.get(part)!.map((next) => next === part ? undefined : rated(next))) });
+      segment: () => bestOf(segmentOf(part).map((next) => next === part ? undefined : rated(next))) });
   };
 
   // Each request's new parts' ratings and the best rating when it ended.
@@ -463,7 +477,7 @@ export async function chatRead(input: ChatReadInput): Promise<ChatReadResult> {
     await rate(batch);
     if (rings) {
       const reply = (part: MemoryCandidate) => {
-        const { session, at } = where.get(part)!;
+        const { session, at } = where(part);
         return session[at + 1];
       };
       const warmPeople = batch.filter(walkable);
@@ -474,7 +488,7 @@ export async function chatRead(input: ChatReadInput): Promise<ChatReadResult> {
       });
       for (let width = 2; hot.length > 0 && !stopped(); width += 1) {
         const ring = hot.map((part) => {
-          const { session, at } = where.get(part)!;
+          const { session, at } = where(part);
           return [session[at - width + 1], session[at + width]]
             .filter((next): next is MemoryCandidate => next !== undefined && !seen.has(next));
         });
@@ -501,9 +515,9 @@ export async function chatRead(input: ChatReadInput): Promise<ChatReadResult> {
   // The segments to open, in the order's ranking of their best part.
   const heads = new Set<readonly MemoryCandidate[]>();
   for (const lane of input.lanes) {
-    for (const part of lane.slice(0, HEADS)) if (members.has(part)) heads.add(segmentOf.get(part)!);
+    for (const part of lane.slice(0, HEADS)) if (members.has(part)) heads.add(segmentOf(part));
   }
-  const opened = [...new Set([...read.map((part) => segmentOf.get(part)!), ...heads])].filter((segment) => rules.opens({
+  const opened = [...new Set([...read.map((part) => segmentOf(part)), ...heads])].filter((segment) => rules.opens({
     person: bestOf(segment.map((part) => person(part) ? rated(part) : undefined)),
     rating: bestOf(segment.map(rated)), best, laneHead: heads.has(segment) }));
   const first = (segment: readonly MemoryCandidate[]) =>
