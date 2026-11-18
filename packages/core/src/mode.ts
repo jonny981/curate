@@ -63,7 +63,14 @@ export interface Mode {
    *  maker's starting point for a clear no). The picks lead the text;
    *  every other kept part still follows, and nothing is dropped. It
    *  needs a decider that answers list requests, such as `jev()`. */
-  readonly choicePerFact?: boolean | { readonly bar?: number };
+  readonly choicePerFact?: boolean | {
+    readonly bar?: number;
+    /** After each round, ask whether the parts picked so far state
+     *  everything the task asks, of them alone in their own request; at
+     *  or over the bar (default 0.7, the maker's starting point for a
+     *  clear yes) every fact's loop ends. Off by default; measured only. */
+    readonly enough?: boolean | { readonly bar?: number };
+  };
   /** How the decide step reads the mode's parts on the fused order:
    *  `rankedRead` or a `conversationRead()`. Parts of modes that share
    *  a read are read together. */

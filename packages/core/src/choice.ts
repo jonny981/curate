@@ -16,6 +16,14 @@ export const FACT_CHOICE = {
   false: 'The items share its subject, plan it, ask about it or report work toward it, without stating it',
 } as const;
 
+/** The question that says whether the parts picked so far suffice: asked
+ *  of them alone, in their own request. */
+export const ENOUGH_QUESTION = {
+  question: 'Do these items together state everything the task asks?',
+  true: 'Every fact the task asks for is stated in them',
+  false: 'Some fact the task asks for is not stated in them',
+} as const;
+
 export interface ChoiceInput {
   readonly task: string;
   /** The facts the answer needs: one loop each. */
@@ -34,6 +42,9 @@ export interface ChoiceInput {
   /** Send each Choice's options in the reverse order, the state
    *  unchanged: the maker's check for a lean toward the first option. */
   readonly reverseOptions?: boolean;
+  /** After each round, ask whether the parts picked so far state
+   *  everything the task asks; at or over this, every loop ends. */
+  readonly enough?: number;
 }
 
 export interface ChoicePick {
@@ -49,11 +60,14 @@ export interface ChoiceResult {
   readonly facts: readonly {
     readonly fact: string;
     readonly picks: readonly ChoicePick[];
-    /** 'no' when the companion said no, 'empty' when no item was left. */
-    readonly ended: 'no' | 'empty';
+    /** 'no' when the companion said no, 'empty' when no item was left,
+     *  'enough' when the sufficiency question said the picks suffice. */
+    readonly ended: 'no' | 'empty' | 'enough';
   }[];
   readonly rounds: number;
   readonly requests: number;
+  /** The sufficiency question's answer after each round, when asked. */
+  readonly enough?: readonly number[];
 }
 
 /** A request the service refused as too large: asked again in halves. */
@@ -148,6 +162,7 @@ export async function choosePerFact(input: ChoiceInput): Promise<ChoiceResult> {
       return chooseAmong(loop, [await chooseAmong(loop, found.slice(0, middle)), await chooseAmong(loop, found.slice(middle))]);
     }
   };
+  const enough: number[] = [];
   let rounds = 0;
   for (let round = 1; loops.some((loop) => loop.ended === undefined); round += 1) {
     rounds = round;
@@ -164,6 +179,16 @@ export async function choosePerFact(input: ChoiceInput): Promise<ChoiceResult> {
       }
       if (loop.windows.every((window) => window.length === 0)) loop.ended = 'empty';
     }));
+    if (input.enough !== undefined && loops.some((loop) => loop.ended === undefined)) {
+      const picked = [...new Set(loops.flatMap((loop) => loop.picks.map((pick) => pick.key)))];
+      const answers = await ask(picked, { enough: { type: 'noul', question: ENOUGH_QUESTION.question,
+        trueCriterion: ENOUGH_QUESTION.true, falseCriterion: ENOUGH_QUESTION.false } });
+      const said = answered(answers.enough, 'the sufficiency question');
+      if (!('probability' in said)) throw new Error('The decision service answered a list question in the wrong shape.');
+      enough.push(said.probability);
+      if (said.probability >= input.enough) for (const loop of loops) loop.ended ??= 'enough';
+    }
   }
-  return { facts: loops.map(({ fact, picks, ended }) => ({ fact, picks, ended: ended! })), rounds, requests };
+  return { facts: loops.map(({ fact, picks, ended }) => ({ fact, picks, ended: ended! })), rounds, requests,
+    ...(input.enough === undefined ? {} : { enough }) };
 }

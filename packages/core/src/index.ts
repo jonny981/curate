@@ -13,7 +13,7 @@ export * from './levers.js';
 export { conversationRead, rankedRead, type Mode, type ModeRead, type ModeReadInput, type ModeReadResult } from './mode.js';
 export { opens, stops, walksOn, type ConversationRules, type OpenFacts, type StopFacts, type WalkFacts } from './chat-read.js';
 export { jevListRequest, jevRequest } from './models.js';
-export { choosePerFact, CHOICE_OPTIONS, FACT_CHOICE, type ChoiceInput, type ChoicePick, type ChoiceResult } from './choice.js';
+export { choosePerFact, CHOICE_OPTIONS, ENOUGH_QUESTION, FACT_CHOICE, type ChoiceInput, type ChoicePick, type ChoiceResult } from './choice.js';
 export { judgmentFacts, judgmentPopulation, modelScore, type JudgmentFacts, type JudgmentPopulation } from './judgments.js';
 export { sinceCutoff, taskMoment, taskPeriod, type TaskPeriod } from './time.js';
 export type { StoredIndexOptions, StoredIndexReport } from './stored-index.js';

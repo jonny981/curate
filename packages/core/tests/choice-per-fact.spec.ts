@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DecisionServiceError, jev } from '../src/models.js';
 import {
-  choosePerFact, curate, FACT_CHOICE, jevListRequest, pick, rankedRead, type MemoryCandidate, type Mode, type PickCascade,
+  choosePerFact, curate, ENOUGH_QUESTION, FACT_CHOICE, jevListRequest, pick, rankedRead, type MemoryCandidate, type Mode, type PickCascade,
   type PickDecide, type PickItem, type PickListDecide, type PickListRequest,
 } from '../src/index.js';
 
@@ -123,6 +123,29 @@ describe('a Choice per needed fact', () => {
   });
 });
 
+describe('the sufficiency question', () => {
+  it('asks after each round, of the picks alone, and ends every loop once they suffice', async () => {
+    const { requests, list } = lister();
+    // The picks suffice once both answers are among them.
+    const judged: PickListDecide = async (request, signal) => {
+      if (request.questions.enough === undefined) return list(request, signal);
+      requests.push(request);
+      const both = request.items.filter(([, part]) => part.text.includes('Postgres')).length === 2;
+      return { enough: { status: 'answered', probability: both ? 0.9 : 0.2 } };
+    };
+    const result = await choosePerFact({ task, facts: [fact, 'why it was chosen'], items, list: judged,
+      signal: new AbortController().signal, bar: 0.3, maxChars: Number.POSITIVE_INFINITY, enough: 0.7 });
+    const asked = requests.filter((request) => request.questions.enough !== undefined);
+    expect(asked.map((request) => request.items.map(([key]) => key))).toEqual([['P2'], ['P2', 'P4']]);
+    expect(jevListRequest(asked[0]!).questions).toEqual({ enough: { type: 'noul',
+      instructions: { question: 'Do these items together state everything the task asks?', items: 'items' },
+      criteria: { true: ENOUGH_QUESTION.true, false: ENOUGH_QUESTION.false } } });
+    expect(result.facts.map((loop) => loop.ended)).toEqual(['enough', 'enough']);
+    expect(result.enough).toEqual([0.2, 0.9]);
+    expect(result.rounds).toBe(2);
+  });
+});
+
 describe('a Choice per needed fact in a pick', () => {
   const set: PickCascade = { bias: 0, questions: [{ key: 'relevant', instructions: 'Relevant?', true: 'Yes', false: 'No', weight: 1 }] };
   const mode = (choicePerFact?: Mode['choicePerFact']): Mode => ({ name: 'notes', questions: set, read: rankedRead, needed: true,
@@ -170,6 +193,17 @@ describe('a Choice per needed fact in a pick', () => {
     const entry = (id: string) => result.record.candidates.find((candidate) => candidate.id === id)!;
     expect(entry('e').chosen).toEqual(entry('b').chosen);
     delete ratings.e;
+  });
+
+  it('records the sufficiency question\'s bar and answers when the mode asks it', async () => {
+    const { list } = lister();
+    const judged: PickListDecide = async (request, signal) => request.questions.enough === undefined ? list(request, signal)
+      : { enough: { status: 'answered', probability: 0.95 } };
+    const result = await pick(parts, { task, decide: decider(judged), needed: [fact], modesBySource: { notes: mode({ enough: true }) } });
+    expect(result.record.choicePerFact).toMatchObject({ rounds: 1, enough: { bar: 0.7, answers: [0.95] },
+      facts: [{ ended: 'enough', picks: [{ id: 'b' }] }] });
+    await expect(pick(parts, { task, decide: decider(judged), modesBySource: { notes: mode({ enough: { bar: -1 } }) } }))
+      .rejects.toThrow('modesBySource.notes.choicePerFact.enough.bar must be a number between 0 and 1.');
   });
 
   it('asks nothing when the call gives no needed facts, and says so', async () => {

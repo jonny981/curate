@@ -977,6 +977,14 @@ list, and its `reverseOptions` sends each Choice's options in reverse
 order, the state unchanged, to check the model's lean toward the first
 option.
 
+Off by default and measured only: `choicePerFact: { enough: true }`
+(or `{ enough: { bar } }`) asks after each round, of the parts picked so
+far alone in their own request, "Do these items together state
+everything the task asks?"; at or over its bar (0.7 unless set, the
+maker's starting point for a clear yes) every fact's loop ends. The
+record's `choicePerFact.enough` holds the bar and the answer after each
+round.
+
 ### Decision tags
 
 `tags` asks extra yes/no questions of each reference that passes

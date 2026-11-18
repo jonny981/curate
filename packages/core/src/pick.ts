@@ -772,11 +772,14 @@ export interface PickRecord {
     readonly bar: number;
     readonly facts: readonly {
       readonly fact: string;
-      readonly ended: 'no' | 'empty';
+      readonly ended: 'no' | 'empty' | 'enough';
       readonly picks: readonly { readonly id: string; readonly round: number; readonly probability: number; readonly any: number }[];
     }[];
     readonly rounds: number;
     readonly requests: number;
+    /** Present when the sufficiency question was on: its bar, and its
+     *  answer after each round. */
+    readonly enough?: { readonly bar: number; readonly answers: readonly number[] };
     readonly skipped?: string;
     readonly error?: string;
   };
@@ -1124,6 +1127,9 @@ const DEFAULT_LINKED_PATH_BAR = 0.4;
 /** The companion's bar a Choice per needed fact stops under by default:
  *  0.3, the decision model's maker's starting point for a clear no. */
 const CHOICE_BAR = 0.3;
+/** The sufficiency question's bar by default: 0.7, the decision model's
+ *  maker's starting point for a clear yes. */
+const ENOUGH_BAR = 0.7;
 /** The bar `answerTypes: true` asks the answer types at. */
 const ANSWER_TYPE_BAR = 0.5;
 const TIMED_OUT = Symbol('timed out');
@@ -3528,6 +3534,13 @@ export async function pick(
     return setting === undefined || setting === false ? undefined
       : typeof setting === 'object' && setting.bar !== undefined ? setting.bar : CHOICE_BAR;
   };
+  // The sufficiency question's bar, when the mode asks it.
+  const enoughBar = (candidate: MemoryCandidate) => {
+    const setting = modeFor(candidate.sourceId)?.choicePerFact;
+    const enough = typeof setting === 'object' ? setting.enough : undefined;
+    return enough === undefined || enough === false ? undefined
+      : typeof enough === 'object' && enough.bar !== undefined ? enough.bar : ENOUGH_BAR;
+  };
   const choosing = selected.filter((candidate) => candidate.role === 'reference' && choiceBar(candidate) !== undefined);
   if (choosing.length > 0) {
     const bar = choiceBar(choosing[0]!)!;
@@ -3554,7 +3567,9 @@ export async function pick(
     } else {
       try {
         const list = options.decide.list!;
+        const enough = enoughBar(choosing[0]!);
         const result = await choosePerFact({ task: options.task, facts: needed, header: headerOf(items[0]!), list, signal: decideSignal, bar,
+          ...(enough === undefined ? {} : { enough }),
           maxChars: Math.min(limits.maxBatchChars, list.maxChars ?? Number.POSITIVE_INFINITY),
           items: keyed.map(([key, item]) => {
             const { sourceId, id, title, text, role, date, kind, author, anonymous, facts } = pending(item, specsFor(item)[0]!).question;
@@ -3572,6 +3587,7 @@ export async function pick(
           }
         });
         choiceRecord = { bar, rounds: result.rounds, requests: result.requests,
+          ...(result.enough === undefined ? {} : { enough: { bar: enough!, answers: result.enough } }),
           facts: result.facts.map(({ fact, picks, ended }) => ({ fact, ended,
             picks: picks.map(({ key, round, probability, any }) => ({ id: itemOf.get(key)!.id, round, probability, any })) })) };
       } catch (error) {

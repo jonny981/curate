@@ -339,10 +339,19 @@ export function checkMode(mode: Mode, at: string): void {
     if (typeof choice !== 'object' || choice === null || Array.isArray(choice)) {
       throw new TypeError(`${at}.choicePerFact must be a boolean or { bar }.`);
     }
-    checkKeys(choice as object, ['bar'], `${at}.choicePerFact`);
-    const { bar } = choice as { bar?: unknown };
-    if (bar !== undefined && (typeof bar !== 'number' || !Number.isFinite(bar) || bar < 0 || bar > 1)) {
-      throw new TypeError(`${at}.choicePerFact.bar must be a number between 0 and 1.`);
+    checkKeys(choice as object, ['bar', 'enough'], `${at}.choicePerFact`);
+    const { bar, enough } = choice as { bar?: unknown; enough?: unknown };
+    const between = (value: unknown) => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1;
+    if (bar !== undefined && !between(bar)) throw new TypeError(`${at}.choicePerFact.bar must be a number between 0 and 1.`);
+    if (enough !== undefined && typeof enough !== 'boolean') {
+      if (typeof enough !== 'object' || enough === null || Array.isArray(enough)) {
+        throw new TypeError(`${at}.choicePerFact.enough must be a boolean or { bar }.`);
+      }
+      checkKeys(enough as object, ['bar'], `${at}.choicePerFact.enough`);
+      const { bar: enoughBar } = enough as { bar?: unknown };
+      if (enoughBar !== undefined && !between(enoughBar)) {
+        throw new TypeError(`${at}.choicePerFact.enough.bar must be a number between 0 and 1.`);
+      }
     }
   }
   if (typeof mode.name !== 'string' || !mode.name.trim()) throw new TypeError(`${at}.name must be a nonempty string.`);
