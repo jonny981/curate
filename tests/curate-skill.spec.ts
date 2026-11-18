@@ -13,7 +13,7 @@ import { indexFilePath, STORED_INDEX_FORMAT } from '@curatejs/core/internal';
 import { chat, CHAT_CASCADE, chatSettings } from '@curatejs/chat';
 import { git as gitSource } from '@curatejs/git';
 // @ts-expect-error The standalone JavaScript command has no type declarations.
-import { acceptScope, allowedSession, citable, decisionAnswers, haikuCall, instructionsProfile, lunaCall, NODE_FLOOR, pickFullSources, rankMatches, parseArgs, parseSearches, parseSources, run, DECISION_EXIT, PROCESSOR_WARNING, sandboxAvailable, scopedEntries, sourcesFor, searchLinesPrompt, searchRoute, searchSource, sessionHeader, SETUP, SETUP_EXIT, SetupError, setupGuide, snapshotCodex, writeLog } from '../skills/curate/run.mjs';
+import { acceptScope, allowedSession, citable, decisionAnswers, haikuCall, instructionsProfile, jsonPieces, writeJsonFile, lunaCall, NODE_FLOOR, pickFullSources, rankMatches, parseArgs, parseSearches, parseSources, run, DECISION_EXIT, PROCESSOR_WARNING, sandboxAvailable, scopedEntries, sourcesFor, searchLinesPrompt, searchRoute, searchSource, sessionHeader, SETUP, SETUP_EXIT, SetupError, setupGuide, snapshotCodex, writeLog } from '../skills/curate/run.mjs';
 
 const uncutPick = { everyRanked: true, everyScored: true } as const;
 
@@ -851,6 +851,27 @@ describe('the read cache', () => {
     const lanes = reads.filter((read) => !read.whole);
     expect(lanes.map((read) => read.task).sort()).toEqual(['orchard', 'pear trees', 'quince']);
   });
+});
+
+it('writes a value a piece at a time as the same text JSON.stringify makes', () => {
+  const values: unknown[] = [
+    {}, [], null, 0, -0, 'text', Number.NaN,
+    { candidates: [], nested: { empty: {}, list: [1, 'two', null, { deep: [[]] }] } },
+    { skipped: undefined, fn: () => 1, kept: true, items: [undefined, () => 2, Symbol('s'), 3] },
+    { when: new Date(Date.UTC(2026, 10, 18)), own: { toJSON: (key: string) => ({ key, inner: { toJSON: () => 'once' } }) } },
+    { quoted: 'line\nbreak "and" \u2028 tab\t', '2': 'numbers first', b: 1, a: 2, map: new Map([[1, 2]]) },
+    { record: { pick: { candidates: Array.from({ length: 3 }, (_, index) => ({ id: `part-${index}`, signals: { keyword: index / 3 } })) } } },
+  ];
+  for (const value of values) expect([...jsonPieces(value)].join('')).toBe(JSON.stringify(value, null, 2));
+  // The file holds the same bytes, written past the write buffer's size.
+  const large = { candidates: Array.from({ length: 5000 }, (_, index) => ({ id: `part-${index}`, text: 'é'.repeat(index % 40) })) };
+  const file = join(tmpdir(), `curate-json-pieces-${process.pid}.json`);
+  try {
+    writeJsonFile(file, large);
+    expect(readFileSync(file, 'utf8')).toBe(JSON.stringify(large, null, 2));
+  } finally {
+    realFs.rmSync(file, { force: true });
+  }
 });
 
 it('keeps the person\'s parts in score order', () => {

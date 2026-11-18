@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { closeSync, constants, existsSync, openSync, readSync, realpathSync, rmSync } from 'node:fs';
+import { closeSync, constants, existsSync, openSync, readSync, realpathSync, rmSync, writeSync } from 'node:fs';
 import { copyFile, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { homedir, tmpdir } from 'node:os';
@@ -659,6 +659,72 @@ export async function searchRoute(setting) {
 
 const words = (text) => text.normalize('NFKC').toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
 
+/** The text `JSON.stringify(value, null, 2)` makes, a piece at a time,
+ *  so a large value is written without the whole text held at once. */
+export function* jsonPieces(value) {
+  yield* pieces(value !== null && typeof value === 'object' && typeof value.toJSON === 'function' ? value.toJSON('') : value, '');
+}
+
+/** `jsonPieces` for a value whose own toJSON has already run. */
+function* pieces(value, indent) {
+  if (value === null || typeof value !== 'object'
+    || value instanceof Number || value instanceof String || value instanceof Boolean) {
+    yield JSON.stringify(value);
+    return;
+  }
+  const inner = `${indent}  `;
+  const skipped = (item) => item === undefined || typeof item === 'function' || typeof item === 'symbol';
+  // A member is left out, and an array item written null, by its value
+  // after its own toJSON, as JSON.stringify does.
+  const resolved = (item, name) => item !== null && typeof item === 'object' && typeof item.toJSON === 'function'
+    ? item.toJSON(name) : item;
+  if (Array.isArray(value)) {
+    if (value.length === 0) { yield '[]'; return; }
+    yield '[\n';
+    for (let index = 0; index < value.length; index += 1) {
+      const item = resolved(value[index], String(index));
+      yield inner;
+      if (skipped(item)) yield 'null';
+      else yield* pieces(item, inner);
+      yield index < value.length - 1 ? ',\n' : '\n';
+    }
+    yield `${indent}]`;
+    return;
+  }
+  const members = [];
+  for (const name of Object.keys(value)) {
+    const item = resolved(value[name], name);
+    if (!skipped(item)) members.push([name, item]);
+  }
+  if (members.length === 0) { yield '{}'; return; }
+  yield '{\n';
+  for (const [at, [name, item]] of members.entries()) {
+    yield `${inner}${JSON.stringify(name)}: `;
+    yield* pieces(item, inner);
+    yield at < members.length - 1 ? ',\n' : '\n';
+  }
+  yield `${indent}}`;
+}
+
+/** Writes `JSON.stringify(value, null, 2)` to a file without holding the
+ *  whole text: in one synchronous run, so the file holds one moment's value. */
+export function writeJsonFile(path, value) {
+  const handle = openSync(path, 'w', 0o600);
+  try {
+    let pending = '';
+    for (const piece of jsonPieces(value)) {
+      pending += piece;
+      if (pending.length >= 1 << 16) {
+        writeSync(handle, pending);
+        pending = '';
+      }
+    }
+    if (pending !== '') writeSync(handle, pending);
+  } finally {
+    closeSync(handle);
+  }
+}
+
 export function rankMatches(candidates, settings = {}) {
   const score = (candidate) => Object.values(candidate.signals).reduce((sum, value) => sum + value, 0);
   const sessions = new Map();
@@ -1200,8 +1266,9 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
   let saving = Promise.resolve();
   const save = () => {
     if (!records) return Promise.resolve();
-    const write = saving.then(() =>
-      writeFile(join(folder, 'record.json'), JSON.stringify(record, null, 2), { mode: 0o600 }));
+    // The record is written a piece at a time: a call's record can hold an
+    // entry for every part it read, and its whole text is never held.
+    const write = saving.then(() => writeJsonFile(join(folder, 'record.json'), record));
     saving = write.catch(() => {});
     return write;
   };
