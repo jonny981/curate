@@ -1654,8 +1654,9 @@ the request failed.
 An unknown option, an `answerTokens` that is not a positive integer, a
 `sentenceCutoff` that is neither `false` nor a number from 0 to 1, and
 a `decide` that is not a function each throw a `TypeError` before any
-call. A reference with no selected record entry and weight, or a pick
-with no selected reference, throws too.
+call. A reference with no selected record entry and weight throws too.
+A pick with no selected reference gives an empty text, and the record's
+`nothingKept` says so.
 
 ## Levers and source settings
 

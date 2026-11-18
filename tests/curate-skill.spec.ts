@@ -931,6 +931,21 @@ describe('the sentence cutoff, and what the skill tells the caller', () => {
     expect(lines).toEqual(['No sentence was rated at sentenceCutoff 0.5 or more; the text is empty.']);
   });
 
+  it('returns an empty text, writes the empty text and kept list, and says so, when no part was kept', async () => {
+    const directory = join(await folder(), 'run');
+    await mkdir(directory);
+    const record: { curate?: Record<string, unknown>; status?: string; timings: Record<string, number> } = { timings: {} };
+    const printed = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const result = await writeLog('orchard evidence', pickOf([]), directory, record, {});
+    expect(result.log).toBe('');
+    expect(printed.mock.calls).toEqual([['']]);
+    expect(errors.mock.calls.map((call) => String(call[0]))).toEqual(["No part was kept: none reached its source's keep bar, so the text is empty."]);
+    expect(record).toMatchObject({ status: 'complete', curate: { items: [], nothingKept: true } });
+    expect(await readFile(join(directory, 'log.md'), 'utf8')).toBe('');
+    expect(JSON.parse(await readFile(join(directory, 'kept.json'), 'utf8'))).toEqual([]);
+  });
+
   it('says on standard error how many parts at weight 0.5 or more the budget left out, and how to ask for more', async () => {
     const wide = (id: string) => reference(id, `${'the pear tree by the pond '.repeat(40)}${id}`);
     const { lines } = await told([[ORCHARD, 0.9], [wide('one'), 0.8], [wide('two'), 0.5], [wide('three'), 0.3]], { answerTokens: 60 });

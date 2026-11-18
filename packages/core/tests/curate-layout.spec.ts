@@ -354,8 +354,14 @@ describe('curate', () => {
     expect(record.items.find((item) => item.candidate === twice)?.id).toBe('selected-twice');
   });
 
-  it('fails when no reference was selected', async () => {
-    await expect(curate(TASK, picked([[RULE, 1, 0]]))).rejects.toThrow('no selected reference items');
+  it('gives an empty text, and says nothing was kept, when no reference was selected', async () => {
+    const asked: PickBatch[] = [];
+    const { log, record } = await curate(TASK, picked([[RULE, 1, 0]]),
+      { sentenceCutoff: 0.1, decide: async (batch) => { asked.push(batch); return {}; } });
+    expect(log).toBe('');
+    expect(record).toMatchObject({ items: [], estimatedTokens: 0, collapsed: 0, leftOut: { count: 0, atHalfOrMore: 0 }, nothingKept: true });
+    expect(record).not.toHaveProperty('sentences');
+    expect(asked).toHaveLength(0);
   });
 
   it('fails when a reference has no selected weight', async () => {

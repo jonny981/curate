@@ -115,6 +115,8 @@ export interface CurateRecord {
    *  items were left out for weighing under that share of their
    *  source's best item. They are not counted in `leftOut`. */
   readonly underShare?: number;
+  /** Present when the pick kept no reference part: the text is empty. */
+  readonly nothingKept?: true;
   /** Present when sentences were rated: what the sentence pass did. */
   readonly sentences?: {
     readonly cutoff: number;
@@ -266,8 +268,13 @@ export async function curate(task: string, picked: PickResult, options: CurateOp
     const id = shared.has(candidate.id) ? JSON.stringify([candidate.sourceId, candidate.id]) : candidate.id;
     return { id, candidate, weight: entry.probability };
   });
-  if (!items.length) throw new Error('curate: no selected reference items to curate.');
   const answerTokens = options.answerTokens;
+  // A pick that kept nothing gives an empty text and says so; it is an
+  // answer, not a failure (a question the history holds nothing for).
+  if (!items.length) {
+    return { log: '', record: { levers: picked.record.levers, items: [], estimatedTokens: 0,
+      ...(answerTokens === undefined ? {} : { answerTokens }), collapsed: 0, leftOut: { count: 0, atHalfOrMore: 0 }, nothingKept: true } };
+  }
   // A source whose mode sizes its text by the ratings gives only the
   // parts within its share of its best part's weight.
   const best = new Map<string, number>();
