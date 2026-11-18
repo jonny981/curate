@@ -5,7 +5,8 @@
 // a code repository's commits, about `--parts` parts in all) is indexed
 // once. Then, in a fresh process for each N, N calls start together, each
 // with a task from a fixed list, through the skill's read and pick path
-// (`pickFullSources`, then `curate`), with a stand-in embedder and a
+// (`pickFullSources`, the second search on the coding-agent transcripts
+// as the skill runs it, then `curate`), with a stand-in embedder and a
 // stand-in decision service. Every call waits at its first decision
 // request until all N have arrived; then the live heap and the resident
 // memory are read after a garbage collection. Each task run alone is
@@ -287,7 +288,7 @@ async function child(config) {
   lifelike = config.ratings === 'lifelike';
   const run = await import(pathToFileURL(join(root, 'skills/curate/run.mjs')).href);
   const core = await import('@curatejs/core');
-  const { chat } = await import('@curatejs/chat');
+  const { agentTranscripts, chat } = await import('@curatejs/chat');
   const { git } = await import('@curatejs/git');
   const { knowledgeBase } = await import('@curatejs/markdown');
   const { Worker } = await import('node:worker_threads');
@@ -367,9 +368,12 @@ async function child(config) {
   const call = async (index) => {
     const { task, keywords, answers } = TASKS[index % TASKS.length];
     const lines = { keywords, answers };
-    const sources = [chat({ providers: ['codex'], paths: [join(dir, 'chat')] }), knowledgeBase(join(dir, 'notes')), git(join(dir, 'code'))]
-      .map((source) => run.searchSource({ ...source, labelKinds: [], rare: false },
-        { chat: lines, 'git-history': lines, markdown: lines }, [], dir, { readAudit: false }));
+    const raw = [chat({ providers: ['codex'], paths: [join(dir, 'chat')] }), knowledgeBase(join(dir, 'notes')), git(join(dir, 'code'))];
+    const searched = (source, searches) => run.searchSource({ ...source, labelKinds: [], rare: false }, searches, [], dir, { readAudit: false });
+    const sources = raw.map((source) => searched(source, { chat: lines, 'git-history': lines, markdown: lines }));
+    // The coding-agent transcripts, which the skill searches a second time.
+    const agentIds = new Set(sources.filter((source) => source.mode?.name === agentTranscripts.name).map((source) => source.id));
+    const named = (count) => Array.from({ length: count }, (_, at) => `curate-search:${at}`);
     let first = true;
     const waits = [];
     const live = () => { globalThis.gc(); return process.memoryUsage().heapUsed; };
@@ -408,15 +412,21 @@ async function child(config) {
     const started = performance.now();
     const cpu = process.cpuUsage();
     try {
-      const picked = await run.pickFullSources(sources, {
-        task, taskDate: '2026-11-13T12:00:00Z', searchLines: [...keywords, ...answers].map((_, at) => `curate-search:${at}`),
-        meaning: { embed },
-      }, { task, decide, limits: { maxBatchChars: 120_000 }, cache: false, ...(lifelike ? { stopWhenCold: {} } : {}) });
+      const request = { task, taskDate: '2026-11-13T12:00:00Z', searchLines: named(keywords.length + answers.length), meaning: { embed } };
+      const options = { task, decide, limits: { maxBatchChars: 120_000 }, cache: false, ...(lifelike ? { stopWhenCold: {} } : {}) };
+      const round = await run.pickFullSources(sources, request, options);
+      // The second search, from round one's warmest parts' rarest words.
+      const again = agentIds.size === 0 ? { picked: round } : await run.searchAgain(task, round, agentIds, (found) => run.pickFullSources(
+        raw.filter((_, at) => agentIds.has(sources[at].id)).map((source) => searched(source, { chat: found })),
+        { ...request, searchLines: named(found.keywords.length + found.answers.length) }, options));
+      const picked = again.picked;
       if (watched) { marks.picked = (await settled()) - base; marks.peak = Math.max(marks.peak, marks.picked); }
       const result = await core.curate(task, picked, { sentenceCutoff: false });
       if (watched) { marks.laid = (await settled()) - base; marks.peak = Math.max(marks.peak, marks.laid); }
+      const second = again.record === undefined ? null
+        : { lines: again.lines, seeds: again.seeds, added: again.added, record: strip(again.record) };
       const output = createHash('sha256').update(JSON.stringify({ selected: picked.selected.map((part) => [part.sourceId, part.id]),
-        record: strip(picked.record), log: result.log })).digest('hex');
+        record: strip(picked.record), log: result.log, second })).digest('hex');
       const used = process.cpuUsage(cpu);
       return { task: index % TASKS.length, output, ms: performance.now() - started, waitMs: covered(waits),
         cpuMs: (used.user + used.system) / 1000, selected: picked.selected.length, marks, requests };
@@ -505,8 +515,8 @@ async function main() {
       console.log(`${options.parts} parts; decision service: ${options.delayMs} ms a request, ${
         options.tokensPerSecond === 0 ? 'no token limit' : `${options.tokensPerSecond} tokens a second`}, ${options.tokensPerPart} tokens a part, ${
         options.ratings} ratings`);
-      // The first alone call brings the index up to date; the rest are one a task.
-      const tasks = report.alone.slice(1);
+      // The call that brings the index up to date is not among them.
+      const tasks = report.alone;
       const middle = (point) => fixed(median(tasks.map((call) => call.heapMb[point])));
       console.log(`a call alone, median of the tasks: heap ${middle('first')} MB at its first decision request, ${
         middle('peak')} MB at its highest, ${middle('picked')} MB after the pick`);
