@@ -250,9 +250,17 @@ const partIdOf = (part: RawPart) =>
   `${part.provider}:${part.root}:${relative(part.root, part.file)}:${part.line}:${part.block}:${part.piece}`;
 // The folder read and the file's path in it are each scrubbed whole, then
 // joined: a value that looks like a secret is masked, and masking it never
-// reaches the id's other fields or the part's place, which keep it its own.
-const partId = (part: RawPart) =>
-  `${part.provider}:${scrubChat(part.root)}:${scrubChat(relative(part.root, part.file))}:${part.line}:${part.block}:${part.piece}`;
+// reaches the id's line, block and piece. Two names masked alike, such as
+// two files named by 32 hex characters, would give two transcripts one id
+// and one place, so a masked path carries a short hash of the real one:
+// the transcripts stay apart, and the real name is never shown.
+const partId = (part: RawPart) => {
+  const path = relative(part.root, part.file);
+  const root = scrubChat(part.root), shown = scrubChat(path);
+  const apart = root === part.root && shown === path ? ''
+    : `#${createHash('sha256').update(`${part.root}\0${path}`).digest('hex').slice(0, 16)}`;
+  return `${part.provider}:${root}:${shown}${apart}:${part.line}:${part.block}:${part.piece}`;
+};
 const partTitle = (part: RawPart, zone: string) =>
   `${part.provider} ${part.sessionId} ${part.role} ${zonedIso(part.date, zone)}`;
 const AUTHOR_TITLES: Record<Author, string> = { person: ' (the person)', agent: ' (agent)', tool: ' (tool)', system: ' (system)', unmarked: '' };
