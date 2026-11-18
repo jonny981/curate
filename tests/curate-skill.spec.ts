@@ -1332,6 +1332,40 @@ describe('a run through core decision calls', () => {
       .toContainEqual(expect.objectContaining({ itemsPerRequest: 1 }));
   });
 
+  it('asks a Choice per needed fact over a Markdown source\'s kept notes when its entry turns the lever on', async () => {
+    const directory = await folder();
+    const home = join(directory, 'home');
+    const notesFolder = join(directory, 'notes');
+    await mkdir(home);
+    await mkdir(notesFolder);
+    await writeFile(join(notesFolder, 'orchard.md'), '# Orchard cache\n\nWe keep the orchard cache layered.\n');
+    await writeFile(join(notesFolder, 'garden.md'), '# Orchard plan\n\nThe orchard cache might be flattened one day.\n');
+    const sourcesFile = join(directory, 'sources.json');
+    await writeFile(sourcesFile, JSON.stringify({ records: true,
+      sources: [{ type: 'markdown', path: notesFolder, levers: { choicePerFact: true } }] }));
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
+    vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
+    const choices: string[][] = [];
+    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as { questions: Record<string, { type: string; criteria?: Record<string, unknown> }> };
+      return new Response(JSON.stringify({ usage: null, answers: Object.fromEntries(Object.entries(body.questions).map(([key, question]) => {
+        if (question.type !== 'choice') return [key, { noul: 0.8 }];
+        const options = Object.keys(question.criteria!);
+        choices.push(options);
+        return [key, { type: 'choice', choice: options[0], confidence: 0.9,
+          probabilities: Object.fromEntries(options.map((option, index) => [option, index === 0 ? 0.9 : 0.1 / (options.length - 1)])) }];
+      })) }));
+    }));
+    const { call, calls } = subscriptionReply({ ...searches(), needed: ['Whether the cache stays layered'] });
+    const { record, memory } = await run(['--sources', sourcesFile, 'Is the orchard cache layered?'], call);
+    expect(calls[0]!.prompt).toContain('"needed"');
+    expect(choices.length).toBeGreaterThan(0);
+    expect(record.pick.choicePerFact).toMatchObject({ facts: [{ fact: 'Whether the cache stays layered' }] });
+    expect(record.pick.choicePerFact.facts[0].picks.length).toBeGreaterThan(0);
+    expect(memory).toContain('### Most likely answer');
+  });
+
   it('leaves the search-line call and every request without them when no source turns the lever on', async () => {
     const asked = searchLinesPrompt('the task', ['chat'], undefined, true);
     expect(asked).not.toContain('"wanted"');

@@ -1503,7 +1503,9 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
         throw new Error('Decision service left questions unanswered.');
       }
       return answers;
-    }), { deciderId: 'curate-skill:typesafe:jev-latest' });
+    }), { deciderId: 'curate-skill:typesafe:jev-latest',
+      // A Choice per needed fact asks list requests of the same service, its time counted with the rest.
+      list: Object.assign((request, signal) => deciding.track(() => service.list(request, signal)), { maxChars: service.list.maxChars }) });
     // Jev documents 32,000 tokens for a request's state plus its longest
     // question; three characters per token is a conservative estimate for
     // English text and JSON. Subtracting the longest question's characters
