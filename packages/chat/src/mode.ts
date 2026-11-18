@@ -10,7 +10,8 @@ export const agentTranscripts: Mode = {
 };
 
 /** A person's chats with an assistant, `chatSettings`' mode: the chat
- *  question set, the 0.0146 bar and the ranked read. */
+ *  question set, the 0.0146 bar, the ranked read, and a text of the
+ *  parts weighing at least 0.1 of the best. */
 export const assistantChatHistory: Mode = {
-  name: 'assistant-chat-history', questions: CHAT_CASCADE, bar: 0.0146, read: rankedRead,
+  name: 'assistant-chat-history', questions: CHAT_CASCADE, bar: 0.0146, read: rankedRead, textShare: 0.1,
 };

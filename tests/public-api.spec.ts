@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { agentTranscripts, assistantChatHistory, chat, AGENT_CHAT_CASCADE, CHAT_CASCADE, chatSettings, type ChatOptions, type ChatProvider } from '@curatejs/chat';
 import { commits, git, GIT_HISTORY_CASCADE, gitSettings, type GitOptions } from '@curatejs/git';
-import { markdown, MARKDOWN_CASCADE, markdownSettings, notes, knowledgeBase, rules, rulesSettings, type MarkdownOptions, type KnowledgeBaseOptions } from '@curatejs/markdown';
+import { directMessages, markdown, MARKDOWN_CASCADE, markdownSettings, notes, knowledgeBase, rules, rulesSettings, type MarkdownOptions, type KnowledgeBaseOptions } from '@curatejs/markdown';
 
 const uncutPick = { everyRanked: true, everyScored: true } as const;
 
@@ -111,11 +111,12 @@ describe('package exports', () => {
       { labels: false, names: true, mode: notes },
       { labels: false, names: false, mode: notes, ruleBar: 0.5 },
     ]);
-    expect([agentTranscripts, assistantChatHistory, commits, notes]).toEqual([
+    expect([agentTranscripts, assistantChatHistory, commits, notes, directMessages]).toEqual([
       { name: 'agent-transcripts', questions: AGENT_CHAT_CASCADE, bar: 0.0146, read: expect.any(Function), needed: true },
-      { name: 'assistant-chat-history', questions: CHAT_CASCADE, bar: 0.0146, read: rankedRead },
+      { name: 'assistant-chat-history', questions: CHAT_CASCADE, bar: 0.0146, read: rankedRead, textShare: 0.1 },
       { name: 'commits', questions: GIT_HISTORY_CASCADE, bar: 0.0146, read: rankedRead },
       { name: 'notes', questions: MARKDOWN_CASCADE, bar: 0.0146, read: rankedRead },
+      { name: 'direct-messages', questions: MARKDOWN_CASCADE, bar: 0.0146, read: rankedRead, textShare: 0.1 },
     ]);
     // Each call makes a conversation read of its own, with any of its rules replaced.
     expect(conversationRead()).not.toBe(conversationRead());

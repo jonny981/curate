@@ -197,7 +197,7 @@ Sources can still affect each other. A selected commit brings in a note it chang
 | `rules()` | `notes` | Off | | Off | 0.0146 | 0.5, not yet tuned | `MARKDOWN_CASCADE` |
 | `whatsapp()` | `directMessages` | Off | | On | 0.0146 | | `MARKDOWN_CASCADE` |
 
-- **Mode:** the source's questions, decision-score bar and read in one object, exported by its reader package. `agentTranscripts` reads from the person's own messages outward ([the chat read](packages/core/README.md#the-chat-read)); the others read down the ranked list.
+- **Mode:** the source's questions, decision-score bar and read in one object, exported by its reader package. `assistantChatHistory` and `directMessages` also size the text by the ratings: a part enters it only when its weight is at least a tenth of its source's best ([text share](packages/core/README.md#curating)). `agentTranscripts` reads from the person's own messages outward ([the chat read](packages/core/README.md#the-chat-read)); the others read down the ranked list.
 
 - **Labels:** check each history part for seven kinds of personal fact, such as what someone owns, prefers or decided. This helps Curate find relevant parts that keyword search missed. Each part is labelled once and the label stored for later questions.
 - **Label bar (`labelBar`):** Curate checks which kinds of fact the task needs. If a kind scores at least `labelBar`, Curate brings in the source's parts whose label for that kind also scores at least `labelBar`. 0.5 for every source that carries labels.

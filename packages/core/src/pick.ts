@@ -3456,6 +3456,7 @@ export async function pick(
       bar: referenceBar(id),
       ...(candidates.some((c) => c.sourceId === id && c.role === 'rule') ? { ruleBar: ruleBarFor(id) } : {}),
       ...(questionsFor(id) === undefined ? {} : { questions: questionsFor(id) }),
+      ...(modeFor(id)?.textShare === undefined ? {} : { textShare: modeFor(id)!.textShare }),
     }])) },
     effects,
   };

@@ -1574,6 +1574,18 @@ user: Should refunds use today's rate?
   tokens than it counts. `record.leftOut` holds how many selected items
   the budget stopped before, the strongest weight among them and how
   many have a weight of 0.5 or more.
+- **Text share:** a source whose mode sets `textShare` gives the text
+  only its selected items whose weight is at least that share of its
+  best selected item's weight; the pick record names the share under
+  `levers.sources`. The other items are left out before the budget, and
+  `record.underShare` counts them. `assistantChatHistory` and
+  `directMessages` set 0.1, a tenth of the best: on LoCoMo and
+  LongMemEval it cut the median text from 5,858 to 1,504 and
+  from 1,837 to 1,164 tokens, with 384 against 387 of 400 and 235
+  against 236 of 249 questions answered right. Every other mode sets
+  none. A share of 0 turns it off, so `{ ...assistantChatHistory,
+  textShare: 0 }` gives the text the token budget alone gives, the form
+  the benchmark figures published before it were produced with.
 - **Sentence cutoff:** with `decide`, curate rates every sentence of the
   taken items in one more request and keeps a sentence when its rating
   is `sentenceCutoff` or more, `DEFAULT_SENTENCE_CUTOFF` (0.1) when
@@ -1587,8 +1599,9 @@ user: Should refunds use today's rate?
   words and order under the same headings, and `…` marks each place text
   was left out. A line that opens `user: `, `assistant: ` or
   `<name>: ` for a name in the item's `speakers` names its speaker, and
-  the first kept sentence of that speaker's turn carries the name. An item with no sentence kept is left out, the strongest
-  included, so the text can be empty. A sentence `decide` gives no rating
+  the first kept sentence of that speaker's turn carries the name. An
+  item with no sentence kept is left out, the strongest included, so the
+  text can be empty. A sentence `decide` gives no rating
   stays. When the request fails, the whole text is returned as if no
   sentence were rated, and `record.sentences.failed` holds the message;
   a cancelled request throws. `answerTokens` bounds the text that is
@@ -1599,7 +1612,7 @@ user: Should refunds use today's rate?
 were taken, each with its full `id` (with the source beside it when two
 items share an id), its `candidate` as shown and its exact `weight`;
 `estimatedTokens`, the returned text's estimate; `answerTokens`;
-`collapsed`; `leftOut`; and, when sentences were rated, `sentences`:
+`collapsed`; `leftOut`; `underShare` when a source sets a text share; and, when sentences were rated, `sentences`:
 the `cutoff`, the sentences `kept` of how many (`of`), how many were
 `unanswered`, the items that lost a sentence (`itemsTrimmed`) or every
 sentence (`itemsLeftOut`), `estimatedTokensBefore`, and `failed` when

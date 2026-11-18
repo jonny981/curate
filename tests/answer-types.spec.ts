@@ -64,12 +64,13 @@ const baseline = (): Baseline => JSON.parse(readFileSync(BASELINE, 'utf8'));
  *  time zone and the task-period entries, which the task date added. */
 const asBaseline = (record: PickRecord): PickRecord => {
   const slim: Partial<Record<keyof PickRecord, unknown>> = { ...record,
-    // `pick`'s decide-call counts and the lane-0 ranks single-search
-    // reads now carry were added since the baseline: strip both. The
+    // `pick`'s decide-call counts, the lane-0 ranks single-search reads
+    // now carry and a source's text share were added since the
+    // baseline: strip them. The
     // old build wrote `pick` only under a dial, so counts alone go too.
     candidates: record.candidates.map(({ searchRanks: _ranks, ...candidate }) => candidate),
     levers: { ...record.levers, sources: Object.fromEntries(Object.entries(record.levers.sources)
-      .map(([id, { labelBar: _labelBar, ...settings }]) => [id, settings])) },
+      .map(([id, { labelBar: _labelBar, textShare: _textShare, ...settings }]) => [id, settings])) },
     effects: record.effects.filter((entry) => entry.setting !== 'names' && entry.setting !== 'taskPeriod')
       .map((entry) => entry.setting !== 'labels' ? entry
         : { ...entry, summary: entry.summary.replace(` at the label bar ${LABEL_LANE_BAR}:`, ':') }) };

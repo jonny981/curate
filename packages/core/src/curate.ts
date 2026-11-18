@@ -110,6 +110,10 @@ export interface CurateRecord {
     readonly strongestWeight?: number;
     readonly atHalfOrMore: number;
   };
+  /** Present when a source's mode sets `textShare`: how many selected
+   *  items were left out for weighing under that share of their
+   *  source's best item. They are not counted in `leftOut`. */
+  readonly underShare?: number;
   /** Present when sentences were rated: what the sentence pass did. */
   readonly sentences?: {
     readonly cutoff: number;
@@ -263,8 +267,14 @@ export async function curate(task: string, picked: PickResult, options: CurateOp
   });
   if (!items.length) throw new Error('curate: no selected reference items to curate.');
   const answerTokens = options.answerTokens ?? DEFAULT_ANSWER_TOKENS;
+  // A source whose mode sizes its text by the ratings gives only the
+  // parts within its share of its best part's weight.
+  const best = new Map<string, number>();
+  for (const { candidate, weight } of items) best.set(candidate.sourceId, Math.max(best.get(candidate.sourceId) ?? 0, weight));
+  const shareOf = (sourceId: string) => picked.record.levers.sources?.[sourceId]?.textShare;
+  const sized = items.filter(({ candidate, weight }) => weight >= (shareOf(candidate.sourceId) ?? 0) * best.get(candidate.sourceId)!);
   // `items` follows `picked.selected`, so a stable sort leaves equal weights in the fused order.
-  const ordered = [...items].sort((left, right) => right.weight - left.weight);
+  const ordered = [...sized].sort((left, right) => right.weight - left.weight);
   let taken: Item[] = [];
   let copies = new Map<Item, readonly Item[]>();
   let log = '';
@@ -288,6 +298,7 @@ export async function curate(task: string, picked: PickResult, options: CurateOp
       count: leftOut.length, ...(leftOut.length ? { strongestWeight: leftOut[0]!.weight } : {}),
       atHalfOrMore: leftOut.filter((item) => item.weight >= 0.5).length,
     },
+    ...(items.some(({ candidate }) => shareOf(candidate.sourceId) !== undefined) ? { underShare: items.length - sized.length } : {}),
   };
   const cutoff = options.sentenceCutoff ?? (options.decide === undefined ? false : DEFAULT_SENTENCE_CUTOFF);
   if (cutoff === false) return { log, record };

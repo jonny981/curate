@@ -18,6 +18,10 @@ export interface Mode {
   /** The decision state of a request of this mode's parts lists the
    *  facts the answer needs, when the call gives them (`needed`). */
   readonly needed?: boolean;
+  /** The text takes a kept part of this mode only when its decision
+   *  weight is at least this share of the best kept part's of its
+   *  source. Absent: every kept part, within the token budget. */
+  readonly textShare?: number;
   /** How the decide step reads the mode's parts on the fused order:
    *  `rankedRead` or a `conversationRead()`. Parts of modes that share
    *  a read are read together. */

@@ -62,6 +62,10 @@ What each part does:
   `sentenceCutoff` or more, 0.1 by default. `…` marks where text was left
   out. `sentenceCutoff: false` keeps every sentence and makes no request.
   When the request fails, the whole text comes back and the record says why.
+- **A text sized by the ratings, per mode.** A mode's `textShare` lets its
+  source's parts into the text only at that share of the source's best
+  weight or more. `assistantChatHistory` and `directMessages` set a tenth;
+  `record.underShare` counts the parts it left out.
 - **A stored index per source.** The chat, git and Markdown readers keep one
   SQLite file per source, through Node's built-in `node:sqlite`, under
   `$XDG_CACHE_HOME/curate/index` or `~/.cache/curate/index`. Each call brings

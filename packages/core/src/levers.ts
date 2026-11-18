@@ -70,6 +70,9 @@ export interface SourceSettings {
    *  present when the source carries a set; absent, they were asked the
    *  built-in question for their kind. */
   readonly questions?: PickCascade;
+  /** The share of its best kept part's weight a kept part of this
+   *  source needs to enter the text, present when its mode sets one. */
+  readonly textShare?: number;
   /** The decay half-life this source's Markdown parts ranked with,
    *  present when the source has `decay` on. Only a record
    *  pickFromSources produced carries it. */
