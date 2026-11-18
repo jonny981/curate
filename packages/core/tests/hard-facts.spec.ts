@@ -1,0 +1,162 @@
+import { describe, expect, it } from 'vitest';
+import {
+  conversationRead, jevRequest, pick, rankedRead, type MemoryCandidate, type Mode, type PickBatch, type PickCascade, type PickDecide,
+} from '../src/index.js';
+
+const task = 'What did Ana decide about the database?';
+const set: PickCascade = { bias: 0, questions: [{ key: 'relevant', instructions: 'Relevant?', true: 'Yes', false: 'No', weight: 1 }] };
+const mode = (settings: Partial<Mode> = {}): Mode => ({ name: 'agent-transcripts', questions: set, read: conversationRead(), ...settings });
+
+const container = 'claude-code:/home/ana/.claude/projects:app/s1.jsonl';
+/** A transcript piece as the chat reader cuts it. */
+const piece = (line: number, at: number, author: 'person' | 'agent' | 'tool', text: string, rank?: number): MemoryCandidate => ({
+  sourceId: 'chat', role: 'reference', id: `${container}:${line}:1:${at}`,
+  title: `claude-code s1 ${author === 'agent' ? 'assistant' : author === 'tool' ? 'tool-result' : 'user'}`, text, signals: {},
+  date: { value: `2026-10-01T09:0${line}:00Z`, meaning: 'recorded' }, author,
+  place: { container, at: [line, 1, at] },
+  chat: { provider: 'claude-code', sessionId: 's1', role: author === 'agent' ? 'assistant' : author === 'tool' ? 'tool-result' : 'user' },
+  ...(rank === undefined ? { poolOnly: true as const } : { searchRanks: [rank] }),
+});
+// The person asks; an agent proposes in two pieces; a tool answers; the
+// agent asks to go ahead; the person agrees; the agent reports.
+const session = [
+  piece(1, 1, 'person', 'Which database should we use?', 0),
+  piece(2, 1, 'agent', 'Two options. ', 1),
+  piece(2, 2, 'agent', 'Postgres or SQLite.'),
+  piece(3, 1, 'tool', '{"rows": 3}'),
+  piece(4, 1, 'agent', 'Shall I go with Postgres?'),
+  piece(5, 1, 'person', "Let's do it", 2),
+  piece(6, 1, 'agent', 'Done: Postgres it is.'),
+];
+const at = (line: number, part = 1) => session.find((item) => item.place!.at[0] === line && item.place!.at[2] === part)!;
+const recording = () => {
+  const batches: PickBatch[] = [];
+  const decide: PickDecide = async (batch) => {
+    batches.push(batch);
+    return Object.fromEntries(batch.questions.map((question) => [question.key, { status: 'answered', probability: 0.9 }]));
+  };
+  return { batches, decide };
+};
+const asked = (batches: readonly PickBatch[], id: string) => batches.flatMap((batch) => batch.questions).find((question) => question.id === id);
+
+describe('hard facts in the state', () => {
+  it('give each transcript item its kind, session, place, the message it answers and what answered it', async () => {
+    const { batches, decide } = recording();
+    await pick(session, { task, decide, modesBySource: { chat: mode({ hardFacts: true }) } });
+    expect(asked(batches, at(5).id)!.facts).toEqual({ kind: "person's message", session: 's1', position: 5, pieces: 1,
+      replies_to: { id: at(4).id, text: 'Shall I go with Postgres?' } });
+    expect(asked(batches, at(2, 2).id)!.facts).toEqual({ kind: 'agent step', session: 's1', position: 2, pieces: 2, piece: 2,
+      replies_to: { id: at(1).id, text: 'Which database should we use?' },
+      answered_by: { id: at(5).id, text: "Let's do it" } });
+    expect(asked(batches, at(1).id)!.facts).toEqual({ kind: "person's message", session: 's1', position: 1, pieces: 1 });
+    expect(asked(batches, at(3).id)!.facts).toEqual({ kind: 'tool output', session: 's1', position: 3, pieces: 1 });
+    expect(asked(batches, at(6).id)!.facts).toEqual({ kind: 'agent step', session: 's1', position: 6, pieces: 1,
+      replies_to: { id: at(5).id, text: "Let's do it" } });
+  });
+
+  it('put the person and how many answers are wanted at the top of the state, as sent', async () => {
+    const { batches, decide } = recording();
+    await pick([at(5)], { task, decide, person: 'Ana', wanted: 'one decision',
+      modesBySource: { chat: mode({ hardFacts: true, read: rankedRead }) } });
+    expect(batches).toHaveLength(1);
+    expect(jevRequest(batches[0]!)).toEqual({
+      model: 'jev-latest',
+      state: {
+        task,
+        person: 'Ana',
+        wanted: 'one decision',
+        items: {
+          1: {
+            id: at(5).id,
+            date: 'recorded 2026-10-01T09:05:00Z',
+            title: 'claude-code s1 user',
+            text: "Let's do it",
+            author: 'person',
+            kind: "person's message",
+            session: 's1',
+            pieces: 1,
+          },
+        },
+      },
+      questions: {
+        q0: {
+          type: 'noul',
+          instructions: { question: 'Relevant?', item: 'items.1' },
+          criteria: { true: 'Yes', false: 'No' },
+        },
+      },
+    });
+  });
+
+  it('leave out what needs the whole transcript when the read does not walk it', async () => {
+    const { batches, decide } = recording();
+    await pick(session, { task, decide, modesBySource: { chat: mode({ hardFacts: true, read: rankedRead }) } });
+    expect(asked(batches, at(2).id)!.facts).toEqual({ kind: 'agent step', session: 's1', pieces: 2, piece: 1 });
+    expect(asked(batches, at(5).id)!.facts).toEqual({ kind: "person's message", session: 's1', pieces: 1 });
+  });
+
+  it('give a whole message its facts without a piece number', async () => {
+    const { batches, decide } = recording();
+    await pick(session, { task, decide, modesBySource: { chat: mode({ hardFacts: true, wholeMessages: true }) } });
+    expect(asked(batches, at(2).id)).toMatchObject({ text: 'Two options. Postgres or SQLite.',
+      facts: { kind: 'agent step', session: 's1', position: 2, pieces: 2 } });
+    expect(asked(batches, at(2).id)!.facts).not.toHaveProperty('piece');
+  });
+
+  it('give a commit and a note their kind only', async () => {
+    const plain = (sourceId: string): MemoryCandidate => ({ sourceId, role: 'reference', id: `${sourceId}-1`, title: sourceId,
+      text: 'We chose Postgres.', signals: {}, searchRanks: [0] });
+    const { batches, decide } = recording();
+    await pick([plain('history'), plain('notes')], { task, decide, sourceKinds: { history: 'git-history', notes: 'markdown' },
+      modesBySource: { history: mode({ hardFacts: true, read: rankedRead }), notes: mode({ hardFacts: true, read: rankedRead }) } });
+    expect(asked(batches, 'history-1')!.facts).toEqual({ kind: 'commit' });
+    expect(asked(batches, 'notes-1')!.facts).toEqual({ kind: 'note' });
+  });
+
+  it('send the person and wanted only on requests of a mode that writes hard facts', async () => {
+    const other = { ...at(1), sourceId: 'other', id: 'other-1', text: 'Another session.' };
+    const { batches, decide } = recording();
+    await pick([at(1), other], { task, decide, person: 'Ana', wanted: 'everything said',
+      modesBySource: { chat: mode({ hardFacts: true, read: rankedRead }), other: mode({ read: rankedRead }) } });
+    expect(batches).toHaveLength(2);
+    for (const batch of batches) {
+      const facts = batch.questions[0]!.sourceId === 'chat';
+      expect(batch.person).toBe(facts ? 'Ana' : undefined);
+      expect(batch.wanted).toBe(facts ? 'everything said' : undefined);
+      expect(batch.questions[0]!.facts === undefined).toBe(!facts);
+    }
+  });
+
+  it('store an answer asked with the person apart from one asked without', async () => {
+    const stored = new Map<string, unknown>();
+    const cache = { deciderId: 'stub', store: { get: async (key: string) => stored.get(key), set: async (key: string, value: unknown) => { stored.set(key, value); } } };
+    const options = { task, cache, modesBySource: { chat: mode({ hardFacts: true, read: rankedRead }) } };
+    const first = recording();
+    await pick([at(5)], { ...options, decide: first.decide });
+    const named = recording();
+    await pick([at(5)], { ...options, decide: named.decide, person: 'Ana' });
+    const again = recording();
+    await pick([at(5)], { ...options, decide: again.decide, person: 'Ana' });
+    expect([first.batches.length, named.batches.length, again.batches.length]).toEqual([1, 1, 0]);
+  });
+
+  it('leave every request as it was when off, with or without a person and wanted', async () => {
+    const plain = recording();
+    const before = await pick(session, { task, decide: plain.decide, modesBySource: { chat: mode() } });
+    const off = recording();
+    const after = await pick(session, { task, decide: off.decide, person: 'Ana', wanted: 'one decision',
+      modesBySource: { chat: mode({ hardFacts: false }) } });
+    expect(off.batches).toEqual(plain.batches);
+    expect(after.record.candidates).toEqual(before.record.candidates);
+    expect(after.record.levers.sources.chat).not.toHaveProperty('hardFacts');
+  });
+
+  it('check the person, wanted and the setting', async () => {
+    const decide = recording().decide;
+    await expect(pick(session, { task, decide, person: ' ' })).rejects.toThrow('person must be a nonempty string');
+    await expect(pick(session, { task, decide, wanted: 'some' as 'one decision' }))
+      .rejects.toThrow("wanted must be 'one decision' or 'everything said'.");
+    await expect(pick(session, { task, decide, modesBySource: { chat: mode({ hardFacts: 1 as unknown as boolean }) } }))
+      .rejects.toThrow('modesBySource.chat.hardFacts must be a boolean.');
+  });
+});

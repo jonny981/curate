@@ -11,10 +11,10 @@ import {
 } from './decisions.js';
 import { judgmentFacts, judgmentPopulation, modelScore, type JudgmentPopulation } from './judgments.js';
 import {
-  ANSWER_TYPES, classifyTask, ROUTE_QUESTIONS, routeOptions, type AnswerType, type RouteKey, type RouteOption,
+  ANSWER_TYPES, classifyTask, ROUTE_QUESTIONS, routeOptions, type AnswerType, type PickWanted, type RouteKey, type RouteOption,
 } from './task.js';
 import { conversationRead, rankedRead, type Mode, type ModeRead, type ModeReadResult } from './mode.js';
-import { messageKey, messagePieces, messageText } from './chat-read.js';
+import { messageKey, messageKind, messagePieces, messageText, transcriptMessages } from './chat-read.js';
 import type { EmbeddingFunction } from './meaning.js';
 import type { LeverStates } from './levers.js';
 import type { StoredIndexReport } from './stored-index.js';
@@ -152,6 +152,12 @@ export interface PickBatch {
   /** The facts the answer needs (`PickOptions.needed`), present on a
    *  request whose parts' mode lists them. */
   readonly needed?: readonly string[];
+  /** The person's name as tasks word it (`PickOptions.person`), present
+   *  on a request whose parts' mode writes hard facts. */
+  readonly person?: string;
+  /** How many answers the task wants (`PickOptions.wanted`), present on
+   *  a request whose parts' mode writes hard facts. */
+  readonly wanted?: PickWanted;
 }
 
 export type PickAnswer =
@@ -770,6 +776,16 @@ export interface PickOptions {
    *  requests of their own, without them. Empty or absent: no request
    *  carries them. */
   readonly needed?: readonly string[];
+  /** The person's name as tasks word it, such as 'Ana': the person whose
+   *  own words a transcript marks `author: 'person'`. A request of parts
+   *  whose mode writes hard facts carries it in its state as `person`.
+   *  Absent: no request carries it. */
+  readonly person?: string;
+  /** How many answers the task wants, as the caller's writer judged
+   *  from its wording: 'one decision' or 'everything said'. A request of
+   *  parts whose mode writes hard facts carries it in its state as
+   *  `wanted`. Absent: no request carries it. */
+  readonly wanted?: PickWanted;
   /** Source identities mapped to kinds; pickFromSources fills these from source.kind. */
   readonly sourceKinds?: Readonly<Record<string, CandidateSourceKind>>;
   /** Put these top ranked hits first if they pass the threshold. */
@@ -1732,6 +1748,16 @@ export async function pick(
   // The facts the answer needs, for the requests of parts whose mode lists them.
   const needed = options.needed !== undefined && options.needed.length > 0 ? options.needed : undefined;
   const carriesNeeded = (candidate: MemoryCandidate) => needed !== undefined && modeFor(candidate.sourceId)?.needed === true;
+  // Hard facts: a part of a mode that writes them gets fields code knows,
+  // and its requests carry the call's person and wanted.
+  const factsFor = (candidate: MemoryCandidate) => candidate.role === 'reference' && modeFor(candidate.sourceId)?.hardFacts === true;
+  // The fields a request of this part's carries in its state beside the
+  // task and its items.
+  const headerOf = (candidate: MemoryCandidate): Pick<PickBatch, 'needed' | 'person' | 'wanted'> => ({
+    ...(carriesNeeded(candidate) ? { needed: needed! } : {}),
+    ...(factsFor(candidate) && options.person !== undefined ? { person: options.person } : {}),
+    ...(factsFor(candidate) && options.wanted !== undefined ? { wanted: options.wanted } : {}),
+  });
   checkWriteQuestions(options);
   if (options.route !== undefined && options.route !== 'jev') {
     throw new TypeError(`route must be 'jev'.`);
@@ -1920,6 +1946,49 @@ export async function pick(
   for (const pieces of messages.values()) {
     if (pieces[0]!.chat?.unit === 'prompt') requests.set(JSON.stringify([pieces[0]!.sourceId, pieces[0]!.place!.container]), messageText(pieces));
   }
+  // Hard facts: what code knows about each message of a mode that writes
+  // them. Where a part replies, what answered it and its position need
+  // the whole transcript, so they come only from a read that walks it.
+  const messageFacts = new Map<string, Record<string, unknown>>();
+  const placed = (candidate: MemoryCandidate) => candidate.chat !== undefined && (candidate.place?.at.length ?? 0) >= 3;
+  for (const list of transcriptMessages(references.filter((candidate) => factsFor(candidate) && placed(candidate))).values()) {
+    const walks = modeFor(list[0]!.pieces[0]!.sourceId)?.read.walks === true;
+    const kinds = list.map(({ pieces }) => messageKind(pieces[0]!));
+    const said = (pieces: readonly MemoryCandidate[], at: 'first' | 'last') => {
+      const piece = at === 'first' ? pieces[0]! : pieces[pieces.length - 1]!;
+      return { id: piece.id, text: piece.text };
+    };
+    let person: number | undefined;
+    let step: number | undefined;
+    const facts = list.map(({ pieces }, index): Record<string, unknown> => {
+      const kind = kinds[index];
+      const repliesTo = !walks ? undefined : kind === "person's message" ? step : kind === 'agent step' ? person : undefined;
+      if (kind === "person's message") person = index;
+      if (kind === 'agent step') step = index;
+      return { ...(kind === undefined ? {} : { kind }), session: pieces[0]!.chat!.sessionId,
+        ...(walks ? { position: index + 1 } : {}), pieces: pieces.length,
+        ...(repliesTo === undefined ? {} : { replies_to: said(list[repliesTo]!.pieces, 'last') }) };
+    });
+    // The person's next message after each agent step.
+    let next: number | undefined;
+    for (let index = list.length - 1; walks && index >= 0; index -= 1) {
+      if (kinds[index] === 'agent step' && next !== undefined) facts[index]!.answered_by = said(list[next]!.pieces, 'first');
+      if (kinds[index] === "person's message") next = index;
+    }
+    list.forEach(({ key }, index) => messageFacts.set(key, facts[index]!));
+  }
+  // An item's hard facts: its message's, with its own piece number when it
+  // is one piece of several; a commit's or a note's kind.
+  const hardFactsOf = (candidate: MemoryCandidate, whole: boolean): Record<string, unknown> | undefined => {
+    if (!factsFor(candidate)) return undefined;
+    if (!placed(candidate)) {
+      const kind = kindFor(candidate);
+      return kind === 'git-history' ? { kind: 'commit' } : kind === 'markdown' ? { kind: 'note' } : undefined;
+    }
+    const facts = messageFacts.get(messageKey(candidate));
+    if (facts === undefined) return undefined;
+    return whole || facts.pieces === 1 ? facts : { ...facts, piece: candidate.place!.at[2] };
+  };
 
   const selected: MemoryCandidate[] = [];
   const statuses = new Map<MemoryCandidate, PickEntryStatus>();
@@ -2164,8 +2233,13 @@ export async function pick(
   // The fields code wrote for an item the decision model reads: a whole
   // message's request or part.
   const itemFacts = new Map<MemoryCandidate, Readonly<Record<string, unknown>>>();
+  // Whole messages: each message's items, and the message of each item.
+  const messageItems = new Map<string, MemoryCandidate[]>();
+  const messageOfItem = new Map<MemoryCandidate, string>();
   const pending = (candidate: MemoryCandidate, spec: ReturnType<typeof specsFor>[number], tagSet?: string): Pending => {
-    const facts = itemFacts.get(candidate);
+    const own = itemFacts.get(candidate);
+    const hard = hardFactsOf(candidate, messageOfItem.has(candidate));
+    const facts = hard === undefined ? own : { ...hard, ...own };
     const shown = Number.isFinite(limits.maxQuestionText)
       ? takeCharacters(candidate.text, limits.maxQuestionText)
       : { text: candidate.text, truncated: false };
@@ -2222,7 +2296,7 @@ export async function pick(
     candidate.text === '' ? candidate.title : null,
     question.role, question.kind, question.questionKey, question.question,
     question.trueCriterion ?? null, question.falseCriterion ?? null,
-    question.levels ?? null, question.anonymous ?? null, question.author ?? null, carriesNeeded(candidate),
+    question.levels ?? null, question.anonymous ?? null, question.author ?? null, JSON.stringify(headerOf(candidate)),
     question.facts ?? null]);
   // Asks packed into request-sized batches, at most `most` of them.
   const pack = (fresh: readonly Pending[], task: string, whole: boolean, most: number): Pending[][] => {
@@ -2283,9 +2357,13 @@ export async function pick(
     const cacheable = cache !== undefined && sink !== labelAnswers;
     // A part's question's store key. A request that carries the needed
     // facts asks with them, so its answers are stored under them.
-    const cacheKeyOf = (item: Pending) => decisionKey(
-      sink === answered && carriesNeeded(item.candidate) ? JSON.stringify([task, needed]) : task,
+    const cacheKeyOf = (item: Pending) => {
+      const header = sink === answered ? headerOf(item.candidate) : {};
+      return decisionKey(header.person === undefined && header.wanted === undefined
+        ? (header.needed === undefined ? task : JSON.stringify([task, needed]))
+        : JSON.stringify([task, header]),
       cacheVersion, cache!.deciderId, limits.maxQuestionText, item.question, item.candidate.text);
+    };
     // Only a fully answered result is stored: a refusal, a missing
     // answer, an error or a cancelled call is never written, so the store
     // can never hold one. A failed write keeps the answer and the record
@@ -2349,15 +2427,28 @@ export async function pick(
     // still waits for this round's answers. Results apply in dispatch
     // order whatever order the replies land in, so answer order never
     // depends on completion order.
-    // Requests of parts whose mode lists the facts the answer needs go
-    // apart from the rest, so no other part's request carries them.
-    const listed = sink === answered && needed !== undefined ? fresh.filter((item) => carriesNeeded(item.candidate)) : [];
+    // Parts whose requests carry different fields beside the task (the
+    // facts the answer needs, the person, how many answers are wanted) go
+    // in requests apart, so no other part's request carries them; the
+    // requests carrying the facts the answer needs go first.
+    const groups = new Map<string, Pending[]>();
+    for (const item of fresh) {
+      const key = sink === answered ? JSON.stringify(headerOf(item.candidate)) : '{}';
+      const group = groups.get(key);
+      if (group === undefined) groups.set(key, [item]);
+      else group.push(item);
+    }
     const room = limits.maxBatches - batches - packedBatches;
-    const listedSlices = pack(listed, task, whole, room);
-    const slices = listed.length === 0 ? pack(fresh, task, whole, room) : [...listedSlices,
-      ...pack(fresh.filter((item) => !carriesNeeded(item.candidate)), task, whole, room - listedSlices.length)];
+    const slices: Pending[][] = [];
+    const headers = new Map<Pending[], Pick<PickBatch, 'needed' | 'person' | 'wanted'>>();
+    for (const [key, items] of [...groups].sort(([left], [right]) =>
+      Number(JSON.parse(right).needed !== undefined) - Number(JSON.parse(left).needed !== undefined))) {
+      for (const slice of pack(items, task, whole, room - slices.length)) {
+        slices.push(slice);
+        headers.set(slice, JSON.parse(key) as Pick<PickBatch, 'needed' | 'person' | 'wanted'>);
+      }
+    }
     packedBatches += slices.length;
-    const withNeeded = new Set(listedSlices);
     interface BatchOutcome {
       readonly slice: Pending[];
       readonly sent: boolean;
@@ -2380,8 +2471,7 @@ export async function pick(
         for (const item of slice) sentParts.add(item.candidate);
       }
       try {
-        const sent: Promise<Record<string, PickAnswer>> = options.decide(
-          { task, questions, ...(withNeeded.has(slice) ? { needed: needed! } : {}) }, decideSignal);
+        const sent: Promise<Record<string, PickAnswer>> = options.decide({ task, questions, ...headers.get(slice) }, decideSignal);
         const returned: unknown = await Promise.race([
           sent,
           new Promise<typeof TIMED_OUT>((resolve) => {
@@ -2875,8 +2965,6 @@ export async function pick(
   // The items the decision model judges for a part: the part itself,
   // or, when its mode judges whole messages, its message, sent in
   // consecutive parts when one request cannot hold it.
-  const messageItems = new Map<string, MemoryCandidate[]>();
-  const messageOfItem = new Map<MemoryCandidate, string>();
   const itemsFor = (candidate: MemoryCandidate): MemoryCandidate[] => {
     if (!wholeFor(candidate)) return [candidate];
     const key = messageKey(candidate);
@@ -3593,6 +3681,7 @@ export async function pick(
       ...(questionsFor(id) === undefined ? {} : { questions: questionsFor(id) }),
       ...(modeFor(id)?.textShare === undefined ? {} : { textShare: modeFor(id)!.textShare }),
       ...(modeFor(id)?.wholeMessages === true ? { wholeMessages: true as const } : {}),
+      ...(modeFor(id)?.hardFacts === true ? { hardFacts: true as const } : {}),
     }])) },
     effects,
   };

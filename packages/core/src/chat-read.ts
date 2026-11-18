@@ -200,6 +200,37 @@ export function messagePieces(parts: Iterable<MemoryCandidate>): Map<string, Mem
   return messages;
 }
 
+/** Each transcript's messages among `parts`, in their order there,
+ *  each with its pieces in order. */
+export function transcriptMessages(parts: Iterable<MemoryCandidate>):
+  Map<string, { readonly key: string; readonly pieces: readonly MemoryCandidate[] }[]> {
+  const transcripts = new Map<string, { readonly key: string; readonly pieces: readonly MemoryCandidate[] }[]>();
+  for (const [key, pieces] of messagePieces(parts)) {
+    const transcript = JSON.stringify([pieces[0]!.sourceId, pieces[0]!.place?.container ?? pieces[0]!.id]);
+    const list = transcripts.get(transcript);
+    if (list === undefined) transcripts.set(transcript, [{ key, pieces }]);
+    else list.push({ key, pieces });
+  }
+  for (const list of transcripts.values()) {
+    list.sort((left, right) => compareAt(left.pieces[0]!.place?.at ?? [], right.pieces[0]!.place?.at ?? []));
+  }
+  return transcripts;
+}
+
+/** What kind of message a transcript part is in, from what its reader
+ *  marked: undefined when the reader marked nothing certain. */
+export function messageKind(part: MemoryCandidate): string | undefined {
+  const unit = part.chat?.unit;
+  if (unit === 'summary') return 'compaction summary';
+  if (unit === 'report') return "subagent's final report";
+  if (unit === 'prompt') return "subagent's request";
+  if (part.author === 'person') return "person's message";
+  if (part.author === 'tool' || part.chat?.role === 'tool-call' || part.chat?.role === 'tool-result') return 'tool output';
+  if (part.author === 'agent') return part.chat?.role === 'assistant' ? 'agent step' : "agent's message";
+  if (part.author === 'system') return 'system message';
+  return undefined;
+}
+
 /** A message's text from its pieces, in order: the pieces of one block
  *  joined as the reader cut them, which gives the block back exactly,
  *  and the blocks of one message apart by a blank line. */

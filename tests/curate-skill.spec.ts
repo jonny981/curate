@@ -1221,6 +1221,54 @@ describe('a run through core decision calls', () => {
     expect(await readFile(join(runFolder, 'log.md'), 'utf8')).toContain('2026-01-01');
   });
 
+  it('sends the person and how many answers are wanted, and each part\'s hard facts, when a chat source turns the lever on', async () => {
+    const directory = await folder();
+    const home = join(directory, 'home');
+    const transcripts = join(directory, 'transcripts');
+    await mkdir(home);
+    await mkdir(transcripts);
+    await writeFile(join(transcripts, 'session.jsonl'), [
+      JSON.stringify({ type: 'user', sessionId: 's1', timestamp: '2026-01-01T12:00:00Z', origin: { kind: 'human' },
+        message: { content: 'Should we keep the orchard cache layered?' } }),
+      JSON.stringify({ type: 'assistant', sessionId: 's1', timestamp: '2026-01-01T12:01:00Z',
+        message: { content: [{ type: 'text', text: 'I propose keeping the orchard cache layered.' }] } }),
+      JSON.stringify({ type: 'user', sessionId: 's1', timestamp: '2026-01-01T12:02:00Z', origin: { kind: 'human' },
+        message: { content: 'Yes, do that.' } }),
+    ].join('\n'));
+    const sourcesFile = join(directory, 'sources.json');
+    await writeFile(sourcesFile, JSON.stringify({ records: true, person: 'Ada',
+      sources: [{ type: 'claude-code', path: transcripts, levers: { hardFacts: true } }] }));
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
+    vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
+    const bodies: { state: Record<string, unknown> & { items: Record<string, Record<string, unknown>> } }[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => {
+      const body = JSON.parse(String(init.body));
+      bodies.push(body);
+      return new Response(JSON.stringify({ usage: null,
+        answers: Object.fromEntries(Object.keys(body.questions).map((key) => [key, { noul: 0.8 }])) }));
+    }));
+    const { call, calls } = subscriptionReply({ ...searches(), needed: ['Whether the cache stays layered'], wanted: 'one decision' });
+    const { record } = await run(['--sources', sourcesFile, 'What did Ada decide about the orchard cache?'], call);
+    expect(calls[0]!.prompt).toContain('"wanted"');
+    expect(record.wanted).toEqual({ value: 'one decision' });
+    expect(bodies.length).toBeGreaterThan(0);
+    for (const body of bodies) {
+      expect(body.state).toMatchObject({ person: 'Ada', wanted: 'one decision', needed: ['Whether the cache stays layered'] });
+      for (const item of Object.values(body.state.items)) expect(item).toMatchObject({ session: 's1', pieces: 1 });
+    }
+    const items = bodies.flatMap((body) => Object.values(body.state.items));
+    expect(items.find((item) => item.text === 'Yes, do that.')).toMatchObject({ kind: "person's message",
+      replies_to: { text: 'I propose keeping the orchard cache layered.' } });
+  });
+
+  it('leaves the search-line call and every request without them when no source turns the lever on', async () => {
+    const asked = searchLinesPrompt('the task', ['chat'], undefined, true);
+    expect(asked).not.toContain('"wanted"');
+    expect(searchLinesPrompt('the task', ['chat'], undefined, false, true))
+      .toContain('"wanted": exactly "one decision" or "everything said"');
+  });
+
   it('reads a WhatsApp export in the direct-messages mode and keeps the sender on a kept sentence', async () => {
     const directory = await folder();
     const home = join(directory, 'home');

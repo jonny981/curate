@@ -250,8 +250,9 @@ function itemRecord(question: PickQuestion) {
 }
 
 /** Jev's request body for a batch. The state is a JSON object: the
- *  batch's task, and each distinct item once, as a record under its
- *  number in `items`. Each question's instructions are its wording and
+ *  batch's task, the facts the answer needs, the person and how many
+ *  answers are wanted when the batch carries them, and each distinct
+ *  item once, as a record under its number in `items`. Each question's instructions are its wording and
  *  the path of the record it asks about, such as `items.3`. */
 export function jevRequest(batch: PickBatch, model = 'jev-latest') {
   const items = new Map<string, PickQuestion>();
@@ -267,6 +268,8 @@ export function jevRequest(batch: PickBatch, model = 'jev-latest') {
     state: {
       task: batch.task,
       ...(batch.needed === undefined ? {} : { needed: batch.needed }),
+      ...(batch.person === undefined ? {} : { person: batch.person }),
+      ...(batch.wanted === undefined ? {} : { wanted: batch.wanted }),
       items: Object.fromEntries([...items.values()].map((question, index) => [String(index + 1), itemRecord(question)])),
     },
     questions: Object.fromEntries(batch.questions.map((question, index) => [`q${index}`,

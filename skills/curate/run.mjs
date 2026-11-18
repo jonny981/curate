@@ -119,15 +119,19 @@ const engineFound = () => (createRequire(import.meta.url).resolve.paths('node-ll
 // and it fails closed inside chat() while its weights file is unfitted.
 export const CHAT_MODES = { default: agentTranscripts,
   judgments: { name: 'judgments', questions: JUDGMENT_CHAT_CASCADE, read: rankedRead } };
-// A chat entry's mode, with its own bar when it sets one.
+// The decision levers a chat entry can switch on for its mode, each off by
+// default (core's Mode documents them).
+export const CHAT_LEVERS = ['wholeMessages', 'hardFacts'];
+// A chat entry's mode, with its own bar and levers when it sets them.
 const chatMode = (entry) => {
   const mode = CHAT_MODES[entry.questions ?? 'default'];
-  return entry.bar === undefined ? mode : { ...mode, bar: entry.bar };
+  return entry.bar === undefined && entry.levers === undefined ? mode
+    : { ...mode, ...(entry.bar === undefined ? {} : { bar: entry.bar }), ...entry.levers };
 };
 
 const SOURCE_ENTRY_KEYS = {
-  'claude-code': ['type', 'path', 'since', 'exclude', 'questions', 'bar', 'always'],
-  codex: ['type', 'path', 'since', 'exclude', 'allowedCwd', 'questions', 'bar', 'always'],
+  'claude-code': ['type', 'path', 'since', 'exclude', 'questions', 'bar', 'levers', 'always'],
+  codex: ['type', 'path', 'since', 'exclude', 'allowedCwd', 'questions', 'bar', 'levers', 'always'],
   git: ['type', 'path', 'since', 'exclude', 'include', 'always'],
   markdown: ['type', 'path', 'since', 'exclude', 'always'],
   whatsapp: ['type', 'path', 'since', 'dates', 'always'],
@@ -170,6 +174,10 @@ export function parseSources(value, base = process.cwd()) {
     if (source.bar !== undefined
       && (typeof source.bar !== 'number' || !Number.isFinite(source.bar) || source.bar < 0 || source.bar > 1)) {
       throw new Error('bar must be a number between 0 and 1.');
+    }
+    if (source.levers !== undefined && (source.levers === null || typeof source.levers !== 'object' || Array.isArray(source.levers)
+      || Object.entries(source.levers).some(([key, on]) => !CHAT_LEVERS.includes(key) || typeof on !== 'boolean'))) {
+      throw new Error(`levers must be an object of booleans named ${CHAT_LEVERS.join(', ')}.`);
     }
     if (source.always !== undefined && typeof source.always !== 'boolean') throw new Error('always must be a boolean.');
     if (source.dates !== undefined && !['day-first', 'month-first'].includes(source.dates)) {
@@ -235,6 +243,9 @@ export function parseSources(value, base = process.cwd()) {
   }
   if (value.searchModel !== undefined && !['haiku', 'luna'].includes(value.searchModel)) {
     throw new Error("searchModel must be 'haiku' or 'luna'.");
+  }
+  if (value.person !== undefined && (typeof value.person !== 'string' || !value.person.trim())) {
+    throw new Error('person must be your name as your tasks word it.');
   }
   if (value.envFile !== undefined && (typeof value.envFile !== 'string' || !value.envFile.trim())) {
     throw new Error('envFile must be a file path.');
@@ -1042,13 +1053,16 @@ const scopeAsk = (today) => `\nThe JSON also holds a key "scope": {"kinds": [...
 // when the call reads a mode that lists them in its decision state. The
 // wording is the separate facts prompt the measurement used.
 const NEEDED_ASK = '\nAlso split the task into the separate facts that a complete answer needs, where each fact may be stated in a different message. Give one to five facts; give one fact when a single message can answer the task. Answer from the task text only. Return them as one more JSON key, "needed": a list of short strings.';
+// How many answers the task wants, asked in the same call when the call
+// reads a mode that writes hard facts into its decision state.
+const WANTED_ASK = '\nAlso say whether the task wants one decision or fact, or everything said on a subject. Answer from the task text only. Return it as one more JSON key, "wanted": exactly "one decision" or "everything said".';
 
-export function searchLinesPrompt(task, searchKinds, scopeDate = undefined, askNeeded = false) {
+export function searchLinesPrompt(task, searchKinds, scopeDate = undefined, askNeeded = false, askWanted = false) {
   const registers = { chat: CHAT_SEARCH_LINE_REGISTER, 'git-history': GIT_SEARCH_LINE_REGISTER, markdown: MARKDOWN_SEARCH_LINE_REGISTER };
   return `TASK: ${task}\nWrite search expansions, not a factual answer. For each source kind, give two keyword lines (one naming the subject, one without it) and four plausible hypothetical-answer lines (two naming the subject, two without it). Use varied wording for directions, constraints, tried ideas, rejected ideas and unfinished experiments where the task asks for them. Do not invent evidence.\nRegisters:\n${searchKinds.map((kind) => `${kind}: ${registers[kind]}`).join('\n')}\n${searchKinds.length === kinds.length
     ? 'Return only JSON with these three keys, each containing {"keywords":[...],"answers":[...]}.'
     : `Return only JSON for ${searchKinds.map((kind) => `"${kind}"`).join(', ')}, each containing {"keywords":[...],"answers":[...]}.`}
-Write exactly two keyword lines and exactly four answer lines for each source kind. No other text.${scopeDate === undefined ? '' : scopeAsk(scopeDate)}${askNeeded ? NEEDED_ASK : ''}`;
+Write exactly two keyword lines and exactly four answer lines for each source kind. No other text.${scopeDate === undefined ? '' : scopeAsk(scopeDate)}${askNeeded ? NEEDED_ASK : ''}${askWanted ? WANTED_ASK : ''}`;
 }
 
 // Haiku sometimes names a group after the task's words ("chat" for "our
@@ -1089,6 +1103,13 @@ export function neededFrom(value) {
     && value.every((fact) => typeof fact === 'string' && fact.trim())
     ? { facts: value.map((fact) => fact.trim()) }
     : { missing: value === undefined ? 'the reply gave no facts' : 'the reply\'s facts were not one to five strings' };
+}
+
+// The reply's judgment of how many answers the task wants, or why there
+// is none.
+export function wantedFrom(value) {
+  return value === 'one decision' || value === 'everything said' ? { value }
+    : { missing: value === undefined ? 'the reply gave no answer' : 'the reply was not "one decision" or "everything said"' };
 }
 
 // The search reply gets one repair round: a reply that fails JSON parsing
@@ -1242,7 +1263,9 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
     // A mode that lists the facts the answer needs gets them from the
     // same call as the search lines.
     const askNeeded = callSources.some((entry) => sourceKind(entry.type) === 'chat' && chatMode(entry).needed === true);
-    const searchPrompt = searchLinesPrompt(options.task, searchKinds, scoped ? today : undefined, askNeeded);
+    // A mode that writes hard facts gets how many answers are wanted from it too.
+    const askWanted = callSources.some((entry) => sourceKind(entry.type) === 'chat' && chatMode(entry).hardFacts === true);
+    const searchPrompt = searchLinesPrompt(options.task, searchKinds, scoped ? today : undefined, askNeeded, askWanted);
     const searchStart = Date.now();
     // One entry's source. A Codex entry's sessions are copied to `snapshot`.
     const build = async (entry, snapshot) => {
@@ -1396,12 +1419,14 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
       preparing = Promise.all([...held.values()].map((entry) => entry.warmed));
     }
     const writeLines = callSubscription ?? facts.writer;
-    const { scope: proposedScope, needed: neededReply, ...searchedLines } = await searchLines(searchPrompt, folder, record, save, writeLines, searchKinds);
+    const { scope: proposedScope, needed: neededReply, wanted: wantedReply, ...searchedLines } = await searchLines(searchPrompt, folder, record, save, writeLines, searchKinds);
     record.searches = searchedLines;
     // With no usable list the decision state goes without it, and the
     // record says why.
     const needed = askNeeded ? neededFrom(neededReply) : undefined;
     if (needed !== undefined) record.needed = needed;
+    const wanted = askWanted ? wantedFrom(wantedReply) : undefined;
+    if (wanted !== undefined) record.wanted = wanted;
     record.timings.searchesMs = Date.now() - searchStart;
     let entries = callSources;
     if (scoped) {
@@ -1486,6 +1511,8 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
       ...(settings.feed === undefined ? {} : { feed: settings.feed }),
       ...(settings.threshold === undefined ? {} : { everyScored: { bar: settings.threshold } }),
       ...(agentIds.size === 0 || needed?.facts === undefined ? {} : { needed: needed.facts }),
+      ...(settings.person === undefined ? {} : { person: settings.person }),
+      ...(wanted?.value === undefined ? {} : { wanted: wanted.value }),
       ...(agentIds.size === 0 ? {} : { cache: { deciderId: decide.deciderId, store: {
         get: async (key) => decisions.get(key), set: async (key, value) => { decisions.set(key, value); } } } }) };
     const searched = (source, searches) => {

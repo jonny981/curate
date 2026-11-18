@@ -3,6 +3,11 @@ import type { PickCriterion, PickOptions } from './pick.js';
 
 export type TaskKind = 'count' | 'date' | 'advice' | 'named' | 'other';
 
+/** How many answers a task wants, as a model call judged from its
+ *  wording: one decision or fact, or everything said on a subject. */
+export const PICK_WANTED = ['one decision', 'everything said'] as const;
+export type PickWanted = (typeof PICK_WANTED)[number];
+
 /** Classify only the task's words. A task can need more than one kind of answer. */
 export function classifyTask(task: string): readonly TaskKind[] {
   const text = task.replace(/\s*\(asked .*\)\s*$/, '');

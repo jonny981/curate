@@ -36,6 +36,23 @@ export interface Mode {
    *  placed (`chat` and `place`) are joined; any other part is its own
    *  message. */
   readonly wholeMessages?: boolean;
+  /** Hard facts in the decision state, off by default: fields code
+   *  knows for certain about each item, written into its record, never
+   *  as prose in its text. A transcript part gets its `kind` (the
+   *  person's message, an agent step, an agent's message, tool output,
+   *  a compaction summary, a subagent's request or final report, a
+   *  system message), its `session`, and how many `pieces` its message
+   *  has (with the item's own `piece` when it is one of several).
+   *  When the mode's read walks whole transcripts, so the pick holds
+   *  every part, it also gets its message's `position` in the session,
+   *  `replies_to` (the message it answers: for the person's message the
+   *  agent step before it, for an agent step the person's message
+   *  before it; its last piece's id and text) and, for an agent step,
+   *  `answered_by` (the person's next message; its first piece's id and
+   *  text). A commit gets `kind: 'commit'` and a note `kind: 'note'`,
+   *  and nothing else. The request's state also carries the call's
+   *  `person` and `wanted`, when the call gives them. */
+  readonly hardFacts?: boolean;
   /** How the decide step reads the mode's parts on the fused order:
    *  `rankedRead` or a `conversationRead()`. Parts of modes that share
    *  a read are read together. */

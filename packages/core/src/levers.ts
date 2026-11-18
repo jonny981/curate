@@ -77,6 +77,9 @@ export interface SourceSettings {
    *  piece carries its message's rating, and the text lays the message
    *  out once, whole. */
   readonly wholeMessages?: true;
+  /** Present and true when its mode writes hard facts into each item's
+   *  record in the decision state. */
+  readonly hardFacts?: true;
   /** The decay half-life this source's Markdown parts ranked with,
    *  present when the source has `decay` on. Only a record
    *  pickFromSources produced carries it. */

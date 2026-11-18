@@ -920,6 +920,30 @@ coding-agent history (1,489 ranked pieces, 1,028 messages), the
 requests carried 2.47 times the text: the messages held 4.47 times the
 ranked pieces' text, and 32 reports carried their request.
 
+### Hard facts
+
+Off by default. A mode with `hardFacts: true` writes into each item's
+record in the decision state the fields code knows for certain, never
+prose in its text. A transcript part gets its `kind` (the person's
+message, an agent step, an agent's message, tool output, a compaction
+summary, a subagent's request or final report, or a system message),
+its `session`, and how many `pieces` its message was cut into, with
+its own `piece` number when it is one of several. When the mode's read
+walks whole transcripts (`conversationRead()`), so the pick holds every
+part, the record also gets the message's `position` in its session,
+`replies_to` (the message it answers: for the person's message the
+agent step before it, for an agent step the person's message before
+it; that message's last piece, as `{ id, text }`) and, for an agent
+step, `answered_by` (the person's next message's first piece). A commit
+gets only `kind: 'commit'` and a note only `kind: 'note'`. The
+request's state also carries the pick's `person`, the person's name as
+tasks word it, and `wanted`, `'one decision'` or `'everything said'`
+as the caller's writer judged the task, when the pick gives them:
+`{ task, needed, person, wanted, items }`. Requests of other modes
+never carry them, and an answer asked with them is stored apart from
+one asked without. The record names the setting under
+`levers.sources`.
+
 ### Decision tags
 
 `tags` asks extra yes/no questions of each reference that passes
@@ -1712,7 +1736,7 @@ Each source carries six settings, tuned for its kind of history:
 - **`labelBar`:** the label bar, from 0 to 1, for which kinds the task needs and which of this source's parts join the label lane; absent means 0.5.
 - **`names`:** open one exact-phrase lane per name the task names ([names in the task](#names-in-the-task)). The reason is recall.
 - **`ruleBar`:** keep a rule scored at or above this; absent means 0. Only sources whose parts are rules use it.
-- **`mode`:** how the source's parts are judged and read: `name`; `questions`, the decision questions asked of each reference part (absent: the built-in question for the part's kind); `bar`, keep a reference part scored at or above this (absent: the set's fitted bar, or 0.0146); and `read`, `rankedRead` down the fused order or a `conversationRead()` ([the chat read](#the-chat-read)), which takes `walksOn`, `opens` and `stops` rules in place of the measured ones. Absent: the built-in question, 0.0146 and the ranked read. Off by default: `wholeMessages`, judge each ranked piece's whole message ([whole messages](#whole-messages)).
+- **`mode`:** how the source's parts are judged and read: `name`; `questions`, the decision questions asked of each reference part (absent: the built-in question for the part's kind); `bar`, keep a reference part scored at or above this (absent: the set's fitted bar, or 0.0146); and `read`, `rankedRead` down the fused order or a `conversationRead()` ([the chat read](#the-chat-read)), which takes `walksOn`, `opens` and `stops` rules in place of the measured ones. Absent: the built-in question, 0.0146 and the ranked read. Off by default: `wholeMessages`, judge each ranked piece's whole message ([whole messages](#whole-messages)); `hardFacts`, fields code knows in each item's record ([hard facts](#hard-facts)).
 - **`decay`:** rank older notes lower by their age at the task date, as `{ halfLife: '365 days' }`; absent or `false` is off, as in every preset. Markdown sources only; see the [Markdown reader](https://github.com/jonny981/curate/blob/main/packages/markdown/README.md#decay).
 
 A source can also carry the look-back and path settings its reader ran
