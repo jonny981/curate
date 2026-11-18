@@ -1,5 +1,8 @@
 import { createHash } from 'node:crypto';
+import { createReadStream, type Dirent } from 'node:fs';
 import { lstat, open, readdir, readFile, realpath, stat } from 'node:fs/promises';
+import type { Transform } from 'node:stream';
+import * as zlib from 'node:zlib';
 import { homedir } from 'node:os';
 import { basename, join, relative, resolve, sep } from 'node:path';
 
@@ -99,6 +102,110 @@ interface WalkContext {
   /** Counts skipped symlinks and undated messages on the pass that
    *  carries it — the read's first pass, so repeats do not recount. */
   readonly countSkips?: { n: number };
+  /** Counts compressed sessions that could not be decompressed, on the
+   *  same pass. */
+  readonly countBroken?: { n: number };
+}
+
+/** Node's zstd decompressor, in every Node the packages run on (22.20 and
+ *  later; it came in 22.15). The pinned Node types are older than it. */
+const createZstdDecompress = (zlib as unknown as { createZstdDecompress(): Transform }).createZstdDecompress;
+/** Lines a compressed session is decoded in at a time. */
+const LINE_BATCH = 2000;
+/** The end of a session Codex compressed: `<name>.jsonl.zst`. */
+const COMPRESSED = '.jsonl.zst';
+/** The transcript a file holds. A compressed session is the transcript
+ *  of its uncompressed name, so its parts keep the ids, and the stored
+ *  index the row, they had before it was compressed. */
+const transcriptPath = (file: string) => file.endsWith(COMPRESSED) ? file.slice(0, -'.zst'.length) : file;
+/** Whether a sorted folder entry is a transcript to read: a `.jsonl`
+ *  file, or a compressed session whose uncompressed form is not beside
+ *  it. When both are, the uncompressed one is read: it is the form a
+ *  session can still be growing in. */
+const isTranscript = (entry: Dirent, names: ReadonlySet<string>) => entry.isFile()
+  && (entry.name.endsWith('.jsonl') || (entry.name.endsWith(COMPRESSED) && !names.has(entry.name.slice(0, -'.zst'.length))));
+/** The content size a zstd frame header states, or undefined when the
+ *  header leaves it out. Node's decompressor ends a cut-off frame without
+ *  an error, so this is how a truncated session is told from a whole one. */
+function frameContentSize(head: Buffer): number | undefined {
+  if (head.length < 6 || head.readUInt32LE(0) !== 0xfd2fb528) return undefined;
+  const descriptor = head[4]!;
+  const single = (descriptor & 0x20) !== 0;
+  const sizeField = [single ? 1 : 0, 2, 4, 8][descriptor >> 6]!;
+  if (sizeField === 0) return undefined;
+  const at = 5 + (single ? 0 : 1) + [0, 1, 2, 4][descriptor & 0x03]!;
+  if (head.length < at + sizeField) return undefined;
+  return sizeField === 1 ? head[at]! : sizeField === 2 ? head.readUInt16LE(at) + 256
+    : sizeField === 4 ? head.readUInt32LE(at) : Number(head.readBigUInt64LE(at));
+}
+
+/** A compressed session's bytes, decompressed as a stream with Node's
+ *  own zstd, one chunk at a time. */
+async function* decompressed(file: string, signal: AbortSignal | undefined): AsyncGenerator<Buffer> {
+  const input = createReadStream(file);
+  const output = input.pipe(createZstdDecompress());
+  input.on('error', (error) => output.destroy(error));
+  try {
+    for await (const chunk of output as AsyncIterable<Buffer>) {
+      cancelled(signal);
+      yield chunk;
+    }
+  } finally { output.destroy(); input.destroy(); }
+}
+
+/** What one pass over a compressed session learns, keeping only a few
+ *  bytes: its decompressed length, its first `edge` bytes, and the
+ *  `edge` bytes before `at` when it reaches `at`. It throws
+ *  when the session does not decompress, or gives fewer bytes than its
+ *  zstd frame states: Node's decompressor ends a cut-off frame without an
+ *  error. Some sessions decompress to hundreds of megabytes, more than one
+ *  string can hold, so nothing here holds a session whole. */
+async function compressedFacts(file: string, edge: number, at: number | undefined, signal: AbortSignal | undefined,
+): Promise<{ length: number; head: Buffer; before?: Buffer }> {
+  let length = 0;
+  let head = Buffer.alloc(0);
+  let before = Buffer.alloc(0);
+  for await (const chunk of decompressed(file, signal)) {
+    if (head.length < edge) head = Buffer.concat([head, chunk.subarray(0, edge - head.length)]);
+    if (at !== undefined && length < at && length + chunk.length > at - edge) {
+      before = Buffer.concat([before, chunk.subarray(Math.max(0, at - edge - length), Math.min(chunk.length, at - length))]);
+    }
+    length += chunk.length;
+  }
+  const stated = frameContentSize(await readRange(file, 0, 18));
+  if (stated !== undefined && length < stated) throw new Error(`${file} ends ${stated - length} bytes early`);
+  return { length, head, ...(at !== undefined && length >= at ? { before } : {}) };
+}
+
+/** A compressed session's lines, in order, as `text.split(/\r?\n/)`
+ *  gives them, decoded a line at a time. `tail` keeps its last `edge`
+ *  bytes and `length` counts them all. */
+async function* compressedLines(file: string, signal: AbortSignal | undefined, seen: { length: number; tail: Buffer; edge: number },
+): AsyncGenerator<string> {
+  let rest = Buffer.alloc(0);
+  for await (const chunk of decompressed(file, signal)) {
+    seen.length += chunk.length;
+    seen.tail = Buffer.concat([seen.tail, chunk]).subarray(-seen.edge);
+    const data = rest.length === 0 ? chunk : Buffer.concat([rest, chunk]);
+    let start = 0;
+    for (let end = data.indexOf(10, start); end >= 0; end = data.indexOf(10, start)) {
+      yield data.toString('utf8', start, end).replace(/\r$/, '');
+      start = end + 1;
+    }
+    rest = Buffer.from(data.subarray(start));
+  }
+  yield rest.toString('utf8').replace(/\r$/, '');
+}
+
+/** Lines in batches of `size`, each with the number of its first line. */
+async function* batches(lines: AsyncIterable<string>, size: number): AsyncGenerator<{ readonly first: number; readonly lines: string[] }> {
+  let batch: string[] = [];
+  let first = 0;
+  for await (const line of lines) {
+    batch.push(line);
+    if (batch.length === size) { yield { first, lines: batch }; first += batch.length; batch = []; }
+  }
+  if (batch.length > 0) yield { first, lines: batch };
 }
 
 function object(value: unknown): Json {
@@ -246,12 +353,12 @@ function split(text: string, size: number): string[] {
 }
 
 const partIdOf = (part: RawPart) =>
-  `${part.provider}:${part.root}:${relative(part.root, part.file)}:${part.line}:${part.block}:${part.piece}`;
+  `${part.provider}:${part.root}:${relative(part.root, transcriptPath(part.file))}:${part.line}:${part.block}:${part.piece}`;
 // The folder read and the file's path in it are each scrubbed whole, then
 // joined: a value that looks like a secret is masked, and masking it never
 // reaches the id's other fields or the part's place, which keep it its own.
 const partId = (part: RawPart) =>
-  `${part.provider}:${scrubChat(part.root)}:${scrubChat(relative(part.root, part.file))}:${part.line}:${part.block}:${part.piece}`;
+  `${part.provider}:${scrubChat(part.root)}:${scrubChat(relative(part.root, transcriptPath(part.file)))}:${part.line}:${part.block}:${part.piece}`;
 const partTitle = (part: RawPart, zone: string) =>
   `${part.provider} ${part.sessionId} ${part.role} ${zonedIso(part.date, zone)}`;
 const AUTHOR_TITLES: Record<Author, string> = { person: ' (the person)', agent: ' (agent)', tool: ' (tool)', system: ' (system)', unmarked: '' };
@@ -277,7 +384,7 @@ interface DecodeState {
 type LinePart = Omit<RawPart, 'provider' | 'root' | 'file'>;
 
 /** The session id a transcript starts with, from its file name. */
-const fileSessionId = (file: string) => basename(file, '.jsonl').replace(/^rollout-.*T\d{2}-\d{2}-\d{2}-/, '');
+const fileSessionId = (file: string) => basename(transcriptPath(file), '.jsonl').replace(/^rollout-.*T\d{2}-\d{2}-\d{2}-/, '');
 
 /** Decode transcript lines into scrubbed, split parts. `firstLine` is
  *  the zero-based line number of `lines[0]` in its file. Every dated
@@ -321,9 +428,28 @@ function* decodeLines(
 async function* fileParts(
   provider: ChatProvider, root: string, file: string, walk: WalkContext,
 ): AsyncGenerator<RawPart> {
-  const raw = await readFile(file, { encoding: 'utf8', signal: walk.signal });
   const state: DecodeState = { sessionId: fileSessionId(file), session: {} };
   const undated = () => { if (walk.countSkips) walk.countSkips.n += 1; };
+  if (file.endsWith(COMPRESSED)) {
+    // A compressed session is checked whole first, so one that does not
+    // decompress is counted and gives no part, and the read goes on.
+    try {
+      await compressedFacts(file, 0, undefined, walk.signal);
+    } catch (error) {
+      if (walk.signal?.aborted) throw error;
+      if (walk.countBroken) walk.countBroken.n += 1;
+      return;
+    }
+    const seen = { length: 0, tail: Buffer.alloc(0), edge: 0 };
+    for await (const { first, lines } of batches(compressedLines(file, walk.signal, seen), LINE_BATCH)) {
+      for (const part of decodeLines(provider, lines, first, state, walk.includeTools, walk.size, walk.signal, undated)) {
+        if (part.date < walk.since || part.date > walk.until) continue;
+        yield { provider, root, file, ...part };
+      }
+    }
+    return;
+  }
+  const raw = await readFile(file, { encoding: 'utf8', signal: walk.signal });
   for (const part of decodeLines(provider, raw.split(/\r?\n/), 0, state, walk.includeTools, walk.size, walk.signal, undated)) {
     if (part.date < walk.since || part.date > walk.until) continue;
     yield { provider, root, file, ...part };
@@ -342,12 +468,13 @@ async function* eachPart(
     if (excluded(path, root, exclusions)) return;
     const entries = await readdir(path, { withFileTypes: true });
     entries.sort((a, b) => a.name.localeCompare(b.name));
+    const names = new Set(entries.map((entry) => entry.name));
     for (const entry of entries) {
       const file = join(path, entry.name);
       if (excluded(file, root, exclusions)) continue;
       if (entry.isSymbolicLink()) { if (walk.countSkips) walk.countSkips.n += 1; continue; }
       if (entry.isDirectory()) { yield* visit(provider, root, file); continue; }
-      if (!entry.isFile() || !entry.name.endsWith('.jsonl')) continue;
+      if (!isTranscript(entry, names)) continue;
       yield* fileParts(provider, root, file, walk);
     }
   };
@@ -480,6 +607,8 @@ interface ChatIndex {
   readonly roots: ReadonlyMap<string, {
     readonly transcripts: readonly StoredTranscript[];
     readonly symlinks: readonly string[];
+    /** Compressed sessions that could not be decompressed. */
+    readonly broken: readonly string[];
   }>;
   readonly report: StoredIndexReport;
 }
@@ -510,12 +639,13 @@ async function walkTranscripts(
     if (excluded(path, root, exclusions)) return;
     const entries = await readdir(path, { withFileTypes: true });
     entries.sort((a, b) => a.name.localeCompare(b.name));
+    const names = new Set(entries.map((entry) => entry.name));
     for (const entry of entries) {
       const file = join(path, entry.name);
       if (excluded(file, root, exclusions)) continue;
       if (entry.isSymbolicLink()) { symlinks.push(file); continue; }
       if (entry.isDirectory()) { await visit(file); continue; }
-      if (entry.isFile() && entry.name.endsWith('.jsonl')) files.push(file);
+      if (isTranscript(entry, names)) files.push(file);
     }
   };
   await visit(root);
@@ -624,15 +754,27 @@ async function syncChatIndex(
         head, tail, newline, state, undated, parts) VALUES (?, ?, ?, ?, ?, ?, ?, '', '', 0, '', 0, 0)`);
       const updateRow = database.prepare(`UPDATE transcripts SET root_path = ?, size = ?, mtime = ?, lines = ?, head = ?,
         tail = ?, newline = ?, state = ?, undated = ?, parts = ? WHERE id = ?`);
+      const updateFile = database.prepare('UPDATE transcripts SET size = ?, mtime = ? WHERE id = ?');
       let added = 0;
       let removed = 0;
       const seen = new Set<string>();
-      const loaded = new Map<string, { transcripts: StoredTranscript[]; symlinks: string[] }>();
+      const loaded = new Map<string, { transcripts: StoredTranscript[]; symlinks: string[]; broken: string[] }>();
       for (const { provider, slot, root } of roots) {
         const { files, symlinks } = await walk(root, [...own, ...requested]);
         const transcripts: StoredTranscript[] = [];
+        const broken: string[] = [];
         for (const file of files) {
-          const rel = relative(root, file).split(sep).join('/');
+          /** Stores one decoded part of this file as row `ordinal` of transcript `id`. */
+          const insertOne = (id: number, ordinal: number, part: LinePart, before: string | undefined) => {
+            const words = storedChatWords(part.text, keyword);
+            insertPart.run(id, ordinal, part.line, part.block, part.piece, part.sessionId, part.role, part.author,
+              part.authorName ?? null, part.date, part.text, words.long, words.stems, words.short,
+              vectorKey(part.text, before, ordinal), partId({ provider, root, file, ...part }));
+            insertPostings(id, ordinal, words.stems, words.short);
+            insertPhrase.run(id * PHRASE_ROW + ordinal, phraseWords(part.text));
+          };
+          // A compressed session keeps the row of its uncompressed name.
+          const rel = relative(root, transcriptPath(file)).split(sep).join('/');
           const key = `${provider}\0${slot}\0${rel}`;
           seen.add(key);
           let row = rows.get(key);
@@ -652,6 +794,64 @@ async function syncChatIndex(
           let state: DecodeState = { sessionId: fileSessionId(file), session: {} };
           let undated = 0;
           let appending = false;
+          if (file.endsWith(COMPRESSED)) {
+            // A compressed session is never held whole. One pass checks it
+            // and finds whether a row its uncompressed form left still
+            // holds its start; a second decodes it a line at a time. Its
+            // row keeps the compressed file's size and time, so an
+            // unchanged one is not decompressed again.
+            const edge = Math.min(EDGE_CHECK, row?.size ?? 0);
+            let facts: Awaited<ReturnType<typeof compressedFacts>>;
+            try {
+              facts = await compressedFacts(file, EDGE_CHECK, row === undefined ? undefined : row.size, signal);
+            } catch (error) {
+              if (signal?.aborted) throw error;
+              broken.push(file);
+              if (row !== undefined) transcripts.push({ file, id: row.id, undated: row.undated, root: row.root_path });
+              continue;
+            }
+            const held = row !== undefined && edge > 0 && facts.before !== undefined
+              && digest(facts.head.subarray(0, edge)) === row.head && digest(facts.before.subarray(-edge)) === row.tail;
+            if (held && facts.length === row!.size) {
+              updateFile.run(length, mtime, row!.id);
+              transcripts.push({ file, id: row!.id, undated: row!.undated, root: row!.root_path });
+              continue;
+            }
+            const growing = held && row!.newline === 1;
+            if (row !== undefined && !growing) {
+              deleteParts.run(row.id);
+              deletePostings.run(row.id);
+              removed += row.parts;
+            }
+            const id = row?.id ?? Number(insertRow.run(provider, slot, root, rel, 0, '', 0).lastInsertRowid);
+            if (growing) {
+              state = JSON.parse(row!.state) as DecodeState;
+              undated = row!.undated;
+            }
+            const skip = growing ? row!.lines : 0;
+            const begin = growing ? row!.parts : 0;
+            let ordinal = begin;
+            let before = begin === 0 ? undefined : (textAt.get(id, begin - 1) as { text: string } | undefined)?.text;
+            const seenBytes = { length: 0, tail: Buffer.alloc(0), edge: EDGE_CHECK };
+            let count = 0;
+            let last = '';
+            for await (const { first, lines } of batches(compressedLines(file, signal, seenBytes), LINE_BATCH)) {
+              const fresh = lines.slice(Math.max(0, skip - first));
+              for (const part of decodeLines(provider, fresh, Math.max(first, skip), state, includeTools, size, signal, () => { undated += 1; })) {
+                insertOne(id, ordinal, part, before);
+                before = part.text;
+                ordinal += 1;
+              }
+              count = first + lines.length;
+              last = lines.at(-1) ?? '';
+            }
+            added += ordinal - begin;
+            const idsRoot = !growing || row!.root_path === root ? root : '';
+            updateRow.run(idsRoot, length, mtime, count - 1, growing ? row!.head : digest(facts.head.subarray(0, Math.min(EDGE_CHECK, facts.length))),
+              digest(seenBytes.tail), last === '' ? 1 : 0, JSON.stringify(state), undated, ordinal, id);
+            transcripts.push({ file, id, undated, root: idsRoot });
+            continue;
+          }
           if (row !== undefined && row.newline === 1 && length > row.size) {
             const edge = Math.min(EDGE_CHECK, row.size);
             const [head, grown] = await Promise.all([
@@ -681,12 +881,7 @@ async function syncChatIndex(
           // An append continues from the last part the file already holds.
           let before = start === 0 ? undefined : (textAt.get(id, start - 1) as { text: string } | undefined)?.text;
           for (const part of decodeLines(provider, lines, firstLine, state, includeTools, size, signal, () => { undated += 1; })) {
-            const words = storedChatWords(part.text, keyword);
-            insertPart.run(id, ordinal, part.line, part.block, part.piece, part.sessionId, part.role, part.author,
-              part.authorName ?? null, part.date, part.text, words.long, words.stems, words.short,
-              vectorKey(part.text, before, ordinal), partId({ provider, root, file, ...part }));
-            insertPostings(id, ordinal, words.stems, words.short);
-            insertPhrase.run(id * PHRASE_ROW + ordinal, phraseWords(part.text));
+            insertOne(id, ordinal, part, before);
             before = part.text;
             ordinal += 1;
           }
@@ -701,7 +896,7 @@ async function syncChatIndex(
             JSON.stringify(state), undated, ordinal, id);
           transcripts.push({ file, id, undated, root: idsRoot });
         }
-        loaded.set(rootKey(provider, root), { transcripts, symlinks });
+        loaded.set(rootKey(provider, root), { transcripts, symlinks, broken });
       }
       // A transcript no walk met is gone, unless this request's own
       // exclusions hid it or its root was not walked this call.
@@ -868,6 +1063,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
       const reasons: string[] = [];
       let folders = 0;
       const skips = { n: 0 };
+      const broken = { n: 0 };
       const walkable: { provider: ChatProvider; root: string }[] = [];
       // This read's own connection to the stored index, closed when it ends.
       let database: IndexDatabase | undefined;
@@ -911,6 +1107,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
             provider, root,
             transcripts: (group?.transcripts ?? []).filter((transcript) => !excluded(transcript.file, root, exclusions)),
             symlinks: (group?.symlinks ?? []).filter((path) => !excluded(path, root, exclusions)).length,
+            broken: (group?.broken ?? []).filter((path) => !excluded(path, root, exclusions)).length,
           };
         });
         const inDates = (part: RawPart) => part.date >= since && part.date <= until;
@@ -920,8 +1117,8 @@ export function chat(options: ChatOptions = {}): CandidateSource {
         /** Every part, counting skips on the read's first pass. A stored
          *  part's text is read only when `withText` asks for it. */
         const eachStored = function* (counting: boolean, withText: boolean, light: boolean): Generator<StoredPart> {
-          for (const { provider, root, transcripts, symlinks } of storedRoots!) {
-            if (counting) skips.n += symlinks;
+          for (const { provider, root, transcripts, symlinks, broken: unread } of storedRoots!) {
+            if (counting) { skips.n += symlinks; broken.n += unread; }
             for (const transcript of transcripts) {
               cancelled(request.signal);
               if (counting) skips.n += transcript.undated;
@@ -933,7 +1130,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
         };
         const each = (counting: boolean, withText: boolean, light = false): AsyncIterable<RawPart> | Iterable<RawPart> =>
           storedRoots === undefined
-            ? eachPart(walkable, exclusions, counting ? { ...ctx, countSkips: skips } : ctx)
+            ? eachPart(walkable, exclusions, counting ? { ...ctx, countSkips: skips, countBroken: broken } : ctx)
             : eachStored(counting, withText, light);
         /** One transcript's parts again, as the first pass met them. */
         const partsOf = (
@@ -1251,6 +1448,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
             : bodies.map((index) => byIndex.get(index))
               .filter((candidate): candidate is MemoryCandidate => candidate !== undefined);
           if (skips.n) reasons.push(`skipped ${skips.n} symbolic links or undated messages`);
+          if (broken.n) reasons.push(`could not decompress ${broken.n} compressed sessions`);
           if (limited.length < order.length) {
             reasons.push(`the limit kept ${limited.length} of ${order.length} candidates`);
           }
@@ -1374,6 +1572,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
             : kept.map((index) => byIndex.get(index))
               .filter((candidate): candidate is MemoryCandidate => candidate !== undefined);
           if (skips.n) reasons.push(`skipped ${skips.n} symbolic links or undated messages`);
+          if (broken.n) reasons.push(`could not decompress ${broken.n} compressed sessions`);
           if (request.limit !== undefined && curveKept.length > request.limit) {
             reasons.push(`the limit kept ${request.limit} of ${curveKept.length} candidates`);
           }
@@ -1413,6 +1612,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           matched.sort((a, b) => (b.laneScore ?? 0) - (a.laneScore ?? 0) || a.id.localeCompare(b.id));
           const kept = request.limit === undefined ? matched : matched.slice(0, request.limit);
           if (skips.n) reasons.push(`skipped ${skips.n} symbolic links or undated messages`);
+          if (broken.n) reasons.push(`could not decompress ${broken.n} compressed sessions`);
           if (kept.length < matched.length) reasons.push(`the phrase limit kept ${kept.length} of ${matched.length} candidates`);
           return {
             status: 'read', candidates: kept, ...indexed,
@@ -1439,6 +1639,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
         if (request.poolIds === true && request.wholeLanes === true && request.limit === undefined && corpus !== undefined) {
           skips.n += corpus.skips;
           if (skips.n) reasons.push(`skipped ${skips.n} symbolic links or undated messages`);
+          if (broken.n) reasons.push(`could not decompress ${broken.n} compressed sessions`);
           return {
             status: 'read', candidates: [], poolIds: corpus.ids, ...indexed,
             complete: reasons.length === 0,
@@ -1608,6 +1809,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           : kept.map((index) => byIndex.get(index))
             .filter((candidate): candidate is MemoryCandidate => candidate !== undefined);
         if (skips.n) reasons.push(`skipped ${skips.n} symbolic links or undated messages`);
+        if (broken.n) reasons.push(`could not decompress ${broken.n} compressed sessions`);
         if (request.limit !== undefined && order.length > request.limit) {
           reasons.push(`the limit kept ${request.limit} of ${order.length} candidates`);
         }

@@ -23,7 +23,8 @@ Five packages:
   whose labels match a kind the task needs to the parts keyword search already
   found for the decide step. Chat asks its seven label kinds by default; git
   and Markdown carry none.
-- **`@curatejs/chat`** reads local Claude Code and Codex transcripts. It
+- **`@curatejs/chat`** reads local Claude Code and Codex transcripts,
+  including the Codex sessions Codex compresses (`.jsonl.zst`). It
   scrubs likely secrets before ranking.
 - **`@curatejs/git`** reads commit history, with optional blame and co-change
   signals.

@@ -1,10 +1,11 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { closeSync, constants, existsSync, openSync, readSync, realpathSync, rmSync } from 'node:fs';
+import { closeSync, constants, createReadStream, existsSync, openSync, readSync, realpathSync, rmSync } from 'node:fs';
 import { copyFile, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createZstdDecompress } from 'node:zlib';
 import { curate, DEFAULT_MAX_QUESTION_TEXT, levelDistribution, pickFromSources, sinceCutoff, taskPeriod } from '@curatejs/core';
 import { jev } from '@curatejs/core/models';
 import { chat, scrubChat, AGENT_CHAT_CASCADE, CHAT_SEARCH_LINE_REGISTER, JUDGMENT_CHAT_CASCADE } from '@curatejs/chat';
@@ -371,6 +372,7 @@ function readWarning(read) {
 // the buffer is wiped when it is released: a read that ran ahead of the
 // header would otherwise keep a rejected session's bytes in memory.
 export function sessionHeader(path) {
+  if (path.endsWith('.jsonl.zst')) return compressedHeader(path);
   const fd = openSync(path, 'r');
   const chunk = Buffer.alloc(65536);
   const chunks = [];
@@ -384,6 +386,25 @@ export function sessionHeader(path) {
       if (read < chunk.length) break;
     }
   } finally { closeSync(fd); chunk.fill(0); }
+  try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { return null; }
+}
+
+// A compressed Codex session's header: its first line, decompressed as a
+// stream that stops at the first newline, so admission never decompresses
+// a whole session. It rejects when the start of the file does not
+// decompress; a first line that is not JSON gives null, as above.
+async function compressedHeader(path) {
+  const input = createReadStream(path);
+  const output = input.pipe(createZstdDecompress());
+  input.on('error', (error) => output.destroy(error));
+  const chunks = [];
+  try {
+    for await (const chunk of output) {
+      const end = chunk.indexOf(10);
+      if (end >= 0) { chunks.push(Buffer.from(chunk.subarray(0, end))); break; }
+      chunks.push(Buffer.from(chunk));
+    }
+  } finally { output.destroy(); input.destroy(); }
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { return null; }
 }
 
@@ -402,8 +423,11 @@ export async function allowedSession(header, allowedCwd) {
 // The entry's own exclusions match the way chat's do under the folder:
 // relative to it, an excluded file is never opened and an excluded
 // folder is never descended into.
+// A compressed session (`<name>.jsonl.zst`) is admitted by its header like
+// any other, unless its uncompressed form sits beside it: that form is the
+// one read. One whose header does not decompress is counted apart.
 export async function filterSessions(folder, allowedCwd, exclude) {
-  const admitted = [], excluded = [];
+  const admitted = [], excluded = [], unreadable = [];
   const entries = (exclude ?? []).map((entry) =>
     entry.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '') || '.');
   const blocked = (path) => {
@@ -412,17 +436,22 @@ export async function filterSessions(folder, allowedCwd, exclude) {
   };
   const walk = async (path) => {
     if (blocked(path)) return;
-    for (const entry of await readdir(path, { withFileTypes: true })) {
+    const entries = await readdir(path, { withFileTypes: true });
+    const names = new Set(entries.map((entry) => entry.name));
+    for (const entry of entries) {
       const file = join(path, entry.name);
       if (entry.isSymbolicLink() || blocked(file)) continue;
       if (entry.isDirectory()) await walk(file);
-      else if (entry.isFile() && entry.name.endsWith('.jsonl')) {
-        (await allowedSession(sessionHeader(file), allowedCwd) ? admitted : excluded).push(file);
+      else if (entry.isFile() && (entry.name.endsWith('.jsonl')
+        || (entry.name.endsWith('.jsonl.zst') && !names.has(entry.name.slice(0, -'.zst'.length))))) {
+        let header;
+        try { header = await sessionHeader(file); } catch { unreadable.push(file); continue; }
+        (await allowedSession(header, allowedCwd) ? admitted : excluded).push(file);
       }
     }
   };
   await walk(folder);
-  return { admitted, excluded };
+  return { admitted, excluded, unreadable };
 }
 
 export async function snapshotCodex(entry, folder) {
@@ -449,9 +478,14 @@ export async function snapshotCodex(entry, folder) {
     ...(exclude === undefined ? {} : { exclude }),
     ...(entry.questions === undefined ? {} : { questions: CHAT_QUESTION_SETS[entry.questions] }),
     ...(entry.bar === undefined ? {} : { bar: entry.bar }) });
+  // A session whose compressed header does not decompress was never
+  // copied: the read says how many, as the reader says of a body.
+  const unread = filter.unreadable.length === 0 ? undefined
+    : `could not decompress ${filter.unreadable.length} compressed sessions`;
   return { filter, source: { ...source, async read(request, context) {
     const result = await source.read(request, context);
     return result.status !== 'read' ? result : { ...result,
+      ...(unread === undefined ? {} : { complete: false, partial: result.partial === undefined ? unread : `${result.partial}; ${unread}` }),
       candidates: result.candidates.map((candidate) =>
         ({ ...candidate, id: candidate.id.replace(folder, entry.path) })),
       // A meaning lane's id and score list names the same parts, so the

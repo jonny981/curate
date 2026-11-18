@@ -27,6 +27,17 @@ const source = chat({ providers: ['claude-code', 'codex'], since: '14 days' });
   `~/.codex/sessions/`. Both folders are scanned recursively. `providers`
   defaults to both. `paths: ['/path/to/transcripts']` replaces the default
   folders for each selected provider.
+- **Compressed Codex sessions:** Codex compresses older sessions as
+  `<name>.jsonl.zst`. Each is read as the session `<name>.jsonl`, with
+  Node's own zstd, decoded a line at a time and never held whole: the
+  same session id, the same part ids and the same
+  place in the stored index, so a session indexed before it was
+  compressed keeps its parts, and only lines it gained before then are
+  read. When both forms of a session sit side by side, the uncompressed
+  one is read, since it is the one that can still grow. A compressed
+  session that does not decompress, or that ends before the size its
+  header states, is left out and counted: the read is not complete, and
+  `partial` says how many.
 - **Dates:** `since` accepts an ISO date or a duration such as `'14 days'`
   or `'12 hours'`. An ISO date is the cutoff itself. A duration counts
   back from the task date: the read request's `taskDate`, else its `asOf`,

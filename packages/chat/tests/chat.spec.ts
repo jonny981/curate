@@ -1,5 +1,6 @@
 import { appendFile, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import * as zlib from 'node:zlib';
 import { join, sep } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -276,6 +277,91 @@ describe.each(['claude-code', 'codex'] as const)('chat %s', (provider) => {
     expect(output).not.toContain(secret);
     expect(output).toContain('[redacted]');
     expect(output).toContain(commit);
+  });
+});
+
+describe('compressed Codex sessions', () => {
+  // Codex compresses an older session as `<name>.jsonl.zst`; Node 22.20 compresses it here.
+  const zstd = (text: string) => (zlib as unknown as { zstdCompressSync(data: Buffer): Buffer }).zstdCompressSync(Buffer.from(text));
+  const name = 'rollout-2026-10-02T10-00-00-0f1e2d3c-4b5a-6978-8091-a2b3c4d5e6f7';
+  /** A Codex session of `count` questions and answers about the orchard; returns its file. */
+  const session = async (root: string, count: number, label = name) => {
+    await transcript('codex', Array.from({ length: count }, (_, at) =>
+      [message('codex', 'user', `orchard question ${at}`), message('codex', 'assistant', `orchard answer ${at}`)]).flat(), root, label);
+    return join(root, '2026/10/02', `${label}.jsonl`);
+  };
+  const compress = async (file: string) => { await writeFile(`${file}.zst`, zstd(await readFile(file, 'utf8'))); await rm(file); };
+  const parts = (result: Awaited<ReturnType<typeof read>>) => result.candidates.map((part) => [part.id, part.text, part.chat?.sessionId]).sort();
+
+  it('reads a compressed session as the session it was: same parts, ids and session, from the files and from the index', async () => {
+    const root = await folder();
+    const file = await session(root, 3);
+    const plain = parts(await read('codex', root, { index: false }));
+    await compress(file);
+    for (const options of [{ index: false as const }, {}]) {
+      const result = await read('codex', root, options);
+      expect(parts(result)).toEqual(plain);
+      expect(result.complete).toBe(true);
+    }
+  });
+
+  it('decodes a long compressed session across many chunks as its uncompressed form', async () => {
+    const root = await folder();
+    const file = await session(root, 3000);
+    const plain = parts(await read('codex', root, { index: false }, { task: 'orchard', wholeLanes: true }));
+    expect(plain).toHaveLength(6000);
+    await compress(file);
+    for (const options of [{ index: false as const }, {}]) {
+      expect(parts(await read('codex', root, options, { task: 'orchard', wholeLanes: true }))).toEqual(plain);
+    }
+  });
+
+  it('keeps an indexed session\'s parts when it is compressed, and reads only the lines it gained before', async () => {
+    const root = await folder();
+    const directory = await folder();
+    const file = await session(root, 2);
+    const first = await read('codex', root, { index: { directory } });
+    await compress(file);
+    const second = await read('codex', root, { index: { directory } });
+    expect(parts(second)).toEqual(parts(first));
+    expect(second.index).toMatchObject({ added: 0, removed: 0 });
+    // Indexed again as a file, then grown by one exchange, then compressed.
+    const other = await session(root, 2, `${name}-b`);
+    await read('codex', root, { index: { directory } });
+    await appendFile(other, [message('codex', 'user', 'orchard question 2'), message('codex', 'assistant', 'orchard answer 2')]
+      .map((record) => JSON.stringify(record)).join('\n') + '\n');
+    await compress(other);
+    const grown = await read('codex', root, { index: { directory } });
+    expect(grown.index).toMatchObject({ added: 2, removed: 0 });
+    expect(parts(grown)).toEqual(parts(await read('codex', root, { index: false })));
+  });
+
+  it('reads one session in both forms once, from its uncompressed file', async () => {
+    const root = await folder();
+    const file = await session(root, 2);
+    // An older, shorter copy compressed beside the file the session still grows in.
+    await writeFile(`${file}.zst`, zstd((await readFile(file, 'utf8')).split('\n').slice(0, 3).join('\n') + '\n'));
+    await appendFile(file, JSON.stringify(message('codex', 'user', 'orchard question late')) + '\n');
+    for (const options of [{ index: false as const }, {}]) {
+      const result = await read('codex', root, options);
+      expect(result.candidates.map((part) => part.text).sort()).toEqual(
+        ['orchard answer 0', 'orchard answer 1', 'orchard question 0', 'orchard question 1', 'orchard question late']);
+      expect(new Set(result.candidates.map((part) => part.id)).size).toBe(5);
+    }
+  });
+
+  it('counts a compressed session that does not decompress, and reads the rest', async () => {
+    const root = await folder();
+    await session(root, 1);
+    const broken = await session(root, 40, `${name}-c`);
+    const bytes = zstd(await readFile(broken, 'utf8'));
+    await writeFile(`${broken}.zst`, bytes.subarray(0, Math.floor(bytes.length / 2)));
+    await rm(broken);
+    for (const options of [{ index: false as const }, {}]) {
+      const result = await read('codex', root, options);
+      expect(result.candidates.map((part) => part.text).sort()).toEqual(['orchard answer 0', 'orchard question 0']);
+      expect(result).toMatchObject({ complete: false, partial: expect.stringContaining('could not decompress 1 compressed sessions') });
+    }
   });
 });
 

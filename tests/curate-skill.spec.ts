@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events';
 import { existsSync, openSync, readFileSync, readSync, readdirSync, writeFileSync } from 'node:fs';
 import { copyFile, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
+import * as zlib from 'node:zlib';
 import { delimiter, join, resolve } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -330,6 +331,43 @@ describe('Codex session folder restrictions', () => {
     // both already stored and adds nothing.
     expect(runs[1]!.index).toMatchObject({ parts: 2, added: 0, removed: 0 });
     expect(runs[1]!.candidates).toEqual(runs[0]!.candidates);
+  });
+
+  it('admits a compressed session by its first line alone, and reads it from the snapshot as its uncompressed form', async () => {
+    const zstd = (text: string) => (zlib as unknown as { zstdCompressSync(data: Buffer): Buffer }).zstdCompressSync(Buffer.from(text));
+    const directory = await folder();
+    const root = join(directory, 'projects');
+    const sessions = join(directory, 'sessions', '2026', '01');
+    await Promise.all([root, sessions].map((path) => mkdir(path, { recursive: true })));
+    const body = (cwd: string) => `${JSON.stringify(metadata(cwd))}\n${JSON.stringify(message)}\n`;
+    const allowed = join(sessions, 'allowed.jsonl.zst');
+    const other = join(sessions, 'other.jsonl.zst');
+    await writeFile(allowed, zstd(body(root)));
+    await writeFile(other, zstd(body(directory)));
+    // A long session cut off after its first blocks: its first line still decompresses, so the header read never
+    // reached the cut. A file that is not zstd at all has no header to read.
+    const long = zstd(`${JSON.stringify(metadata(root))}\n${Array.from({ length: 20000 }, (_, at) =>
+      JSON.stringify({ ...message, payload: { ...message.payload, content: [{ type: 'input_text', text: `Line ${at} of a long session.` }] } })).join('\n')}\n`);
+    const cut = join(sessions, 'cut.jsonl.zst');
+    await writeFile(cut, long.subarray(0, Math.floor(long.length / 2)));
+    const garbage = join(sessions, 'garbage.jsonl.zst');
+    await writeFile(garbage, 'not zstd at all');
+    expect(await sessionHeader(cut)).toEqual(metadata(root));
+    await expect(sessionHeader(garbage)).rejects.toThrow();
+
+    const { filter, source }: { filter: { admitted: string[]; excluded: string[]; unreadable: string[] }; source: CandidateSource } =
+      await snapshotCodex({ type: 'codex', path: join(directory, 'sessions'), allowedCwd: root }, join(directory, 'snapshot'));
+    expect(filter.admitted.sort()).toEqual([allowed, cut].sort());
+    expect(filter.excluded).toEqual([other]);
+    expect(filter.unreadable).toEqual([garbage]);
+    const result = await source.read({ task: 'orchard evidence' });
+    if (result.status !== 'read') throw new Error('Expected the admitted sessions to be read.');
+    expect(result.candidates.map((candidate) => candidate.text)).toEqual(['Useful orchard evidence.']);
+    expect(result.candidates[0]!.id).toContain(`${join('2026', '01', 'allowed.jsonl')}:`);
+    // The cut session's body and the garbage file's header are both counted.
+    expect(result).toMatchObject({ complete: false });
+    expect(result.partial).toContain('could not decompress 1 compressed sessions');
+    expect(result.partial!.split('could not decompress 1 compressed sessions')).toHaveLength(3);
   });
 
   it('reads only admitted snapshot copies despite new sessions and changed originals', async () => {
