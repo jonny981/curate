@@ -625,7 +625,8 @@ export interface PickRecord {
      *  and share it tested with, the waves of decision requests the
      *  read sent, the batches of the order it rated, the parts of the
      *  order it rated, the parts of the order it never rated, the rated
-     *  parts at or above their keep bar, and what ended the read: 'order' when it reached the order's end, 'cold'
+     *  parts at or above their keep bar, the rated parts at or above the
+     *  floor, and what ended the read: 'order' when it reached the order's end, 'cold'
      *  when the ratings went cold, or the stopping dial that ended it
      *  first ('limits', 'time', 'cancelled', 'error'). `cold` is
      *  present when the ratings went cold: the batch, counted from 1
@@ -641,6 +642,7 @@ export interface PickRecord {
       readonly rated: number;
       readonly unread: number;
       readonly kept: number;
+      readonly atFloor: number;
       readonly ended: 'order' | 'cold' | 'limits' | 'time' | 'cancelled' | 'error';
       readonly cold?: {
         readonly batch: number;
@@ -826,8 +828,10 @@ export interface PickOptions {
    *  `floor` (default 0.1), or under `share` (default 0.2) times the
    *  best score of every batch before it. It never stops before the
    *  read has kept a reference part on the bar the selection keeps it
-   *  at, whatever sets that bar, so a question the history
-   *  holds nothing for reads the whole order even with the stop set.
+   *  at, whatever sets that bar, and rated one at or above `floor`, so
+   *  a question the history holds nothing for, and a history whose
+   *  every part scores under the floor, read the whole order even with
+   *  the stop set, at the full cost of the stop off.
    *  The rest of that wave is rated and kept as usual; a part below
    *  the stop is never asked by the read and records 'unassessed' with
    *  reason 'stopWhenCold'. A higher floor or share stops sooner and
@@ -1267,6 +1271,7 @@ interface EffectInput {
     readonly cold: NonNullable<NonNullable<PickRecord['pick']>['stopWhenCold']>['cold'];
     readonly ended: NonNullable<NonNullable<PickRecord['pick']>['stopWhenCold']>['ended'];
     readonly kept: number;
+    readonly atFloor: number;
     readonly orderBySource: ReadonlyMap<string, number>;
     readonly ratedBySource: ReadonlyMap<string, number>;
   } | undefined;
@@ -1600,7 +1605,7 @@ function settingEffects(input: EffectInput): PickSettingEffect[] {
     }
 
     if (input.stopWhenCold !== undefined) {
-      const { floor, share, cold, ended, kept } = input.stopWhenCold;
+      const { floor, share, cold, ended, kept, atFloor } = input.stopWhenCold;
       const order = input.stopWhenCold.orderBySource.get(id) ?? 0;
       const read = input.stopWhenCold.ratedBySource.get(id) ?? 0;
       const unread = order - read;
@@ -1614,6 +1619,8 @@ function settingEffects(input: EffectInput): PickSettingEffect[] {
           : ended === 'order'
             ? kept === 0 && unread === 0
               ? `stopWhenCold on ${id}: no part reached the keep bar, so the read rated every one of ${count(order, 'part')} in the order and kept none.`
+            : atFloor === 0 && unread === 0
+              ? `stopWhenCold on ${id}: no part rated at or above the floor ${floor}, so the stop could not fire and the read rated every one of ${count(order, 'part')} in the order.`
             : unread === 0
               ? `stopWhenCold on ${id}: the ratings never went cold, so the read rated every one of ${count(order, 'part')} in the order and left 0 unread.`
               : `stopWhenCold on ${id}: the ratings never went cold and the read reached the end of the order, but ${unread} of its parts got no decision score: it rated ${left}.`
@@ -2917,9 +2924,11 @@ export async function pick(
     waves: number;
     batches: number;
     readonly rated: Set<MemoryCandidate>;
-    /** The main read holds the stop until it has kept a part, so a
-     *  history whose evidence sits below a cold stretch never comes back
-     *  empty. The rare-word round runs only once the main read kept
+    /** The main read holds the stop until it has kept a part and rated
+     *  one at or above the floor, so a history whose evidence sits below
+     *  a cold stretch never comes back empty, and a read whose first
+     *  ratings all sit under the floor goes on until one reaches it. The
+     *  rare-word round runs only once the main read kept
      *  parts, so its own read does not wait. */
     readonly waitForKept: boolean;
     best: number;
@@ -2933,6 +2942,9 @@ export async function pick(
     const answer = combined.get(candidate);
     return answer?.status === 'answered' && 'probability' in answer ? answer.probability : undefined;
   };
+  // A rated part at or above the stop's floor: the main read's stop
+  // waits for one, and the record counts them.
+  const atFloor = (candidate: MemoryCandidate) => (scoreOf(candidate) ?? 0) >= stopRule!.floor;
   const main = reading(true);
   // Parts an identical earlier text answers: they ride free and do not
   // count toward a batch's best score, so a copy of a warm part cannot
@@ -2974,7 +2986,8 @@ export async function pick(
   // in order, as a read of one batch at a time would check them: the
   // read stops at the first batch whose best decision score is under
   // the floor, or under the share of the best score before it, once the
-  // read has kept a part. The rest of that wave is already rated. A batch holding no reference
+  // read has kept a part and rated one at or above the floor. The rest
+  // of that wave is already rated. A batch holding no reference
   // part it asked about is not checked. A stopping dial that ends a
   // wave early leaves its batches unchecked: the dial, not the ratings,
   // ended the read. Without the stop the order goes out at once.
@@ -3001,9 +3014,10 @@ export async function pick(
         state.batches += 1;
         if (stop || state.cold !== undefined) continue;
         const best = Math.max(0, ...own.map((candidate) => scoreOf(candidate) ?? 0));
-        // Until the read has kept a part, a cold batch does not stop it.
+        // Until the read has kept a part and rated one at or above the
+        // floor, a cold batch does not stop it.
         if ((best < stopRule.floor || best < stopRule.share * state.best)
-          && (!state.waitForKept || keptAny())) {
+          && (!state.waitForKept || ([...state.rated].some(atFloor) && keptAny()))) {
           state.cold = { batch: state.batches, best, bestBefore: state.best,
             under: best < stopRule.floor ? 'floor' : 'share' };
         } else state.best = Math.max(state.best, best);
@@ -3104,8 +3118,9 @@ export async function pick(
   const readEnded = stopRule === undefined ? undefined
     : main.cold !== undefined ? 'cold' as const : feedStop ?? 'order' as const;
   // The reference parts the read rated that the selection pass kept on
-  // its own bar.
+  // its own bar, and those it rated at or above the stop's floor.
   const readKept = [...main.rated].filter(keepsAt(decided)).length;
+  const readAtFloor = [...main.rated].filter(atFloor).length;
   // A queued part the feed never held was never asked a question. The
   // 'gate' reason names only the gate's own call: a reference part the
   // keyword lanes never held — not one a lane's candidate limit cut —
@@ -3311,7 +3326,7 @@ export async function pick(
     } }),
     ...(stopRule === undefined ? {} : { stopWhenCold: {
       ...stopRule, waves: main.waves, batches: main.batches, rated: main.rated.size,
-      unread: insideOrder.length - main.rated.size, kept: readKept, ended: readEnded!,
+      unread: insideOrder.length - main.rated.size, kept: readKept, atFloor: readAtFloor, ended: readEnded!,
       ...(main.cold === undefined ? {} : { cold: main.cold }),
     } }),
     ranking: feedFused || fused ? 'fusion' : 'keyword',
@@ -3341,7 +3356,7 @@ export async function pick(
     fused,
     feedOption: options.feed,
     stopWhenCold: stopRule === undefined ? undefined : {
-      ...stopRule, cold: main.cold, ended: readEnded!, kept: readKept, orderBySource: bySource(insideOrder),
+      ...stopRule, cold: main.cold, ended: readEnded!, kept: readKept, atFloor: readAtFloor, orderBySource: bySource(insideOrder),
       ratedBySource: bySource(main.rated) },
     rareHeld,
     typedSources: new Map(Object.entries(options.questionsBySource ?? {}).flatMap(([id, set]) =>

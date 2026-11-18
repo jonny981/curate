@@ -1108,9 +1108,10 @@ describe('a run through core decision calls', () => {
 
     const record = JSON.parse(await readFile(join(runFolder, 'record.json'), 'utf8'));
     expect(record.status).toBe('complete');
-    // Every answer is 0.8, under the floor of 0.9: the read stops at its first batch.
+    // Every answer is 0.8, so every part scores under the floor of 0.9:
+    // the stop may not fire, and the read reaches the end of the order.
     expect(record.pick?.pick?.stopWhenCold).toMatchObject({ floor: 0.9, share: 0.2, waves: 1,
-      cold: { batch: 1, under: 'floor' } });
+      atFloor: 0, ended: 'order', unread: 0 });
     expect(record.pick?.levers?.stopWhenCold).toEqual({ floor: 0.9, share: 0.2 });
     expect(record.pick?.levers).not.toHaveProperty('everyRanked');
   });
@@ -1161,22 +1162,74 @@ describe('a run through core decision calls', () => {
     vi.stubEnv('HOME', home);
     vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
     vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
-    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => new Response(JSON.stringify({
-      usage: null,
-      answers: Object.fromEntries(Object.keys(JSON.parse(String(init.body)).questions).map((key) => [key, { noul: 0.8 }])),
-    }))));
+    // The first request's parts score over the floor of 0.9; every
+    // answer after it is 0.8, which scores under it.
+    let requests = 0;
+    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => {
+      const warm = requests++ === 0;
+      const questions = JSON.parse(String(init.body)).questions as Record<string, { instructions: string }>;
+      return new Response(JSON.stringify({
+        usage: null,
+        answers: Object.fromEntries(Object.entries(questions).map(([key, question]) => [key, {
+          noul: !warm ? 0.8 : question.instructions.startsWith('Is this item about a different subject') ? 0.01 : 0.99,
+        }])),
+      }));
+    }));
     vi.spyOn(console, 'log').mockImplementation(() => {});
     const warned = vi.spyOn(console, 'error').mockImplementation(() => {});
     const { call } = subscriptionReply(searches());
     const { record } = await run(['--sources', sourcesFile, 'orchard'], call);
 
-    // Every answer is 0.8, under the floor of 0.9: the read stops after its first wave.
+    // The first batch is warm; the second scores under the floor of 0.9,
+    // and the read stops after its first wave.
     const stop = record.pick.pick.stopWhenCold;
-    expect(stop).toMatchObject({ ended: 'cold', waves: 1, cold: { batch: 1, under: 'floor' } });
+    expect(stop).toMatchObject({ ended: 'cold', waves: 1, cold: { batch: 2, under: 'floor' } });
     expect(stop.unread).toBeGreaterThan(0);
     expect(warned.mock.calls.map(([line]) => String(line)).filter((line) => line.includes('stopWhenCold'))).toEqual([
       `The rating stop ended the read where the ratings went cold, with ${stop.unread} of ${stop.rated + stop.unread} ranked parts unread; set "stopWhenCold": false in ${sourcesFile} to read them all.`,
     ]);
+  });
+
+  it('reads on past a first wave that scores under the floor by default, to the end of the order when nothing reaches it', async () => {
+    const directory = await folder();
+    const home = join(directory, 'home');
+    const notes = join(directory, 'notes');
+    await mkdir(home);
+    await mkdir(notes);
+    // Enough parts for more than one wave of two batches.
+    await writeFile(join(notes, 'orchard.md'), Array.from({ length: 400 }, (_, index) =>
+      `## Orchard row ${index}\n\nRow ${index} of the orchard has fruit trees. ${'The trees grow here. '.repeat(30)}\n`).join('\n'));
+    const sourcesFile = join(directory, 'sources.json');
+    await writeFile(sourcesFile, JSON.stringify({ records: true, sentenceCutoff: false, sources: [{ type: 'markdown', path: notes }] }));
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
+    vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
+    // A part counted as off the subject: every part scores over the keep
+    // bar and under the default floor of 0.1.
+    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => {
+      const questions = JSON.parse(String(init.body)).questions as Record<string, { instructions: string }>;
+      return new Response(JSON.stringify({
+        usage: null,
+        answers: Object.fromEntries(Object.entries(questions).map(([key, question]) => [key, {
+          noul: question.instructions.startsWith('Is this item about a different subject') ? 0.9 : 0.5,
+        }])),
+      }));
+    }));
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const warned = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { call } = subscriptionReply(searches());
+    const { record } = await run(['--sources', sourcesFile, 'orchard'], call);
+
+    expect(record.status).toBe('complete');
+    expect(record.pick.levers.stopWhenCold).toEqual({ floor: 0.1, share: 0.2 });
+    const stop = record.pick.pick.stopWhenCold;
+    expect(stop).toMatchObject({ ended: 'order', unread: 0, atFloor: 0 });
+    expect(stop.waves).toBeGreaterThan(1);
+    expect(stop.kept).toBe(stop.rated);
+    const scores = record.pick.candidates.flatMap((entry: { probability?: number }) =>
+      entry.probability === undefined ? [] : [entry.probability]);
+    expect(scores.every((score: number) => score >= 0.0146 && score < 0.1)).toBe(true);
+    expect(warned.mock.calls.map(([line]) => String(line)).filter((line) => line.includes('stopWhenCold'))).toEqual([]);
   });
 
   it('carries each entry\'s since, include and exclude into the recorded source settings', async () => {

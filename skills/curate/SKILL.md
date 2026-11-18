@@ -45,7 +45,7 @@ Run the command from a folder inside the project the question is about. The work
 curate "What did we decide about retrying failed uploads, and why?"
 ```
 
-- **Expect to pay for each call.** The decision step is a paid service, at about $0.00002 for each part it rates, and a call rates parts from the top of its ranked list until the ratings go cold. This cost is why the question count is capped above.
+- **Expect to pay for each call.** The decision step is a paid service, at about $0.00002 for each part it rates, and a call rates parts from the top of its ranked list until the ratings go cold, or the whole list when no part has rated at or above the stop's floor. This cost is why the question count is capped above.
 - **Run calls one after another.** Each call loads the local embedding model and updates the same stored index.
 - **Read standard error as well as the printed text.** It names sources that were missing, only partly read, or skipped as outside this project. It says when the token budget left out strong evidence, and when the decision step stopped where its ratings went cold with ranked parts unread. You report these to the person. It also says which model wrote the search lines; that line needs no report.
 - **Treat exit code 3 as setup, not as an answer.** The message lists every need not met, each with why Curate needs it and the fix. Run `curate check`, then walk the person through the missing lines as [Setup](#setup) describes. Report any other failure plainly with its message.
@@ -145,7 +145,7 @@ A call from `~/work/app` then reads the app's own history, with only its last 90
 - **Source types:** `claude-code`, `codex`, `git` and `markdown`. Each takes a `path`, and optional `since`, `exclude` and `always`. `git` also takes `include`. Chat sources also take `questions` and `bar`. A `codex` source with a `path` needs `allowedCwd`, the folders whose sessions may be read.
 - **Chat sources with no path:** A `claude-code` or `codex` entry may leave out `path`. It then reads only the transcripts of the project the call runs in, with the entry's own `since`, `exclude`, `questions` and `bar`, in place of the ones the call reads on its own. It takes no `always` or `allowedCwd`, and outside a project it reads nothing.
 - **Related projects:** `"related": [["~/work/app", "~/work/docs"]]` makes a call in either project also read the other's Claude Code transcripts and Codex sessions, never its commits or Markdown.
-- **Call settings:** `stopWhenCold` (on unless set to `false`; it stops at a floor of 0.1 and a share of 0.2 unless `{ floor, share }` sets them), `answerTokens` (2,000 by default), `sentenceCutoff`, `searchModel` (`haiku` or `luna`), `scope`, `threshold`, `feed`, `userFirst`, `recentFirst`, `records`, `readAudit` and `maxInFlight`.
+- **Call settings:** `stopWhenCold` (on unless set to `false`; it stops at a floor of 0.1 and a share of 0.2 unless `{ floor, share }` sets them, and only once a part has rated at or above the floor), `answerTokens` (2,000 by default), `sentenceCutoff`, `searchModel` (`haiku` or `luna`), `scope`, `threshold`, `feed`, `userFirst`, `recentFirst`, `records`, `readAudit` and `maxInFlight`.
 
 [references/settings.md](references/settings.md) explains every key and what the call does with it. Read it when you change a setting or need to explain a result.
 

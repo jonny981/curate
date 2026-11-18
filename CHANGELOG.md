@@ -73,8 +73,10 @@ What each part does:
   a part. `pick.stopWhenCold` is off unless set; `{}` reads the order two
   batches at a time and stops at the first batch whose best decision score is
   under 0.1, or under 0.2 times the best score before it, never before the
-  read has kept a part, so a question the history holds nothing for reads the
-  whole order; `{ floor, share }` sets the two numbers for one call: a higher
+  read has kept a part and rated one at or above the floor, so a question the
+  history holds nothing for, and a history whose every part scores under the
+  floor, read the whole order at the cost of the stop off; `{ floor, share }`
+  sets the two numbers for one call: a higher
   one stops sooner and costs less, a lower one reads further and finds more.
   On three benchmark runs' saved scores `{}` rated 64% (LoCoMo), 55%
   (DolphinBench) and 83% (BEAM) of the parts the runs rated and kept 98.5%,
