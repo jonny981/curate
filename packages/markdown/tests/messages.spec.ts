@@ -126,6 +126,18 @@ describe('a WhatsApp chat export', () => {
     expect(said).not.toHaveProperty('partial');
   });
 
+  it('names on a cut piece the sender of the message it was cut from, though an earlier line holds the same words', async () => {
+    const root = await folder();
+    const file = join(root, '_chat.txt');
+    const said = 'The ferry leaves at seven.';
+    // Alice's line is 700 characters up to the sentence Bob said, so the cut leaves that sentence as a piece of its own.
+    await writeFile(file, [`[08/05/2023, 13:56:00] Bob: ${said}`, `[08/05/2023, 13:57:00] Alice: ${'a'.repeat(692)} ${said}`].join('\n'));
+    const result = await whatsapp(file, { directory: join(root, 'notes'), dates: 'day-first' }).read({ task: 'ferry', wholeLanes: true });
+    if (result.status !== 'read') throw new Error('Expected a read');
+    const alone = result.candidates.filter((part) => part.text.trim().endsWith(said) && !part.text.includes('a'.repeat(50)) && !part.text.includes('# session'));
+    expect(alone.map((part) => part.text.trim())).toEqual([`Alice: ${said}`]);
+  });
+
   it('lets calls at once read one export, each writing its notes apart', async () => {
     const root = await folder();
     const file = join(root, '_chat.txt');

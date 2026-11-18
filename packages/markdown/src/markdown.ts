@@ -442,7 +442,7 @@ function instructionLocation(directory: string, paths: readonly string[], root: 
 /** Cut text into parts of at most `limit` characters at line ends, so the
  *  parts joined exactly reproduce the text. A single line longer than the
  *  limit is hard-cut; every part must still be judged. */
-function splitParts(text: string, limit: number): readonly string[] {
+export function splitParts(text: string, limit: number): readonly string[] {
   const parts: string[] = [];
   let start = 0;
   while (start < text.length) {

@@ -4,10 +4,10 @@ import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 
 import {
-  SourceReadError,
+  DEFAULT_MAX_QUESTION_TEXT, SourceReadError,
   type CandidateReadContext, type CandidateReadRequest, type CandidateReadResult, type CandidateSource, type MemoryCandidate, type Mode,
 } from '@curatejs/core';
-import { knowledgeBase } from './markdown.js';
+import { knowledgeBase, splitParts } from './markdown.js';
 import { directMessages } from './mode.js';
 
 /** One message of a chat export between people. */
@@ -237,19 +237,27 @@ export function whatsapp(path: string, options: WhatsappOptions = {}): Candidate
   };
   // A part the notes reader cut from inside a message opens with the
   // sender of the line it starts in, so the decision model and the layout
-  // see who said it.
-  const spoken = (candidate: MemoryCandidate): string => {
+  // see who said it. The part is found where the notes reader cut it: its
+  // section of the note, cut again at the same size, and its number there.
+  const spoken = (candidate: MemoryCandidate, budget: number): string => {
     const lead = /^(\s*)(.*)/.exec(candidate.text)!;
     const opener = new RegExp(`^(?:${speakers.map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')}): `);
     if (speakers.length === 0 || lead[2] === '' || opener.test(lead[2]!)) return candidate.text;
     const [file, lines] = (candidate.contentRef ?? '').split('#L');
     const note = notes.get(file ?? '');
     if (note === undefined || lines === undefined) return candidate.text;
-    const sectionLine = Number(lines.split('-')[0]);
-    let sectionStart = 0;
-    for (let line = 1; line < sectionLine && sectionStart >= 0; line += 1) sectionStart = note.indexOf('\n', sectionStart) + 1;
-    const at = note.indexOf(candidate.text, sectionStart);
-    if (at < 0) return candidate.text;
+    const [first, last] = lines.split('-L').map(Number) as [number, number];
+    const lineStart = (line: number) => {
+      let offset = 0;
+      for (let at = 1; at < line && offset >= 0; at += 1) offset = note.indexOf('\n', offset) + 1;
+      return offset;
+    };
+    const sectionStart = lineStart(first);
+    const sectionEnd = note.indexOf('\n', lineStart(last)) + 1 || note.length;
+    const pieces = splitParts(note.slice(sectionStart, sectionEnd), budget);
+    const number = Number(/#\d+\.(\d+)$/.exec(candidate.id)?.[1] ?? 1);
+    if (pieces[number - 1] !== candidate.text) return candidate.text;
+    const at = sectionStart + pieces.slice(0, number - 1).reduce((length, piece) => length + piece.length, 0);
     // The lines before the part's first one, nearest first: the first that opens with a sender names it.
     const before = note.slice(0, at + lead[1]!.length).split('\n').reverse();
     for (const line of before) {
@@ -272,10 +280,12 @@ export function whatsapp(path: string, options: WhatsappOptions = {}): Candidate
       if (!await done) return { status: 'absent', reason: 'no-whatsapp-export' };
       const result = await inner.read(request, context);
       if (result.status !== 'read') return result;
+      // The notes reader's part size: its own, or the request's when smaller.
+      const budget = Math.min(DEFAULT_MAX_QUESTION_TEXT, request.maxQuestionText ?? DEFAULT_MAX_QUESTION_TEXT);
       const open = order.settled ? undefined : `The export's dates were read ${order.dates === 'day-first' ? 'day first' : 'month first'}: `
         + "no day in them is over 12 and their order fits both readings. Set dates to 'day-first' or 'month-first' to say which.";
       return { ...result,
-        candidates: result.candidates.map((candidate) => ({ ...candidate, sourceId: id, speakers, text: spoken(candidate) })),
+        candidates: result.candidates.map((candidate) => ({ ...candidate, sourceId: id, speakers, text: spoken(candidate, budget) })),
         ...(open === undefined ? {} : { complete: false, partial: result.partial === undefined ? open : `${result.partial} ${open}` }),
         ...(result.historySize === undefined ? {} : { historySize: Object.fromEntries(Object.entries(result.historySize)
           .map(([source, count]) => [source === inner.id ? id : source, count])) }) };
