@@ -89,7 +89,9 @@ these files as usual.
 `markdown({ paths, kind })` reads folders, individual files, or glob patterns.
 Paths beginning with `~/` resolve against the user's home directory. Git-ignored
 paths, `.git`, and `node_modules` are skipped before file contents are opened.
-Markdown files include `.md`, `.markdown`, `.mdc`, and `.cursorrules`.
+A folder git cannot check for ignored files, such as a bare repository kept
+inside the folder, is skipped whole and named in the read's `partial`; the rest
+is read. Markdown files include `.md`, `.markdown`, `.mdc`, and `.cursorrules`.
 
 ```ts
 import { markdown, rules } from '@curatejs/markdown';

@@ -36,7 +36,7 @@ const { log, rules, picked, result } = await mem.recall('What billing constraint
 - **Rules:** `rules` joins selected rules with blank lines and preserves each rule's text. Rules are not in `log`.
 - **Selection:** `picked` is the full `PickSourcesResult`, including source reads and decision records.
 - **Questions:** Each source carries its decision question set as `questions`, set through `historySource()`, and each built-in reader carries its fitted set. `memory()`, `pickFromSources()` and the `/curate` skill all ask each source its own set. A source without one asks core's ordinary question. A direct `pick()` takes the sets by source id as `questionsBySource`.
-- **Incomplete collection:** Absent or incomplete reads, unanswered candidates and interrupted decisions throw before the layout. Parts intentionally excluded by the label questions are allowed. The error's `cause` holds `picked` for inspection. Source read errors propagate. A limit that leaves candidates unassessed also throws; use `pickFromSources()` directly if you need to accept a partial selection.
+- **Incomplete collection:** Absent or incomplete reads, unanswered candidates and interrupted decisions throw before the layout. Parts intentionally excluded by the label questions are allowed. The error's `cause` holds `picked` for inspection. A source whose read fails counts as absent here too; when every source fails, its error propagates. A limit that leaves candidates unassessed also throws; use `pickFromSources()` directly if you need to accept a partial selection.
 - **Cancellation:** `mem.recall(task, { signal })` passes the signal to the readers and every `decide` call.
 
 Each source carries its own settings: whether the rare-word round runs on it, which label kinds its parts are asked, and the decision-score bars its parts are cut at.
@@ -106,6 +106,9 @@ A source implements `CandidateSource`: it has an `id`, a declared `role`
   Non-fatal, with its reason.
 - **A thrown `SourceReadError`**: a real failure: an unreadable file, a
   corrupt store, or `code: 'cancelled'` when the read was aborted.
+  `pickFromSources` reports a source whose read fails (`code: 'failed'`)
+  as `absent`, with the reason `the read failed: <message>`, and reads
+  the others; when every source failed, it throws the first failure.
 
 The request's `exclude` paths are refused before any content is opened,
 so excluded text never reaches signals or a model. A `revision` pin is

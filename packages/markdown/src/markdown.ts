@@ -131,6 +131,10 @@ interface Walked {
   /** Entries that looked like content but were not walked or read; each
    *  a symbolic link. Skipped items make the read incomplete. */
   readonly skipped: number;
+  /** Folders git could not check for ignored files, such as a bare
+   *  repository inside the corpus: each was skipped whole, and makes the
+   *  read incomplete. */
+  readonly unchecked: readonly string[];
 }
 
 async function walkMarkdown(
@@ -143,6 +147,7 @@ async function walkMarkdown(
 ): Promise<Walked> {
   const files: string[] = [];
   let skipped = 0;
+  const unchecked: string[] = [];
   async function walk(directory: string): Promise<void> {
     if (signal?.aborted) throw new SourceReadError('cancelled', 'The read was cancelled.');
     let entries;
@@ -157,8 +162,19 @@ async function walkMarkdown(
       throw new SourceReadError('failed', `Could not list ${directory}: ${message(error)}`);
     }
     entries.sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
-    const ignored = legacy ? new Set<string>()
-      : await ignoredPaths(directory, entries.map((entry) => join(directory, entry.name)), toplevel, signal);
+    let ignored: ReadonlySet<string> = new Set<string>();
+    if (!legacy) {
+      try {
+        ignored = await ignoredPaths(directory, entries.map((entry) => join(directory, entry.name)), toplevel, signal);
+      } catch (error) {
+        if (isCancel(error)) throw error;
+        // A folder git cannot check, such as a bare repository kept
+        // inside the corpus, is skipped whole and named; the rest of the
+        // walk goes on.
+        unchecked.push(directory);
+        return;
+      }
+    }
     for (const entry of entries) {
       // rules() still lists .cursorrules, only so the read can record that it skipped it.
       if (legacy !== undefined ? entry.name.startsWith('.') && !(legacy === 'rules' && entry.name === '.cursorrules')
@@ -175,7 +191,7 @@ async function walkMarkdown(
     }
   }
   await walk(root);
-  return { files, skipped };
+  return { files, skipped, unchecked };
 }
 
 /** Files an agent harness loads every session on its own. */
@@ -463,6 +479,8 @@ interface ReadState {
   readonly root: string;
   readonly files: readonly string[];
   readonly skipped: number;
+  /** Folders the walk skipped because git could not check them. */
+  readonly unchecked?: readonly string[];
   /** Set when the corpus sits inside a work tree: the repository the
    *  notes belong to and the corpus's path inside it. */
   readonly repo?: { readonly toplevel: string; readonly prefix: string };
@@ -754,7 +772,7 @@ async function openDirectory(
     repo = { toplevel, prefix: relative(toplevel, root).split(sep).join('/') };
   } else {
     if (legacy === 'rules') {
-      const { files, skipped } = await walkMarkdown(root, request.signal, exclude, undefined, select, legacy);
+      const { files, skipped, unchecked } = await walkMarkdown(root, request.signal, exclude, undefined, select, legacy);
       // Scopes name paths from the repository root, as Cursor and Copilot
       // read them; a repository git cannot inspect leaves the library folder.
       let probe: WorkTreeProbe | undefined;
@@ -763,7 +781,7 @@ async function openDirectory(
       } catch (error) {
         if (isCancel(error)) throw asSourceReadError(error);
       }
-      return { root, files, skipped,
+      return { root, files, skipped, unchecked,
         ...(probe?.status === 'worktree' ? { scopeRoot: await realpath(probe.toplevel) } : {}) };
     }
     let probe: WorkTreeProbe;
@@ -782,15 +800,15 @@ async function openDirectory(
     }
     if (probe.status === 'absent') {
       if (request.revision !== undefined) return { status: 'absent', reason: PIN_REASON };
-      const { files, skipped } = await walkMarkdown(root, request.signal, exclude, undefined, select, legacy);
-      return { root, files, skipped };
+      const { files, skipped, unchecked } = await walkMarkdown(root, request.signal, exclude, undefined, select, legacy);
+      return { root, files, skipped, unchecked };
     }
     const toplevel = await realpath(probe.toplevel);
     repo = { toplevel, prefix: relative(toplevel, root).split(sep).join('/') };
   }
   if (request.revision === undefined) {
-    const { files, skipped } = await walkMarkdown(root, request.signal, exclude, repo.toplevel, select, legacy);
-    return { root, files, skipped, repo };
+    const { files, skipped, unchecked } = await walkMarkdown(root, request.signal, exclude, repo.toplevel, select, legacy);
+    return { root, files, skipped, unchecked, repo };
   }
   try {
     // The pin resolves once here; the tree, the contents and the dates
@@ -1445,6 +1463,9 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
         }
         present = true;
         skipped += state.skipped;
+        if (state.unchecked !== undefined && state.unchecked.length > 0) {
+          reasons.push(`skipped ${state.unchecked.length} ${state.unchecked.length === 1 ? 'folder' : 'folders'} git could not check for ignored files: ${state.unchecked.join(', ')}`);
+        }
         revision = state.pinned?.revision;
         const files = state.files.filter((file) => {
           if (legacy === 'rules' && basename(file).toLowerCase() === 'readme.md') return false;

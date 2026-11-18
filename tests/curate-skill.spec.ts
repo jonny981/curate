@@ -1,7 +1,7 @@
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { existsSync, openSync, readFileSync, readSync, readdirSync, writeFileSync } from 'node:fs';
-import { copyFile, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import * as zlib from 'node:zlib';
 import { delimiter, join, resolve } from 'node:path';
@@ -2694,6 +2694,38 @@ describe('a call reads the project its working folder sits in', () => {
     expect(embed.mock.calls.flat(2).join('\n')).toContain('The project document plans the orchard.');
     expect(readdirSync(at('cache', 'curate', 'index')).some((name) => name.endsWith('.sqlite'))).toBe(true);
     expect(printed.mock.calls.map(([line]) => String(line))).toEqual([`Prepared 4 sources for ${repo}.`]);
+  });
+
+  it('--prepare skips and names a bare repository inside the project, and prepares the rest', async () => {
+    const { at, repo } = await project();
+    execFileSync('git', ['-C', repo, 'init', '-q', '--bare', '-b', 'main', join('backups', 'old.git')], { stdio: 'pipe' });
+    const embed = vi.fn(async (texts: readonly string[]) => texts.map(() => [1, 0]));
+    vi.mocked(createLocalEmbedder).mockImplementationOnce((async () => ({ embed, dispose: vi.fn(async () => {}) })) as never);
+    const warned = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await run(['--prepare']);
+    expect(embed.mock.calls.flat(2).join('\n')).toContain('The project document plans the orchard.');
+    expect(vi.mocked(console.log).mock.calls.map(([line]) => String(line))).toContain(`Prepared 4 sources for ${repo}.`);
+    expect(warned.mock.calls.map(([line]) => String(line))).toContainEqual(expect.stringMatching(
+      new RegExp(`^Source only partly read: .*: skipped 1 folder git could not check for ignored files: ${at('project', 'backups', 'old.git').replace(/[.]/g, '\\.')}$`)));
+  });
+
+  it('--prepare finishes the other sources when one fails, and says which failed', async () => {
+    const { at, repo, settings } = await project();
+    await mkdir(at('locked'));
+    await chmod(at('locked'), 0o000);
+    try {
+      const sourcesFile = await settings([{ type: 'markdown', path: at('locked'), always: true }]);
+      const embed = vi.fn(async (texts: readonly string[]) => texts.map(() => [1, 0]));
+      vi.mocked(createLocalEmbedder).mockImplementationOnce((async () => ({ embed, dispose: vi.fn(async () => {}) })) as never);
+      const warned = vi.spyOn(console, 'error').mockImplementation(() => {});
+      await run(['--sources', sourcesFile, '--prepare']);
+      expect(embed.mock.calls.flat(2).join('\n')).toContain('The project document plans the orchard.');
+      expect(vi.mocked(console.log).mock.calls.map(([line]) => String(line))).toContain(`Prepared 4 sources of 5 for ${repo}.`);
+      expect(warned.mock.calls.map(([line]) => String(line))).toContainEqual(expect.stringMatching(
+        new RegExp(`^Source failed: markdown ${at('locked').replace(/[.]/g, '\\.')}: Could not list ${at('locked').replace(/[.]/g, '\\.')}: `)));
+    } finally {
+      await chmod(at('locked'), 0o755);
+    }
   });
 
   it('--prepare removes the files an earlier version of Curate kept and names them, where a call removes none', async () => {
