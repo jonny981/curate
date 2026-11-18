@@ -1062,6 +1062,43 @@ async function addTaskPeriod(
     ...(partial === '' ? {} : { partial }) };
 }
 
+/** One candidate per part: copies of a part from several reads merge
+ *  into one, with each lane's best rank and the best meaning score. */
+function mergeCopies(candidates: readonly MemoryCandidate[]): MemoryCandidate[] {
+  const unique = new Map<string, MemoryCandidate>();
+  // Kind lanes differ between source kinds, so a single-lane read can
+  // meet the merge without ranks: absent positions count as null.
+  const bestRank = (candidate: MemoryCandidate) => (candidate.searchRanks ?? []).reduce<number>(
+    (best, rank) => rank === null ? best : Math.min(best, rank), Number.POSITIVE_INFINITY,
+  );
+  for (const candidate of candidates) {
+    const key = JSON.stringify([candidate.sourceId, candidate.id]);
+    const existing = unique.get(key);
+    if (existing === undefined) {
+      unique.set(key, candidate);
+      continue;
+    }
+    const length = Math.max(existing.searchRanks?.length ?? 0, candidate.searchRanks?.length ?? 0);
+    const ranks = Array.from({ length }, (_, lane) => {
+      const left = existing.searchRanks?.[lane] ?? null;
+      const right = candidate.searchRanks?.[lane] ?? null;
+      return left === null ? right : right === null ? left : Math.min(left, right);
+    });
+    const chosen = bestRank(candidate) < bestRank(existing) ? candidate : existing;
+    const past = existing.pastLaneCut === true && candidate.pastLaneCut === true ? { pastLaneCut: true as const } : {};
+    const meaningScore = Math.max(
+      existing.meaningScore ?? Number.NEGATIVE_INFINITY,
+      candidate.meaningScore ?? Number.NEGATIVE_INFINITY);
+    // A merged candidate still needs at least one lane rank.
+    unique.set(key, ranks.some((rank) => rank !== null)
+      ? { ...unmarked(chosen), searchRanks: ranks,
+          ...(Number.isFinite(meaningScore) ? { meaningScore } : {}), ...past }
+      : { ...unmarked(chosen), searchRanks: undefined,
+          ...(Number.isFinite(meaningScore) ? { meaningScore } : {}), ...past });
+  }
+  return [...unique.values()];
+}
+
 /**
  * Read every source, then pick over the combined candidates. The read
  * revision is copied onto candidates that do not carry their own
@@ -1183,42 +1220,10 @@ export async function pickFromSources(
       );
     }
   }
-  let combined = candidates;
-  if (sources.some((source) => searchTasks(request, source.kind, namesFor(source)).length > 1)
-    || request.meaning !== undefined) {
-    const unique = new Map<string, MemoryCandidate>();
-    // Kind lanes differ between source kinds, so a single-lane read can
-    // meet the merge without ranks: absent positions count as null.
-    const bestRank = (candidate: MemoryCandidate) => (candidate.searchRanks ?? []).reduce<number>(
-      (best, rank) => rank === null ? best : Math.min(best, rank), Number.POSITIVE_INFINITY,
-    );
-    for (const candidate of candidates) {
-      const key = JSON.stringify([candidate.sourceId, candidate.id]);
-      const existing = unique.get(key);
-      if (existing === undefined) {
-        unique.set(key, candidate);
-        continue;
-      }
-      const length = Math.max(existing.searchRanks?.length ?? 0, candidate.searchRanks?.length ?? 0);
-      const ranks = Array.from({ length }, (_, lane) => {
-        const left = existing.searchRanks?.[lane] ?? null;
-        const right = candidate.searchRanks?.[lane] ?? null;
-        return left === null ? right : right === null ? left : Math.min(left, right);
-      });
-      const chosen = bestRank(candidate) < bestRank(existing) ? candidate : existing;
-      const past = existing.pastLaneCut === true && candidate.pastLaneCut === true ? { pastLaneCut: true as const } : {};
-      const meaningScore = Math.max(
-        existing.meaningScore ?? Number.NEGATIVE_INFINITY,
-        candidate.meaningScore ?? Number.NEGATIVE_INFINITY);
-      // A merged candidate still needs at least one lane rank.
-      unique.set(key, ranks.some((rank) => rank !== null)
-        ? { ...unmarked(chosen), searchRanks: ranks,
-            ...(Number.isFinite(meaningScore) ? { meaningScore } : {}), ...past }
-        : { ...unmarked(chosen), searchRanks: undefined,
-            ...(Number.isFinite(meaningScore) ? { meaningScore } : {}), ...past });
-    }
-    combined = [...unique.values()];
-  }
+  // The merge's map of every part's key is local to `mergeCopies`, so it
+  // is not held while the pick runs.
+  const combined = sources.some((source) => searchTasks(request, source.kind, namesFor(source)).length > 1)
+    || request.meaning !== undefined ? mergeCopies(candidates) : candidates;
   const readsBySource: Record<string, PickSourceRead> = Object.create(null);
   for (const [index, read] of reads.entries()) {
     if (read.status !== 'read') continue;
