@@ -3535,8 +3535,18 @@ export async function pick(
       const ms = Date.parse(candidate.date?.value ?? '');
       return Number.isFinite(ms) ? ms : 0;
     };
+    // An identical text is one option, at its first place: the text lays
+    // its copies out once too, and each would cost a round.
+    const copies = new Map<string, MemoryCandidate[]>();
     const items = [...new Set(choosing.flatMap(itemsFor))]
-      .sort((left, right) => said(left) - said(right) || left.id.localeCompare(right.id));
+      .sort((left, right) => said(left) - said(right) || left.id.localeCompare(right.id))
+      .filter((item) => {
+        const text = (item.text.trim() || item.title).trim();
+        const group = copies.get(text);
+        if (group === undefined) { copies.set(text, [item]); return true; }
+        group.push(item);
+        return false;
+      });
     const keyed = items.map((item, index): [string, MemoryCandidate] => [`P${index + 1}`, item]);
     const itemOf = new Map(keyed);
     if (needed === undefined || stop !== undefined) {
@@ -3553,9 +3563,11 @@ export async function pick(
         result.facts.forEach(({ picks }, fact) => {
           for (const pick of picks) {
             const item = itemOf.get(pick.key)!;
-            const key = messageOfItem.get(item);
-            for (const piece of key === undefined ? [item] : messages.get(key) ?? [item]) {
-              picked.set(piece, [...picked.get(piece) ?? [], { fact, round: pick.round, probability: pick.probability }]);
+            for (const copy of copies.get((item.text.trim() || item.title).trim()) ?? [item]) {
+              const key = messageOfItem.get(copy);
+              for (const piece of key === undefined ? [copy] : messages.get(key) ?? [copy]) {
+                picked.set(piece, [...picked.get(piece) ?? [], { fact, round: pick.round, probability: pick.probability }]);
+              }
             }
           }
         });

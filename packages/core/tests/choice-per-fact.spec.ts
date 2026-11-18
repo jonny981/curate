@@ -161,6 +161,17 @@ describe('a Choice per needed fact in a pick', () => {
     expect(result.selected.map((candidate) => candidate.id).sort()).toEqual(off.selected.map((candidate) => candidate.id).sort());
   });
 
+  it('asks an identical text once, at its first place, and marks every copy with its pick', async () => {
+    const { requests, list } = lister();
+    const copy = part('e', 'We chose Postgres.', 5, 4);
+    ratings.e = 0.45;
+    const result = await pick([...parts, copy], { task, decide: decider(list), needed: [fact], modesBySource: { notes: mode(true) } });
+    expect(requests[0]!.items.map(([, item]) => item.id)).toEqual(['a', 'b', 'c', 'd']);
+    const entry = (id: string) => result.record.candidates.find((candidate) => candidate.id === id)!;
+    expect(entry('e').chosen).toEqual(entry('b').chosen);
+    delete ratings.e;
+  });
+
   it('asks nothing when the call gives no needed facts, and says so', async () => {
     const { requests, list } = lister();
     const result = await pick(parts, { task, decide: decider(list), modesBySource: { notes: mode({ bar: 0.5 }) } });
