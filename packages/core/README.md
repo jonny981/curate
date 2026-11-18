@@ -931,10 +931,18 @@ request; `itemsPerRequest: n` holds at most n. The decision model's
 maker shows many questions about one document in a request, and its
 re-ranking recipe sends one candidate per request; it shows no request
 judging many separate items. The requests of a round go out at once,
-inside `limits.maxInFlight` and the decider's own rate (`jev()` keeps to
-TypeSafe's published 80 requests and 100,000 tokens a second, so 1,000
-items take at least 12.5 seconds to send). A rating stop still plans
-its waves in parts. On the 22 short lists of one person's coding-agent
+inside `limits.maxInFlight` and the decider's own rate. `jev()` queues
+every request inside 80 requests and 100,000 estimated tokens a second
+unless given the organization's own limits (`requestsPerSecond`,
+`tokensPerSecond`, as TypeSafe's console shows them; its documentation
+sets them per organization), and waits out a 429 or a 529 as the reply
+directs. At that pace a read of 1,000 items needs at least: pieces 3.8
+seconds batched, 12.5 seconds one a request (bound by the requests);
+whole messages 13.8 and 15.2 seconds; whole messages with hard facts
+15.8 and 17.3 seconds (bound by the tokens either way), worked from the
+average request sizes below. The service's own time comes on top: 182
+whole messages with hard facts, one a request and four at a time, came
+back in 7.3 seconds with none refused, about 0.15 seconds a request. A rating stop still plans its waves in parts. On the 22 short lists of one person's coding-agent
 history, one item per request carried 1.38 times the request text of
 today's batching on pieces (1,489 requests in place of 27), 2.72 times
 on whole messages (against 2.47 batched) and 3.11 times on whole

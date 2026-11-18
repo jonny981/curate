@@ -62,9 +62,9 @@ export class DecisionServiceError extends Error {
    *  last reply asked for. */
   constructor(status: number, reply: string, said: string, options?: ErrorOptions & { readonly waited?: string }) {
     const reason: DecisionServiceFailure = status === 0 ? 'unreachable' : status === 402 ? 'credit'
-      : status === 401 || status === 403 ? 'key' : status === 429 ? 'busy' : 'refused';
+      : status === 401 || status === 403 ? 'key' : status === 429 || status === 529 ? 'busy' : 'refused';
     super(reason === 'unreachable' ? `The decision service could not be reached: ${said}`
-      : reason === 'busy' ? `The decision service is still rate-limiting requests (HTTP 429) after ${options?.waited ?? 'its retries'}: ${said}`
+      : reason === 'busy' ? `The decision service is still ${status === 529 ? 'overloaded' : 'rate-limiting requests'} (HTTP ${status}) after ${options?.waited ?? 'its retries'}: ${said}`
         : `The decision service ${reason === 'credit' ? 'has no credit' : reason === 'key' ? 'refused the API key'
           : 'refused the request'} (HTTP ${status}): ${said}`, options);
     this.name = 'DecisionServiceError';
@@ -115,10 +115,15 @@ function wait(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
-/** TypeSafe's published starting allowance: 80 requests and 100,000
- *  tokens a second, a token estimated at three characters like the
- *  request-size bounds. The service publishes no simultaneous-request
- *  limit; these two rates bound every request the adapter sends. */
+/** The pace the client keeps unless the caller sets its organization's
+ *  own limits (`jev({ requestsPerSecond, tokensPerSecond })`): 80
+ *  requests and 100,000 tokens a second, a starting allowance TypeSafe
+ *  once published, a token estimated at three characters like the
+ *  request-size bounds. TypeSafe's current documentation sets limits per
+ *  organization, shown in its developer console, in requests and tokens
+ *  a second, and answers a request over either 429. These two rates
+ *  bound every request the adapter sends: it queues against them and
+ *  never sends faster. */
 const JEV_TOKENS_PER_SECOND = 100_000;
 const JEV_REQUESTS_PER_SECOND = 80;
 
@@ -436,15 +441,24 @@ export interface JevCall {
 
 /** Create a decision function using TypeSafe's yes/no probabilities, or
  *  those of another server that speaks Jev's format at `url`. */
-export function jev({ apiKey, model = 'jev-latest', url = JEV_URL, onCall }: {
+export function jev({ apiKey, model = 'jev-latest', url = JEV_URL, onCall,
+  requestsPerSecond = JEV_REQUESTS_PER_SECOND, tokensPerSecond = JEV_TOKENS_PER_SECOND }: {
   /** Required at TypeSafe's address; sent only when given. */
   readonly apiKey?: string | undefined;
   readonly model?: string;
   readonly url?: string;
+  /** The organization's rate limits, as its TypeSafe console shows
+   *  them: the client queues every request inside both. Default 80
+   *  requests and 100,000 tokens a second. */
+  readonly requestsPerSecond?: number;
+  readonly tokensPerSecond?: number;
   /** Called once per request, split and resent requests included. */
   readonly onCall?: ((call: JevCall) => void | Promise<void>) | undefined;
 }): PickDecide {
   if (!apiKey && url === JEV_URL) throw new Error('Jev requires an API key.');
+  for (const [name, rate] of [['requestsPerSecond', requestsPerSecond], ['tokensPerSecond', tokensPerSecond]] as const) {
+    if (!(Number.isFinite(rate) && rate > 0)) throw new TypeError(`jev: ${name} must be a positive number.`);
+  }
   const deciderId = url === JEV_URL ? `typesafe:${model}:item-records` : `jev:${hostAndPath(url)}:${model}:item-records`;
   // The largest whole body Jev has accepted in this pick. Once a
   // rejection has landed, later batches are planned inside it, and a
@@ -456,7 +470,7 @@ export function jev({ apiKey, model = 'jev-latest', url = JEV_URL, onCall }: {
   // planned subrequests, rejection splits and rate-limit resends each
   // reserve their allowance before dispatching. A request held for its
   // split children holds no allowance while it waits.
-  const allow = rateAllowance(JEV_TOKENS_PER_SECOND, JEV_REQUESTS_PER_SECOND);
+  const allow = rateAllowance(tokensPerSecond, requestsPerSecond);
   // A pick is its signal: every decide call of one pick — its batches,
   // splits and resends — arrives under the same signal object, so a
   // send's failure domain is looked up from it. A batch of that pick
@@ -508,19 +522,20 @@ export function jev({ apiKey, model = 'jev-latest', url = JEV_URL, onCall }: {
           ...(raw.answers === undefined ? {} : { answers: raw.answers }),
           splits: 0,
         };
-        // A rate-limited request waits as the reply directs, then sends the
-        // same request unchanged: it is never split, dropped or counted as
-        // a size rejection, and every attempt stays in the record. A wait
-        // that would end past JEV_RATE_LIMITED_MS from the first 429 fails
-        // the request with the last reply instead.
-        if (reply.status === 429) {
+        // A rate-limited request (429), or one the service was too
+        // overloaded to take (529), waits as the reply directs, then sends
+        // the same request unchanged: it is never split, dropped or counted
+        // as a size rejection, and every attempt stays in the record. A
+        // wait that would end past JEV_RATE_LIMITED_MS from the first such
+        // reply fails the request with the last reply instead.
+        if (reply.status === 429 || reply.status === 529) {
           const now = Date.now();
           const pause = retryAfterMs(reply.retryAfter);
           limitedSince ??= now;
           if (now - limitedSince + pause > JEV_RATE_LIMITED_MS) {
             const seconds = (ms: number) => Math.round(ms / 1000);
-            const error = new DecisionServiceError(429, reply.text, saidIn(reply.text), { waited: `${seconds(now - limitedSince)} s; `
-              + `a rate-limited request waits at most ${seconds(JEV_RATE_LIMITED_MS)} s, and the last reply asked for `
+            const error = new DecisionServiceError(reply.status, reply.text, saidIn(reply.text), { waited: `${seconds(now - limitedSince)} s; `
+              + `${reply.status === 529 ? 'an overloaded' : 'a rate-limited'} request waits at most ${seconds(JEV_RATE_LIMITED_MS)} s, and the last reply asked for `
               + `${seconds(pause)} s more (${reply.retryAfter === null ? 'no Retry-After' : `Retry-After: ${reply.retryAfter}`})` });
             allow.stop(domain, error);
             await onCall?.(call);

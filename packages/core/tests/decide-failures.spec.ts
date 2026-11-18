@@ -56,6 +56,32 @@ describe('a decide call the decision service refuses', () => {
     expect(error.cause).toMatchObject({ status: 429, reason: 'busy' });
   });
 
+  it('says the service is still overloaded when a 529 asks for a wait past the minute', async () => {
+    const error = await failure(() => new Response('overloaded', { status: 529, headers: { 'retry-after': '120' } }));
+    expect(error.message.split('\n')[0]).toBe('The decide call failed. The decision service is still overloaded (HTTP 529) '
+      + 'after 0 s; an overloaded request waits at most 60 s, and the last reply asked for 120 s more (Retry-After: 120): overloaded');
+    expect(error.cause).toMatchObject({ status: 529, reason: 'busy' });
+  });
+
+  it('waits out a 529, as the service asks for an overloaded reply, and decides as usual', async () => {
+    let calls = 0;
+    vi.stubGlobal('fetch', vi.fn<typeof globalThis.fetch>().mockImplementation(async (_url, init) => {
+      calls += 1;
+      if (calls === 1) return new Response('overloaded', { status: 529, headers: { 'retry-after': '0' } });
+      const body = JSON.parse(String(init!.body)) as { questions: Record<string, unknown> };
+      return Response.json({ answers: Object.fromEntries(Object.keys(body.questions).map((name) => [name, { noul: 0.7 }])) });
+    }));
+    const result = await pick(parts.slice(0, 2), { task: 'Which database?', decide: jev({ apiKey: 'test-key' }), everyRanked: true, everyScored: true });
+    expect(result.selected).toHaveLength(2);
+    expect(calls).toBe(2);
+  });
+
+  it('takes the organization\'s rates, each a positive number', () => {
+    expect(() => jev({ apiKey: 'test-key', requestsPerSecond: 0 })).toThrow('jev: requestsPerSecond must be a positive number.');
+    expect(() => jev({ apiKey: 'test-key', tokensPerSecond: Number.NaN })).toThrow('jev: tokensPerSecond must be a positive number.');
+    expect(() => jev({ apiKey: 'test-key', requestsPerSecond: 500, tokensPerSecond: 1_000_000 })).not.toThrow();
+  });
+
   it('waits out a 429 and decides as usual', async () => {
     let calls = 0;
     vi.stubGlobal('fetch', vi.fn<typeof globalThis.fetch>().mockImplementation(async (_url, init) => {
