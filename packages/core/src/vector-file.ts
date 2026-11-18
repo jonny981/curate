@@ -52,6 +52,20 @@ export function recordCount(path: string, dimensions: number): number {
  *  chunk of records at a time; fewer, a record at a time. The vector is
  *  read in place from a buffer the next records reuse: read it during the
  *  visit and never keep it. */
+const HEX = '0123456789abcdef';
+
+/** Whether the 32 bytes at `at` are the key written as lowercase hex,
+ *  as `toString('hex')` writes them, compared without making the string. */
+function sameKey(bytes: Uint8Array, at: number, key: string): boolean {
+  if (key.length !== 64) return false;
+  for (let index = 0; index < 32; index += 1) {
+    const byte = bytes[at + index]!;
+    if (key.charCodeAt(2 * index) !== HEX.charCodeAt(byte >> 4)
+      || key.charCodeAt(2 * index + 1) !== HEX.charCodeAt(byte & 15)) return false;
+  }
+  return true;
+}
+
 export function readRecords(
   path: string, dimensions: number, wanted: readonly { readonly record: number; readonly key: string }[],
   visit: (key: string, vector: Float64Array) => void,
@@ -80,7 +94,7 @@ export function readRecords(
         if (readSync(descriptor, buffer, 0, (end - start) * size, start * size) !== (end - start) * size) return;
       }
       const at = (record - start) * size;
-      if (buffer.toString('hex', at, at + 32) !== key) continue;
+      if (!sameKey(buffer, at, key)) continue;
       visit(key, new Float64Array(buffer.buffer, buffer.byteOffset + at + 32, dimensions));
     }
   } finally {
