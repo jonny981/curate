@@ -189,6 +189,44 @@ describe.each(kinds)('one-pass chat read with %s', (_name, make) => {
   });
 });
 
+describe('one walk an index, shared by the calls of a process', () => {
+  const make = (root: string, cache: string) => chat({ paths: [root], index: { directory: cache } });
+
+  it('makes the walk once for calls on an unchanged index, and again once the index changes', { timeout: 60_000 }, async () => {
+    const root = await folder();
+    const cache = await folder();
+    await history(root);
+    onePass.walks = 0;
+    const first = await call(() => make(root, cache), true);
+    const again = await call(() => make(root, cache), true);
+    expect(onePass.walks).toBe(1);
+    expect(again.results).toEqual(first.results);
+    await transcript('codex', [message('codex', 'user', 'A new quince note about the pump.', LATER)], root, 'added');
+    const changed = await call(() => make(root, cache), true);
+    expect(onePass.walks).toBe(2);
+    expect(changed.results[4]!.candidates.length).toBe(first.results[4]!.candidates.length + 1);
+  });
+
+  it('keeps a call on the walk it started with while another call indexes a change', { timeout: 60_000 }, async () => {
+    const root = await folder();
+    const cache = await folder();
+    await history(root);
+    const alone = await call(() => make(root, cache), true);
+    // A call reads its first lanes, another call indexes a new transcript
+    // and reads, then the first call reads the rest of its lanes.
+    onePass.on = true;
+    const reader = make(root, cache);
+    const context = { files: new Map<string, Promise<string>>(), shared: new Map<object, unknown>() };
+    const results: Read[] = [];
+    for (const lane of lanes.slice(0, 5)) results.push(await reader.read(lane, context));
+    await transcript('codex', [message('codex', 'user', 'A new quince note about the pump.', LATER)], root, 'added');
+    const other = await call(() => make(root, cache), true);
+    expect(other.results[4]!.candidates.length).toBe(alone.results[4]!.candidates.length + 1);
+    for (const lane of lanes.slice(5)) results.push(await reader.read(lane, context));
+    expect(results.map(bare)).toEqual(alone.results);
+  });
+});
+
 describe('one-pass keyword lanes on a generated history', () => {
   // The direct read scores every part and sorts them all: the oracle for
   // lanes that order only the parts a posting or title names.

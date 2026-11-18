@@ -52,19 +52,25 @@ function wall(ms: number, timeZone: string) {
     second: parts.second! };
 }
 
-/** The last offset read, by zone and quarter hour: the zones in use
- *  change offset on a quarter hour, and a transcript's parts arrive mostly in
- *  time order, so most reads reuse it. */
-let lastOffset: { zone: string; quarter: number; offset: number } | undefined;
+/** Offsets read in this process, by zone and quarter hour: the zones in
+ *  use change offset on a quarter hour, so one read serves its quarter
+ *  for every call. Reading one takes the zone's formatter; a call writes
+ *  thousands of dates. At most `OFFSETS_KEPT` are kept a zone. */
+const offsets = new Map<string, Map<number, number>>();
+const OFFSETS_KEPT = 200_000;
 
 /** The zone's offset from UTC at a moment, in minutes. */
 function offsetAt(ms: number, timeZone: string): number {
   const quarter = Math.floor(ms / 900_000);
-  if (lastOffset?.zone === timeZone && lastOffset.quarter === quarter) return lastOffset.offset;
+  let zone = offsets.get(timeZone);
+  if (zone === undefined) offsets.set(timeZone, zone = new Map());
+  const known = zone.get(quarter);
+  if (known !== undefined) return known;
   const at = wall(ms, timeZone);
   const second = Math.floor(ms / 1000) * 1000;
   const offset = Math.round((Date.UTC(at.year, at.month - 1, at.day, at.hour, at.minute, at.second) - second) / 60_000);
-  lastOffset = { zone: timeZone, quarter, offset };
+  if (zone.size >= OFFSETS_KEPT) zone.clear();
+  zone.set(quarter, offset);
   return offset;
 }
 

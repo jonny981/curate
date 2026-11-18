@@ -464,9 +464,10 @@ interface ChatKeywordEnum {
 }
 
 /** Internal to this package and not part of its public surface: the
- *  one-pass read's switch and a count of the reads it served. A test
- *  turns it off to get the per-lane path as its oracle. */
-export const onePass = { on: true, served: 0 };
+ *  one-pass read's switch, a count of the reads it served and of the
+ *  walks it made. A test turns it off to get the per-lane path as its
+ *  oracle. */
+export const onePass = { on: true, served: 0, walks: 0 };
 
 /** What one call knows about the whole stored history, read once and
  *  shared by every lane of the call: each in-window part's stored fields,
@@ -501,13 +502,6 @@ interface ChatCorpus {
   readonly names: Int32Array;
   readonly marks: Int32Array;
   readonly strings: readonly string[];
-  /** The parts whose title holds a word `phraseCount` compares, found
-   *  once per word, when a phrase lane first asks. */
-  readonly titlePhraseWords: Map<string, number[]>;
-  /** Each part's title words of three characters or more and long text
-   *  words, as a title index counts them; made when a keyword lane
-   *  first asks. */
-  titleLengths?: { readonly lengths: Uint32Array; readonly length: number };
   readonly longs: Uint32Array;
   /** Each part's place in id order; equal ids share a place. */
   readonly places: Uint32Array;
@@ -516,13 +510,32 @@ interface ChatCorpus {
   /** The index's `indexVersion` the parts were read at; unset when an
    *  update landed while they were read. */
   readonly version: number | undefined;
+  readonly skips: number;
+}
+
+/** What one call works out from a walk for itself; the walk, which
+ *  calls share, holds none of it. */
+interface WalkCache {
   /** Each word's postings as part indexes, read from the index once. */
   readonly postings: Map<string, { readonly index: number[]; readonly count: number[] }>;
-  readonly skips: number;
+  /** The parts whose title holds a word `phraseCount` compares, found
+   *  once per word, when a phrase lane first asks. */
+  readonly titlePhraseWords: Map<string, number[]>;
+  /** Each part's title words of three characters or more and long text
+   *  words, as a title index counts them; made when a keyword lane
+   *  first asks. */
+  titleLengths?: { readonly lengths: Uint32Array; readonly length: number };
   /** Each part's unit vector, once a meaning lane has embedded them with
    *  an embedder that keeps no store. */
   units?: Float64Array[];
 }
+
+/** The latest walk of each stored index in this process, by the index
+ *  file's path. A call whose walk would read the same parts (the same
+ *  window, zone and exclusions) of the index at the same version takes
+ *  it as it is; it is never changed after it is made. A newer walk takes
+ *  its place, and an older one goes when the last call holding it ends. */
+const sharedWalks = new Map<string, ChatCorpus>();
 
 /** A source's entry in a read context's shared space: the meaning
  *  lanes' held scores, the part ids scrubbed once for every lane that
@@ -532,6 +545,8 @@ interface Shared {
   ids?: Map<string, string>;
   keyword?: ChatKeywordEnum;
   corpus?: ChatCorpus;
+  /** What this call works out from the walk for itself. */
+  walkCache?: WalkCache;
   /** The parts of the call's one walk its reads have left out because
    *  their stored row no longer held them, by place in the walk. */
   changed?: Set<number>;
@@ -1096,7 +1111,12 @@ export function chat(options: ChatOptions = {}): CandidateSource {
         let corpus: ChatCorpus | undefined;
         if (onePass.on && shared !== undefined && storedRoots !== undefined) {
           const key = JSON.stringify([stored!.path, since, until, zone, exclusions]);
+          const held = shared.corpus === undefined ? sharedWalks.get(stored!.path) : undefined;
+          if (held !== undefined && held.key === key && held.version !== undefined && held.version === indexVersion(database!)) {
+            shared.corpus = held;
+          }
           if (shared.corpus === undefined) {
+            onePass.walks += 1;
             const before = skips.n;
             const version = indexVersion(database!);
             // A session id, role, author, author name or unit is held once
@@ -1164,11 +1184,17 @@ export function chat(options: ChatOptions = {}): CandidateSource {
               lines: Int32Array.from(column.lines), blocks: Int32Array.from(column.blocks), pieces: Int32Array.from(column.pieces),
               dates: Float64Array.from(column.dates), sessions: Int32Array.from(column.sessions), roles: Int32Array.from(column.roles),
               authors: Int32Array.from(column.authors), names: Int32Array.from(column.names), marks: Int32Array.from(column.marks),
-              longs: Uint32Array.from(column.longs), titlePhraseWords: new Map(),
-              places, byPlace: Uint32Array.from(byId), postings: new Map(),
+              longs: Uint32Array.from(column.longs),
+              places, byPlace: Uint32Array.from(byId),
               version: indexVersion(database!) === version ? version : undefined,
               skips: skips.n - before,
             };
+            Object.freeze(ids);
+            Object.freeze(strings);
+            for (const range of fileRanges) Object.freeze(range);
+            Object.freeze(fileRanges);
+            Object.freeze(shared.corpus);
+            if (shared.corpus.version !== undefined) sharedWalks.set(stored!.path, shared.corpus);
             // Each lane counts the skips where its own walk would have.
             skips.n = before;
           }
@@ -1177,6 +1203,8 @@ export function chat(options: ChatOptions = {}): CandidateSource {
             onePass.served += 1;
           }
         }
+        // What this call works out from the walk, kept by the call.
+        const walkCache = (): WalkCache => (shared!.walkCache ??= { postings: new Map(), titlePhraseWords: new Map() });
         /** A part of the call's one walk at its stored row, or undefined. */
         const indexAt = (transcript: number, ordinal: number): number | undefined => {
           const span = corpus!.spans.get(transcript);
@@ -1294,7 +1322,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           // not describe the texts it holds.
           if (indexVersion(database!) !== corpus!.version) return Array.from({ length: corpus!.count }, (_, index) => index);
           const first = phraseWords(phrase).split(' ')[0]!;
-          let holders = corpus!.titlePhraseWords.get(first);
+          let holders = walkCache().titlePhraseWords.get(first);
           if (holders === undefined) {
             // A title's words are its provider's, session id's and role's,
             // found once a string, and its date's, which are digits, or a
@@ -1312,7 +1340,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
               if (has(c.providers[index]!) || has(c.sessions[index]!) || has(c.roles[index]!)
                 || (dated && phraseWords(zonedIso(c.dates[index]!, zone)).split(' ').includes(first))) holders.push(index);
             }
-            c.titlePhraseWords.set(first, holders);
+            walkCache().titlePhraseWords.set(first, holders);
           }
           for (const index of holders) found.add(index);
           return [...found].sort((left, right) => left - right);
@@ -1370,7 +1398,8 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           const dateShort = /^\d\d$/;
           const datedStems = stems.filter((term) => dateLong.test(term));
           const datedShorts = shorts.filter((word) => dateShort.test(word));
-          if (c.titleLengths === undefined) {
+          const cache = walkCache();
+          if (cache.titleLengths === undefined) {
             const lengths = new Uint32Array(c.count);
             let length = 0;
             for (let index = 0; index < c.count; index += 1) {
@@ -1383,7 +1412,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
               lengths[index] = kept + c.longs[index]!;
               length += kept + c.longs[index]!;
             }
-            c.titleLengths = { lengths, length };
+            cache.titleLengths = { lengths, length };
           }
           const stemLists = new Map<string, number[]>(stems.map((term) => [term, []]));
           const shortLists = new Map<string, number[]>(shorts.map((word) => [word, []]));
@@ -1418,7 +1447,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
               list?.push(index);
             }
           }
-          return { parts: c.count, length: c.titleLengths.length, lengths: c.titleLengths.lengths, stems: stemLists, shorts: shortLists };
+          return { parts: c.count, length: cache.titleLengths.length, lengths: cache.titleLengths.lengths, stems: stemLists, shorts: shortLists };
         };
         /** These parts of the walk as a lane hands them on, their texts read
          *  by key; a part whose row no longer holds it is left out. */
@@ -1481,10 +1510,11 @@ export function chat(options: ChatOptions = {}): CandidateSource {
               // embedder with no store has each part's unit vector kept
               // for the call, for a later query list to score.
               const stored = 'eachVector' in embed;
-              if (!stored && corpus.units !== undefined
-                && (corpus.units[0]?.length ?? queryVectors[0]!.length) === queryVectors[0]!.length) {
-                lite.similarities = new Float64Array(corpus.units.length * queryVectors.length);
-                corpus.units.forEach((unit, index) => queryVectors.forEach((query, at) => {
+              const units_ = walkCache().units;
+              if (!stored && units_ !== undefined
+                && (units_[0]?.length ?? queryVectors[0]!.length) === queryVectors[0]!.length) {
+                lite.similarities = new Float64Array(units_.length * queryVectors.length);
+                units_.forEach((unit, index) => queryVectors.forEach((query, at) => {
                   lite.similarities[index * queryVectors.length + at] = similarity(unit, query);
                 }));
                 return lite;
@@ -1525,7 +1555,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
                 if (units !== undefined) units[index] = unit;
                 queryVectors.forEach((query, at) => { lite.similarities[index * queryVectors.length + at] = similarity(unit, query); });
               }, request.signal);
-              corpus.units = units;
+              walkCache().units = units;
               return lite;
             }
             for await (const part of each(true, true)) {
@@ -1878,7 +1908,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
               const { stems, shorts } = rank.postingTerms();
               const postingOf = database.prepare('SELECT transcript, ordinal, count FROM postings WHERE term = ?');
               const fold = (term: string, word: string, short: boolean) => {
-                let posting = c.postings.get(term);
+                let posting = walkCache().postings.get(term);
                 if (posting === undefined) {
                   posting = { index: [], count: [] };
                   for (const row of postingOf.all(term) as { transcript: number; ordinal: number; count: number }[]) {
@@ -1887,7 +1917,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
                     posting.index.push(index);
                     posting.count.push(row.count);
                   }
-                  c.postings.set(term, posting);
+                  walkCache().postings.set(term, posting);
                 }
                 for (let at = 0; at < posting.index.length; at += 1) rank.posting(posting.index[at]!, word, posting.count[at]!, short);
               };
@@ -2144,7 +2174,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           const { stems, shorts } = rank.postingTerms();
           let postingOf: ReturnType<IndexDatabase['prepare']> | undefined;
           const fold = (term: string, word: string, short: boolean) => {
-            let posting = corpus.postings.get(term);
+            let posting = walkCache().postings.get(term);
             if (posting === undefined) {
               postingOf ??= database!.prepare('SELECT transcript, ordinal, count FROM postings WHERE term = ?');
               posting = { index: [], count: [] };
@@ -2154,7 +2184,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
                 posting.index.push(index);
                 posting.count.push(row.count);
               }
-              corpus.postings.set(term, posting);
+              walkCache().postings.set(term, posting);
             }
             for (let at = 0; at < posting.index.length; at += 1) rank.posting(posting.index[at]!, word, posting.count[at]!, short);
           };
