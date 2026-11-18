@@ -21,6 +21,17 @@ describe('the second search\'s lines', () => {
     // A seed with no rare word gives no line.
     expect(rareLines('task', ['common filler'], parts)).toEqual([]);
   });
+
+  it('never takes a word shaped like a credential, at any length', () => {
+    // A key prefix with 15 characters after it, one short of what the
+    // part scrubber masks, in the two best parts and nowhere else.
+    const token = 'sk-abcdefghijklmno';
+    const parts = [part(token), part(token), ...Array.from({ length: 198 }, (_, index) => part(`unique${index}`))];
+    expect(rareLines('where', [token, token], parts)).toEqual([]);
+    for (const shaped of ['xai-shortkey', 'pk-abc', 'rk-abcdef', 'xoxb-short']) {
+      expect(rareLines('where', [shaped], [part(shaped), part(shaped), ...parts])).toEqual([]);
+    }
+  });
 });
 
 type Author = 'person' | 'agent';
