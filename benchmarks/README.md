@@ -26,7 +26,7 @@ The memory texts and questions in the LongMemEval folders are excerpts of the Lo
 
 ### How the LongMemEval result was run
 
-- **Setting:** Curate (compact), the default. For each question Curate lays out the history parts that the decision model kept, in their own words, within an answer budget of 2,000 tokens, then keeps the sentences that the decision model rates 0.1 or more. No model writes the memory text. [How the memory text is built](longmemeval/2026-11-11/README.md#how-the-memory-text-is-built).
+- **Setting:** Curate (compact). For each question Curate lays out the history parts that the decision model kept, in their own words, within an answer budget of 2,000 tokens, then keeps the sentences that the decision model rates 0.1 or more. No model writes the memory text. [How the memory text is built](longmemeval/2026-11-11/README.md#how-the-memory-text-is-built).
 - **Prompts:** gpt-6.1-sol answers with Mem0's published answering prompt and two additions, rules for reading the memories and a paragraph on near matches ([the full prompt](longmemeval/2026-11-11/README.md#the-prompt)); gpt-6.1-sol marks with LongMemEval's own marking prompts, and LongMemEval's grader is its `evaluate_qa.py` (commit `9e0b455`), unchanged, with the judge `gpt-4o-2024-08-06`.
 - **Six answer sets over one set of memory texts:** Curate built the 500 memory texts once. gpt-6.1-sol wrote answers from them six times, and gpt-6.1-sol marked each set: 469, 466, 471, 470, 470 and 467 right. These are six repeats of the answering and the marking, not six runs from start to end. The published answers are the set with the highest score, 471. LongMemEval's grader marked that same set once: 464.
 - **The Mem0 platform rows:** its published answers, written by GPT-5, marked here by both graders.
@@ -42,7 +42,7 @@ LoCoMo, all 1,540 scored questions (categories 1 to 4): answer questions about l
 | **Curate (full)** | **gpt-6.1-sol** | **96.5** (1,486/1,540) | **94.6** (1,457/1,540) | **3,839** |
 | **Curate (compact)** | **gpt-4.1-mini** | | **91.4** (1,408/1,540) | **1,248** |
 
-Curate (full) has an answer budget of 6,000 tokens and keeps every sentence (`answerTokens: 6000`, `sentenceCutoff: false`). Curate (compact) is the default: an answer budget of 2,000 tokens and a sentence cutoff of 0.1 (`answerTokens: 2000`, `sentenceCutoff: 0.1`).
+Curate (full) has an answer budget of 6,000 tokens and keeps every sentence (`answerTokens: 6000`, `sentenceCutoff: false`). Curate (compact) has an answer budget of 2,000 tokens and a sentence cutoff of 0.1 (`answerTokens: 2000`, `sentenceCutoff: 0.1`).
 The answers, every verdict, a list of the misses, and a script that rebuilds each memory text from your own copy of the dataset are in [`locomo/2026-11-12/`](locomo/2026-11-12/README.md).
 
 Published results with frontier answering models:

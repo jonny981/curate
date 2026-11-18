@@ -1584,10 +1584,12 @@ user: Should refunds use today's rate?
   A text that only sits inside a longer item stays: it may be a quote, a
   rejected plan or a later restatement, and the longer item's place and
   date are not its own. `record.collapsed` counts the copies.
-- **Budget:** `answerTokens` keeps the whole text within that many
-  estimated tokens, `DEFAULT_ANSWER_TOKENS` (2,000) when omitted. Items
-  are taken in weight order, and the first item that would take the text
-  over the budget stops the taking. The strongest item is always kept
+- **Size:** with no `answerTokens`, there is no budget: the text holds
+  every selected item its source's text share admits, so its size is a
+  result of the ratings, and `record.estimatedTokens` states it.
+- **Budget:** `answerTokens`, off by default, keeps the whole text within
+  that many estimated tokens. Items are taken in weight order, and the
+  first item that would take the text over the budget stops the taking. The strongest item is always kept
   whole, even over the budget. The estimate needs no tokenizer: it counts
   words, digits in threes, runs of one punctuation mark, line ends and
   characters outside ASCII, fitted to a real tokenizer's counts and set
@@ -1596,26 +1598,25 @@ user: Should refunds use today's rate?
   tokens than it counts. `record.leftOut` holds how many selected items
   the budget stopped before, the strongest weight among them and how
   many have a weight of 0.5 or more.
-- **Text share:** a source whose mode sets `textShare` gives the text
-  only its selected items whose weight is at least that share of its
-  best selected item's weight; the pick record names the share under
-  `levers.sources`. The other items are left out before the budget, and
-  `record.underShare` counts them. `directMessages` sets 0.1, a tenth
-  of the best: on LoCoMo it cut the median text from 5,858 to 1,504
-  tokens, with 384 against 387 of 400 questions answered right.
-  `assistantChatHistory` and `longAssistantChats` set 0.2: replayed on
-  saved ratings with their shared read, it found as much evidence or
-  more, in a 16% smaller text, than each mode's own measured rules on
-  BEAM and LongMemEval. Every other mode sets
-  none. A share of 0 turns it off, so `{ ...directMessages,
-  textShare: 0 }` gives the text the token budget alone gives, the form
-  the benchmark figures published before it were produced with.
-- **Sentence cutoff:** with `decide`, curate rates every sentence of the
-  taken items in one more request and keeps a sentence when its rating
-  is `sentenceCutoff` or more, `DEFAULT_SENTENCE_CUTOFF` (0.1) when
-  omitted. `sentenceCutoff: false` rates no sentence and calls no model;
-  without `decide` no sentence is rated either, and a number then throws
-  a `TypeError`. Each sentence is asked "Does this sentence supply
+- **Text share:** a dial no mode sets by default. A source whose mode
+  sets `textShare` gives the text only its selected items whose weight
+  is at least that share of its best selected item's weight; the pick
+  record names the share under `levers.sources`. The other items are
+  left out before any budget, and `record.underShare` counts them.
+  Measured: on LoCoMo a share of 0.1 on `directMessages` cut the median
+  text from 5,858 to 1,504 tokens, with 384 against 387 of 400 questions
+  answered right; on 150 LongMemEval questions read as notes, with no
+  budget, a share of 0.1 kept 268 of the 271 labelled answer turns the
+  whole selection held, and 0.2 kept 257. A change that leaves out a
+  kept part needs answers that show no loss, so no mode sets one.
+- **Sentence cutoff:** off by default: omitted or `false`, no sentence
+  is rated and no model is called. Measured at 0.1 on 150 LongMemEval
+  questions, it removed 9.2% of the sentences and 7.2% of the tokens,
+  and cut 12 labelled answer turns that were whole in the text to
+  partial or absent. Given a number and `decide`, curate rates every
+  sentence of the taken items and keeps a sentence when its rating is
+  `sentenceCutoff` or more; a number without `decide` throws a
+  `TypeError`. Each sentence is asked "Does this sentence supply
   evidence, a constraint or a decision for this task?" with no id or
   title, the item's date on its first sentence. A sentence is the text up
   to a full stop, question mark or exclamation mark followed by a space,
@@ -1628,14 +1629,15 @@ user: Should refunds use today's rate?
   text can be empty. A sentence `decide` gives no rating
   stays. When the request fails, the whole text is returned as if no
   sentence were rated, and `record.sentences.failed` holds the message;
-  a cancelled request throws. `answerTokens` bounds the text that is
-  rated, so the returned text is usually far smaller. A kept sentence
+  a cancelled request throws. An `answerTokens` budget, when set,
+  bounds the text that is rated. A kept sentence
   can lose the sentence that says what it refers to.
 
 `record` holds the pick's `levers`; the `items` taken, in the order they
 were taken, each with its full `id` (with the source beside it when two
 items share an id), its `candidate` as shown and its exact `weight`;
-`estimatedTokens`, the returned text's estimate; `answerTokens`;
+`estimatedTokens`, the returned text's estimate; `answerTokens` when a
+budget was set;
 `collapsed`; `leftOut`; `underShare` when a source sets a text share; and, when sentences were rated, `sentences`:
 the `cutoff`, the sentences `kept` of how many (`of`), how many were
 `unanswered`, the items that lost a sentence (`itemsTrimmed`) or every

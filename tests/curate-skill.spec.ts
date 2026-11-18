@@ -1218,7 +1218,7 @@ describe('a run through core decision calls', () => {
       '',
     ].join('\n'));
     const sourcesFile = join(directory, 'sources.json');
-    await writeFile(sourcesFile, JSON.stringify({ records: true, sources: [{ type: 'whatsapp', path: file, always: true }] }));
+    await writeFile(sourcesFile, JSON.stringify({ records: true, sentenceCutoff: 0.1, sources: [{ type: 'whatsapp', path: file, always: true }] }));
     vi.stubEnv('HOME', home);
     vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
     vi.stubEnv('TYPESAFE_API_KEY', 'test-key');

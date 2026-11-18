@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { curate, DEFAULT_SENTENCE_CUTOFF, type MemoryCandidate, type PickBatch, type PickDecide, type PickResult } from '../src/index.js';
+import { curate, type MemoryCandidate, type PickBatch, type PickDecide, type PickResult } from '../src/index.js';
 
 function part(sourceId: string, id: string, date: string | undefined, text: string, role: 'reference' | 'rule' = 'reference'): MemoryCandidate {
   return {
@@ -72,14 +72,37 @@ describe('curate', () => {
     expect(record.levers).toEqual(GARDEN.record.levers);
   });
 
-  it('budgets 2,000 estimated tokens by default', async () => {
+  it('sets no budget by default: every selected item is laid out, and the record states the size', async () => {
     const big = part('orchard', 'big', '2024-03-01', 'pear '.repeat(1_900));
     const after = part('orchard', 'after', '2024-03-01', 'plum '.repeat(200));
-    const { record } = await curate(TASK, picked([[big, 0.9, 0], [after, 0.8, 1]]), {});
+    const { log, record } = await curate(TASK, picked([[big, 0.9, 0], [after, 0.8, 1]]), {});
+    expect(record).not.toHaveProperty('answerTokens');
+    expect(record.items.map((item) => item.candidate.id)).toEqual(['big', 'after']);
+    expect(record.leftOut).toEqual({ count: 0, atHalfOrMore: 0 });
+    expect(record.estimatedTokens).toBeGreaterThan(2_000);
+    expect(log).toContain('plum');
+  });
+
+  it('keeps the text within answerTokens when it is set, and counts what the budget left out', async () => {
+    const big = part('orchard', 'big', '2024-03-01', 'pear '.repeat(1_900));
+    const after = part('orchard', 'after', '2024-03-01', 'plum '.repeat(200));
+    const { record } = await curate(TASK, picked([[big, 0.9, 0], [after, 0.8, 1]]), { answerTokens: 2_000 });
     expect(record.answerTokens).toBe(2_000);
     expect(record.items.map((item) => item.candidate.id)).toEqual(['big']);
     expect(record.estimatedTokens).toBeLessThanOrEqual(2_000);
     expect(record.estimatedTokens).toBeGreaterThan(1_900);
+    expect(record.leftOut).toEqual({ count: 1, strongestWeight: 0.8, atHalfOrMore: 1 });
+  });
+
+  it('lays out with no budget exactly what a budget too large to stop anything lays out, copies included', async () => {
+    const copy = { ...MEDLAR, id: 'copy', sourceId: 'pond', date: { value: '2024-03-07', meaning: 'recorded' as const } };
+    const items = picked([[QUINCE, 0.9, 0], [KOI, 0.8, 1], [MEDLAR, 0.7, 2], [copy, 0.6, 3], [FIG, 0.5, 4]]);
+    const free = await curate(TASK, items, {});
+    const wide = await curate(TASK, items, { answerTokens: 1_000_000 });
+    expect(free.log).toBe(wide.log);
+    expect(free.record.items).toEqual(wide.record.items);
+    expect(free.record.collapsed).toBe(1);
+    expect(wide.record.collapsed).toBe(1);
   });
 
   it('estimates tokens from words, numbers, punctuation and lines, set a little high', async () => {
@@ -559,9 +582,17 @@ describe('the sentence cutoff by default', () => {
   const decide: PickDecide = async (batch) => Object.fromEntries(batch.questions.map((question) =>
     [question.key, { status: 'answered' as const, probability: question.text.includes('door') ? 0.1 : 0.09 }]));
 
-  it('rates sentences at 0.1 when a decision function is given', async () => {
-    const { log, record } = await curate(TASK, picked([[SHED, 0.9, 0]]), { decide });
-    expect(DEFAULT_SENTENCE_CUTOFF).toBe(0.1);
+  it('rates no sentence and calls no model when sentenceCutoff is unset, even with a decision function', async () => {
+    const asked: PickBatch[] = [];
+    const { log, record } = await curate(TASK, picked([[SHED, 0.9, 0]]),
+      { decide: async (batch) => { asked.push(batch); return decide(batch, new AbortController().signal); } });
+    expect(asked).toHaveLength(0);
+    expect(log).toBe('### Most likely answer\n\n#### shed (said 2024-03-14)\n\nPainted the shed door. Oiled the hinges.\n');
+    expect(record).not.toHaveProperty('sentences');
+  });
+
+  it('rates sentences at the cutoff it is given', async () => {
+    const { log, record } = await curate(TASK, picked([[SHED, 0.9, 0]]), { sentenceCutoff: 0.1, decide });
     expect(log).toBe('### Most likely answer\n\n#### shed (said 2024-03-14)\n\nPainted the shed door. …\n');
     expect(record.sentences).toMatchObject({ cutoff: 0.1, kept: 1, of: 2 });
   });

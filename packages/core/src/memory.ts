@@ -5,8 +5,8 @@ import { pickFromSources, type CandidateReadRequest, type CandidateSource, type 
 
 export interface MemoryOptions {
   readonly sources: readonly CandidateSource[];
-  /** Rates each part for the pick and, unless `curate.sentenceCutoff`
-   *  is `false`, each sentence of the parts laid out. */
+  /** Rates each part for the pick and, when `curate.sentenceCutoff`
+   *  is a number, each sentence of the parts laid out. */
   readonly decide: PickDecide;
   /** Read, pick and layout options for the whole call; each source
    *  carries its own settings. */

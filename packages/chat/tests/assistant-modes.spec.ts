@@ -22,7 +22,8 @@ const rater = (ratings: Readonly<Record<string, number>>) => {
 describe('the two assistant-chat modes', () => {
   it('share one set of defaults under their own names, each with a read of its own', () => {
     for (const [mode, name] of [[assistantChatHistory, 'assistant-chat-history'], [longAssistantChats, 'long-assistant-chats']] as const) {
-      expect(mode).toMatchObject({ name, questions: CHAT_CASCADE, bar: 0.0146, textShare: 0.2 });
+      expect(mode).toMatchObject({ name, questions: CHAT_CASCADE, bar: 0.0146 });
+      expect(mode).not.toHaveProperty('textShare');
       expect(mode.needed).toBeUndefined();
     }
     expect(assistantChatHistory.read).not.toBe(longAssistantChats.read);

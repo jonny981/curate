@@ -8,6 +8,7 @@ export const notes: Mode = { name: 'notes', questions: MARKDOWN_CASCADE, bar: 0.
 
 /** Messages between people, the mode of `whatsapp()`: the
  *  `MARKDOWN_CASCADE` decision questions, as the LoCoMo runs measured
- *  them on sessions read as Markdown notes, the 0.0146 bar, the ranked
- *  read, and a text of the parts weighing at least 0.1 of the best. */
-export const directMessages: Mode = { name: 'direct-messages', questions: MARKDOWN_CASCADE, bar: 0.0146, read: rankedRead, textShare: 0.1 };
+ *  them on sessions read as Markdown notes, the 0.0146 bar and the ranked
+ *  read. It sets no text share: a share of 0.1 measured 384 against 387
+ *  of 400 LoCoMo questions answered right, so it is a dial a caller sets. */
+export const directMessages: Mode = { name: 'direct-messages', questions: MARKDOWN_CASCADE, bar: 0.0146, read: rankedRead };

@@ -39,14 +39,14 @@ LoCoMo, all 1,540 scored questions:
 
 \* Score as published; these answers were not marked again here.
 
-Curate (full) has an answer budget of 6,000 tokens and keeps every sentence (`answerTokens: 6000`, `sentenceCutoff: false`). Curate (compact) is the default: an answer budget of 2,000 tokens and a sentence cutoff of 0.1 (`answerTokens: 2000`, `sentenceCutoff: 0.1`).
+Curate (full) has an answer budget of 6,000 tokens and keeps every sentence (`answerTokens: 6000`, `sentenceCutoff: false`). Curate (compact) has an answer budget of 2,000 tokens and a sentence cutoff of 0.1 (`answerTokens: 2000`, `sentenceCutoff: 0.1`).
 How each run was set up, and its proof files, are in [benchmarks](benchmarks/README.md).
 
 ## Built for memory that keeps growing
 
 - **No work when history is written.** Curate reads transcripts, git history and Markdown where they already live, when a task asks. No extraction step or graph to keep in sync, and no database server or hosted vector store: local index files, made on first use.
 - **Go straight to the source.** [Mem0](https://docs.mem0.ai/core-concepts/memory-operations/add) extracts facts with a model, [Mastra](https://mastra.ai/docs/memory/observational-memory) keeps observations written by a model, and [Zep](https://help.getzep.com/v4/how-graph-creation-works) builds a knowledge graph. Curate selects from the original history for each task.
-- **Keep the task model focused.** It reads only the parts chosen for its task, within a token budget, even when the history spans thousands of parts.
+- **Keep the task model focused.** It reads only the parts chosen for its task, as much text as the ratings keep, even when the history spans thousands of parts.
 
 [LongMemEval](benchmarks/longmemeval/2026-11-11/README.md#context-sizes): **1,577 task-model tokens** a question on average, from histories of about **48 sessions** and **102,580 tokens** on average (o200k, every turn's role and text): about **65 times less**. [LoCoMo](benchmarks/locomo/2026-11-12/README.md#context-sizes): **3,839** task-model tokens a question in the full setting and **1,248** in the compact one, from conversations of about **21,155 tokens**.
 
@@ -162,7 +162,7 @@ const { log, rules, picked, result } = await mem.recall('What billing constraint
 - **Source questions are automatic.** Each reader brings its own set of narrow questions.
 - **Incomplete collection throws.** An absent or incomplete read, an unanswered candidate, or interrupted decisions stop recall. Parts intentionally excluded by the label questions are allowed. Read and model errors reach the caller.
 - **Rules stay exact.** `rules` joins the selected rule text with blank lines. The laid-out text holds reference evidence, not rules.
-- **Weak sentences go.** After the layout, `decide` rates each sentence in one more request, and the text keeps those rated 0.1 or more. `curate: { sentenceCutoff: false }` keeps every sentence and makes no request. See [Curate](#curate).
+- **Every sentence stays by default.** `curate: { sentenceCutoff: 0.1 }` turns on a sentence step: after the layout, `decide` rates each sentence and the text keeps those rated at the cutoff or more. Measured at 0.1 on 150 LongMemEval questions, it removed 9.2% of the sentences and 7.2% of the tokens, and cut 12 labelled answer turns that were whole in the text to partial or absent. See [Curate](#curate).
 - **Cancellation is optional.** Pass an `AbortSignal` as `mem.recall(task, { signal })`.
 
 ### Read each source with its own settings
@@ -197,7 +197,7 @@ Sources can still affect each other. A selected commit brings in a note it chang
 | `rules()` | `notes` | Off | | Off | 0.0146 | 0.5, not yet tuned | `MARKDOWN_CASCADE` |
 | `whatsapp()` | `directMessages` | Off | | On | 0.0146 | | `MARKDOWN_CASCADE` |
 
-- **Mode:** the source's questions, decision-score bar and read in one object, exported by its reader package. `directMessages`, `assistantChatHistory` and `longAssistantChats` also size the text by the ratings: a part enters it only when its weight is at least a tenth (`directMessages`) or a fifth (the two assistant-chat modes) of its source's best ([text share](packages/core/README.md#curating)). The two assistant-chat modes read the person's own messages first, then the rest of the ranked list, and stop where the ratings go cold. `agentTranscripts` reads from the person's own messages outward ([the chat read](packages/core/README.md#the-chat-read)); the others read down the ranked list.
+- **Mode:** the source's questions, decision-score bar and read in one object, exported by its reader package. Every mode's text takes every kept part; a mode's `textShare` is a dial, off by default, that keeps only the parts weighing at least that share of their source's best ([text share](packages/core/README.md#curating)). The two assistant-chat modes read the person's own messages first, then the rest of the ranked list, and stop where the ratings go cold. `agentTranscripts` reads from the person's own messages outward ([the chat read](packages/core/README.md#the-chat-read)); the others read down the ranked list.
 
 - **Labels:** check each history part for seven kinds of personal fact, such as what someone owns, prefers or decided. This helps Curate find relevant parts that keyword search missed. Each part is labelled once and the label stored for later questions.
 - **Label bar (`labelBar`):** Curate checks which kinds of fact the task needs. If a kind scores at least `labelBar`, Curate brings in the source's parts whose label for that kind also scores at least `labelBar`. 0.5 for every source that carries labels.
@@ -220,8 +220,8 @@ These levers act on the whole call:
 | `pick.route` | Off |
 | `pick.everyScored` | Unset: each source's bar. When set, one bar for every source |
 | `pick.taskPeriod` | On: a task that names a period lets in the parts dated inside it |
-| `curate.answerTokens` | 2,000: the estimated tokens the laid-out text keeps within |
-| `curate.sentenceCutoff` | 0.1: the sentence rating the text keeps; `false` rates no sentence |
+| `curate.answerTokens` | None: the text holds every part the ratings keep. A number keeps the laid-out text within that many estimated tokens |
+| `curate.sentenceCutoff` | None: no sentence is rated. A number from 0 to 1 keeps only the sentences rated at it or more |
 
 The fused order and `pick.everyRanked: { c }` rank every source's parts in one fused list before they read or cut, and a stopping limit in `pick.limits` (questions, batches, time) is shared by every source.
 With any of them, one source's settings can change what Curate picks from another.
@@ -544,7 +544,7 @@ Curate has no telemetry. Its only network request is the decision request; the `
 flowchart LR
   sources["Chat, Markdown and git"] --> rank["Rank<br/>Keyword search"]
   rank --> decide["Decide<br/>Narrow questions"]
-  decide --> curate["Curate<br/>Own words, token budget"]
+  decide --> curate["Curate<br/>Own words, sized by the ratings"]
   curate --> agent["Agent<br/>Does the task"]
   agent -. "Own tools" .-> sources
 ```
@@ -582,8 +582,8 @@ No model writes the text.
 
 - **Strongest first:** the two parts with the highest decision score sit under `### Most likely answer`. Every other part is grouped by the date it was said and its source, oldest first and strongest first inside a group. A part with no date sits under `(said unknown)`, last. A date that is only a file's last change reads `(file changed <date>)`.
 - **Copies taken once:** a part whose text is the same as a stronger kept part's is left out, and the kept part's heading names where else it was said.
-- **Budget:** `curate.answerTokens` keeps the text within 2,000 estimated tokens by default. The strongest part is always kept whole. The record's `leftOut` counts the parts the budget stopped before.
-- **Sentence cutoff:** given `decide`, curate rates each sentence of the taken parts in one request and keeps those rated `curate.sentenceCutoff` or more, 0.1 by default. `…` marks where text was left out. `false` keeps every sentence and makes no request. When the request fails, the whole text comes back and the record says why.
+- **Size:** The text holds every part the ratings keep, so its size is a result, which the record states as `estimatedTokens`. `curate.answerTokens`, off by default, keeps the text within that many estimated tokens. The strongest part is always kept whole, and the record's `leftOut` counts the parts the budget stopped before.
+- **Sentence cutoff:** off by default. Given a number and `decide`, curate rates each sentence of the taken parts and keeps those rated `curate.sentenceCutoff` or more. `…` marks where text was left out. Measured at 0.1 on 150 LongMemEval questions, it removed 9.2% of the sentences and 7.2% of the tokens, and cut 12 labelled answer turns that were whole in the text to partial or absent. When the request fails, the whole text comes back and the record says why.
 
 ## Plain files and git
 

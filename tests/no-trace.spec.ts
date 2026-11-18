@@ -380,7 +380,7 @@ describe('a records-off call', () => {
     const fixture = await makeFixture();
     const done = await call(fixture, {});
     const memory = done.printed.join('\n');
-    expect(memory).toContain(`### ${fixture.at('notes', 'orchard.md')} (said unknown)\n\n# Orchard\nThe orchard has trees.`);
+    expect(memory).toContain(`### ${fixture.at('notes', 'orchard.md')} (said unknown)\n\n# Orchard\n\nThe orchard has trees.`);
     expect(memory).not.toMatch(/UNDATED|collect/);
   });
 
