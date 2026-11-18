@@ -826,12 +826,16 @@ const searchTokens = (text) => new Set((text.match(/[A-Za-z][A-Za-z'’-]{2,}|\d
  *  a key prefix the scrubber knows, or one the scrubber would mask. It
  *  never becomes a search line, which the record keeps. */
 const credentialShaped = (token) => /^(?:sk|xai|pk|rk|xox[abeoprs])-/i.test(token) || scrubChat(token) !== token;
+/** The word of the mark the scrubber leaves where it masked a secret,
+ *  `[redacted]`: it says nothing about the history, so it is never a
+ *  search line either. */
+const SCRUB_MARK = searchTokens('[redacted]');
 
 /** Round two's lines: for each seed text, its rarest words in `parts`
  *  (the history's parts) that the task does not use, of five or more
  *  characters or a number, rarest first and then alphabetical, leaving
- *  out any word shaped like a credential. A seed with no such word gives
- *  no line. */
+ *  out any word shaped like a credential and the scrubber's mark. A seed
+ *  with no such word gives no line. */
 export function rareLines(task, seeds, parts) {
   const counts = new Map();
   for (const part of parts) for (const token of searchTokens(part.text)) counts.set(token, (counts.get(token) ?? 0) + 1);
@@ -839,7 +843,7 @@ export function rareLines(task, seeds, parts) {
   const asked = searchTokens(task);
   return seeds.map((text) => [...searchTokens(text)]
     .filter((token) => counts.get(token) >= RARE_LEAST && counts.get(token) <= most && !asked.has(token)
-      && (token.length >= 5 || /^\d/.test(token)) && !credentialShaped(token))
+      && (token.length >= 5 || /^\d/.test(token)) && !credentialShaped(token) && !SCRUB_MARK.has(token))
     .sort((left, right) => counts.get(left) - counts.get(right) || (left < right ? -1 : left > right ? 1 : 0))
     .slice(0, SECOND_SEARCH_WORDS).join(' ')).filter((line) => line !== '');
 }

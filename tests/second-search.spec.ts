@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { conversationRead, type CandidateReadRequest, type CandidateSource, type MemoryCandidate, type PickCascade, type PickDecide } from '@curatejs/core';
+import { scrubChat } from '@curatejs/chat';
 // @ts-expect-error The standalone JavaScript command has no type declarations.
 import { pickFullSources, rareLines, searchAgain, searchSource } from '../skills/curate/run.mjs';
 
@@ -31,6 +32,14 @@ describe('the second search\'s lines', () => {
     for (const shaped of ['xai-shortkey', 'pk-abc', 'rk-abcdef', 'xoxb-short']) {
       expect(rareLines('where', [shaped], [part(shaped), part(shaped), ...parts])).toEqual([]);
     }
+  });
+
+  it('never takes the mark the scrubber left where it masked a key', () => {
+    // The two best parts hold only a key the chat reader already masked.
+    const masked = scrubChat(`sk-${'Ab3'.repeat(16)}`);
+    expect(masked).not.toContain('Ab3');
+    const parts = [part(masked), part(masked), ...Array.from({ length: 198 }, (_, index) => part(`unique${index}`))];
+    expect(rareLines('where', [masked, masked], parts)).toEqual([]);
   });
 });
 
