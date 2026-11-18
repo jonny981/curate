@@ -392,20 +392,27 @@ export function sessionHeader(path) {
 // A compressed Codex session's header: its first line, decompressed as a
 // stream that stops at the first newline, so admission never decompresses
 // a whole session. It rejects when the start of the file does not
-// decompress; a first line that is not JSON gives null, as above.
+// decompress, and when the file ends before its first line does and what
+// came out is not JSON: Node's decompressor ends an empty or cut-off file
+// without an error, and that is a damaged session, not one to refuse. A
+// whole first line that is not JSON gives null, as above.
 async function compressedHeader(path) {
   const input = createReadStream(path);
   const output = input.pipe(createZstdDecompress());
   input.on('error', (error) => output.destroy(error));
   const chunks = [];
+  let ended = true;
   try {
     for await (const chunk of output) {
       const end = chunk.indexOf(10);
-      if (end >= 0) { chunks.push(Buffer.from(chunk.subarray(0, end))); break; }
+      if (end >= 0) { chunks.push(Buffer.from(chunk.subarray(0, end))); ended = false; break; }
       chunks.push(Buffer.from(chunk));
     }
   } finally { output.destroy(); input.destroy(); }
-  try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { return null; }
+  try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch {
+    if (ended) throw new Error(`${path} ends before its first line does`);
+    return null;
+  }
 }
 
 export async function allowedSession(header, allowedCwd) {
@@ -425,9 +432,11 @@ export async function allowedSession(header, allowedCwd) {
 // folder is never descended into.
 // A compressed session (`<name>.jsonl.zst`) is admitted by its header like
 // any other, unless its uncompressed form sits beside it: that form is the
-// one read. One whose header does not decompress is counted apart.
+// one read. One whose header does not decompress is counted apart. A
+// session Codex compressed after the folder was listed is admitted by its
+// compressed form; one gone in both forms is counted apart too.
 export async function filterSessions(folder, allowedCwd, exclude) {
-  const admitted = [], excluded = [], unreadable = [];
+  const admitted = [], excluded = [], unreadable = [], gone = [];
   const entries = (exclude ?? []).map((entry) =>
     entry.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '') || '.');
   const blocked = (path) => {
@@ -445,13 +454,26 @@ export async function filterSessions(folder, allowedCwd, exclude) {
       else if (entry.isFile() && (entry.name.endsWith('.jsonl')
         || (entry.name.endsWith('.jsonl.zst') && !names.has(entry.name.slice(0, -'.zst'.length))))) {
         let header;
-        try { header = await sessionHeader(file); } catch { unreadable.push(file); continue; }
-        (await allowedSession(header, allowedCwd) ? admitted : excluded).push(file);
+        let path = file;
+        try {
+          header = await sessionHeader(path);
+        } catch (error) {
+          const moved = error?.code === 'ENOENT' && path.endsWith('.jsonl');
+          if (moved) path = `${path}.zst`;
+          try {
+            if (!moved) throw error;
+            header = await sessionHeader(path);
+          } catch (again) {
+            (again?.code === 'ENOENT' ? gone : unreadable).push(path);
+            continue;
+          }
+        }
+        (await allowedSession(header, allowedCwd) ? admitted : excluded).push(path);
       }
     }
   };
   await walk(folder);
-  return { admitted, excluded, unreadable };
+  return { admitted, excluded, unreadable, gone };
 }
 
 export async function snapshotCodex(entry, folder) {
@@ -462,26 +484,44 @@ export async function snapshotCodex(entry, folder) {
   const exclude = entry.exclude?.map((entry_) => isAbsolute(entry_) ? relative(entry.path, entry_) : entry_);
   const filter = await filterSessions(entry.path, entry.allowedCwd, exclude);
   await mkdir(folder, { recursive: true, mode: 0o700 });
-  for (const original of filter.admitted) {
-    const target = join(folder, relative(entry.path, original));
+  let gone = filter.gone.length;
+  for (const admitted of filter.admitted) {
+    let original = admitted;
+    let target = join(folder, relative(entry.path, original));
     await mkdir(dirname(target), { recursive: true, mode: 0o700 });
-    await copyFile(original, target, constants.COPYFILE_FICLONE);
+    // A session Codex compressed since its header was read is copied in
+    // its compressed form; one gone in both forms is counted.
+    const copied = async () => {
+      try { await copyFile(original, target, constants.COPYFILE_FICLONE); return true; } catch (error) {
+        if (error?.code !== 'ENOENT') throw error;
+        return false;
+      }
+    };
+    if (!await copied()) {
+      if (!original.endsWith('.jsonl')) { gone += 1; continue; }
+      original = `${original}.zst`;
+      target = `${target}.zst`;
+      if (!await copied()) { gone += 1; continue; }
+    }
     // The stored index keys a session by the source id, which names the
     // original folder, and by its path inside the folder. With the
     // original's times kept, the next run's copy of an unchanged
     // session matches what the index holds, and is not read again.
-    const { atime, mtime } = await stat(original);
-    await utimes(target, atime, mtime);
+    const times = await stat(original).catch((error) => { if (error?.code === 'ENOENT') return undefined; throw error; });
+    if (times !== undefined) await utimes(target, times.atime, times.mtime);
   }
   const source = chat({ id: `chat:codex:${entry.path}`, providers: ['codex'], paths: [folder],
     ...(entry.since === undefined ? {} : { since: entry.since }),
     ...(exclude === undefined ? {} : { exclude }),
     ...(entry.questions === undefined ? {} : { questions: CHAT_QUESTION_SETS[entry.questions] }),
     ...(entry.bar === undefined ? {} : { bar: entry.bar }) });
-  // A session whose compressed header does not decompress was never
-  // copied: the read says how many, as the reader says of a body.
-  const unread = filter.unreadable.length === 0 ? undefined
-    : `could not decompress ${filter.unreadable.length} compressed sessions`;
+  // A session whose compressed header does not decompress, or that was
+  // gone, was never copied: the read says how many, as the reader says of
+  // a body.
+  const unread = [
+    ...(filter.unreadable.length === 0 ? [] : [`could not decompress ${filter.unreadable.length} compressed sessions`]),
+    ...(gone === 0 ? [] : [`could not find ${gone} sessions moved or deleted during the read`]),
+  ].join('; ') || undefined;
   return { filter, source: { ...source, async read(request, context) {
     const result = await source.read(request, context);
     return result.status !== 'read' ? result : { ...result,

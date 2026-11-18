@@ -352,22 +352,28 @@ describe('Codex session folder restrictions', () => {
     await writeFile(cut, long.subarray(0, Math.floor(long.length / 2)));
     const garbage = join(sessions, 'garbage.jsonl.zst');
     await writeFile(garbage, 'not zstd at all');
+    // An empty file and one cut inside its frame header decompress to nothing without an error: they are
+    // damaged sessions, never ones the header refuses.
+    const empty = join(sessions, 'empty.jsonl.zst');
+    await writeFile(empty, '');
+    const header = join(sessions, 'header.jsonl.zst');
+    await writeFile(header, long.subarray(0, 5));
     expect(await sessionHeader(cut)).toEqual(metadata(root));
-    await expect(sessionHeader(garbage)).rejects.toThrow();
+    for (const damaged of [garbage, empty, header]) await expect(sessionHeader(damaged)).rejects.toThrow();
 
     const { filter, source }: { filter: { admitted: string[]; excluded: string[]; unreadable: string[] }; source: CandidateSource } =
       await snapshotCodex({ type: 'codex', path: join(directory, 'sessions'), allowedCwd: root }, join(directory, 'snapshot'));
     expect(filter.admitted.sort()).toEqual([allowed, cut].sort());
     expect(filter.excluded).toEqual([other]);
-    expect(filter.unreadable).toEqual([garbage]);
+    expect(filter.unreadable.sort()).toEqual([empty, garbage, header].sort());
     const result = await source.read({ task: 'orchard evidence' });
     if (result.status !== 'read') throw new Error('Expected the admitted sessions to be read.');
     expect(result.candidates.map((candidate) => candidate.text)).toEqual(['Useful orchard evidence.']);
     expect(result.candidates[0]!.id).toContain(`${join('2026', '01', 'allowed.jsonl')}:`);
-    // The cut session's body and the garbage file's header are both counted.
+    // The cut session's body and the three damaged headers are all counted.
     expect(result).toMatchObject({ complete: false });
     expect(result.partial).toContain('could not decompress 1 compressed sessions');
-    expect(result.partial!.split('could not decompress 1 compressed sessions')).toHaveLength(3);
+    expect(result.partial).toContain('could not decompress 3 compressed sessions');
   });
 
   it('reads only admitted snapshot copies despite new sessions and changed originals', async () => {

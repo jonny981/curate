@@ -34,10 +34,15 @@ const source = chat({ providers: ['claude-code', 'codex'], since: '14 days' });
   place in the stored index, so a session indexed before it was
   compressed keeps its parts, and only lines it gained before then are
   read. When both forms of a session sit side by side, the uncompressed
-  one is read, since it is the one that can still grow. A compressed
-  session that does not decompress, or that ends before the size its
-  header states, is left out and counted: the read is not complete, and
-  `partial` says how many.
+  one is read, since it is the one that can still grow. Every zstd frame
+  of a compressed session is read, and the file is checked against its
+  own frame structure: a session that is empty, cut off inside a frame,
+  holds bytes after its last frame, or does not decompress is left out
+  and counted, and the read is not complete, with `partial` saying how
+  many. A file cut exactly between two whole frames cannot be told from
+  a whole one. A session Codex compresses after a read lists the folder
+  is read in its compressed form; one gone in both forms is counted the
+  same way.
 - **Dates:** `since` accepts an ISO date or a duration such as `'14 days'`
   or `'12 hours'`. An ISO date is the cutoff itself. A duration counts
   back from the task date: the read request's `taskDate`, else its `asOf`,

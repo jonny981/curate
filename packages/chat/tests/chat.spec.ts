@@ -18,6 +18,9 @@ const fileReads: string[] = [];
 const rangeReads: { file: string; bytes: number }[] = [];
 // Every folder the reader lists, so a spec can count its walks.
 const folderReads: string[] = [];
+// A spec can change what a listing shows, as a folder that changed
+// between its listing and its read.
+let relist: ((entries: unknown[]) => unknown[]) | undefined;
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
   return {
@@ -26,9 +29,10 @@ vi.mock('node:fs/promises', async (importOriginal) => {
       fileReads.push(String(file));
       return (actual.readFile as (f: unknown, o?: unknown) => Promise<unknown>)(file, options);
     },
-    readdir: (folder: unknown, options?: unknown) => {
+    readdir: async (folder: unknown, options?: unknown) => {
       folderReads.push(String(folder));
-      return (actual.readdir as (f: unknown, o?: unknown) => Promise<unknown>)(folder, options);
+      const entries = await (actual.readdir as (f: unknown, o?: unknown) => Promise<unknown[]>)(folder, options);
+      return relist === undefined ? entries : relist(entries);
     },
     open: async (...call: Parameters<typeof actual.open>) => {
       const handle = await actual.open(...call);
@@ -49,6 +53,7 @@ const directories: string[] = [];
 // Chat asks label questions by default; keep their saved answers out of the real cache.
 beforeEach(async () => { vi.stubEnv('XDG_CACHE_HOME', await folder()); });
 afterEach(async () => {
+  relist = undefined;
   vi.useRealTimers();
   vi.unstubAllEnvs();
   await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
@@ -361,6 +366,98 @@ describe('compressed Codex sessions', () => {
       const result = await read('codex', root, options);
       expect(result.candidates.map((part) => part.text).sort()).toEqual(['orchard answer 0', 'orchard question 0']);
       expect(result).toMatchObject({ complete: false, partial: expect.stringContaining('could not decompress 1 compressed sessions') });
+    }
+  });
+
+  // Node's decompressor reads only a file's first frame, ends a cut-off frame without an error, and ignores bytes
+  // after the frame, so each of these read as a whole session with too few parts before.
+  const unsized = (text: string) => (zlib as unknown as { zstdCompressSync(data: Buffer, options: unknown): Buffer })
+    .zstdCompressSync(Buffer.from(text), { params: { [(zlib.constants as unknown as Record<string, number>).ZSTD_c_contentSizeFlag!]: 0 } });
+  it.each([
+    ['an empty file', () => Buffer.alloc(0)],
+    ['the first five bytes of a frame', (text: string) => zstd(text).subarray(0, 5)],
+    ['a frame with no content size, cut in half', (text: string) => { const bytes = unsized(text); return bytes.subarray(0, Math.floor(bytes.length / 2)); }],
+    ['a whole first frame, then a cut second frame', (text: string) => {
+      const [first, ...rest] = text.split('\n');
+      const second = zstd(rest.join('\n'));
+      return Buffer.concat([zstd(`${first}\n`), second.subarray(0, Math.floor(second.length / 2))]);
+    }],
+    ['a whole frame, then bytes that are no frame', (text: string) => Buffer.concat([zstd(text), Buffer.from('left over')])],
+  ])('counts %s as a damaged session, never a complete one, and reads the rest', async (_, damage) => {
+    const root = await folder();
+    await session(root, 1);
+    const damaged = await session(root, 40, `${name}-d`);
+    await writeFile(`${damaged}.zst`, damage(await readFile(damaged, 'utf8')));
+    await rm(damaged);
+    for (const options of [{ index: false as const }, {}]) {
+      const result = await read('codex', root, options);
+      expect(result.candidates.map((part) => part.text).sort()).toEqual(['orchard answer 0', 'orchard question 0']);
+      expect(result).toMatchObject({ complete: false, partial: expect.stringContaining('could not decompress 1 compressed sessions') });
+    }
+  });
+
+  it('reads every frame of a session compressed in several frames', async () => {
+    const root = await folder();
+    const file = await session(root, 40);
+    const plain = parts(await read('codex', root, { index: false }));
+    const lines = (await readFile(file, 'utf8')).split('\n');
+    const half = Math.floor(lines.length / 2);
+    await writeFile(`${file}.zst`, Buffer.concat([zstd(`${lines.slice(0, half).join('\n')}\n`), unsized(lines.slice(half).join('\n'))]));
+    await rm(file);
+    for (const options of [{ index: false as const }, {}]) {
+      const result = await read('codex', root, options);
+      expect(parts(result)).toEqual(plain);
+      expect(result.complete).toBe(true);
+    }
+  });
+
+  it('keeps no growing copy of a compressed session on a read with no index', async () => {
+    const root = await folder();
+    const file = await session(root, 3000);
+    const size = (await stat(file)).size;
+    await compress(file);
+    const concat = Buffer.concat.bind(Buffer);
+    let largest = 0;
+    const spy = vi.spyOn(Buffer, 'concat').mockImplementation((list, ...rest) => {
+      if (new Error().stack?.includes('compressedLines')) largest = Math.max(largest, list.reduce((total, item) => total + item.length, 0));
+      return concat(list, ...rest);
+    });
+    try {
+      await read('codex', root, { index: false }, { task: 'orchard', wholeLanes: true });
+    } finally { spy.mockRestore(); }
+    expect(largest).toBeGreaterThan(0);
+    expect(largest).toBeLessThan(size / 4);
+  });
+
+  it('reads a session Codex compressed after the folder was listed as the same session', async () => {
+    const root = await folder();
+    const file = await session(root, 3);
+    const plain = parts(await read('codex', root, { index: false }));
+    await compress(file);
+    // The listing still shows the session under its uncompressed name.
+    relist = (entries) => entries.map((entry) => {
+      const { name: listed } = entry as { name: string };
+      return listed.endsWith('.jsonl.zst') ? Object.assign(Object.create(Object.getPrototypeOf(entry)), entry, { name: listed.slice(0, -4) }) : entry;
+    });
+    for (const options of [{ index: false as const }, {}]) {
+      const result = await read('codex', root, options);
+      expect(parts(result)).toEqual(plain);
+      expect(result.complete).toBe(true);
+    }
+  });
+
+  it('counts a listed session that is gone in both forms, and reads the rest', async () => {
+    const root = await folder();
+    await session(root, 1);
+    // The listing shows a second session that was removed before it was read.
+    relist = (entries) => entries.flatMap((entry) => {
+      const { name: listed } = entry as { name: string };
+      return listed.endsWith('.jsonl') ? [entry, Object.assign(Object.create(Object.getPrototypeOf(entry)), entry, { name: `gone-${listed}` })] : [entry];
+    });
+    for (const options of [{ index: false as const }, {}]) {
+      const result = await read('codex', root, options);
+      expect(result.candidates.map((part) => part.text).sort()).toEqual(['orchard answer 0', 'orchard question 0']);
+      expect(result).toMatchObject({ complete: false, partial: expect.stringContaining('could not find 1 sessions moved or deleted during the read') });
     }
   });
 });
