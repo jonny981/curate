@@ -848,11 +848,28 @@ export function searchSource(source, searches, audit, folder, settings = {}) {
 // this call only.
 export async function pickFullSources(sources, call, options, context = { files: new Map(), shared: new Map() }) {
   const request = call;
+  // Each class of parts that read their text on demand, from the reads
+  // made here: their connections close once the pick ends, and when a
+  // read here or the pick fails.
+  const closers = new Map();
+  const noted = (read) => {
+    if (read?.status === 'read') {
+      for (const part of read.candidates) {
+        const close = part[CLOSE_PARTS];
+        if (close !== undefined && !closers.has(close)) closers.set(close, part);
+      }
+    }
+    return read;
+  };
+  const closeParts = () => { for (const [close, part] of closers) close.call(part); };
   // The call's meaning queries, in the raw form `task` carries: each
   // lane's wrapper maps it to the real line the way the task maps.
   const meaningQueries = [...new Set([request.task, ...(request.searchLines ?? [])]
     .map((line) => line.trim()).filter(Boolean))];
-  const cached = await Promise.all(sources.map(async (source) => {
+  // A failed read fails the call with the first error, as Promise.all
+  // would, once every other read has ended and been noted.
+  let failure;
+  const pending = sources.map(async (source) => { try {
     const reads = new Map();
     // A slot holds one lane's read: the key names everything that tells
     // one lane's read from another's, so a name, phrase, kind or period
@@ -879,7 +896,7 @@ export async function pickFullSources(sources, call, options, context = { files:
               && !(meaningLane.wholeLanes ?? !(request.wholeLanes !== true && source.role === 'reference'))
               ? { keptBodiesOnly: true } : {}) }),
           ...(revision === undefined ? {} : { revision }) };
-        const read = await source.read(readRequest, context);
+        const read = noted(await source.read(readRequest, context));
         if (read.status === 'read' && read.revision !== undefined) revision ??= read.revision;
         // The pick asks each slot once: one search lane a task, one
         // meaning lane a query, the task and its lines read once each.
@@ -915,8 +932,21 @@ export async function pickFullSources(sources, call, options, context = { files:
       if (held.askers === 0) reads.delete(slot);
       return held.read;
     } };
-  }));
-  return pickFromSources(cached, request, options);
+  } catch (error) {
+    failure ??= { error };
+    throw error;
+  } });
+  await Promise.allSettled(pending);
+  if (failure !== undefined) {
+    closeParts();
+    throw failure.error;
+  }
+  const cached = await Promise.all(pending);
+  try {
+    return await pickFromSources(cached, request, options);
+  } finally {
+    closeParts();
+  }
 }
 
 // The second search on coding-agent transcripts, in the sequence it was
@@ -936,6 +966,10 @@ export async function pickFullSources(sources, call, options, context = { files:
 /** Round one's warmest rated parts that give round two its lines: three,
  *  as in both measurements. */
 const SECOND_SEARCH_SEEDS = 3;
+/** What a part that reads its text on demand answers to let go of its
+ *  reader's index connection, as core's pickFromSources asks once a pick
+ *  ends: a caller that reads such a part's text later closes it again. */
+const CLOSE_PARTS = Symbol.for('curate.close');
 /** The words each of those parts gives its line, rarest first: eight, as
  *  in both measurements. */
 const SECOND_SEARCH_WORDS = 8;

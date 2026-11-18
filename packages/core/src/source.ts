@@ -415,7 +415,10 @@ export class SourceReadError extends Error {
 
 export interface PickSourcesResult extends PickResult {
   /** Each source's combined search result, in source order. Absent
-   *  reasons and partial notes remain available beside the pick record. */
+   *  reasons and partial notes remain available beside the pick record.
+   *  A read's candidates may read their text on demand: reading one after
+   *  the pick opens its reader's index connection again, which calling
+   *  `Symbol.for('curate.close')` on any of them closes. */
   readonly reads: readonly CandidateReadResult[];
 }
 
@@ -1192,7 +1195,34 @@ export async function pickFromSources(
   // The task's names, found once for every source with name lanes on.
   const found = sources.some((source) => source.names === true) ? await findTaskNames(options) : undefined;
   const namesFor = (source: CandidateSource) => source.names === true ? found!.found : [];
-  const reads = await Promise.all(sources.map(async (source) => {
+  // A reader may hand parts that read their text on demand (they answer
+  // `SETTLE_PART` and `CLOSE_PARTS`) and lookups that find parts by key
+  // (`parts`). Each read's are noted as it returns, so the connections
+  // they open are closed once the pick ends, and on any failure before:
+  // one part a class of such parts answers for all of them.
+  const closers = new Map<() => void, MemoryCandidate>();
+  const lookups = new Set<ModeParts>();
+  const noted = (source: CandidateSource): CandidateSource => Object.assign(Object.create(source) as CandidateSource, {
+    async read(...args: Parameters<CandidateSource['read']>) {
+      const read = await source.read(...args);
+      if (read.status === 'read') {
+        for (const candidate of read.candidates) {
+          const close = (candidate as unknown as Record<symbol, (() => void) | undefined>)[CLOSE_PARTS];
+          if (close !== undefined && !closers.has(close)) closers.set(close, candidate);
+        }
+        if (read.parts !== undefined) lookups.add(read.parts);
+      }
+      return read;
+    },
+  });
+  const closeAll = () => {
+    for (const parts of lookups) parts.close();
+    for (const [close, part] of closers) close.call(part);
+  };
+  // A failed read fails the call with the first error, as Promise.all
+  // would, once every other read has ended and been noted.
+  let failure: { readonly error: unknown } | undefined;
+  const pending = sources.map(async (source) => {
     const sourceRequest: CandidateReadRequest = {
       ...request, ...(taskDate === undefined ? { asOf } : { taskDate }), timeZone, taskPeriod: undefined,
       ...(source.decay === undefined ? {} : { decayHalfLife: durationMs(source.decay.halfLife, 'decay.halfLife') }),
@@ -1215,9 +1245,20 @@ export async function pickFromSources(
       // meaning lanes keep every part's similarity for it.
       ...(options.everyRanked === undefined ? { meaningPositions: true } : {}),
     };
-    const read = await readSearches(source, sourceRequest, context, namesFor(source));
-    return period === undefined ? read : addTaskPeriod(source, sourceRequest, period, read, context);
-  }));
+    try {
+      const read = await readSearches(noted(source), sourceRequest, context, namesFor(source));
+      return period === undefined ? read : addTaskPeriod(noted(source), sourceRequest, period, read, context);
+    } catch (error) {
+      failure ??= { error };
+      throw error;
+    }
+  });
+  await Promise.allSettled(pending);
+  if (failure !== undefined) {
+    closeAll();
+    throw failure.error;
+  }
+  const reads = await Promise.all(pending);
   const candidates: MemoryCandidate[] = [];
   const sourceKinds: Record<string, CandidateSourceKind> = Object.assign(Object.create(null), options.sourceKinds);
   let rulesEnumerationComplete = options.rulesEnumerationComplete !== false;
@@ -1276,20 +1317,9 @@ export async function pickFromSources(
   // Each source reads the call's task and search lines unless the
   // caller names its own; the units of agent work are ranked against them.
   const queries = [...new Set([request.task, ...(request.searchLines ?? [])].map((line) => line.trim()).filter(Boolean))];
-  // A reader may hand parts that read their text on demand (they answer
-  // `SETTLE_PART` and `CLOSE_PARTS`). Once the pick ends, each kept one
+  // Once the pick ends, each kept part that reads its text on demand
   // takes its text, checked against the text it was made from, and every
-  // such reader and lookup lets go of its connections.
-  // One part a class of such parts answers for all of them.
-  const closers = new Map<() => void, MemoryCandidate>();
-  for (const candidate of combined) {
-    const close = (candidate as unknown as Record<symbol, (() => void) | undefined>)[CLOSE_PARTS];
-    if (close !== undefined && !closers.has(close)) closers.set(close, candidate);
-  }
-  const closeLookups = () => {
-    for (const parts of Object.values(partsBySource)) parts.close();
-    for (const [close, part] of closers) close.call(part);
-  };
+  // reader and lookup noted above lets go of its connections.
   let picked: Awaited<ReturnType<typeof pick>>;
   try {
     picked = await pick(combined, {
@@ -1303,19 +1333,22 @@ export async function pickFromSources(
     ...(Object.keys(partsBySource).length === 0 ? {} : { partsBySource }),
     });
   } catch (error) {
-    closeLookups();
+    closeAll();
     throw error;
   }
   const selected: MemoryCandidate[] = [];
   const settledChanged: Record<string, number> = Object.create(null);
-  for (const part of picked.selected) {
-    const settle = (part as unknown as Record<symbol, (() => MemoryCandidate | undefined) | undefined>)[SETTLE_PART];
-    if (settle === undefined) { selected.push(part); continue; }
-    const plain = settle.call(part);
-    if (plain === undefined) settledChanged[part.sourceId] = (settledChanged[part.sourceId] ?? 0) + 1;
-    else selected.push(plain);
+  try {
+    for (const part of picked.selected) {
+      const settle = (part as unknown as Record<symbol, (() => MemoryCandidate | undefined) | undefined>)[SETTLE_PART];
+      if (settle === undefined) { selected.push(part); continue; }
+      const plain = settle.call(part);
+      if (plain === undefined) settledChanged[part.sourceId] = (settledChanged[part.sourceId] ?? 0) + 1;
+      else selected.push(plain);
+    }
+  } finally {
+    closeAll();
   }
-  closeLookups();
   const result = { ...picked, selected };
   // The read request's lever joins the pick's resolved set.
   // `meaning.wholeLanes` resolves the
