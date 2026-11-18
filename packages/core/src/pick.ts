@@ -14,6 +14,7 @@ import {
   ANSWER_TYPES, classifyTask, ROUTE_QUESTIONS, routeOptions, type AnswerType, type RouteKey, type RouteOption,
 } from './task.js';
 import { conversationRead, rankedRead, type Mode, type ModeRead, type ModeReadResult } from './mode.js';
+import { messageKey, messagePieces, messageText } from './chat-read.js';
 import type { EmbeddingFunction } from './meaning.js';
 import type { LeverStates } from './levers.js';
 import type { StoredIndexReport } from './stored-index.js';
@@ -135,6 +136,10 @@ export interface PickQuestion {
   readonly anonymous?: boolean;
   /** Who wrote the part, where its reader marked it: the part's `author`. */
   readonly author?: MemoryCandidate['author'];
+  /** Fields code knows for certain about the item, written into its
+   *  record in the decision state after its own fields, such as the
+   *  request a subagent's report answered (`asked`). Absent: none. */
+  readonly facts?: Readonly<Record<string, unknown>>;
   readonly sourceId: string;
   readonly id: string;
   readonly title: string;
@@ -1122,7 +1127,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  *  date and text; an anonymous item's id and title never reach the
  *  model, so they count nothing. */
 function itemChars(question: PickQuestion): number {
-  return (question.anonymous === true ? 0 : question.id.length + question.title.length)
+  return (question.anonymous === true ? 0 : question.id.length + question.title.length
+    + (question.facts === undefined ? 0 : JSON.stringify(question.facts).length))
     + question.text.length
     + (question.date === undefined ? 0 : question.date.value.length + question.date.meaning.length);
 }
@@ -1904,6 +1910,16 @@ export async function pick(
   const unheld: Record<string, number> = Object.fromEntries(Object.entries(options.historySizeBySource ?? {})
     .map(([id, size]) => [id, Math.max(0, size - (givenBySource.get(id) ?? 0))]));
   const historySize = references.length + Object.values(unheld).reduce((total, count) => total + count, 0);
+  // Whole messages: the reference parts of a mode that judges whole
+  // messages, each with every other piece of its message the pick holds.
+  const wholeFor = (candidate: MemoryCandidate) => candidate.role === 'reference'
+    && modeFor(candidate.sourceId)?.wholeMessages === true && candidate.chat !== undefined && (candidate.place?.at.length ?? 0) >= 3;
+  const messages = messagePieces(references.filter(wholeFor));
+  // Each transcript's subagent request, the message its report answers.
+  const requests = new Map<string, string>();
+  for (const pieces of messages.values()) {
+    if (pieces[0]!.chat?.unit === 'prompt') requests.set(JSON.stringify([pieces[0]!.sourceId, pieces[0]!.place!.container]), messageText(pieces));
+  }
 
   const selected: MemoryCandidate[] = [];
   const statuses = new Map<MemoryCandidate, PickEntryStatus>();
@@ -2145,7 +2161,11 @@ export async function pick(
     question: PickQuestion;
     cacheKey?: string;
   };
+  // The fields code wrote for an item the decision model reads: a whole
+  // message's request or part.
+  const itemFacts = new Map<MemoryCandidate, Readonly<Record<string, unknown>>>();
   const pending = (candidate: MemoryCandidate, spec: ReturnType<typeof specsFor>[number], tagSet?: string): Pending => {
+    const facts = itemFacts.get(candidate);
     const shown = Number.isFinite(limits.maxQuestionText)
       ? takeCharacters(candidate.text, limits.maxQuestionText)
       : { text: candidate.text, truncated: false };
@@ -2158,6 +2178,7 @@ export async function pick(
       ...(candidate.date === undefined ? {} : { date: candidate.date }),
       ...(candidate.kind === undefined ? {} : { kind: candidate.kind }),
       ...(candidate.author === undefined ? {} : { author: candidate.author }),
+      ...(facts === undefined ? {} : { facts }),
       role: candidate.role, question: spec.question,
       ...(spec.levels === undefined
         ? { trueCriterion: spec.trueCriterion, falseCriterion: spec.falseCriterion }
@@ -2201,7 +2222,8 @@ export async function pick(
     candidate.text === '' ? candidate.title : null,
     question.role, question.kind, question.questionKey, question.question,
     question.trueCriterion ?? null, question.falseCriterion ?? null,
-    question.levels ?? null, question.anonymous ?? null, question.author ?? null, carriesNeeded(candidate)]);
+    question.levels ?? null, question.anonymous ?? null, question.author ?? null, carriesNeeded(candidate),
+    question.facts ?? null]);
   // Asks packed into request-sized batches, at most `most` of them.
   const pack = (fresh: readonly Pending[], task: string, whole: boolean, most: number): Pending[][] => {
     const slices: Pending[][] = [];
@@ -2850,12 +2872,78 @@ export async function pick(
   };
   // Candidates a stop left half-assessed inside a cascade.
   const curtailed = new Map<MemoryCandidate, 'limits' | 'time' | 'cancelled' | 'error'>();
-  // A part's first-round asks: every question, or a cascade's first.
-  const firstAsks = (candidate: MemoryCandidate) => specsFor(candidate)
-    .filter((spec) => candidate.role === 'rule' || !cascadeFor(candidate)?.first || spec.key === cascadeFor(candidate)!.first)
-    .map((spec) => pending(candidate, spec));
-  const evaluate = async (phase: readonly MemoryCandidate[]) => {
-    await ask(phase.flatMap(firstAsks));
+  // The items the decision model judges for a part: the part itself,
+  // or, when its mode judges whole messages, its message, sent in
+  // consecutive parts when one request cannot hold it.
+  const messageItems = new Map<string, MemoryCandidate[]>();
+  const messageOfItem = new Map<MemoryCandidate, string>();
+  const itemsFor = (candidate: MemoryCandidate): MemoryCandidate[] => {
+    if (!wholeFor(candidate)) return [candidate];
+    const key = messageKey(candidate);
+    const known = messageItems.get(key);
+    if (known !== undefined) return known;
+    const pieces = messages.get(key) ?? [candidate];
+    const first = pieces[0]!;
+    const asked = first.chat?.unit === 'report'
+      ? requests.get(JSON.stringify([first.sourceId, first.place!.container])) : undefined;
+    const own = asked === undefined ? {} : { asked };
+    // What a request holds beside the message's text: the task, the
+    // facts the answer needs, the item's other fields and its questions.
+    const specs = specsFor(first);
+    const beside = options.task.length + (carriesNeeded(first) ? JSON.stringify(needed).length : 0)
+      + first.id.length + first.title.length + (first.date === undefined ? 0 : first.date.value.length + first.date.meaning.length)
+      + JSON.stringify({ ...own, part: `${pieces.length} of ${pieces.length}`, opening: first.text }).length
+      + specs.reduce((sum, spec) => sum + spec.question.length
+        + (spec.levels ?? [spec.trueCriterion ?? '', spec.falseCriterion ?? '']).join('').length, 0);
+    // Consecutive pieces, as many as fit, measured as the request sends them.
+    const ranges: MemoryCandidate[][] = [];
+    for (const piece of pieces) {
+      const last = ranges.at(-1);
+      if (last !== undefined && JSON.stringify(messageText([...last, piece])).length <= limits.maxBatchChars - beside) last.push(piece);
+      else ranges.push([piece]);
+    }
+    const items = ranges.length === 1 && pieces.length === 1 && asked === undefined ? [first]
+      : ranges.map((range) => ({ ...range[0]!, text: messageText(range) }));
+    items.forEach((item, index) => {
+      const facts = { ...own, ...(ranges.length === 1 ? {} : { part: `${index + 1} of ${ranges.length}` }),
+        ...(index === 0 ? {} : { opening: first.text }) };
+      if (Object.keys(facts).length > 0) itemFacts.set(item, facts);
+      messageOfItem.set(item, key);
+    });
+    messageItems.set(key, items);
+    return items;
+  };
+  // An item's first-round asks: every question, or a cascade's first.
+  const asksOf = (item: MemoryCandidate) => specsFor(item)
+    .filter((spec) => item.role === 'rule' || !cascadeFor(item)?.first || spec.key === cascadeFor(item)!.first)
+    .map((spec) => pending(item, spec));
+  // A part's first-round asks: its items'.
+  const firstAsks = (candidate: MemoryCandidate) => itemsFor(candidate).flatMap(asksOf);
+  // A message's rating is its best item's, and each piece of it carries
+  // that rating and the answers behind it.
+  const spread = (phase: readonly MemoryCandidate[]) => {
+    const probability = (item: MemoryCandidate) => {
+      const answer = combined.get(item);
+      return answer?.status === 'answered' && 'probability' in answer ? answer.probability : -1;
+    };
+    for (const key of new Set(phase.flatMap((item) => messageOfItem.get(item) ?? []))) {
+      const items = messageItems.get(key)!;
+      const best = items.reduce((top, item) => probability(item) > probability(top) ? item : top);
+      for (const piece of messages.get(key) ?? []) {
+        if (piece === best) continue;
+        for (const map of [combined, answered, keptBy, untyped, unwritten, unnamed] as Map<MemoryCandidate, unknown>[]) {
+          if (map.has(best)) map.set(piece, map.get(best)); else map.delete(piece);
+        }
+        if (curtailed.has(best)) curtailed.set(piece, curtailed.get(best)!); else curtailed.delete(piece);
+        if (items.some((item) => truncated.get(item) === true)) truncated.set(piece, true);
+        else if (truncated.has(best)) truncated.set(piece, false);
+        if (items.some((item) => decideFailed.has(item))) decideFailed.add(piece);
+      }
+    }
+  };
+  const evaluate = async (given: readonly MemoryCandidate[]) => {
+    const phase = messages.size === 0 ? given : [...new Set(given.flatMap(itemsFor))];
+    await ask(phase.flatMap(asksOf));
     if (!stop) {
       await ask(phase.flatMap((candidate) => {
         const cascade = cascadeFor(candidate);
@@ -2955,6 +3043,7 @@ export async function pick(
       } else answer = got.values().next().value!;
       combined.set(candidate, answer);
     }
+    if (messages.size > 0) spread(phase);
   };
 
   // The reference parts of `parts` the decide step answered: the count
@@ -3156,6 +3245,21 @@ export async function pick(
     }
   }
 
+  // Under whole messages a message's rating is each of its pieces': the
+  // other pieces of every message the reads judged join the feed, so a
+  // message is kept or rejected whole.
+  if (messages.size > 0) {
+    const held = new Set(feed);
+    const queued = new Set(queue);
+    for (const candidate of [...feed]) {
+      if (!wholeFor(candidate) || !messageItems.has(messageKey(candidate))) continue;
+      for (const piece of messages.get(messageKey(candidate)) ?? []) {
+        if (held.has(piece) || !queued.has(piece)) continue;
+        held.add(piece);
+        feed.push(piece);
+      }
+    }
+  }
   // The reference bar may rise with the decided set's size, so the
   // selection pass runs once the whole feed has answered. Without that
   // curve each reference is cut at its own source's bar.
@@ -3488,6 +3592,7 @@ export async function pick(
       ...(candidates.some((c) => c.sourceId === id && c.role === 'rule') ? { ruleBar: ruleBarFor(id) } : {}),
       ...(questionsFor(id) === undefined ? {} : { questions: questionsFor(id) }),
       ...(modeFor(id)?.textShare === undefined ? {} : { textShare: modeFor(id)!.textShare }),
+      ...(modeFor(id)?.wholeMessages === true ? { wholeMessages: true as const } : {}),
     }])) },
     effects,
   };

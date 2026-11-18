@@ -238,14 +238,15 @@ function itemState(question: PickQuestion): string {
 }
 
 /** An item as a named record in a Jev request's state: its id, date,
- *  title and text, and its author where its reader marked one. A
- *  missing date is null. An anonymous item keeps only its date and its
- *  text, so its identifying fields and author never reach the request. */
+ *  title and text, its author where its reader marked one, and the
+ *  fields code knows about it (`facts`). A missing date is null. An
+ *  anonymous item keeps only its date and its text, so its identifying
+ *  fields, author and facts never reach the request. */
 function itemRecord(question: PickQuestion) {
   const date = question.date === undefined ? null : `${question.date.meaning} ${question.date.value}`;
   if (question.anonymous === true) return { date, text: anonymousText(question.text) };
   return { id: question.id, date, title: question.title, text: question.text,
-    ...(question.author === undefined ? {} : { author: question.author }) };
+    ...(question.author === undefined ? {} : { author: question.author }), ...question.facts };
 }
 
 /** Jev's request body for a batch. The state is a JSON object: the

@@ -22,6 +22,20 @@ export interface Mode {
    *  weight is at least this share of the best kept part's of its
    *  source. Absent: every kept part, within the token budget. */
   readonly textShare?: number;
+  /** Judge whole messages, off by default. A transcript message is cut
+   *  into pieces for the search lanes; with this on, the decision
+   *  questions about a ranked piece are asked once about its whole
+   *  message (every piece the pick holds, joined in order), a
+   *  subagent's report with the request that produced it (`asked`),
+   *  and the message's rating applies to each of its pieces: they are
+   *  kept together, and the text lays the message out once, whole. A
+   *  message too large for one request (`limits.maxBatchChars`) is sent
+   *  as consecutive parts, each marked `part: 'k of n'` and, after the
+   *  first, carrying the message's first piece as `opening`; the
+   *  message's rating is its best part's. Only parts a transcript reader
+   *  placed (`chat` and `place`) are joined; any other part is its own
+   *  message. */
+  readonly wholeMessages?: boolean;
   /** How the decide step reads the mode's parts on the fused order:
    *  `rankedRead` or a `conversationRead()`. Parts of modes that share
    *  a read are read together. */

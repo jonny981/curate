@@ -1,6 +1,7 @@
 import type { MemoryCandidate, PickBatch, PickDecide, PickResult } from './pick.js';
 import type { LeverStates } from './levers.js';
 import { checkCurateOptions } from './options.js';
+import { messageKey, messagePieces, messageText } from './chat-read.js';
 
 /** The estimate curate states its text's size with, and holds an
  *  `answerTokens` budget with when one is set. Characters
@@ -259,7 +260,7 @@ export async function curate(task: string, picked: PickResult, options: CurateOp
     if (first === undefined) firstOf.set(candidate.id, candidate);
     else if (first !== candidate) shared.add(candidate.id);
   }
-  const items = references.map((candidate) => {
+  const pieceItems = references.map((candidate) => {
     const entry = entries.get(JSON.stringify([candidate.sourceId, candidate.id]));
     if (entry?.status !== 'selected' || entry.probability === undefined
       || !Number.isFinite(entry.probability) || entry.probability < 0 || entry.probability > 1) {
@@ -267,6 +268,25 @@ export async function curate(task: string, picked: PickResult, options: CurateOp
     }
     const id = shared.has(candidate.id) ? JSON.stringify([candidate.sourceId, candidate.id]) : candidate.id;
     return { id, candidate, weight: entry.probability };
+  });
+  // A source whose mode judged whole messages lays each message out once,
+  // whole: its kept pieces joined in order, at its first piece's place,
+  // with the message's weight.
+  const whole = (candidate: MemoryCandidate) => picked.record.levers.sources?.[candidate.sourceId]?.wholeMessages === true
+    && candidate.chat !== undefined && (candidate.place?.at.length ?? 0) >= 3;
+  const pieces = messagePieces(references.filter(whole));
+  const itemOf = new Map(pieceItems.map((item) => [item.candidate, item]));
+  const laid = new Set<string>();
+  const items = pieceItems.flatMap((item) => {
+    if (!whole(item.candidate)) return [item];
+    const key = messageKey(item.candidate);
+    if (laid.has(key)) return [];
+    laid.add(key);
+    const message = pieces.get(key)!;
+    if (message.length === 1) return [item];
+    const first = itemOf.get(message[0]!)!;
+    return [{ ...first, candidate: { ...first.candidate, text: messageText(message) },
+      weight: Math.max(...message.map((piece) => itemOf.get(piece)!.weight)) }];
   });
   const answerTokens = options.answerTokens;
   // A pick that kept nothing gives an empty text and says so; it is an

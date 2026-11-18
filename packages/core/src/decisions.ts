@@ -44,6 +44,9 @@ export function decisionKey(
       ...(question.levels === undefined && question.anonymous === undefined ? []
         : [question.levels ?? null, question.anonymous ?? null]),
       ...(question.author === undefined ? [] : [{ author: question.author }]),
+      // The fields code wrote into the item's record, only when it
+      // carries them: a plain item's key is the one already stored.
+      ...(question.facts === undefined ? [] : [{ facts: question.facts }]),
       question.questionKey ?? null, question.tagSet ?? null,
       question.sourceId, question.id, question.title, question.role, question.kind ?? null,
       question.date === undefined ? null : [question.date.value, question.date.meaning],

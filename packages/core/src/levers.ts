@@ -73,6 +73,10 @@ export interface SourceSettings {
   /** The share of its best kept part's weight a kept part of this
    *  source needs to enter the text, present when its mode sets one. */
   readonly textShare?: number;
+  /** Present and true when its mode judges whole messages: each kept
+   *  piece carries its message's rating, and the text lays the message
+   *  out once, whole. */
+  readonly wholeMessages?: true;
   /** The decay half-life this source's Markdown parts ranked with,
    *  present when the source has `decay` on. Only a record
    *  pickFromSources produced carries it. */

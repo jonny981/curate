@@ -72,7 +72,7 @@ const decide = jev({ apiKey: process.env.TYPESAFE_API_KEY });
 
 - **Jev:** `jev({ apiKey?, model?, url? })` returns a `PickDecide` function for TypeSafe's System One endpoint, with `deciderId: typesafe:${model}:item-records`. The model defaults to `'jev-latest'`. Missing or invalid probabilities become missing answers.
 - **Jev at another address:** set `url` for any server that speaks Jev's format, such as a Clef server. The key is then optional, and no `authorization` header is sent without one. The `deciderId` is `jev:${host}${path}:${model}:item-records`, read from `url`.
-- **What a Jev request holds:** the request's state is a JSON object: the batch's task, the facts the answer needs when the batch carries them (`needed`), and each item once, as a record under its number in `items`, with its id, date, title and text, and its `author` where its reader marked one. Each question's instructions are an object holding its wording and the path of its item's record, such as `items.3`, so an item asked seven questions is sent once. `jevRequest(batch, model?)`, exported from `@curatejs/core`, builds that body.
+- **What a Jev request holds:** the request's state is a JSON object: the batch's task, the facts the answer needs when the batch carries them (`needed`), and each item once, as a record under its number in `items`, with its id, date, title and text, its `author` where its reader marked one, and any fields code wrote about it (`facts` on the question, such as a report's `asked`). Each question's instructions are an object holding its wording and the path of its item's record, such as `items.3`, so an item asked seven questions is sent once. `jevRequest(batch, model?)`, exported from `@curatejs/core`, builds that body.
 - **Jev request size:** Jev documents its limits in tokens: 32,000 for the state plus the longest question, and 64,000 for the whole request. At an estimate of three characters a token, `jev()` splits a batch into several requests so that in each one the state plus its longest question's instructions and criteria is at most 96,000 characters, and the whole request body at most 192,000. An item's questions always go in its item's request, and an item larger than those bounds goes alone. The answers come back as one map for the batch.
 - **A request rejected as too large is sent again, smaller:** an HTTP 400 or 413 reply splits a multi-item request in two, each item keeping all its questions, and a rejected half splits again. A lone item is resent with its evidence text halved, and its answers are marked `truncated`. `jev()` remembers the largest whole body the service accepted; after a rejection, later batches are planned inside it. A request rejected at no more than that size — or a lone item whose text was cut to nothing — did not fail for size, so its reply is thrown as sent and the batch still fails. The error of a failed request carries the reply's whole body in `reply`.
 - **Every request reported:** `jev({ apiKey, onCall })` calls `onCall` once per request, planned, split and resent ones alike, with a `JevCall`: when it was sent, the questions count, the whole-body size, the reply's status, the milliseconds it took, the usage and answers the reply held, and `splits`, the extra requests its rejection produced — 2 for a split, 1 for a resent item, 0 otherwise. A request that never got a reply, through a network failure or a cancellation, is reported with status 0 and the failure's message in `error`; the error still fails the pick.
@@ -901,6 +901,25 @@ JSON state, with lists a separate model call wrote: non-answers rated
 through to keep 98% of the answers from 14.3% to 3.8%. Not confirmed on
 held-out tasks.
 
+### Whole messages
+
+Off by default. A mode with `wholeMessages: true` keeps the pieces a
+transcript message is cut into for the search lanes, but asks its
+decision questions about each ranked piece's whole message, once: every
+piece of it the pick holds, joined in order, the blocks of one message
+apart by a blank line. A subagent's report goes with the request that
+produced it, as `asked` in its record. A message too large for one
+request (`limits.maxBatchChars`) goes as consecutive parts, each marked
+`part: 'k of n'` and, after the first, carrying the message's first
+piece as `opening`; the message takes its best part's rating. Every
+piece carries its message's rating, so a message is kept or left out
+whole, and `curate` lays it out once, whole. Only parts a transcript
+reader placed (`chat` and `place`) are joined. The record names the
+setting under `levers.sources`. On the 22 short lists of one person's
+coding-agent history (1,489 ranked pieces, 1,028 messages), the
+requests carried 2.47 times the text: the messages held 4.47 times the
+ranked pieces' text, and 32 reports carried their request.
+
 ### Decision tags
 
 `tags` asks extra yes/no questions of each reference that passes
@@ -1693,7 +1712,7 @@ Each source carries six settings, tuned for its kind of history:
 - **`labelBar`:** the label bar, from 0 to 1, for which kinds the task needs and which of this source's parts join the label lane; absent means 0.5.
 - **`names`:** open one exact-phrase lane per name the task names ([names in the task](#names-in-the-task)). The reason is recall.
 - **`ruleBar`:** keep a rule scored at or above this; absent means 0. Only sources whose parts are rules use it.
-- **`mode`:** how the source's parts are judged and read: `name`; `questions`, the decision questions asked of each reference part (absent: the built-in question for the part's kind); `bar`, keep a reference part scored at or above this (absent: the set's fitted bar, or 0.0146); and `read`, `rankedRead` down the fused order or a `conversationRead()` ([the chat read](#the-chat-read)), which takes `walksOn`, `opens` and `stops` rules in place of the measured ones. Absent: the built-in question, 0.0146 and the ranked read.
+- **`mode`:** how the source's parts are judged and read: `name`; `questions`, the decision questions asked of each reference part (absent: the built-in question for the part's kind); `bar`, keep a reference part scored at or above this (absent: the set's fitted bar, or 0.0146); and `read`, `rankedRead` down the fused order or a `conversationRead()` ([the chat read](#the-chat-read)), which takes `walksOn`, `opens` and `stops` rules in place of the measured ones. Absent: the built-in question, 0.0146 and the ranked read. Off by default: `wholeMessages`, judge each ranked piece's whole message ([whole messages](#whole-messages)).
 - **`decay`:** rank older notes lower by their age at the task date, as `{ halfLife: '365 days' }`; absent or `false` is off, as in every preset. Markdown sources only; see the [Markdown reader](https://github.com/jonny981/curate/blob/main/packages/markdown/README.md#decay).
 
 A source can also carry the look-back and path settings its reader ran

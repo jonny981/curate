@@ -175,6 +175,43 @@ const compareAt = (left: readonly number[], right: readonly number[]) => {
   return left.length - right.length;
 };
 
+/** The message a transcript part was cut from: its transcript, its line
+ *  and its role there, as the chat reader marks them (`place.at` is the
+ *  line, block and piece). A part with no transcript place is a message
+ *  of its own. */
+export function messageKey(part: MemoryCandidate): string {
+  const at = part.place?.at;
+  return part.chat === undefined || at === undefined || at.length < 3
+    ? JSON.stringify([part.sourceId, part.id])
+    : JSON.stringify([part.sourceId, part.place!.container, at[0], part.chat.role]);
+}
+
+/** The pieces of each message among `parts`, in their order in the
+ *  message. */
+export function messagePieces(parts: Iterable<MemoryCandidate>): Map<string, MemoryCandidate[]> {
+  const messages = new Map<string, MemoryCandidate[]>();
+  for (const part of parts) {
+    const key = messageKey(part);
+    const pieces = messages.get(key);
+    if (pieces === undefined) messages.set(key, [part]);
+    else pieces.push(part);
+  }
+  for (const pieces of messages.values()) pieces.sort((left, right) => compareAt(left.place?.at ?? [], right.place?.at ?? []));
+  return messages;
+}
+
+/** A message's text from its pieces, in order: the pieces of one block
+ *  joined as the reader cut them, which gives the block back exactly,
+ *  and the blocks of one message apart by a blank line. */
+export function messageText(pieces: readonly MemoryCandidate[]): string {
+  let text = '';
+  pieces.forEach((piece, index) => {
+    const block = piece.place?.at[1];
+    text += index > 0 && block !== pieces[index - 1]!.place?.at[1] ? `\n\n${piece.text}` : piece.text;
+  });
+  return text;
+}
+
 const dateMs = (part: MemoryCandidate) => {
   const ms = Date.parse(part.date?.value ?? '');
   return Number.isFinite(ms) ? ms : 0;
