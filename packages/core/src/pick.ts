@@ -834,8 +834,13 @@ export interface PickOptions {
    *  the stop set, at the full cost of the stop off.
    *  The rest of that wave is rated and kept as usual; a part below
    *  the stop is never asked by the read and records 'unassessed' with
-   *  reason 'stopWhenCold'. A higher floor or share stops sooner and
-   *  spends less; a lower one reads further and finds more. It applies
+   *  reason 'stopWhenCold'. A higher share stops sooner and spends
+   *  less; a lower one reads further and finds more. The floor is both
+   *  the level a batch's best score must reach to keep the read going
+   *  and the level some part must reach before the stop may fire, so a
+   *  higher floor can also make a read longer: it reads on until some
+   *  part scores at or above it, to the end of the order if none does.
+   *  It applies
    *  only when `everyRanked`
    *  is not given (passing both throws a TypeError). On three
    *  benchmarks' saved ratings the defaults rated 64% (LoCoMo), 55%

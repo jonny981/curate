@@ -76,8 +76,12 @@ What each part does:
   read has kept a part and rated one at or above the floor, so a question the
   history holds nothing for, and a history whose every part scores under the
   floor, read the whole order at the cost of the stop off; `{ floor, share }`
-  sets the two numbers for one call: a higher
-  one stops sooner and costs less, a lower one reads further and finds more.
+  sets the two numbers for one call. A higher share stops sooner and costs
+  less, a lower one reads further and finds more. The floor is both the level
+  a batch's best score must reach to keep the read going and the level some
+  part must reach before the stop may fire, so a higher floor can also make a
+  read longer: it reads on until some part scores at or above it, to the end
+  of the order if none does.
   On three benchmark runs' saved scores `{}` rated 64% (LoCoMo), 55%
   (DolphinBench) and 83% (BEAM) of the parts the runs rated and kept 98.5%,
   95.2% and 100% of their evidence. On the published runs it saved $0.0012 a

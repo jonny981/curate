@@ -232,6 +232,29 @@ describe('the rating stop', () => {
         + 'the read rated every one of 20 parts in the order.');
   });
 
+  it('can read further with a higher floor: one above every rating reads to the end and says why', async () => {
+    // p0 rates 0.2 and every other part 0.05. At a floor of 0.1, p0 is at
+    // or above it, so the stop fires at the cold batch 2 after 4 parts.
+    // At a floor of 0.3 no part reaches it, so the stop may never fire
+    // and the read rates all 20: five times the parts.
+    const at = async (floor: number) => {
+      const { decide, calls } = rated((id) => (id === 'p0' ? 0.2 : 0.05));
+      const picked = await pick(ranked(20), { task: 'recall the plan', decide, limits: twoABatch, stopWhenCold: { floor } });
+      return { picked, asked: asked(calls) };
+    };
+    const low = await at(0.1);
+    expect(low.asked).toHaveLength(4);
+    expect(low.picked.record.pick!.stopWhenCold).toMatchObject({
+      floor: 0.1, rated: 4, atFloor: 1, ended: 'cold', cold: { batch: 2, under: 'floor' } });
+    const high = await at(0.3);
+    expect(high.asked).toHaveLength(20);
+    expect(high.picked.record.pick!.stopWhenCold).toEqual({
+      floor: 0.3, share: 0.2, waves: 5, batches: 10, rated: 20, unread: 0, kept: 20, atFloor: 0, ended: 'order' });
+    expect(high.picked.record.effects.find((entry) => entry.setting === 'stopWhenCold')!.summary)
+      .toBe('stopWhenCold on notes: no part rated at or above the floor 0.3, so the stop could not fire and '
+        + 'the read rated every one of 20 parts in the order.');
+  });
+
   it('waits for a part at or above the call\'s own floor', async () => {
     // The first wave rates 0.3: at the default floor, under a floor of
     // 0.5, so it is cold and the stop may not fire yet. p4 rates 0.9 in
