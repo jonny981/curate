@@ -292,7 +292,8 @@ const unitVector = (vector: ArrayLike<number>) => {
 /** The units to open: for reports and for prompts, each ranked among
  *  its own kind by keyword and, with an embedder, by meaning (its
  *  descriptor's best cosine against the queries), each list cut at its
- *  own bend (`cutScoreCurve`); every unit above either cut opens. */
+ *  own bend (`cutScoreCurve`); every unit above either cut opens. A list
+ *  whose scores are all equal opens none. */
 export async function unitStarts(units: readonly AgentUnit[], queries: readonly string[],
   embed: EmbeddingFunction | undefined): Promise<AgentUnit[]> {
   if (units.length === 0 || queries.length === 0) return [];
@@ -313,6 +314,9 @@ export async function unitStarts(units: readonly AgentUnit[], queries: readonly 
   for (const kind of UNIT_KINDS) {
     const peers = ranked.filter((index) => units[index]!.kind === kind);
     for (const scores of meaning === undefined ? [keyword] : [keyword, meaning]) {
+      // Scores all equal say nothing about which unit holds the answer,
+      // where the bend would keep every one: that list opens none.
+      if (peers.every((index) => scores[index] === scores[peers[0]!])) continue;
       const order = [...peers].sort((left, right) => scores[right]! - scores[left]!);
       for (const index of order.slice(0, cutScoreCurve(order.map((at) => scores[at]!)))) open.add(index);
     }

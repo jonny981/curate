@@ -547,6 +547,14 @@ describe('the units of agent work as one more start', () => {
     expect(unitDescriptors(agentUnits(target))[0]!.split('\n')).toContain(`## Outage ${'and what followed it '.repeat(40)}`.trim().slice(0, 400));
   });
 
+  it('opens no unit from a ranking whose scores are all equal', async () => {
+    // Every text has the same vector, and no query word is in a descriptor.
+    const units = agentUnits(Array.from({ length: 3 }, (_, n) => [agentPart(`a${n}`, 1, 1, 'prompt', `Look at orchard row ${n}.`),
+      agentPart(`a${n}`, 9, 1, 'report', `Orchard row ${n} has fruit trees.`)]).flat());
+    const same = async (texts: readonly string[]) => texts.map(() => [1, 0]);
+    expect(await unitStarts(units, ['What happened?'], same)).toEqual([]);
+  });
+
   it('describes a unit by its first 600 characters, its headings, its rarest words and, for a report, its prompt', () => {
     // The text the measured script (climb13.py) makes from the same parts,
     // with the heading that starts the second part, which the script lost.

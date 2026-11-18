@@ -1194,8 +1194,10 @@ describe('a run through core decision calls', () => {
   });
 
   it('ranks the subagents\' reports and prompts against the source\'s own search lines', async () => {
-    // Every report and prompt speaks of the orchard and the task does not,
-    // so a unit opens only when the read ranks them against the real lines.
+    // Only agent a2 speaks of the orchard the search lines name, and the
+    // task names nothing. The keyword ranking opens a2's prompt and report;
+    // the meaning ranking scores every unit the same (a2's through the
+    // lines, the others through the task), so it opens none.
     const directory = await folder();
     const home = join(directory, 'home');
     const transcripts = join(directory, 'transcripts');
@@ -1208,9 +1210,10 @@ describe('a run through core decision calls', () => {
     for (const n of [1, 2, 3]) {
       const side = { isSidechain: true, agentId: `a${n}` };
       await writeFile(join(transcripts, 'main', 'subagents', `agent-a${n}.jsonl`), lines([
-        { type: 'user', sessionId: 'main', timestamp: `2026-01-01T12:0${n}:00Z`, ...side, message: { content: `Look at orchard row ${n}.` } },
+        { type: 'user', sessionId: 'main', timestamp: `2026-01-01T12:0${n}:00Z`, ...side,
+          message: { content: n === 2 ? 'Look at orchard row 2.' : `Look at pear row ${n}.` } },
         { type: 'assistant', sessionId: 'main', timestamp: `2026-01-01T12:0${n}:30Z`, ...side,
-          message: { content: [{ type: 'text', text: `Orchard row ${n} has fruit trees.` }] } },
+          message: { content: [{ type: 'text', text: n === 2 ? 'Orchard row 2 has fruit trees.' : `Pear row ${n} is fine.` }] } },
       ]));
     }
     const sourcesFile = join(directory, 'sources.json');
@@ -1226,7 +1229,7 @@ describe('a run through core decision calls', () => {
     const { folder: runFolder } = await run(['--sources', sourcesFile, 'What happened?'], call);
     const record = JSON.parse(await readFile(join(runFolder, 'record.json'), 'utf8'));
     expect(record.status).toBe('complete');
-    expect(record.pick?.pick?.chatRead?.units).toBeGreaterThan(0);
+    expect(record.pick?.pick?.chatRead?.units).toBe(2);
   });
 
   it('runs the pick with the rating stop the sources file names', async () => {
