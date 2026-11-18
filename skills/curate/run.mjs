@@ -760,7 +760,7 @@ export async function pickFullSources(sources, call, options, context = { files:
           ...(revision === undefined ? {} : { revision }) };
         const read = await source.read(readRequest, context);
         if (read.status === 'read' && read.revision !== undefined) revision ??= read.revision;
-        reads.set(key(readRequest), read);
+        reads.set(key(readRequest), { request: readRequest, read });
       }
     }
     // The fused order is read whenever everyRanked is unset, and it
@@ -783,7 +783,15 @@ export async function pickFullSources(sources, call, options, context = { files:
       const held = reads.get(key(readRequest));
       // A read the cache does not hold — a name lane, a task-period read —
       // goes to the wrapped source with the same request.
-      return held === undefined ? source.read({ wholeLanes: false, ...readRequest }, context) : held;
+      if (held === undefined) return source.read({ wholeLanes: false, ...readRequest }, context);
+      // The pick merges each lane's read once, and the cache lets it go
+      // then: the call does not keep every lane's parts and meaning scores
+      // once they are merged. A second ask for a lane reads it again with
+      // the request the cache read it with.
+      const { read } = held;
+      if (read === undefined) return source.read(held.request, context);
+      held.read = undefined;
+      return read;
     } };
   }));
   return pickFromSources(cached, request, options);
