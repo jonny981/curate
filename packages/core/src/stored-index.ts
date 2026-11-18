@@ -136,6 +136,18 @@ export async function openIndexFile(path: string, directory: string): Promise<In
   return database;
 }
 
+/** A connection to an index file a call has already opened and brought
+ *  up to date, made at once for a lookup that cannot wait: the file and
+ *  its WAL mode already exist. Close it when the lookup is done. */
+export function openIndexFileNow(path: string): IndexDatabase {
+  const sqlite = process.getBuiltinModule('node:sqlite') as unknown as {
+    DatabaseSync: new (path: string) => IndexDatabase;
+  };
+  const database = new sqlite.DatabaseSync(path);
+  database.exec('PRAGMA busy_timeout = 600000');
+  return database;
+}
+
 const updating = new Map<string, Promise<unknown>>();
 
 /** How many updates have changed the file, as `updateIndex` counts them.

@@ -1243,8 +1243,13 @@ kept, and neither `candidates` nor a read's candidates in `reads` lists
 them. `pick.n` still counts every part. A part only a meaning lane kept
 then follows the keyword lanes' parts in those lists, in the order the
 meaning lanes reached it. A source whose mode has a read of its own,
-such as `conversationRead()`, keeps every part, since that read walks
-each part's whole transcript. A lane's candidate limit, not
+such as `conversationRead()`, is counted the same way when its reader
+can find a part by key, as the chat reader can: that read asks for the
+parts of a transcript, the person's parts newest first and the units of
+agent work, and only the parts it reaches are listed. A reached part no
+lane kept is listed with `poolOnly` and no `signals`: the record does
+not hold its task keyword score or the skill's rank number. `unheld`
+counts the rest. A lane's candidate limit, not
 the stop, leaves its cut parts unassessed with reason `'limits'`, and
 `memory()` still rejects that collection; it accepts `'stopWhenCold'`
 and `'feed'`.

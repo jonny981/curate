@@ -13,7 +13,7 @@ import { judgmentFacts, judgmentPopulation, modelScore, type JudgmentPopulation 
 import {
   ANSWER_TYPES, classifyTask, ROUTE_QUESTIONS, routeOptions, type AnswerType, type RouteKey, type RouteOption,
 } from './task.js';
-import { conversationRead, rankedRead, type Mode, type ModeRead, type ModeReadResult } from './mode.js';
+import { conversationRead, rankedRead, type Mode, type ModeParts, type ModeReach, type ModeRead, type ModeReadResult } from './mode.js';
 import type { EmbeddingFunction } from './meaning.js';
 import type { LeverStates } from './levers.js';
 import type { StoredIndexReport } from './stored-index.js';
@@ -517,9 +517,10 @@ export interface PickRecord {
   readonly levers: LeverStates;
   readonly candidates: readonly PickRecordEntry[];
   /** Present when pickFromSources only sized a history for the fused
-   *  order: by source ID, how many of its parts no lane kept.
-   *  They are counted here, not recorded one by one in `candidates`, and
-   *  none of them could reach the decide step. */
+   *  order: by source ID, how many of its parts no lane kept and no
+   *  read of a mode's own reached. They are counted here, not recorded
+   *  one by one in `candidates`, and none of them reached the decide
+   *  step. */
   readonly unheld?: Readonly<Record<string, number>>;
   readonly rulesCoverage: 'complete' | 'incomplete';
   /** Present when a decide call rejected its batch and ended the pick:
@@ -959,6 +960,9 @@ export interface PickOptions {
    *  given. The fused order places meaning against the whole history,
    *  and the record counts the parts not given in `unheld`. */
   readonly historySizeBySource?: Readonly<Record<string, number>>;
+  /** Internal to pickFromSources: for a sized source whose mode reads
+   *  on its own, the parts no lane kept, which that read finds by key. */
+  readonly partsBySource?: Readonly<Record<string, ModeParts>>;
   readonly limits?: PickLimits;
   readonly thresholds?: PickThresholds;
   /** The task's date, as the read request's `taskDate` takes it: the
@@ -1876,6 +1880,54 @@ export async function pick(
   const unheld: Record<string, number> = Object.fromEntries(Object.entries(options.historySizeBySource ?? {})
     .map(([id, size]) => [id, Math.max(0, size - (givenBySource.get(id) ?? 0))]));
   const historySize = references.length + Object.values(unheld).reduce((total, count) => total + count, 0);
+
+  // Parts a source hands by key (`partsBySource`) for a mode read of its
+  // own. Each part is one candidate per call: the lane's candidate when a
+  // lane holds it, else the first made, every time it is reached.
+  const given = new Set(candidates);
+  const known = new Map<string, MemoryCandidate>();
+  for (const candidate of candidates) if (!known.has(questionKey(candidate))) known.set(questionKey(candidate), candidate);
+  // Where a part sits in the order `rankAndInterleave` deals the parts
+  // in: its place in its own source's order, then its source's place.
+  // A part no lane held comes after its source's lane parts, in the
+  // order the source's whole read lists it.
+  const sourceAt = new Map(Object.keys(options.readsBySource ?? {}).map((id, index) => [id, index] as const));
+  const inGroup = new Map<MemoryCandidate, number>();
+  const groupSize = new Map<string, number>();
+  for (const candidate of references) {
+    const at = groupSize.get(candidate.sourceId) ?? 0;
+    inGroup.set(candidate, at);
+    groupSize.set(candidate.sourceId, at + 1);
+  }
+  const dealtBySource = new Map<string, (part: MemoryCandidate) => number>();
+  const queued = (part: MemoryCandidate): readonly [number, number] => {
+    const source = sourceAt.get(part.sourceId) ?? Number.MAX_SAFE_INTEGER;
+    const at = inGroup.get(part);
+    if (at !== undefined) return [at, source];
+    const parts = options.partsBySource?.[part.sourceId];
+    if (parts === undefined) return [Number.MAX_SAFE_INTEGER, source];
+    let dealt = dealtBySource.get(part.sourceId);
+    if (dealt === undefined) {
+      dealt = parts.dealt(new Set(references.filter((candidate) => candidate.sourceId === part.sourceId)
+        .map((candidate) => candidate.id)));
+      dealtBySource.set(part.sourceId, dealt);
+    }
+    return [(groupSize.get(part.sourceId) ?? 0) + dealt(part), source];
+  };
+  const canonical = (part: MemoryCandidate): MemoryCandidate => {
+    const key = questionKey(part);
+    const held = known.get(key);
+    if (held !== undefined) return held;
+    known.set(key, part);
+    priority.set(part, queued(part)[0]);
+    return part;
+  };
+  const byQueue = (left: MemoryCandidate, right: MemoryCandidate) => {
+    const [leftAt, leftSource] = queued(left);
+    const [rightAt, rightSource] = queued(right);
+    return leftAt - rightAt || leftSource - rightSource;
+  };
+  const once = (list: Iterable<MemoryCandidate>) => [...new Set(list)];
 
   const selected: MemoryCandidate[] = [];
   const statuses = new Map<MemoryCandidate, PickEntryStatus>();
@@ -3093,6 +3145,65 @@ export async function pick(
   // and can reach any of its parts the pick holds; its own stop decides
   // how far it reads. The parts it rated join the feed, and a part of
   // the order it never reached records why.
+  // What a conversation read reaches beyond its parts, from each of its
+  // sources: by key from a source that hands its parts so, and from the
+  // pick's own parts of any other source.
+  const reachOf = (parts: readonly MemoryCandidate[], sources: readonly string[]): ModeReach => {
+    const memory = (id: string): Pick<ModeParts, 'transcript' | 'person' | 'units'> => {
+      const own = parts.filter((candidate) => candidate.sourceId === id);
+      const container = (part: MemoryCandidate) => part.place?.container ?? part.id;
+      return {
+        transcript: (part) => own.filter((candidate) => container(candidate) === container(part)),
+        person: () => own.filter((candidate) => candidate.author === 'person')
+          .sort((left, right) => dateOf(right) - dateOf(left) || byQueue(left, right)),
+        units: () => own,
+      };
+    };
+    const dateOf = (part: MemoryCandidate) => {
+      const ms = Date.parse(part.date?.value ?? '');
+      return Number.isFinite(ms) ? ms : 0;
+    };
+    const from = new Map(sources.map((id) => [id, options.partsBySource?.[id] ?? memory(id)] as const));
+    // A source's person parts newest first, equal dates in the dealt order.
+    const newest = function* (id: string): Generator<MemoryCandidate> {
+      let run: MemoryCandidate[] = [];
+      for (const part of from.get(id)!.person()) {
+        const held = canonical(part);
+        if (run.length > 0 && dateOf(run[0]!) !== dateOf(held)) {
+          yield* run.sort(byQueue);
+          run = [];
+        }
+        run.push(held);
+      }
+      yield* run.sort(byQueue);
+    };
+    return {
+      // In the dealt order, which a transcript's equal places keep.
+      transcript: (part) => once((from.get(part.sourceId)?.transcript(part) ?? []).map(canonical)).sort(byQueue),
+      *person() {
+        const seen = new Set<MemoryCandidate>();
+        const streams = sources.map((id) => newest(id));
+        const heads = streams.map((stream) => stream.next());
+        for (;;) {
+          let best = -1;
+          for (const [at, head] of heads.entries()) {
+            if (head.done) continue;
+            if (best < 0) { best = at; continue; }
+            const top = heads[best]!.value as MemoryCandidate;
+            if (dateOf(head.value) > dateOf(top) || (dateOf(head.value) === dateOf(top) && byQueue(head.value, top) < 0)) best = at;
+          }
+          if (best < 0) return;
+          const part = heads[best]!.value as MemoryCandidate;
+          heads[best] = streams[best]!.next();
+          if (seen.has(part)) continue;
+          seen.add(part);
+          yield part;
+        }
+      },
+      units: () => once(sources.flatMap((id) => from.get(id)!.units().map(canonical))).sort(byQueue),
+      queued,
+    };
+  };
   const ownReads = [...new Set(chatOrder.map(readOf))];
   let ownRuns: Promise<ModeReadResult>[] = [];
   if (ownReads.length > 0) {
@@ -3120,9 +3231,18 @@ export async function pick(
       const share = new Map(parts.map((candidate) => [candidate, (candidate.searchRanks ?? [])
         .reduce<number>((best, rank, index) => rank === null || !keyword(candidate, index) ? best
           : Math.max(best, (laneLength.get(index)! - rank) / laneLength.get(index)!), 0)] as const));
-      const queries = [...new Set(parts.flatMap((candidate) => options.queriesBySource?.[candidate.sourceId] ?? []))];
+      // The read's sources: those it holds parts of, and a sized source of
+      // its mode that hands its parts by key, in the order the parts are dealt.
+      const byKey = limitAdmits !== undefined ? []
+        : Object.keys(options.partsBySource ?? {}).filter((id) => modeFor(id)?.read === read);
+      const sources = [...new Set([...parts.map((candidate) => candidate.sourceId), ...byKey])]
+        .sort((left, right) => (sourceAt.get(left) ?? Number.MAX_SAFE_INTEGER) - (sourceAt.get(right) ?? Number.MAX_SAFE_INTEGER));
+      const queries = [...new Set((byKey.length === 0 ? [...new Set(parts.map((candidate) => candidate.sourceId))] : sources)
+        .flatMap((id) => options.queriesBySource?.[id] ?? []))];
+      const reach = byKey.length === 0 ? undefined : reachOf(parts, sources);
       return read({
         ...shared, parts, order: chatOrder.filter((candidate) => readOf(candidate) === read),
+        ...(reach === undefined ? {} : { reach }),
         ...(queries.length === 0 ? {} : { queries }), ...(options.embed === undefined ? {} : { embed: options.embed }),
         byKeyword: [...share.keys()].filter((candidate) => share.get(candidate)! > 0)
           .sort((left, right) => share.get(right)! - share.get(left)!),
@@ -3164,6 +3284,47 @@ export async function pick(
         unread: result.unread.length, ended: result.ended === 'stopped' ? stop! : result.ended as 'fall' | 'order' };
     }
   }
+
+  // The parts the pick lists: those it was given and those a read
+  // reached by key, in the order the source's whole read would have
+  // listed them. A source that hands parts by key lists the parts a
+  // keyword, phrase, kind or name lane holds first, as given, then the
+  // rest by their place in its whole read. A part of it no read reached
+  // is counted in `unheld`, not listed.
+  const reachedBySource = new Map<string, MemoryCandidate[]>();
+  for (const result of results) {
+    for (const part of result.read) {
+      if (given.has(part)) continue;
+      const list = reachedBySource.get(part.sourceId);
+      if (list === undefined) reachedBySource.set(part.sourceId, [part]);
+      else if (!list.includes(part)) list.push(part);
+    }
+  }
+  const byKey = options.partsBySource ?? {};
+  const listed = Object.keys(byKey).length === 0 ? candidates : (() => {
+    const blocks = new Map<string, MemoryCandidate[]>();
+    for (const candidate of candidates) {
+      const block = blocks.get(candidate.sourceId);
+      if (block === undefined) blocks.set(candidate.sourceId, [candidate]);
+      else block.push(candidate);
+    }
+    for (const id of Object.keys(byKey)) if (!blocks.has(id)) blocks.set(id, []);
+    const laneHeld = (candidate: MemoryCandidate) => candidate.searchRanks?.some((rank, index) =>
+      rank !== null && options.readsBySource?.[candidate.sourceId]?.lanes[index] !== 'meaning') === true;
+    return [...blocks].sort(([left], [right]) => (sourceAt.get(left) ?? Number.MAX_SAFE_INTEGER)
+      - (sourceAt.get(right) ?? Number.MAX_SAFE_INTEGER)).flatMap(([id, block]) => {
+      const parts = byKey[id];
+      if (parts === undefined) return block;
+      return [...block.filter(laneHeld), ...[...block.filter((candidate) => !laneHeld(candidate)),
+        ...reachedBySource.get(id) ?? []].sort((left, right) => parts.place(left) - parts.place(right))];
+    });
+  })();
+  // A source that hands parts by key counts the parts no read reached.
+  const counted: Record<string, number> = Object.fromEntries(Object.entries(unheld).map(([id, count]) =>
+    [id, byKey[id] === undefined ? count : count - (reachedBySource.get(id)?.length ?? 0)]));
+  // The settings' effects read the sized histories ranked reads place.
+  const rankedUnheld: Record<string, number> = Object.fromEntries(Object.entries(unheld)
+    .filter(([id]) => byKey[id] === undefined));
 
   // The reference bar may rise with the decided set's size, so the
   // selection pass runs once the whole feed has answered. Without that
@@ -3244,7 +3405,7 @@ export async function pick(
   const chosen = new Set(selected);
   // Parts the link pass looked at, for the record's `effects`.
   const linkActed = new Set<MemoryCandidate>();
-  for (const candidate of candidates.filter(admitted)) {
+  for (const candidate of listed.filter(admitted)) {
     const status = statuses.get(candidate)!;
     if (status.status !== 'rejected'
       || status.probability < thresholds.linkedPathBar
@@ -3252,7 +3413,7 @@ export async function pick(
       || candidate.path === undefined
       || candidate.repository === undefined) continue;
     linkActed.add(candidate);
-    const carrier = candidates.find((other) =>
+    const carrier = listed.find((other) =>
       other !== candidate
       && other.role === 'reference'
       && chosen.has(other)
@@ -3299,7 +3460,7 @@ export async function pick(
     return counts;
   };
   const effects = settingEffects({
-    candidates: candidates.filter(admitted),
+    candidates: listed.filter(admitted),
     queue, feed, statuses, laneHeld, labelLane, labelNeeds, labelBar: labelBarFor, labels, labelKindsBySource,
     scored: scoredParts, belowBar, linkActed, rankedBySource, cutBySource,
     reads: options.readsBySource ?? {},
@@ -3323,20 +3484,20 @@ export async function pick(
       ratedBySource: bySource(rankedRated), chatSources: new Set(chatOrder.map((candidate) => candidate.sourceId)) },
     typedSources: new Map(Object.entries(questionsBySource ?? {}).flatMap(([id, set]) =>
       (set.typed?.length ?? 0) > 0 ? [[id, set.typed!.some((q) => neededTypes.has(q.answerType))] as const] : [])),
-    typedAsked: new Set(candidates.filter((candidate) =>
+    typedAsked: new Set(listed.filter((candidate) =>
       typedFor(candidate).some((q) => answered.get(candidate)?.has(q.key) === true))),
     untyped,
     writtenSources: new Set(Object.entries(questionsBySource ?? {})
       .flatMap(([id, set]) => set.written === undefined ? [] : [id])),
-    writtenAsked: new Set(candidates.filter((candidate) =>
+    writtenAsked: new Set(listed.filter((candidate) =>
       writtenFor(candidate).some((q) => answered.get(candidate)?.has(q.key) === true))),
     unwritten,
     keepReached: new Set(keptBy.keys()),
     namedSources: new Set(Object.entries(questionsBySource ?? {})
       .flatMap(([id, set]) => set.named === undefined ? [] : [id])),
     named: (names?.found.length ?? 0) > 0,
-    unheld,
-    namedAsked: new Set(candidates.filter((candidate) =>
+    unheld: rankedUnheld,
+    namedAsked: new Set(listed.filter((candidate) =>
       namedFor(candidate).some((q) => answered.get(candidate)?.has(q.key) === true))),
     unnamed,
   });
@@ -3393,11 +3554,22 @@ export async function pick(
     const w = rank <= 3 ? 0.75 : rank <= 10 ? 0.60 : 0.40;
     return w / rank + (1 - w) * probability;
   };
+  // A part a read reached by key sits in the queue where the pick deals
+  // it, as it did when the source handed every part.
+  const queuedBefore = (a: MemoryCandidate, b: MemoryCandidate) => {
+    const left = feedOrder.get(a);
+    const right = feedOrder.get(b);
+    if (given.has(a) && given.has(b)) return (left ?? feedOrder.size) - (right ?? feedOrder.size);
+    if (!given.has(a) && !given.has(b)) return byQueue(a, b);
+    const [reached, other, sign] = given.has(a) ? [b, a, -1] : [a, b, 1];
+    const at = feedOrder.get(other);
+    return sign * (at === undefined || other.role === 'reference' && byQueue(reached, other) < 0 ? -1 : 1);
+  };
   selected.sort((a, b) => Number(b.role === 'rule') - Number(a.role === 'rule')
     || Number(top.has(b)) - Number(top.has(a)) || weight(b) - weight(a)
-    || (feedOrder.get(a) ?? feedOrder.size) - (feedOrder.get(b) ?? feedOrder.size));
+    || queuedBefore(a, b));
 
-  const entries: PickRecordEntry[] = candidates
+  const entries: PickRecordEntry[] = listed
     .filter(admitted).map((candidate) => {
     const cascade = cascadeFor(candidate);
     const status = statuses.get(candidate)!;
@@ -3452,7 +3624,7 @@ export async function pick(
       ...(appliedReference === undefined ? {} : { appliedReference }) },
     ...(options.ranking === undefined ? {} : { ranking: options.ranking }),
     candidates: entries,
-    ...(options.historySizeBySource === undefined ? {} : { unheld }),
+    ...(options.historySizeBySource === undefined ? {} : { unheld: counted }),
     rulesCoverage,
     ...(decideFailure === undefined ? {} : {
       decideError: { candidates: decideFailure.ids, message: decideFailure.message },
@@ -3484,7 +3656,7 @@ export async function pick(
     ...(names === undefined ? {} : { names }),
     ...(pickRecord === undefined ? {} : { pick: pickRecord }),
     levers: { ...levers, sources: Object.fromEntries([...new Set([
-      ...Object.keys(labelKindsBySource), ...candidates.map((candidate) => candidate.sourceId),
+      ...Object.keys(labelKindsBySource), ...listed.map((candidate) => candidate.sourceId),
       ...Object.keys(modes), ...Object.keys(options.ruleBarBySource ?? {}),
     ])].map((id) => [id, {
       ...(options.sourceKinds?.[id] === undefined ? {} : { kind: options.sourceKinds[id] }),

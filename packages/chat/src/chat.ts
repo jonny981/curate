@@ -6,7 +6,8 @@ import { basename, join, relative, resolve, sep } from 'node:path';
 import {
   canonicalPath, phraseCount, phraseQuery, phraseWords, PHRASE_INDEX, laneBend, normalized, similarity, sinceCutoff, taskMoment, timeZoneOf,
   zonedIso, bagEntries, checkIndexOption, eachPartVector, indexDirectory, indexFilePath, indexVersion, openIndexFile,
-  removeEarlierFormats, textKey, updateIndex, type IndexDatabase, type StoredIndexOptions, type StoredIndexReport,
+  openIndexFileNow, removeEarlierFormats, textKey, updateIndex, type IndexDatabase, type StoredIndexOptions,
+  type StoredIndexReport,
 } from '@curatejs/core/internal';
 import {
   startChatRank, storedChatWords, CHAT_KEYWORD_SETTINGS, type ChatKeywordSettings, type ChatRankSession,
@@ -17,7 +18,7 @@ import { porterStem } from './porter.js';
 import { DEFAULT_MAX_QUESTION_TEXT, type MemoryCandidate } from '@curatejs/core';
 import {
   historySource, SourceReadError, type CandidateReadContext, type CandidateReadRequest, type CandidateSource,
-  type Mode,
+  type Mode, type ModeParts, type PoolPart,
 } from '@curatejs/core';
 import { chatSettings } from './defaults.js';
 import { agentTranscripts } from './mode.js';
@@ -1779,6 +1780,225 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           };
         }
 
+        /** The walk's parts a conversation read finds by key (`ModeParts`):
+         *  each made into a candidate once per call, from the walk's
+         *  columns and its text read by key when first reached. A part
+         *  carries no signals: it was never read by a lane. The pool order
+         *  is the order this read would list the parts in: the task's
+         *  keyword score, then the id. */
+        const walkParts = (): ModeParts => {
+          const c = corpus!;
+          const path = stored!.path;
+          const made = new Map<number, MemoryCandidate>();
+          const madeAt = new WeakMap<MemoryCandidate, number>();
+          // The parts made, a few at a time, on a connection of their own.
+          const make = (indexes: readonly number[]): (MemoryCandidate | undefined)[] => {
+            const wanted = indexes.filter((index) => !made.has(index));
+            if (wanted.length > 0) {
+              const previous = database;
+              database = openIndexFileNow(path);
+              try {
+                for (const [index, text] of textsOf(wanted)) {
+                  const candidate: MemoryCandidate = { ...held(index, text, { signals: {} }), searchRanks: undefined, poolOnly: true };
+                  made.set(index, candidate);
+                  madeAt.set(candidate, index);
+                }
+              } finally {
+                database.close();
+                database = previous;
+              }
+            }
+            return indexes.map((index) => made.get(index));
+          };
+          // The task's keyword score of every part, as the pool read scores it.
+          let scored: Float64Array | undefined;
+          const scores = () => {
+            if (scored !== undefined) return scored;
+            const previous = database;
+            database = openIndexFileNow(path);
+            try {
+              const rank = startChatRank([request.task, ...(request.paths ?? [])].join(' '), options.keyword);
+              const { stems, shorts } = rank.postingTerms();
+              const postingOf = database.prepare('SELECT transcript, ordinal, count FROM postings WHERE term = ?');
+              const fold = (term: string, word: string, short: boolean) => {
+                let posting = c.postings.get(term);
+                if (posting === undefined) {
+                  posting = { index: [], count: [] };
+                  for (const row of postingOf.all(term) as { transcript: number; ordinal: number; count: number }[]) {
+                    const index = indexAt(row.transcript, row.ordinal);
+                    if (index === undefined) continue;
+                    posting.index.push(index);
+                    posting.count.push(row.count);
+                  }
+                  c.postings.set(term, posting);
+                }
+                for (let at = 0; at < posting.index.length; at += 1) rank.posting(posting.index[at]!, word, posting.count[at]!, short);
+              };
+              for (const term of stems) fold(term, term, false);
+              for (const word of shorts) fold(`!${word}`, word, true);
+              rank.observeTitles(titleTerms(stems, shorts));
+              rank.scoreIndexed({ heading: '', name: '', front: '' });
+              scored = Float64Array.from(rank.finish(c.ids, c.places).scores);
+            } finally {
+              database.close();
+              database = previous;
+            }
+            return scored;
+          };
+          // A part's transcript as its candidate names it (its id less the
+          // line, block and piece). Two transcripts can share the name when
+          // a path part was masked as a secret; the read treats them as one.
+          let containers: Map<string, number[]> | undefined;
+          const spansOf = (container: string) => {
+            if (containers === undefined) {
+              containers = new Map();
+              for (const [start, end] of c.spans.values()) {
+                const name = c.ids[start]!.split(':').slice(0, -3).join(':');
+                const list = containers.get(name);
+                if (list === undefined) containers.set(name, [start, end]);
+                else list.push(start, end);
+              }
+            }
+            return containers.get(container) ?? [];
+          };
+          // The part a candidate is, by its transcript and place in it.
+          const indexOf = (part: MemoryCandidate): number | undefined => {
+            const own = madeAt.get(part);
+            if (own !== undefined) return own;
+            const spans = spansOf(part.place?.container ?? '');
+            const at = part.place?.at;
+            if (at === undefined) return undefined;
+            for (let span = 0; span < spans.length; span += 2) {
+              for (let index = spans[span]!; index < spans[span + 1]!; index += 1) {
+                if (c.lines[index] === at[0] && c.blocks[index] === at[1] && c.pieces[index] === at[2]) return index;
+              }
+            }
+            return undefined;
+          };
+          const withOrder = (sort: () => Uint32Array): ModeParts => {
+            // The pool order, made once: one part number a place.
+            let sorted: Uint32Array | undefined;
+            const order = () => sorted ??= sort();
+            // Each part's place in the pool order, and of parts that share
+            // an id (`places` equal) only the first there is a part.
+            let placed: Uint32Array | undefined;
+            const placeOf = () => {
+              if (placed !== undefined) return placed;
+              placed = new Uint32Array(c.count);
+              order().forEach((index, place) => { placed![index] = place; });
+              return placed;
+            };
+            let firsts: Map<number, number> | undefined;
+            const first = (index: number) => {
+              if (firsts === undefined) {
+                firsts = new Map();
+                const places = placeOf();
+                for (let at = 1; at < c.byPlace.length; at += 1) {
+                  const index = c.byPlace[at]!;
+                  const before = c.byPlace[at - 1]!;
+                  if (c.places[index] !== c.places[before]) continue;
+                  const group = c.places[index]!;
+                  const held = firsts.get(group) ?? before;
+                  firsts.set(group, places[index]! < places[held]! ? index : held);
+                }
+              }
+              const winner = firsts.get(c.places[index]!);
+              return winner === undefined || winner === index;
+            };
+            const listed = (indexes: readonly number[]) =>
+              make(indexes.filter(first)).filter((candidate): candidate is MemoryCandidate => candidate !== undefined);
+            // The place of the first part of an id.
+            const groupPlace = (index: number) => {
+              const winner = (firsts ?? (first(index), firsts))!.get(c.places[index]!);
+              return placeOf()[winner ?? index]!;
+            };
+            return {
+              transcript(part) {
+                const spans = spansOf(part.place?.container ?? '');
+                const indexes: number[] = [];
+                for (let span = 0; span < spans.length; span += 2) {
+                  for (let index = spans[span]!; index < spans[span + 1]!; index += 1) indexes.push(index);
+                }
+                return listed(indexes);
+              },
+              *person() {
+                const places = placeOf();
+                const person = c.strings.indexOf('person');
+                const indexes: number[] = [];
+                for (let index = 0; index < c.count; index += 1) if (c.authors[index] === person) indexes.push(index);
+                indexes.sort((left, right) => c.dates[right]! - c.dates[left]! || places[left]! - places[right]!);
+                for (let at = 0; at < indexes.length; at += 64) yield* listed(indexes.slice(at, at + 64));
+              },
+              units() {
+                const places = placeOf();
+                const agent = c.strings.indexOf('agent');
+                const user = c.strings.indexOf('user');
+                const indexes: number[] = [];
+                for (let index = 0; index < c.count; index += 1) {
+                  if (c.marks[index]! >= 0 || (c.authors[index] === agent && c.roles[index] === user)) indexes.push(index);
+                }
+                return listed(indexes.sort((left, right) => places[left]! - places[right]!));
+              },
+              place(part) {
+                const at = indexOf(part);
+                return at === undefined ? Number.POSITIVE_INFINITY : groupPlace(at);
+              },
+              dealt(laneIds) {
+                // The pool order less the parts whose id a lane holds and
+                // all but the first part of each id.
+                const position = new Int32Array(c.count).fill(-1);
+                const seen = new Set<number>();
+                let next = 0;
+                for (const index of order()) {
+                  const group = c.places[index]!;
+                  if (seen.has(group)) continue;
+                  seen.add(group);
+                  if (laneIds.has(c.ids[index]!)) continue;
+                  position[index] = next;
+                  next += 1;
+                }
+                return (part) => {
+                  const at = indexOf(part);
+                  if (at === undefined) return Number.POSITIVE_INFINITY;
+                  const own = position[at]!;
+                  return own >= 0 ? own : position[(firsts ?? (first(at), firsts))!.get(c.places[at]!) ?? at]!;
+                };
+              },
+              ordered(compare) {
+                return withOrder(() => {
+                  const latest = new Map<number, number>();
+                  for (let index = 0; index < c.count; index += 1) {
+                    const session = c.sessions[index]!;
+                    latest.set(session, Math.max(latest.get(session) ?? 0, c.dates[index]!));
+                  }
+                  const scoreOf = scores();
+                  const left = { id: '', score: 0, date: 0, sessionLatest: 0 };
+                  const right = { ...left };
+                  const fill = (part: { -readonly [key in keyof PoolPart]: PoolPart[key] }, index: number) => {
+                    part.id = c.ids[index]!;
+                    part.score = scoreOf[index]!;
+                    part.date = c.dates[index]!;
+                    part.sessionLatest = latest.get(c.sessions[index]!)!;
+                    return part;
+                  };
+                  // Ties `compare` leaves keep the reader's own order: score,
+                  // then place, then part number.
+                  return Uint32Array.from({ length: c.count }, (_, index) => index).sort((one, other) =>
+                    compare(fill(left, one), fill(right, other))
+                    || scoreOf[other]! - scoreOf[one]! || c.places[one]! - c.places[other]! || one - other);
+                });
+              },
+            };
+          };
+          // The reader's own order: scored parts by score, the rest and ties
+          // in id order, as the keyword read lists the parts.
+          return withOrder(() => {
+            const scoreOf = scores();
+            return Uint32Array.from({ length: c.count }, (_, index) => index)
+              .sort((left, right) => scoreOf[right]! - scoreOf[left]! || c.places[left]! - c.places[right]! || left - right);
+          });
+        };
+
         // Pass one enumerates the corpus, pass two scores it, and a
         // third pass reads back only the files that kept a part.
         const rank = startChatRank([request.task, ...(request.paths ?? [])].join(' '), options.keyword);
@@ -1798,7 +2018,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           skips.n += corpus.skips;
           if (skips.n) reasons.push(`skipped ${skips.n} symbolic links or undated messages`);
           return {
-            status: 'read', candidates: [], poolIds: corpus.ids, ...indexed,
+            status: 'read', candidates: [], poolIds: corpus.ids, parts: walkParts(), ...indexed, ...changed(),
             complete: reasons.length === 0,
             ...(reasons.length ? { partial: reasons.join('; ') } : {}),
           };

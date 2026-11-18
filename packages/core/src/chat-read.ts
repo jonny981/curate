@@ -1,5 +1,6 @@
 import { cutScoreCurve } from './lanes.js';
 import type { EmbeddingFunction } from './meaning.js';
+import type { ModeReach } from './mode.js';
 import type { MemoryCandidate } from './pick.js';
 
 // The numbers below were measured on one history: about 116,000 parts of
@@ -98,6 +99,10 @@ export interface ChatReadInput {
   /** The read's decisions; each one absent is today's measured rule
    *  (`walksOn`, `opens`, `stops`). */
   readonly rules?: ConversationRules;
+  /** The parts beyond `parts` the read may reach, found by key: with
+   *  it, `parts` holds the parts the lanes kept and the rest of each
+   *  transcript, the person's parts and the units come from here. */
+  readonly reach?: ModeReach;
 }
 
 /** The decisions a conversation read makes from ratings, each given the
@@ -409,10 +414,12 @@ export async function chatRead(input: ChatReadInput): Promise<ChatReadResult> {
   const { score, stopped } = input;
   if (stopped()) return { read: [], requests: 0, segments: 0, units: 0, ended: 'stopped' };
   const members = new Set(input.parts);
-  // Each transcript's parts. A part with no place is a container of its own.
+  const { reach } = input;
+  // Each transcript's parts. A part with no place is a container of its
+  // own. With `reach`, a transcript's parts are found when first reached.
   const transcriptOf = (part: MemoryCandidate) => JSON.stringify([part.sourceId, part.place?.container ?? part.id]);
   const transcripts = new Map<string, MemoryCandidate[]>();
-  for (const part of input.parts) {
+  for (const part of reach === undefined ? input.parts : []) {
     const transcript = transcriptOf(part);
     const list = transcripts.get(transcript);
     if (list === undefined) transcripts.set(transcript, [part]);
@@ -427,7 +434,7 @@ export async function chatRead(input: ChatReadInput): Promise<ChatReadResult> {
     const transcript = transcriptOf(part);
     let found = sessions.get(transcript);
     if (found === undefined) {
-      const session = [...transcripts.get(transcript)!]
+      const session = [...reach === undefined ? transcripts.get(transcript)! : reach.transcript(part)]
         .sort((left, right) => compareAt(left.place?.at ?? [], right.place?.at ?? []));
       const segments = new Map<MemoryCandidate, readonly MemoryCandidate[]>();
       const cuts = session.length < TILE_MIN ? []
@@ -447,7 +454,8 @@ export async function chatRead(input: ChatReadInput): Promise<ChatReadResult> {
     return { session, at: at.get(part)! };
   };
   const segmentOf = (part: MemoryCandidate) => sessionOf(part).segments.get(part)!;
-  // An order's parts, then every other part newest first.
+  // An order's parts, then every other part newest first; equal dates
+  // keep the pick's order of the read's parts.
   const listed = (order: readonly MemoryCandidate[]) => {
     const ranked = order.filter((part) => members.has(part));
     const held = new Set(ranked);
@@ -455,7 +463,20 @@ export async function chatRead(input: ChatReadInput): Promise<ChatReadResult> {
       .sort((left, right) => dateMs(right) - dateMs(left))];
   };
   const ranked = input.order.filter((part) => members.has(part));
-  const place = new Map(listed(input.order).map((part, index) => [part, index]));
+  // Each part's place in the order's listing: a map of every part, or,
+  // with `reach`, the same comparison made from the order's index, the
+  // date and the pick's order of the read's parts.
+  const place = reach === undefined ? new Map(listed(input.order).map((part, index) => [part, index])) : undefined;
+  const rankedAt = new Map(ranked.map((part, index) => [part, index]));
+  const byPlace = (left: MemoryCandidate, right: MemoryCandidate): number => {
+    if (place !== undefined) return place.get(left)! - place.get(right)!;
+    const a = rankedAt.get(left);
+    const b = rankedAt.get(right);
+    if (a !== undefined || b !== undefined) return (a ?? Number.POSITIVE_INFINITY) - (b ?? Number.POSITIVE_INFINITY);
+    const [leftAt, leftSource] = reach!.queued(left);
+    const [rightAt, rightSource] = reach!.queued(right);
+    return dateMs(right) - dateMs(left) || leftAt - rightAt || leftSource - rightSource;
+  };
 
   const seen = new Set<MemoryCandidate>();
   const read: MemoryCandidate[] = [];
@@ -513,11 +534,29 @@ export async function chatRead(input: ChatReadInput): Promise<ChatReadResult> {
   };
 
   let ended: ChatReadResult['ended'] = 'order';
-  const people = listed(input.byKeyword).filter(person);
+  // The person's parts: those the keyword lanes ranked, then the rest
+  // newest first, taken a request at a time.
+  const people = function* (): Generator<MemoryCandidate> {
+    if (reach === undefined) {
+      yield* listed(input.byKeyword).filter(person);
+      return;
+    }
+    const keyword = input.byKeyword.filter((part) => members.has(part));
+    yield* keyword.filter(person);
+    const held = new Set(keyword);
+    for (const part of reach.person()) if (!held.has(part)) yield part;
+  };
   const others = ranked.filter((part) => !person(part));
-  for (const [parts, rings] of [[people, true], [others, false]] as const) {
-    for (let at = 0; at < parts.length && ended === 'order'; at += STEP) {
-      await request(parts.slice(at, at + STEP), rings);
+  for (const [parts, rings] of [[people(), true], [others.values(), false]] as const) {
+    while (ended === 'order') {
+      const batch: MemoryCandidate[] = [];
+      while (batch.length < STEP) {
+        const next = parts.next();
+        if (next.done) break;
+        batch.push(next.value);
+      }
+      if (batch.length === 0) break;
+      await request(batch, rings);
       if (stopped()) ended = 'stopped';
       else if (rules.stops({ requests: log, kept: input.kept(read) })) ended = 'fall';
     }
@@ -534,10 +573,9 @@ export async function chatRead(input: ChatReadInput): Promise<ChatReadResult> {
     person: bestOf(segment.map((part) => person(part) ? rated(part) : undefined)),
     rating: bestOf(segment.map(rated)), best, laneHead: heads.has(segment) }));
   const first = (segment: readonly MemoryCandidate[]) =>
-    segment.reduce((lowest, part) => Math.min(lowest, place.get(part)!), Number.POSITIVE_INFINITY);
-  const segments = opened.sort((left, right) => first(left) - first(right));
-  await rate(segments.flatMap((segment) =>
-    [...segment].sort((left, right) => place.get(left)! - place.get(right)!).slice(0, STARTS)));
+    segment.reduce((lowest, part) => byPlace(part, lowest) < 0 ? part : lowest);
+  const segments = opened.sort((left, right) => byPlace(first(left), first(right)));
+  await rate(segments.flatMap((segment) => [...segment].sort(byPlace).slice(0, STARTS)));
   // A walk from every warm part of every opened segment. The walks
   // advance together: each round rates the next ring of every walk
   // still open, so the rounds in a row are the longest walk's, not their
@@ -558,7 +596,8 @@ export async function chatRead(input: ChatReadInput): Promise<ChatReadResult> {
   // Then the units of agent work above the bend of either ranking,
   // read as the segments are: each unit's starts, its parts the order
   // ranks first and then in its own order, and walks inside the unit.
-  const found = stopped() ? [] : await unitStarts(agentUnits(input.parts), input.queries ?? [], input.embed);
+  const found = stopped() ? [] : await unitStarts(agentUnits(reach === undefined ? input.parts : reach.units()),
+    input.queries ?? [], input.embed);
   // The ranking can take long enough for another read to stop the call.
   const units = stopped() ? [] : found;
   // A part the order does not rank comes after those it does.

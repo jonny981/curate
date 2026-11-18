@@ -458,17 +458,43 @@ export async function snapshotCodex(entry, folder) {
   const source = chat({ id: `chat:codex:${entry.path}`, providers: ['codex'], paths: [folder],
     ...(entry.since === undefined ? {} : { since: entry.since }),
     ...(exclude === undefined ? {} : { exclude }), mode: chatMode(entry) });
+  // A part's id and transcript name the snapshot path; the call sees the
+  // original path, and the source is asked with the snapshot path again.
+  const named = (candidate, from, to) => ({ ...candidate, id: candidate.id.replace(from, to),
+    ...(candidate.place === undefined ? {} : { place: { ...candidate.place,
+      container: candidate.place.container.replace(from, to) } }) });
+  const shown = (candidate) => named(candidate, folder, entry.path);
+  const asked = (candidate) => named(candidate, entry.path, folder);
+  const renamed = (parts) => ({
+    transcript: (part) => parts.transcript(asked(part)).map(shown),
+    *person() { for (const part of parts.person()) yield shown(part); },
+    units: () => parts.units().map(shown),
+    place: (part) => parts.place(asked(part)),
+    dealt: (laneIds) => {
+      const dealt = parts.dealt(new Set([...laneIds].map((id) => id.replace(entry.path, folder))));
+      return (part) => dealt(asked(part));
+    },
+    ordered: (compare) => {
+      // The reader reuses the two parts it compares, and so does this.
+      const left = {};
+      const right = {};
+      const shownAs = (into, part) => Object.assign(into, part, { id: part.id.replace(folder, entry.path) });
+      return renamed(parts.ordered((a, b) => compare(shownAs(left, a), shownAs(right, b))));
+    },
+  });
   return { filter, source: { ...source, async read(request, context) {
     const result = await source.read(request, context);
     return result.status !== 'read' ? result : { ...result,
-      candidates: result.candidates.map((candidate) => ({ ...candidate, id: candidate.id.replace(folder, entry.path),
-        // The transcript a part sits in is named by the same path.
-        ...(candidate.place === undefined ? {} : { place: { ...candidate.place,
-          container: candidate.place.container.replace(folder, entry.path) } }) })),
+      // The transcript a part sits in is named by the same path.
+      candidates: result.candidates.map(shown),
       // A meaning lane's id and score list names the same parts, so the
       // same remap applies; without it those ids keep the snapshot path.
       ...(result.meaningScores === undefined ? {} : { meaningScores: result.meaningScores.map((score) =>
-        ({ ...score, id: score.id.replace(folder, entry.path) })) }) };
+        ({ ...score, id: score.id.replace(folder, entry.path) })) }),
+      // A read that hands parts by key sizes the history by these ids,
+      // so they take the same remap.
+      ...(result.parts === undefined ? {} : { parts: renamed(result.parts) }),
+      ...(result.poolIds === undefined ? {} : { poolIds: result.poolIds.map((id) => id.replace(folder, entry.path)) }) };
   } } };
 }
 
@@ -725,6 +751,15 @@ export function writeJsonFile(path, value) {
   }
 }
 
+/** The order `rankMatches` gives a whole read's parts, for parts a
+ *  source hands by key (`PoolPart`): score, then the newer session and
+ *  part, then the id. */
+export function poolOrder(settings = {}) {
+  return (a, b) => b.score - a.score
+    || (settings.recentFirst === false ? 0 : b.sessionLatest - a.sessionLatest || b.date - a.date)
+    || a.id.localeCompare(b.id);
+}
+
 export function rankMatches(candidates, settings = {}) {
   const score = (candidate) => Object.values(candidate.signals).reduce((sum, value) => sum + value, 0);
   const sessions = new Map();
@@ -775,7 +810,9 @@ export function searchSource(source, searches, audit, folder, settings = {}) {
     const result = read.status !== 'read' || request.meaningLane !== undefined ? read : { ...read, candidates: rankMatches(read.candidates.filter((candidate) =>
       request.wholeLanes === true
       || ['keyword', 'bm25', 'heading-words', 'file-words'].some((key) => candidate.signals[key] > 0)
-      || words(`${candidate.title} ${candidate.text}`).some((word) => terms.has(word))), settings) };
+      || words(`${candidate.title} ${candidate.text}`).some((word) => terms.has(word))), settings),
+      // Parts the source hands by key take the order this read would give them.
+      ...(read.parts === undefined ? {} : { parts: read.parts.ordered(poolOrder(settings)) }) };
     const entry = { source: source.id, task, ...(request.meaningLane === undefined ? {} : { lane: 'meaning' }), ms: Date.now() - started, status: result.status,
       parts: result.meaningScores?.length ?? result.candidates?.length ?? 0,
       complete: result.complete, partial: result.partial };

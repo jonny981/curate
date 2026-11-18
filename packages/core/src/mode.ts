@@ -27,6 +27,60 @@ export interface Mode {
 /** One read of the fused order's parts. */
 export type ModeRead = (input: ModeReadInput) => Promise<ModeReadResult>;
 
+/** A source's parts that no lane kept, for a mode read of its own:
+ *  found by key and made into candidates only when the read reaches
+ *  them. A source whose mode reads on its own hands them on the read
+ *  that sizes its history (`poolIds`), so the pick never holds them.
+ *  Each answers at once, from the source's own index: the read runs
+ *  beside others, and a wait here would change when its requests go
+ *  out against theirs. */
+export interface ModeParts {
+  /** Every part of the transcript `part` sits in, in place order. */
+  transcript(part: MemoryCandidate): readonly MemoryCandidate[];
+  /** The person's own parts, newest first; equal dates in pool order. */
+  person(): Iterable<MemoryCandidate>;
+  /** Every part that can belong to a unit of agent work (marked a
+   *  prompt, a report or a summary, or written by an agent in the
+   *  user's turn), in pool order. */
+  units(): readonly MemoryCandidate[];
+  /** A part's place in the pool order: the order the source's whole
+   *  read lists every part in. Parts that share an id take the place of
+   *  the first of them. */
+  place(part: MemoryCandidate): number;
+  /** Where each part comes among the parts of the pool order no lane
+   *  holds, counting only the first part of each id: the order a pick
+   *  given the whole pool would list them in. `laneIds` are the ids of
+   *  the source's parts the lanes hold. */
+  dealt(laneIds: ReadonlySet<string>): (part: MemoryCandidate) => number;
+  /** The same parts with the pool order `compare` gives (a stable sort
+   *  of the reader's own order): a caller that reorders the source's
+   *  whole read reorders these the same way. The reader sorts one array
+   *  of part numbers and reuses the two parts it hands `compare`, so
+   *  `compare` must not keep them. */
+  ordered(compare: (left: PoolPart, right: PoolPart) => number): ModeParts;
+}
+
+/** What a pool order compares: a part's id, its score in the task's
+ *  keyword read of the whole history, its date and its session's latest
+ *  date in the read (milliseconds; 0 for none). */
+export interface PoolPart {
+  readonly id: string;
+  readonly score: number;
+  readonly date: number;
+  readonly sessionLatest: number;
+}
+
+/** The parts a conversation read may reach beyond `parts`, from every
+ *  source of the read, made into one candidate a part per call. */
+export interface ModeReach {
+  readonly transcript: (part: MemoryCandidate) => readonly MemoryCandidate[];
+  readonly person: () => Iterable<MemoryCandidate>;
+  readonly units: () => readonly MemoryCandidate[];
+  /** Where a part sits in the pick's order of the read's parts, as
+   *  `parts` lists them: lower first. */
+  readonly queued: (part: MemoryCandidate) => readonly [number, number];
+}
+
 /** What a read is given. The ranked read takes `order`, `then`,
  *  `between`, `waves`, `copied`, `score`, `kept`, `stopped` and `stop`;
  *  the conversation read takes `parts`, `order`, `byKeyword`, `lanes`,
@@ -68,6 +122,9 @@ export interface ModeReadInput {
   readonly queries?: readonly string[];
   /** The call's local embedder, when it has one. */
   readonly embed?: EmbeddingFunction;
+  /** The parts beyond `parts` a conversation read may reach, when its
+   *  sources hand them by key rather than as candidates. */
+  readonly reach?: ModeReach;
 }
 
 /** What a read did. */
@@ -168,6 +225,7 @@ export function conversationRead(rules: ConversationRules = {}): ModeRead {
   return async (input) => {
     const result = await chatRead({ parts: input.parts, order: input.order, byKeyword: input.byKeyword,
       lanes: input.lanes, rate: input.rate, score: input.score, kept: input.kept, stopped: input.stopped, rules,
+      ...(input.reach === undefined ? {} : { reach: input.reach }),
       ...(input.queries === undefined ? {} : { queries: input.queries }),
       ...(input.reused === undefined ? {} : { reused: input.reused }),
       ...(input.embed === undefined ? {} : { embed: input.embed }) });

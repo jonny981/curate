@@ -8,7 +8,7 @@ import { cutLane, laneBend, laneScoreOf, type SearchLaneReport } from './lanes.j
 import {
   checkCascade, checkMode, checkPickOptions, checkReadRequest, checkWriteQuestions, findTaskNames,
 } from './options.js';
-import { rankedRead, type Mode } from './mode.js';
+import { rankedRead, type Mode, type ModeParts } from './mode.js';
 import { LABEL_KINDS, type LabelKind } from './labels.js';
 import { datedIn, durationMs, taskMoment, taskPeriod, timeZoneOf, zonedIso, type TaskPeriod } from './time.js';
 import type { StoredIndexReport } from './stored-index.js';
@@ -247,6 +247,10 @@ export type CandidateReadResult =
        *  left out so far, because another call re-indexed their file and
        *  their stored row no longer holds them. */
       readonly changed?: number;
+      /** A sizing read's answer for a source whose mode reads on its own:
+       *  the parts no lane kept, found by key when that read reaches them
+       *  (see `ModeParts`). */
+      readonly parts?: ModeParts;
       /** Set by a reader that ranked with `decayHalfLife`: how many dated
        *  parts it ranked, and the ids of the parts its limit and lane cut
        *  kept (`added`) or left out (`dropped`) only because of decay. A
@@ -734,7 +738,13 @@ async function readSearches(
   // source ID, the reader's own or its whole read's, are kept to size the
   // history once every lane is in.
   let poolKeys: Map<string, Set<string>> | undefined;
-  if (request.labelPool === 'size' && source.role === 'reference' && (laneCut || request.limit !== undefined)) {
+  // A source whose mode reads on its own is sized only when its reader
+  // hands the parts no lane kept by key (`parts`); one that cannot keeps
+  // its whole pool, as a mode read of its own reaches any part.
+  const ownRead = (source.mode?.read ?? rankedRead) !== rankedRead;
+  let poolForm = request.labelPool;
+  let parts: ModeParts | undefined;
+  if (poolForm === 'size' && source.role === 'reference' && (laneCut || request.limit !== undefined)) {
     const sized = await source.read({
       ...request, task: tasks[0]!.task, searchLines: undefined, searchPhrases: undefined,
       kindLanes: undefined, meaning: undefined, limit: undefined, wholeLanes: true,
@@ -746,16 +756,24 @@ async function readSearches(
     }
     // A reader that returned the parts answered the uncut pool read itself.
     if (sized.poolIds === undefined) poolRead = sized;
-    poolKeys = new Map(sized.poolIds === undefined || sized.poolIds.length === 0 ? [] : [[source.id, new Set(sized.poolIds)]]);
-    for (const candidate of sized.candidates) {
-      if (candidate.role !== 'reference') continue;
-      const ids = poolKeys.get(candidate.sourceId);
-      if (ids === undefined) poolKeys.set(candidate.sourceId, new Set([candidate.id]));
-      else ids.add(candidate.id);
+    if (ownRead && sized.parts === undefined) {
+      poolForm = 'count';
+    } else {
+      // Only a mode's own read finds parts by key; a ranked read counts them.
+      parts = ownRead ? sized.parts : undefined;
+      poolKeys = new Map(sized.poolIds === undefined || sized.poolIds.length === 0 ? [] : [[source.id, new Set(sized.poolIds)]]);
+      for (const candidate of sized.candidates) {
+        if (candidate.role !== 'reference') continue;
+        const ids = poolKeys.get(candidate.sourceId);
+        if (ids === undefined) poolKeys.set(candidate.sourceId, new Set([candidate.id]));
+        else ids.add(candidate.id);
+      }
+      const partial = [read.partial, sized.partial].filter(Boolean).join('; ');
+      read = { ...read, complete: read.complete && sized.complete, ...(partial === '' ? {} : { partial }),
+        ...(parts === undefined ? {} : { parts }) };
     }
-    const partial = [read.partial, sized.partial].filter(Boolean).join('; ');
-    read = { ...read, complete: read.complete && sized.complete, ...(partial === '' ? {} : { partial }) };
-  } else if (request.labelPool !== undefined && request.labelPool !== 'size' && source.role === 'reference'
+  }
+  if (poolForm !== undefined && poolForm !== 'size' && source.role === 'reference'
     && (laneCut || request.limit !== undefined)) {
     const full = await fullPool();
     if (full.status !== 'read') {
@@ -777,7 +795,7 @@ async function readSearches(
     // pool only counts toward the dial's N or is placed by the fused
     // order, no search matched it, so a keyword miss keeps
     // noSearchMatch.
-    const missed = request.labelPool === 'count' && read.noSearchMatch === true;
+    const missed = poolForm === 'count' && read.noSearchMatch === true;
     const { noSearchMatch: _miss, ...mergedRead } = read;
     read = { ...mergedRead, candidates: [...union.values()],
       complete: read.complete && full.complete,
@@ -1153,6 +1171,7 @@ export async function pickFromSources(
   );
   // Each history a 'size' read sized: its candidates and the parts no lane kept.
   const historySizeBySource: Record<string, number> = Object.create(null);
+  const partsBySource: Record<string, ModeParts> = Object.create(null);
   const labelBarBySource: Record<string, number> = Object.fromEntries(
     sources.flatMap((source) => source.labelBar === undefined ? [] : [[source.id, source.labelBar]]),
   );
@@ -1182,10 +1201,10 @@ export async function pickFromSources(
       // part the period brings in that no lane kept is ordered among the
       // pool's parts, so a period keeps the pool.
       labelPool: (source.labelKinds?.length ?? 0) > 0 ? 'gate'
-        : poolSizing.on && options.everyRanked === undefined && period === undefined
-          // A mode read of its own walks each part's whole transcript, so
-          // its source keeps the whole pool.
-          && (source.mode?.read ?? rankedRead) === rankedRead ? 'size'
+        // A mode read of its own walks each part's whole transcript: its
+        // source is sized when the reader hands the rest by key, and keeps
+        // the whole pool when it cannot (see `readSearches`).
+        : poolSizing.on && options.everyRanked === undefined && period === undefined ? 'size'
           : options.everyRanked !== true ? 'count' : undefined,
       // The fused order reads every part's meaning position, so the
       // meaning lanes keep every part's similarity for it.
@@ -1210,6 +1229,7 @@ export async function pickFromSources(
     if (sources[index]!.role !== 'reference' && !read.complete) rulesEnumerationComplete = false;
     const sized = Object.entries(read.historySize ?? {});
     for (const [id, size] of sized) historySizeBySource[id] = (historySizeBySource[id] ?? 0) + size;
+    if (read.parts !== undefined) partsBySource[sources[index]!.id] = read.parts;
     // A history's settings are recorded for its uncounted parts too, as
     // when they were candidates.
     for (const candidate of [...read.candidates, ...sized.map(([sourceId]) => ({ sourceId }))]) {
@@ -1259,6 +1279,7 @@ export async function pickFromSources(
     rulesEnumerationComplete, sourceKinds, labelKindsBySource, labelBarBySource,
     ruleBarBySource, modesBySource, readsBySource,
     ...(Object.keys(historySizeBySource).length === 0 ? {} : { historySizeBySource }),
+    ...(Object.keys(partsBySource).length === 0 ? {} : { partsBySource }),
   });
   // The read request's lever joins the pick's resolved set.
   // `meaning.wholeLanes` resolves the
@@ -1310,8 +1331,8 @@ export async function pickFromSources(
   // The names found above, also when every source with name lanes on was absent.
   // A history's size went to the pick and stays out of the reads.
   return { ...result, reads: reads.map((read) => {
-    if (read.status !== 'read' || read.historySize === undefined) return read;
-    const { historySize: _size, ...rest } = read;
+    if (read.status !== 'read' || (read.historySize === undefined && read.parts === undefined)) return read;
+    const { historySize: _size, parts: _parts, ...rest } = read;
     return rest;
   }), record: { ...result.record, ...(found === undefined ? {} : { names: found }),
     ...(Object.keys(index).length === 0 ? {} : { index }),

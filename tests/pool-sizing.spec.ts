@@ -149,21 +149,29 @@ it.each<[string, boolean, Partial<PickOptions>]>([
   expect(sized.picked.record.candidates.length).toBeLessThan(merged.picked.record.candidates.length);
 });
 
-it('keeps every part of a history whose mode has a read of its own', { timeout: 120_000 }, async () => {
-  // The conversation read walks each part's whole transcript, so the chat
-  // history is merged as before while the other sources are sized.
+it('sizes a history whose mode has a read of its own, and lists the parts that read reached', { timeout: 120_000 }, async () => {
+  // The conversation read finds the parts no lane kept by key, so the
+  // chat history is sized like the others: the call selects and lays out
+  // the same parts, and its record lists the chat parts the read reached
+  // and counts the rest. A part no lane read carries no signals.
   const paths = await histories();
   const cache = await folder();
   await call(paths, cache, task, false, false, {}, agentTranscripts);
   const merged = await call(paths, cache, task, false, false, {}, agentTranscripts);
   const sized = await call(paths, cache, task, true, false, {}, agentTranscripts);
-  expect(sized.picked.selected).toEqual(merged.picked.selected);
+  expect(sized.picked.selected.map((part) => [part.sourceId, part.id]))
+    .toEqual(merged.picked.selected.map((part) => [part.sourceId, part.id]));
   expect(sized.log).toBe(merged.log);
-  const chatEntries = (record: typeof merged.picked.record) => record.candidates.filter((entry) => entry.sourceId.startsWith('chat'));
-  expect(chatEntries(sized.picked.record)).toEqual(chatEntries(merged.picked.record));
-  expect(chatEntries(sized.picked.record).some((entry) => entry.poolOnly === true)).toBe(true);
+  const chatEntries = (record: typeof merged.picked.record) => record.candidates.filter((entry) => entry.sourceId.startsWith('chat'))
+    .map((entry) => entry.poolOnly === true ? { ...entry, signals: {} } : entry);
+  const listed = new Set(chatEntries(sized.picked.record).map((entry) => entry.id));
+  const unreached = chatEntries(merged.picked.record).filter((entry) => !listed.has(entry.id));
+  expect(chatEntries(sized.picked.record)).toEqual(chatEntries(merged.picked.record).filter((entry) => listed.has(entry.id)));
+  expect(unreached.length).toBeGreaterThan(0);
+  expect(unreached.every((entry) => entry.poolOnly === true && entry.status === 'unassessed')).toBe(true);
+  const counted = Object.entries(sized.picked.record.unheld!).filter(([id]) => id.startsWith('chat'));
+  expect(counted.reduce((sum, [, count]) => sum + count, 0)).toBe(unreached.length);
   const unheld = Object.entries(sized.picked.record.unheld!).filter(([, count]) => count > 0).map(([id]) => id);
-  expect(unheld.some((id) => id.startsWith('chat'))).toBe(false);
   expect(unheld.some((id) => id.includes('apart'))).toBe(true);
 });
 
