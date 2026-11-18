@@ -1038,7 +1038,9 @@ score; equal ratings keep the search's order) go into one Choice,
 into its own option as who said it, when, and its text (an object with
 the fields code wrote, when it has any), with the task and the call's
 fields in the state. Under `wholeMessages` a candidate is a whole
-message, and an identical text is one candidate. The pick is removed
+message, and identical and near-identical texts (the same words in the
+same order, whatever their case, punctuation, Markdown and spacing)
+are one candidate, every copy carrying its pick. The pick is removed
 and the Choice asked again; after each round, "Do these items together
 state everything the task asks?" is asked of the picks so far alone, in
 their own request, and at or over its bar (`enough: { bar }`, 0.7
@@ -1064,6 +1066,14 @@ the error in the record. It needs a decider with a `list` function, as
 `jev()` has. `choosePerFact()` runs the same loop on any candidates, and
 its `reverseOptions` sends each Choice's options in reverse order, the
 maker's check for a lean toward the first option.
+
+It is likely a lever for tasks that want one answer (`wanted: 'one
+decision'`): the recipe fits one right candidate among many, and when
+many parts state the same fact a Choice splits its probability among
+them. On one task of one person's coding-agent history, 12 of its 20
+options held an answer and the top took 0.20. In that measurement it
+held its order across option orders (40 to 44 of 57 facts agreed) but
+did not move answers marked right.
 
 ### A keep bar set by measurement
 

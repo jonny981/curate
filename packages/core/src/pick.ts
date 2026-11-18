@@ -3639,13 +3639,17 @@ export async function pick(
       const ms = Date.parse(candidate.date?.value ?? '');
       return Number.isFinite(ms) ? ms : 0;
     };
-    // An identical text is one option, at its first place: the text lays
-    // its copies out once too, and each would cost a round.
+    // Identical and near-identical texts (the same words in the same
+    // order, whatever their case, punctuation, Markdown and spacing) are
+    // one option, at their first place: a Choice splits its probability
+    // among options that say the same, and each would cost a round.
+    const sameWords = (item: MemoryCandidate) =>
+      (item.text.trim() || item.title).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
     const copies = new Map<string, MemoryCandidate[]>();
     const items = [...new Set(choosing.flatMap(itemsFor))]
       .sort((left, right) => said(left) - said(right) || left.id.localeCompare(right.id))
       .filter((item) => {
-        const text = (item.text.trim() || item.title).trim();
+        const text = sameWords(item);
         const group = copies.get(text);
         if (group === undefined) { copies.set(text, [item]); return true; }
         group.push(item);
@@ -3656,11 +3660,14 @@ export async function pick(
     // the search's order, never the list's.
     const byId = new Map(references.map((candidate) => [candidate.id, candidate]));
     const searchPlace = (item: MemoryCandidate) => priority.get(byId.get(item.id) ?? item) ?? Number.POSITIVE_INFINITY;
-    const ratingFor = (item: MemoryCandidate, fact: number) => {
+    const ownRating = (item: MemoryCandidate, fact: number) => {
       const key = cascadeFor(item)?.facts?.question.key;
       const answer = key === undefined ? undefined : answered.get(item)?.get(`${key}${fact + 1}`);
       return answer?.status === 'answered' && 'probability' in answer ? answer.probability : scoreOf(item) ?? 0;
     };
+    // An option stands for its copies, at the best of their ratings.
+    const ratingFor = (item: MemoryCandidate, fact: number) =>
+      Math.max(...(copies.get(sameWords(item)) ?? [item]).map((copy) => ownRating(copy, fact)));
     if (needed === undefined || stop !== undefined) {
       choiceRecord = { candidates, facts: [], rounds: 0, requests: 0, skipped: stop ?? 'the call gave no needed facts' };
     } else {
@@ -3689,7 +3696,7 @@ export async function pick(
         result.facts.forEach(({ picks }, fact) => {
           for (const pick of picks) {
             const item = itemOf.get(pick.key)!;
-            for (const copy of copies.get((item.text.trim() || item.title).trim()) ?? [item]) {
+            for (const copy of copies.get(sameWords(item)) ?? [item]) {
               const key = messageOfItem.get(copy);
               for (const piece of key === undefined ? [copy] : messages.get(key) ?? [copy]) {
                 picked.set(piece, [...picked.get(piece) ?? [], { fact, round: pick.round, probability: pick.probability }]);

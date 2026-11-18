@@ -186,11 +186,14 @@ describe('a Choice per needed fact in a pick', () => {
     expect(result.record.choicePerFact!.facts[0]!.ranked.map((entry) => entry.id)).toEqual(['b', 'd', 'c', 'a']);
   });
 
-  it('asks an identical text once, at its first place, and marks every copy with its pick', async () => {
+  it('asks an identical or near-identical text once, at its first place, and marks every copy with its pick', async () => {
     const { requests, list } = lister();
-    const copy = part('e', 'We chose Postgres.', 5, 4);
+    // The same words, with other case, punctuation and Markdown.
+    const copy = part('e', '**We chose postgres**', 5, 4);
     ratings.e = 0.95;
     const result = await pick([...parts, copy], { task, decide: decider(list), needed: [fact], modesBySource: { notes: mode(true) } });
+    // The option stands at its best copy's rating: first of the screen.
+    expect(options(requests[0]!)[0]).toBe('b');
     expect(options(requests[0]!)).not.toContain('e');
     const entry = (id: string) => result.record.candidates.find((candidate) => candidate.id === id)!;
     expect(entry('e').chosen).toEqual(entry('b').chosen);
