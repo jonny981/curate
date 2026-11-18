@@ -489,6 +489,17 @@ export interface PickCascade {
     /** Added when the task has at least one name. */
     readonly hasNames: number;
   };
+  /** A question asked once per fact the call gives in `needed`, of
+   *  each reference part, in the same request as the set's other
+   *  questions: `{fact}` in its wording and criteria is replaced, and its
+   *  key, followed by the fact's place in the list from 1, keys each
+   *  answer. `highest` × logit(the highest answer across the facts),
+   *  clamped to 0.0001 to 0.9999 first, joins the score. A call with no
+   *  needed facts asks it of no part and adds nothing. */
+  readonly facts?: {
+    readonly question: PickCriterion;
+    readonly highest: number;
+  };
   /** A fitted combining model: the answers and the code facts Curate
    *  computes per part score through its weights instead of the
    *  per-question weights. A set carrying one selects no first, band,
@@ -2284,10 +2295,19 @@ export async function pick(
     readonly trueCriterion?: string;
     readonly falseCriterion?: string;
   }
+  // The set's needed-fact question, once per fact the call gives.
+  const factQuestionsFor = (candidate: MemoryCandidate): PickCriterion[] => {
+    const facts = candidate.role === 'reference' ? cascadeFor(candidate)?.facts : undefined;
+    const fill = (text: string, fact: string) => text.replaceAll('{fact}', () => fact);
+    return facts === undefined ? [] : (needed ?? []).map((fact, index) => ({
+      key: `${facts.question.key}${index + 1}`, instructions: fill(facts.question.instructions, fact),
+      true: fill(facts.question.true, fact), false: fill(facts.question.false, fact),
+    }));
+  };
   const specsFor = (candidate: MemoryCandidate): QuestionSpec[] => {
     const cascade = cascadeFor(candidate);
     return candidate.role === 'reference' && cascade
-      ? [...cascade.questions, ...typedFor(candidate), ...writtenFor(candidate), ...namedFor(candidate)].map((q) => ({ key: q.key, question: q.instructions,
+      ? [...cascade.questions, ...typedFor(candidate), ...writtenFor(candidate), ...namedFor(candidate), ...factQuestionsFor(candidate)].map((q) => ({ key: q.key, question: q.instructions,
         ...('levels' in q
           ? { levels: q.levels }
           : { trueCriterion: q.true, falseCriterion: q.false }) }))
@@ -3129,7 +3149,8 @@ export async function pick(
           const typed = typedFor(candidate);
           const written = writtenFor(candidate);
           const named = namedFor(candidate);
-          const asked = [...cascade.questions, ...typed, ...written, ...named];
+          const factAsks = factQuestionsFor(candidate);
+          const asked = [...cascade.questions, ...typed, ...written, ...named, ...factAsks];
           if (stop && asked.some((q) => !got.has(q.key))
             && (!cascade.first || first?.status === 'answered')) {
             curtailed.set(candidate, stop);
@@ -3180,16 +3201,22 @@ export async function pick(
             }).reduce<number | undefined>((top, p) => top === undefined || p > top ? p : top, undefined);
             const namedZ = named.length === 0 ? 0
               : cascade.named!.hasNames + (best === undefined ? 0 : cascade.named!.highest * writtenLogit(best));
-            if (typed.length > 0) untyped.set(candidate, 1 / (1 + Math.exp(-(z + writtenZ + namedZ))));
-            if (written.length > 0) unwritten.set(candidate, 1 / (1 + Math.exp(-(z + typedZ + namedZ))));
-            if (named.length > 0) unnamed.set(candidate, 1 / (1 + Math.exp(-(z + typedZ + writtenZ))));
+            // The highest needed-fact answer; with none answered it adds nothing.
+            const bestFact = factAsks.flatMap((q) => {
+              const reply = got.get(q.key);
+              return reply?.status === 'answered' && 'probability' in reply ? [reply.probability] : [];
+            }).reduce<number | undefined>((top, p) => top === undefined || p > top ? p : top, undefined);
+            const factZ = bestFact === undefined ? 0 : cascade.facts!.highest * writtenLogit(bestFact);
+            if (typed.length > 0) untyped.set(candidate, 1 / (1 + Math.exp(-(z + writtenZ + namedZ + factZ))));
+            if (written.length > 0) unwritten.set(candidate, 1 / (1 + Math.exp(-(z + typedZ + namedZ + factZ))));
+            if (named.length > 0) unnamed.set(candidate, 1 / (1 + Math.exp(-(z + typedZ + writtenZ + factZ))));
             const keeper = typed.find((q) => {
               const reply = got.get(q.key);
               return q.keepAt !== undefined && reply?.status === 'answered'
                 && 'probability' in reply && reply.probability >= q.keepAt;
             });
             if (keeper !== undefined) keptBy.set(candidate, keeper.key);
-            answer = { status: 'answered', probability: 1 / (1 + Math.exp(-(z + typedZ + writtenZ + namedZ))),
+            answer = { status: 'answered', probability: 1 / (1 + Math.exp(-(z + typedZ + writtenZ + namedZ + factZ))),
               // The verdict reused the store only when every answer
               // behind it did: a question this pick asked — even one
               // that came back unanswered — keeps it fresh.
@@ -3754,7 +3781,8 @@ export async function pick(
       ...(cascade && candidate.role === 'reference' && answered.has(candidate) ? {
         questions: [...cascade.questions, ...typedFor(candidate),
           ...writtenFor(candidate).filter((q) => answered.get(candidate)!.has(q.key)),
-          ...namedFor(candidate).filter((q) => answered.get(candidate)!.has(q.key))]
+          ...namedFor(candidate).filter((q) => answered.get(candidate)!.has(q.key)),
+          ...factQuestionsFor(candidate).filter((q) => answered.get(candidate)!.has(q.key))]
           .map((q) => ({ key: q.key, ...(answered.get(candidate)!.get(q.key) ?? { status: 'missing' as const }) })),
       } : {}),
       ...(tags === undefined ? {} : { tags }),

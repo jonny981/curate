@@ -16,6 +16,24 @@ export const FACT_CHOICE = {
   false: 'The items share its subject, plan it, ask about it or report work toward it, without stating it',
 } as const;
 
+/** The narrow question without its "or", in two: whether an item
+ *  answers the task, and, once per needed fact (`facts` in a question
+ *  set), whether it states that fact. Each is one judgment, worded as
+ *  the labels mean it, "answers" rather than "relevant", and its `false`
+ *  names the confusing case. */
+export const ANSWER_QUESTION = {
+  key: 'answers',
+  instructions: 'Does this item answer the task?',
+  true: 'It states the answer to the task itself',
+  false: 'It describes work toward the answer, a plan, or a question about it, without stating the result',
+} as const;
+export const FACT_QUESTION = {
+  key: 'fact',
+  instructions: 'Does this item state this needed fact: {fact}',
+  true: 'It states the fact itself',
+  false: 'It is about the same subject, a plan or a step toward it, without stating the fact',
+} as const;
+
 /** The question that says whether the parts picked so far suffice: asked
  *  of them alone, in their own request. */
 export const ENOUGH_QUESTION = {

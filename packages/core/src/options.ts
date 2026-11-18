@@ -49,7 +49,7 @@ const SOURCE_KIND_KEYS: readonly CandidateSourceKind[] = ['chat', 'git-history',
 /** The fixed keys of `ranking`, keyed by candidate kind. */
 const MEMORY_KIND_KEYS: readonly MemoryKind[] = ['knowledge', 'docs', 'rules', 'instructions'];
 const CASCADE_KEYS: readonly (keyof PickCascade)[] = [
-  'bias', 'questions', 'typed', 'first', 'band', 'firstOnly', 'written', 'named', 'model', 'anonymousItems',
+  'bias', 'questions', 'typed', 'first', 'band', 'firstOnly', 'written', 'named', 'facts', 'model', 'anonymousItems',
 ];
 const TAG_SET_KEYS: readonly (keyof PickTagSet)[] = ['key', 'questions'];
 const CRITERION_KEYS: readonly (keyof PickCriterion)[] = ['key', 'instructions', 'true', 'false'];
@@ -65,6 +65,7 @@ const TYPED_QUESTION_KEYS: readonly (keyof NonNullable<PickCascade['typed']>[num
 const FIRST_ONLY_KEYS: readonly (keyof NonNullable<PickCascade['firstOnly']>)[] = ['bias', 'weight'];
 const WRITTEN_KEYS: readonly (keyof NonNullable<PickCascade['written']>)[] = ['highest', 'second'];
 const NAMED_KEYS: readonly (keyof NonNullable<PickCascade['named']>)[] = ['question', 'highest', 'hasNames'];
+const FACTS_KEYS: readonly (keyof NonNullable<PickCascade['facts']>)[] = ['question', 'highest'];
 /** The keys Curate gives the written questions, in order. */
 export const WRITTEN_QUESTION_KEYS = ['task1', 'task2', 'task3', 'task4'] as const;
 
@@ -95,6 +96,8 @@ export function checkCascadeKeys(set: PickCascade | undefined, path: string): vo
   checkKeys(set?.written, WRITTEN_KEYS, `${path}.written`);
   checkKeys(set?.named, NAMED_KEYS, `${path}.named`);
   checkKeys(set?.named?.question, CRITERION_KEYS, `${path}.named.question`);
+  checkKeys(set?.facts, FACTS_KEYS, `${path}.facts`);
+  checkKeys(set?.facts?.question, CRITERION_KEYS, `${path}.facts.question`);
   for (const [index, question] of (set?.questions ?? []).entries()) {
     checkKeys(question, CASCADE_QUESTION_KEYS, `${path}.questions[${index}]`);
   }
@@ -136,9 +139,9 @@ export function checkCascade(set: PickCascade | undefined): void {
         + 'of the same nonzero length, a finite b, and a bar from 0 to 1.');
     }
     if (set.first !== undefined || set.band !== undefined || set.firstOnly !== undefined
-      || set.typed !== undefined || set.written !== undefined || set.named !== undefined) {
+      || set.typed !== undefined || set.written !== undefined || set.named !== undefined || set.facts !== undefined) {
       throw new TypeError('a model question set selects through its weights alone: '
-        + 'it cannot carry first, band, firstOnly, typed, written or named.');
+        + 'it cannot carry first, band, firstOnly, typed, written, named or facts.');
     }
     const nouled = (q: PickCascade['questions'][number]) =>
       'true' in q && 'false' in q && q.true !== undefined && q.false !== undefined;
@@ -189,6 +192,20 @@ export function checkCascade(set: PickCascade | undefined): void {
       || all.some((key) => key.startsWith(question.key) && /^\d+$/.test(key.slice(question.key.length)))) {
       throw new TypeError('a question set\'s named question needs a key, instructions, true and false, finite highest '
         + 'and hasNames weights, and a key that, followed by a number, is no other question\'s key.');
+    }
+  }
+  if (set.facts !== undefined) {
+    const facts: Partial<NonNullable<PickCascade['facts']>> =
+      typeof set.facts === 'object' && set.facts !== null ? set.facts : {};
+    const question = facts.question;
+    const all = [...keys, ...(set.typed ?? []).map((q) => q.key), ...(set.written === undefined ? [] : WRITTEN_QUESTION_KEYS),
+      ...(set.named === undefined ? [] : [set.named.question.key])];
+    if (typeof question !== 'object' || question === null
+      || [question.key, question.instructions, question.true, question.false].some((text) => typeof text !== 'string' || !text.trim())
+      || !Number.isFinite(facts.highest)
+      || all.some((key) => key.startsWith(question.key) && /^\d*$/.test(key.slice(question.key.length)))) {
+      throw new TypeError('a question set\'s facts question needs a key, instructions, true and false, a finite highest '
+        + 'weight, and a key that, followed by a number, is no other question\'s key.');
     }
   }
   if (set.first !== undefined || set.band !== undefined || set.firstOnly !== undefined) {

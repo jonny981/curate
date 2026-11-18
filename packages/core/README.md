@@ -944,6 +944,31 @@ never carry them, and an answer asked with them is stored apart from
 one asked without. The record names the setting under
 `levers.sources`.
 
+### The narrow question in two
+
+Off by default: no shipped question set asks them. `ANSWER_QUESTION`
+and `FACT_QUESTION`, exported from `@curatejs/core`, split the narrow
+question "does this item itself state the answer to the task, or one
+of the needed facts, rather than only being about the same subject or
+a step on the way to it?" into one judgment each, as the decision
+model's maker advises ("beware the 'or'"), in the wording a reranking
+study found best calibrated with this model ("answers" rather than
+"relevant"): "Does this item answer the task?", whose `false` names the
+confusing case ("It describes work toward the answer, a plan, or a
+question about it, without stating the result"), and "Does this item
+state this needed fact: {fact}". A question set takes the first as any
+question and the second as its `facts` question, which it asks once per
+fact the call gives in `needed`, in the same request, keyed `fact1`,
+`fact2` and so on; `highest` × logit(the highest fact answer) joins the
+score, as a `named` question's does:
+
+```ts
+const answers: PickCascade = { bias: 0, questions: [{ ...ANSWER_QUESTION, weight: 1 }],
+  facts: { question: FACT_QUESTION, highest: 1 } };
+```
+
+The weights are the caller's: none are fitted for these questions.
+
 ### A Choice per needed fact
 
 Off by default. A mode with `choicePerFact: true` (or `{ bar }`)
