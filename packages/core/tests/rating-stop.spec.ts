@@ -40,8 +40,10 @@ const index = (id: string) => Number(id.slice(1));
 /** Two parts a batch: batch n (from 1) holds p(2n-2) and p(2n-1). */
 const twoABatch = { maxPerBatch: 2 } as const;
 const batchOf = (id: string) => Math.floor(index(id) / 2) + 1;
-/** The stop with its default floor and share; it is off unless set. */
-const on = { stopWhenCold: {} } as const;
+/** The stop with its default floor and share, judging windows of two
+ *  rated parts, so a window is a batch of `twoABatch`; it is off unless
+ *  set. */
+const on = { stopWhenCold: { parts: 2 } } as const;
 
 describe('the rating stop', () => {
   it('stops on the floor after the first batch once its wave rated a part at the floor, rating only the first wave', async () => {
@@ -55,10 +57,10 @@ describe('the rating stop', () => {
     expect(peak()).toBe(2);
     expect(asked(calls)).toEqual(['p0', 'p1', 'p2', 'p3']);
     expect(picked.record.pick!.stopWhenCold).toEqual({
-      floor: 0.1, share: 0.2, waves: 1, batches: 2, rated: 4, unread: 16, kept: 4, atFloor: 1, ended: 'cold',
-      cold: { batch: 1, best: 0.05, bestBefore: 0, under: 'floor' },
+      floor: 0.1, share: 0.2, parts: 2, waves: 1, windows: 1, rated: 4, unread: 16, kept: 4, atFloor: 1, ended: 'cold',
+      cold: { window: 1, best: 0.05, bestBefore: 0, under: 'floor' },
     });
-    expect(picked.record.levers.stopWhenCold).toEqual({ floor: 0.1, share: 0.2 });
+    expect(picked.record.levers.stopWhenCold).toEqual({ floor: 0.1, share: 0.2, parts: 2 });
     const unread = picked.record.candidates.filter((entry) => index(entry.id) >= 4);
     expect(unread).toHaveLength(16);
     expect(unread.every((entry) => entry.status === 'unassessed' && entry.reason === 'stopWhenCold')).toBe(true);
@@ -82,8 +84,8 @@ describe('the rating stop', () => {
     // Wave 2 holds batches 3 and 4; batch 4 was already sent with it.
     expect(asked(calls)).toEqual(['p0', 'p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7']);
     expect(picked.record.pick!.stopWhenCold).toMatchObject({
-      waves: 2, batches: 4, rated: 8, unread: 4,
-      cold: { batch: 3, best: 0.15, bestBefore: 0.9, under: 'share' },
+      waves: 2, windows: 3, rated: 8, unread: 4,
+      cold: { window: 3, best: 0.15, bestBefore: 0.9, under: 'share' },
     });
     expect(picked.record.candidates.filter((entry) => entry.status === 'unassessed').map((entry) => entry.id))
       .toEqual(['p8', 'p9', 'p10', 'p11']);
@@ -100,7 +102,7 @@ describe('the rating stop', () => {
 
     expect(asked(calls)).toHaveLength(10);
     expect(picked.record.pick!.stopWhenCold).toEqual({
-      floor: 0.1, share: 0.2, waves: 3, batches: 5, rated: 10, unread: 0, kept: 5, atFloor: 5, ended: 'order' });
+      floor: 0.1, share: 0.2, parts: 2, waves: 3, windows: 5, rated: 10, unread: 0, kept: 5, atFloor: 5, ended: 'order' });
     expect(picked.record.candidates.some((entry) => entry.status === 'unassessed')).toBe(false);
   });
 
@@ -112,7 +114,7 @@ describe('the rating stop', () => {
     const { decide, calls } = rated((id) => best[batchOf(id) - 1]!);
     const picked = await pick(ranked(8), { task: 'recall the plan', decide, ...on, limits: twoABatch });
     expect(asked(calls)).toEqual(['p0', 'p1', 'p2', 'p3']);
-    expect(picked.record.pick!.stopWhenCold).toMatchObject({ waves: 1, batches: 2, cold: { batch: 2, under: 'floor' } });
+    expect(picked.record.pick!.stopWhenCold).toMatchObject({ waves: 1, windows: 2, cold: { window: 2, under: 'floor' } });
 
     // Batch 3 cold, batch 4 warm: both sit in wave 2, which stops at
     // batch 3; batch 4's warm parts were already rated and are kept.
@@ -120,7 +122,7 @@ describe('the rating stop', () => {
     const second = rated((id) => later[batchOf(id) - 1]!);
     const again = await pick(ranked(10), { task: 'recall the plan', decide: second.decide, ...on, limits: twoABatch });
     expect(asked(second.calls)).toEqual(['p0', 'p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7']);
-    expect(again.record.pick!.stopWhenCold).toMatchObject({ batches: 4, cold: { batch: 3 }, unread: 2 });
+    expect(again.record.pick!.stopWhenCold).toMatchObject({ windows: 3, cold: { window: 3 }, unread: 2 });
     expect(again.selected.map((part) => part.id)).toEqual(expect.arrayContaining(['p6', 'p7']));
   });
 
@@ -132,7 +134,7 @@ describe('the rating stop', () => {
     const picked = await pick(parts, { task: 'recall the plan', decide, ...on, limits: twoABatch });
     expect(asked(calls)).toEqual(['p0', 'p1', 'p3', 'p4']);
     expect(picked.record.pick!.stopWhenCold).toMatchObject({
-      batches: 2, rated: 5, unread: 5, cold: { batch: 2, best: 0.01, bestBefore: 0.9, under: 'floor' } });
+      windows: 2, rated: 5, unread: 5, cold: { window: 2, best: 0.01, bestBefore: 0.9, under: 'floor' } });
     expect(picked.record.candidates.find((entry) => entry.id === 'p2')).toMatchObject({ status: 'selected', probability: 0.9 });
   });
 
@@ -150,7 +152,7 @@ describe('the rating stop', () => {
     const picked = await pick(ranked(10), { task: 'recall the plan', decide, ...on, limits: twoABatch,
       modesBySource: modesOf(questions), everyScored: true });
     expect(calls).toHaveLength(2);
-    expect(picked.record.pick!.stopWhenCold!.cold).toMatchObject({ batch: 1, under: 'floor' });
+    expect(picked.record.pick!.stopWhenCold!.cold).toMatchObject({ window: 1, under: 'floor' });
     expect(picked.record.pick!.stopWhenCold!.cold!.best).toBeCloseTo(0.045, 3);
   });
 
@@ -196,8 +198,8 @@ describe('the rating stop', () => {
     const picked = await pick(ranked(20), { task: 'recall the plan', decide, ...on, limits: twoABatch });
     expect(asked(calls)).toEqual(Array.from({ length: 16 }, (_, i) => `p${i}`));
     expect(picked.record.pick!.stopWhenCold).toEqual({
-      floor: 0.1, share: 0.2, waves: 4, batches: 8, rated: 16, unread: 4, kept: 1, atFloor: 1, ended: 'cold',
-      cold: { batch: 8, best: 0.001, bestBefore: 0.5, under: 'floor' } });
+      floor: 0.1, share: 0.2, parts: 2, waves: 4, windows: 8, rated: 16, unread: 4, kept: 1, atFloor: 1, ended: 'cold',
+      cold: { window: 8, best: 0.001, bestBefore: 0.5, under: 'floor' } });
     expect(picked.selected.map((part) => part.id)).toEqual(['p13']);
   });
 
@@ -209,11 +211,11 @@ describe('the rating stop', () => {
     const rating: Record<string, number> = { p0: 0.05, p1: 0.03, p2: 0.95 };
     const { decide, calls } = rated((id) => rating[id]!);
     const picked = await pick(ranked(3, (i) => `note ${i} ${'words of a long note '.repeat(400)}`), {
-      task: 'recall the plan', decide, ...on, limits: { maxBatchChars: 10_000 } });
+      task: 'recall the plan', decide, stopWhenCold: { parts: 1 }, limits: { maxBatchChars: 10_000 } });
     expect(calls).toHaveLength(3);
     expect(asked(calls)).toEqual(['p0', 'p1', 'p2']);
     expect(picked.record.pick!.stopWhenCold).toEqual({
-      floor: 0.1, share: 0.2, waves: 2, batches: 3, rated: 3, unread: 0, kept: 3, atFloor: 1, ended: 'order' });
+      floor: 0.1, share: 0.2, parts: 1, waves: 2, windows: 3, rated: 3, unread: 0, kept: 3, atFloor: 1, ended: 'order' });
     expect(picked.selected.map((part) => part.id)).toContain('p2');
   });
 
@@ -227,7 +229,7 @@ describe('the rating stop', () => {
     expect(picked.selected).toHaveLength(20);
     expect(picked.record.candidates.some((entry) => entry.status === 'unassessed')).toBe(false);
     expect(picked.record.pick!.stopWhenCold).toEqual({
-      floor: 0.1, share: 0.2, waves: 5, batches: 10, rated: 20, unread: 0, kept: 20, atFloor: 0, ended: 'order' });
+      floor: 0.1, share: 0.2, parts: 2, waves: 5, windows: 10, rated: 20, unread: 0, kept: 20, atFloor: 0, ended: 'order' });
     expect(picked.record.effects.find((entry) => entry.setting === 'stopWhenCold')!.summary)
       .toBe('stopWhenCold on notes: no part rated at or above the floor 0.1, so the stop could not fire and '
         + 'the read rated every one of 20 parts in the order.');
@@ -240,17 +242,17 @@ describe('the rating stop', () => {
     // and the read rates all 20: five times the parts.
     const at = async (floor: number) => {
       const { decide, calls } = rated((id) => (id === 'p0' ? 0.2 : 0.05));
-      const picked = await pick(ranked(20), { task: 'recall the plan', decide, limits: twoABatch, stopWhenCold: { floor } });
+      const picked = await pick(ranked(20), { task: 'recall the plan', decide, limits: twoABatch, stopWhenCold: { floor, parts: 2 } });
       return { picked, asked: asked(calls) };
     };
     const low = await at(0.1);
     expect(low.asked).toHaveLength(4);
     expect(low.picked.record.pick!.stopWhenCold).toMatchObject({
-      floor: 0.1, rated: 4, atFloor: 1, ended: 'cold', cold: { batch: 2, under: 'floor' } });
+      floor: 0.1, rated: 4, atFloor: 1, ended: 'cold', cold: { window: 2, under: 'floor' } });
     const high = await at(0.3);
     expect(high.asked).toHaveLength(20);
     expect(high.picked.record.pick!.stopWhenCold).toEqual({
-      floor: 0.3, share: 0.2, waves: 5, batches: 10, rated: 20, unread: 0, kept: 20, atFloor: 0, ended: 'order' });
+      floor: 0.3, share: 0.2, parts: 2, waves: 5, windows: 10, rated: 20, unread: 0, kept: 20, atFloor: 0, ended: 'order' });
     expect(high.picked.record.effects.find((entry) => entry.setting === 'stopWhenCold')!.summary)
       .toBe('stopWhenCold on notes: no part rated at or above the floor 0.3, so the stop could not fire and '
         + 'the read rated every one of 20 parts in the order.');
@@ -262,11 +264,11 @@ describe('the rating stop', () => {
     // batch 3; batch 4 rates 0.01 and stops the read.
     const { decide, calls } = rated((id) => (index(id) < 4 ? 0.3 : id === 'p4' ? 0.9 : 0.01));
     const picked = await pick(ranked(12), { task: 'recall the plan', decide, limits: twoABatch,
-      stopWhenCold: { floor: 0.5 } });
+      stopWhenCold: { floor: 0.5, parts: 2 } });
     expect(asked(calls)).toEqual(['p0', 'p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7']);
     expect(picked.record.pick!.stopWhenCold).toEqual({
-      floor: 0.5, share: 0.2, waves: 2, batches: 4, rated: 8, unread: 4, kept: 5, atFloor: 1, ended: 'cold',
-      cold: { batch: 4, best: 0.01, bestBefore: 0.9, under: 'floor' } });
+      floor: 0.5, share: 0.2, parts: 2, waves: 2, windows: 4, rated: 8, unread: 4, kept: 5, atFloor: 1, ended: 'cold',
+      cold: { window: 4, best: 0.01, bestBefore: 0.9, under: 'floor' } });
     expect(picked.selected.map((part) => part.id)).toContain('p4');
   });
 
@@ -279,7 +281,7 @@ describe('the rating stop', () => {
     expect(asked(calls)).toHaveLength(10);
     expect(picked.selected.map((part) => part.id)).toEqual(['p8']);
     expect(picked.record.pick!.stopWhenCold).toEqual({
-      floor: 0.1, share: 0.2, waves: 3, batches: 5, rated: 10, unread: 0, kept: 1, atFloor: 1, ended: 'order' });
+      floor: 0.1, share: 0.2, parts: 2, waves: 3, windows: 5, rated: 10, unread: 0, kept: 1, atFloor: 1, ended: 'order' });
   });
 
   it.each([
@@ -328,7 +330,7 @@ describe('the rating stop', () => {
     expect(asked(calls)).toHaveLength(10);
     expect(picked.selected).toEqual([]);
     expect(picked.record.pick!.stopWhenCold).toEqual({
-      floor: 0.1, share: 0.2, waves: 3, batches: 5, rated: 10, unread: 0, kept: 0, atFloor: 0, ended: 'order' });
+      floor: 0.1, share: 0.2, parts: 2, waves: 3, windows: 5, rated: 10, unread: 0, kept: 0, atFloor: 0, ended: 'order' });
     expect(picked.record.effects.find((entry) => entry.setting === 'stopWhenCold')!.summary)
       .toBe('stopWhenCold on notes: no part reached the keep bar, so the read rated every one of 10 parts in the order and kept none.');
   });
@@ -344,15 +346,15 @@ describe('the rating stop', () => {
     const { decide } = rated((id) => (id === 'p2' ? 0.5 : index(id) < 4 ? 0.05 : 0.9));
     const recalled = await memory({ sources: [source], decide,
       pick: { ...on, limits: twoABatch }, curate: { sentenceCutoff: false } }).recall('recall the plan');
-    expect(recalled.picked.record.pick!.stopWhenCold).toMatchObject({ rated: 4, ended: 'cold', cold: { batch: 1, under: 'floor' } });
+    expect(recalled.picked.record.pick!.stopWhenCold).toMatchObject({ rated: 4, ended: 'cold', cold: { window: 1, under: 'floor' } });
     expect(recalled.picked.selected.map((part) => part.id).sort()).toEqual(['p0', 'p1', 'p2', 'p3']);
     for (const id of ['p0', 'p1', 'p2', 'p3']) expect(recalled.log).toContain(`text of ${id}`);
   });
 
   it.each([
-    ['a batch limit', { limits: { maxPerBatch: 2, maxBatches: 1 } }, 'limits', 2, 1],
-    ['a cancellation', { limits: twoABatch, cancelAt: 'p2' }, 'cancelled', 4, 2],
-  ] as const)('says when %s, not the ratings or the order, ended the read', async (_name, setup, ended, rated_, batches) => {
+    ['a batch limit', { limits: { maxPerBatch: 2, maxBatches: 1 } }, 'limits', 2],
+    ['a cancellation', { limits: twoABatch, cancelAt: 'p2' }, 'cancelled', 4],
+  ] as const)('says when %s, not the ratings or the order, ended the read', async (_name, setup, ended, rated_) => {
     // Ten unique parts all scoring 0.5: the ratings never go cold, so
     // only the dial can end the read early.
     const controller = new AbortController();
@@ -363,7 +365,8 @@ describe('the rating stop', () => {
     const picked = await pick(ranked(10), { task: 'recall the plan', decide, ...on, limits: setup.limits,
       signal: controller.signal });
     expect(picked.record.pick!.stopWhenCold).toEqual({
-      floor: 0.1, share: 0.2, waves: 1, batches, rated: rated_, unread: 10 - rated_, kept: rated_, atFloor: rated_, ended });
+      // A dial that ends the read leaves its parts unjudged: the ratings did not end it.
+      floor: 0.1, share: 0.2, parts: 2, waves: 1, windows: 0, rated: rated_, unread: 10 - rated_, kept: rated_, atFloor: rated_, ended });
     expect(picked.record.candidates.filter((entry) => entry.status === 'unassessed')
       .every((entry) => entry.status === 'unassessed' && entry.reason === ended)).toBe(true);
     expect(picked.record.effects.find((entry) => entry.setting === 'stopWhenCold')!.summary)
@@ -378,7 +381,7 @@ describe('the rating stop', () => {
     };
     const picked = await pick(ranked(10), { task: 'recall the plan', decide, ...on,
       limits: { ...twoABatch, maxElapsedMs: 20 } });
-    expect(picked.record.pick!.stopWhenCold).toMatchObject({ batches: 0, rated: 0, unread: 10, ended: 'time' });
+    expect(picked.record.pick!.stopWhenCold).toMatchObject({ windows: 0, rated: 0, unread: 10, ended: 'time' });
     expect(picked.record.pick!.stopWhenCold).not.toHaveProperty('cold');
   });
 
@@ -388,15 +391,15 @@ describe('the rating stop', () => {
     const best = [0.9, 0.3, 0.2];
     const { decide, calls } = rated((id) => best[batchOf(id) - 1]!);
     const picked = await pick(ranked(6), { task: 'recall the plan', decide, limits: { maxPerBatch: 2 },
-      stopWhenCold: { share: 0.5 } });
+      stopWhenCold: { share: 0.5, parts: 2 } });
     expect(asked(calls)).toEqual(['p0', 'p1', 'p2', 'p3']);
-    expect(picked.record.pick!.stopWhenCold).toMatchObject({ floor: 0.1, share: 0.5, cold: { batch: 2, under: 'share' } });
+    expect(picked.record.pick!.stopWhenCold).toMatchObject({ floor: 0.1, share: 0.5, cold: { window: 2, under: 'share' } });
 
     // A floor of 0.5 stops at the second batch.
     const strict = rated((id) => best[batchOf(id) - 1]!);
     const early = await pick(ranked(6), { task: 'recall the plan', decide: strict.decide, limits: twoABatch,
-      stopWhenCold: { floor: 0.5 } });
-    expect(early.record.pick!.stopWhenCold).toMatchObject({ floor: 0.5, share: 0.2, cold: { batch: 2, under: 'floor' } });
+      stopWhenCold: { floor: 0.5, parts: 2 } });
+    expect(early.record.pick!.stopWhenCold).toMatchObject({ floor: 0.5, share: 0.2, cold: { window: 2, under: 'floor' } });
   });
 
   it('stays inside a feed size, and the size\'s cut keeps its own reason', async () => {
@@ -436,15 +439,46 @@ describe('the rating stop', () => {
     }));
     const calls: JevCall[] = [];
     const decide = jev({ apiKey: 'test-key', onCall: (call) => { calls.push(call); } });
-    const picked = await pick(parts, { task: 'recall the plan', decide, ...on, limits: { maxPerBatch: 4 } });
+    const picked = await pick(parts, { task: 'recall the plan', decide, stopWhenCold: { parts: 4 }, limits: { maxPerBatch: 4 } });
 
     expect(calls.some((call) => call.status === 400 && call.splits === 2)).toBe(true);
     expect(picked.record.pick!.stopWhenCold).toMatchObject({
-      waves: 2, batches: 4, rated: 16, unread: 4, cold: { batch: 3, under: 'floor' } });
+      waves: 2, windows: 3, rated: 16, unread: 4, cold: { window: 3, under: 'floor' } });
     const read = picked.record.candidates.filter((entry) => index(entry.id) < 16);
     expect(read.every((entry) => entry.status === 'selected' || entry.status === 'rejected')).toBe(true);
     expect(picked.record.candidates.filter((entry) => index(entry.id) >= 16)
       .every((entry) => entry.status === 'unassessed' && entry.reason === 'stopWhenCold')).toBe(true);
+  });
+
+  it('judges windows of parts, not requests, so a cold request inside a warm window does not stop the read', async () => {
+    // Two parts a request; p0 rates 0.9, p4 holds a later answer at 0.5,
+    // every other part 0.05. Judged per request, the second request
+    // (p2, p3) is cold and the read stops before p4. Judged in windows of
+    // four, the first window holds p0 and the second p4, and the read
+    // stops only at the third.
+    const rating = (id: string) => (id === 'p0' ? 0.9 : id === 'p4' ? 0.5 : 0.05);
+    const perRequest = await pick(ranked(20), { task: 'recall the plan', decide: rated(rating).decide, ...on, limits: twoABatch });
+    expect(perRequest.selected.map((part) => part.id)).not.toContain('p4');
+    const { decide, calls } = rated(rating);
+    const windowed = await pick(ranked(20), { task: 'recall the plan', decide, stopWhenCold: { parts: 4 }, limits: twoABatch });
+    expect(windowed.selected.map((part) => part.id)).toContain('p4');
+    expect(asked(calls)).toEqual(Array.from({ length: 12 }, (_, i) => `p${i}`));
+    expect(windowed.record.pick!.stopWhenCold).toMatchObject({ parts: 4, windows: 3, rated: 12, unread: 8, cold: { window: 3, under: 'floor' } });
+  });
+
+  it('judges 150 rated parts at a time when the call sets no window', async () => {
+    const { decide } = rated((id) => (id === 'p2' ? 0.5 : 0.05));
+    const picked = await pick(ranked(20), { task: 'recall the plan', decide, stopWhenCold: {}, limits: twoABatch });
+    expect(picked.record.levers.stopWhenCold).toEqual({ floor: 0.1, share: 0.2, parts: 150 });
+    // Twenty parts never fill a window, so the read reaches the order's end.
+    expect(picked.record.pick!.stopWhenCold).toMatchObject({ parts: 150, windows: 0, rated: 20, unread: 0, ended: 'order' });
+  });
+
+  it('rejects a window that is not a whole number of parts', async () => {
+    const { decide } = rated(() => 0.5);
+    for (const parts of [0, 1.5, -2]) {
+      await expect(pick(ranked(3), { task: 't', decide, stopWhenCold: { parts } })).rejects.toThrow('stopWhenCold.parts must be a whole number, 1 or more.');
+    }
   });
 
   it('records what the stop did for each source in the effects', async () => {
@@ -452,7 +486,7 @@ describe('the rating stop', () => {
     const picked = await pick(ranked(20), { task: 'recall the plan', decide, ...on, limits: twoABatch });
     const effect = picked.record.effects.find((entry) => entry.setting === 'stopWhenCold')!;
     expect(effect).toMatchObject({ source: 'notes', actedOn: 20, added: 0, dropped: null });
-    expect(effect.summary).toBe('stopWhenCold on notes: the ratings went cold at batch 1, whose best rating 0.05 '
+    expect(effect.summary).toBe('stopWhenCold on notes: the ratings went cold at window 1, whose best rating 0.05 '
       + 'was under the floor 0.1, so the read rated 4 of 20 parts in the order and left 16 unread.');
   });
 

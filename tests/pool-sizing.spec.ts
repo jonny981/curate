@@ -106,7 +106,8 @@ it.each<[string, boolean, Partial<PickOptions>]>([
   ['', false, {}],
   [' with a look-back and an exclusion', true, {}],
   // The order decides where the stop falls and what a feed size keeps.
-  [' with the stop set', false, { stopWhenCold: {}, limits: { maxPerBatch: 8 } }],
+  // Windows of eight rated parts, one request's worth, so the stop fires inside this small history.
+  [' with the stop set', false, { stopWhenCold: { parts: 8 }, limits: { maxPerBatch: 8 } }],
   [' with a feed size', false, { feed: { order: 'combsum', size: 300 } }],
 ])('keeps the selected parts, their order, the text and every record entry a lane kept when the fused order only sizes the history%s', { timeout: 120_000 }, async (_name, filtered, options) => {
   const paths = await histories();

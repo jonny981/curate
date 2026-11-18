@@ -1213,12 +1213,12 @@ stop decides how far, set or not, with the same wait for a kept part.
 The fused order gives each candidate the best of its keyword-lane
 positions (a keyword lane is one `searchRanks` index across every
 source) and its position in the history's own best-similarity
-ranking. With `stopWhenCold` set, `{}` taking both defaults, the
+ranking. With `stopWhenCold` set, `{}` taking every default, the
 decide step reads that order in the request-sized batches `limits`
-forms, two batches at a time. When both replies land, it checks the
-two batches in order and stops at the first one whose best decision
-score is under `floor` (0.1), or under `share` (0.2) times the best
-score of every batch before it, but never before the read has kept a
+forms, two batches at a time, and judges the rated parts in windows of
+`parts` (150), in order: it stops at the first window whose best
+decision score is under `floor` (0.1), or under `share` (0.2) times the
+best score of every window before it, but never before the read has kept a
 reference part on the bar the selection keeps it at (its source's bar,
 or the bar `everyScored` sets, flat or by size; a rule kept at its own
 bar does not count) and rated one at or above `floor`: until then it
@@ -1227,10 +1227,17 @@ and a history whose every part scores under `floor`, read the whole
 order even with the stop set, at the full cost of the stop off. The score is the
 one the pick keeps parts on, after every question of the part's set. A part whose text
 repeats an earlier part's takes that part's answer and does not count
-toward its batch's best. The other batch of a pair that went cold is
-rated and kept as usual, so the read passes the cold batch by at most
-one batch. A stop never drops a part it rated: every rated part at or
-above its source's keep bar is kept.
+toward a window. A window is a count of parts, not a request: a request
+holds fewer parts when they are long, about ten of a coding agent's,
+and on the saved ratings of 23 coding-agent tasks a stop judged per
+request found 36 of the 103 known answer parts the ratings kept, where
+windows of 150 found 100. 150 is the most parts one request carried
+when the floor and share were measured, so a window passes wherever
+every request inside it would have passed. Parts left over at the end of
+the order, too few to fill a window, are not judged. The rest of the
+wave that held a cold window is rated and kept as usual. A stop never
+drops a part it rated: every rated part at or above its source's keep
+bar is kept.
 
 A part below the stop is never asked by the read and records
 `unassessed` with reason `'stopWhenCold'`. A part no lane placed in the order records
@@ -1259,19 +1266,19 @@ reads on until some part scores at or above it, to the end of the
 order if none does. On 20 parts, two a batch, the first scoring 0.2
 and the rest 0.05, a floor of 0.1 rates 4 parts and stops, and a floor
 of 0.3 rates all 20 and records `atFloor: 0`. The stop applies only when `everyRanked`
-is unset, and records under `levers.stopWhenCold` as `{ floor, share }`,
+is unset, and records under `levers.stopWhenCold` as `{ floor, share, parts }`,
 or `false` when off. The record's `pick` field keeps `n`, `sent`,
 `questions`, `kept` and which ranking the feed followed (`'fusion'` or
-`'keyword'`), and with the stop on, under `stopWhenCold`: the floor
-and share, the `waves` of requests sent, the `batches` and parts
-(`rated`) of the order it rated, the parts of the order it never rated
+`'keyword'`), and with the stop on, under `stopWhenCold`: the floor,
+share and window size (`parts`), the `waves` of requests sent, the
+`windows` it judged, the parts (`rated`) of the order it rated, the parts of the order it never rated
 (`unread`), the rated parts at or above their keep bar (`kept`), the
 rated parts at or above the floor (`atFloor`), and
 what `ended` the read: `'order'` when it reached the order's end, with
 `kept: 0` when nothing reached the keep bar and `atFloor: 0` when
 nothing reached the floor; `'cold'` when the ratings
 went cold; or the stopping dial that ended it first (`'limits'`,
-`'time'`, `'cancelled'` or `'error'`). Under `cold` it keeps the batch that went cold, counted
+`'time'`, `'cancelled'` or `'error'`). Under `cold` it keeps the window that went cold, counted
 from 1 down the order, its `best` score, the best score before it
 (`bestBefore`) and the test it failed (`under`). Under
 `everyRanked: { c }` the `pick` field keeps `n`, `sent`, `questions`,
@@ -1280,8 +1287,8 @@ from 1 down the order, its `best` score, the best score before it
 ```ts
 const picked = await pick(candidates, { task, decide, stopWhenCold: { share: 0.1 } });
 picked.record.pick?.stopWhenCold;
-// { floor: 0.1, share: 0.1, waves: 2, batches: 4, rated: 520, unread: 1480, kept: 37, atFloor: 21, ended: 'cold',
-//   cold: { batch: 3, best: 0.04, bestBefore: 0.92, under: 'floor' } }
+// { floor: 0.1, share: 0.1, parts: 150, waves: 2, windows: 3, rated: 520, unread: 1480, kept: 37, atFloor: 21, ended: 'cold',
+//   cold: { window: 3, best: 0.04, bestBefore: 0.92, under: 'floor' } }
 ```
 
 The stop saves most on long histories and costs answers on short
@@ -1667,7 +1674,7 @@ record holds `levers.wholeLanes: { keyword, meaning }`.
 | Lever | What "on" does | Cost when on | Measured impact | Where measured |
 | --- | --- | --- | --- | --- |
 | Read `wholeLanes` | Keeps every candidate each keyword and meaning lane returned. Off, each lane cuts where its own score curve flattens (chat: the pre-merge keyword score; `searchPhrases` lanes are never cut, and kind lanes are never cut on phrase counts). | The decide feed grows by the parts the curves would have cut; kept counts vary with each lane's scores, and deciding is the expensive stage. | The cut the off state applies missed 6 of 445 answer messages on the tuning half: three shared no words with the question, three ranked below the cut. Its score and cost impact, and the loss under the label gate, are not yet measured. | Saved tuning-half lanes, 249 questions. |
-| Pick `stopWhenCold` | Off unless set; off, the decide step rates every part of the fused order, so a call's cost grows with the parts the search lanes keep. Set (`{}` takes the defaults), it reads the order two batches at a time and stops at the first batch whose best decision score is under `floor` (0.1), or under `share` (0.2) times the best score before it, never before the read has kept a part and rated one at or above `floor`. Parts below the stop record `unassessed` with reason `'stopWhenCold'`. A source in a `conversationRead()` mode keeps [the chat read](#the-chat-read)'s own stop. | The parts read before the scores go cold, and at most one batch past them; a question the history holds nothing for, and a history whose every part scores under `floor`, read the whole order. A higher `share` reads less; a lower one reads more. A higher `floor` can also read more: the read goes on until some part scores at or above it, to the end of the order if none does. Saved $0.0012 a LoCoMo question and $0.0067 a LongMemEval question; about half the parts of a 5,800-part DolphinBench transcript. | On the replay's held-back halves the defaults rated 64%, 55% and 83% of the parts the runs rated on LoCoMo, DolphinBench and BEAM, and kept 98.5%, 95.2% and 100% of their evidence. On the published runs they cost about 5 to 12 of LoCoMo's 1,540 right answers and stayed inside the noise on LongMemEval. | Saved decision scores of three finished benchmark runs, replayed with no decision call, and the published LoCoMo and LongMemEval texts rebuilt and answered twice ([Stop when the ratings go cold](#stop-when-the-ratings-go-cold)). |
+| Pick `stopWhenCold` | Off unless set; off, the decide step rates every part of the fused order, so a call's cost grows with the parts the search lanes keep. Set (`{}` takes the defaults), it reads the order two batches at a time and stops at the first window of 150 rated parts whose best decision score is under `floor` (0.1), or under `share` (0.2) times the best score before it, never before the read has kept a part and rated one at or above `floor`. Parts below the stop record `unassessed` with reason `'stopWhenCold'`. A source in a `conversationRead()` mode keeps [the chat read](#the-chat-read)'s own stop. | The parts read before the scores go cold, and at most one batch past them; a question the history holds nothing for, and a history whose every part scores under `floor`, read the whole order. A higher `share` reads less; a lower one reads more. A higher `floor` can also read more: the read goes on until some part scores at or above it, to the end of the order if none does. Saved $0.0012 a LoCoMo question and $0.0067 a LongMemEval question; about half the parts of a 5,800-part DolphinBench transcript. | On the replay's held-back halves the defaults rated 64%, 55% and 83% of the parts the runs rated on LoCoMo, DolphinBench and BEAM, and kept 98.5%, 95.2% and 100% of their evidence. On the published runs they cost about 5 to 12 of LoCoMo's 1,540 right answers and stayed inside the noise on LongMemEval. | Saved decision scores of three finished benchmark runs, replayed with no decision call, and the published LoCoMo and LongMemEval texts rebuilt and answered twice ([Stop when the ratings go cold](#stop-when-the-ratings-go-cold)). |
 | Pick `everyRanked` | Unset by default: the decide step reads the whole fused order instead. `true` gives the earlier feed: every ranked reference part reaches the decide step. `{ c }` reads only the top `round(c × N^0.8)`, where N is the number of reference parts the pick received; rules pass through uncut and dropped parts record `unassessed` with reason `'pick'`. | With `true`, the decide step reads every ranked part, the whole ranking: all 850 of 850 parts at one measured size and all 8,475 of 8,475 at the largest. The off dial at c = 0.68 read 150 of the 850 and 944 of the 8,475. | On the keyword-and-label ranking the off dial at c = 0.68 kept 437–442 of 445 answer messages (98–99%) at every size from 127 to 8,475 parts (on keeps the whole ranking) and scored 229 of 249 at $0.18 a question; the on state's score and cost under the label gate are not yet measured. | Saved tuning-half rankings replayed, label gate on and `wholeLanes` on; the tuning dials in the root README. |
 | Source `bar`, pick `everyScored` | Off by default: each source cuts its references below its own `bar`, 0.0146 for every reader. `everyScored` sets one cut for every source in place of their bars: `true` keeps every part with a valid decision probability, including zero; `{ bar }` cuts below a flat bar; `{ bySize }` cuts below a bar that rises with the decided count. | `curate` receives every scored part. At the 0.0146 bar it receives about 70 of a LongMemEval history's 850 parts. | At the 0.0146 bar: 225 of the 249 tuning questions at $0.13 a question (223 on the all-500 replay), and 458 of 500. A saved 0.6 bar removed every fed fragment of 183 labelled answer turns; a 0.05 bar lost 8 of 438 answer messages. 0.0146 is the highest cut that lost no answer message on the tuning questions. | Saved-decision sweep and the LongMemEval runs in the root README. |
 | Source `labels` | Per source: a source that carries label kinds has its reference parts labelled with those kind questions, and the task is asked once per distinct kind set. Sources with no kinds receive no label questions. Stores each set under `directory` and adds a label lane so parts the keyword lanes dropped can reach decide on the `everyRanked` feed; under the fused order the lane reorders the order the decide step reads and admits none. Uses a default cache directory and decision-function ID; `pick.labels` overrides both. | One question per kind for each part and task, once per text, kind set and `deciderId`; later picks reuse the store. | Keyword alone reached 439 of the tuning half's 445 answer messages; with each part labelled, all 445 were reached at 38% of each history. Its score and cost impact is not yet measured. | Saved label run on the tuning half, in the root README. |

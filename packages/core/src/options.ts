@@ -232,13 +232,17 @@ export function checkPickOptions(options: PickOptions): void {
   }
   checkKeys(options.cache, CACHE_KEYS, 'cache');
   checkKeys(options.everyRanked, ['c'], 'everyRanked');
-  checkKeys(options.stopWhenCold, ['floor', 'share'], 'stopWhenCold');
+  checkKeys(options.stopWhenCold, ['floor', 'share', 'parts'], 'stopWhenCold');
   if (options.stopWhenCold !== undefined) {
     const stop: unknown = options.stopWhenCold;
+    const { parts, ...levels } = typeof stop === 'object' && stop !== null ? stop as Record<string, unknown> : {};
     if (stop !== false && (typeof stop !== 'object' || stop === null || Array.isArray(stop)
-      || Object.values(stop).some((value) => value !== undefined
+      || Object.values(levels).some((value) => value !== undefined
         && (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 1)))) {
       throw new TypeError('stopWhenCold must be false or hold a floor and a share between 0 and 1.');
+    }
+    if (parts !== undefined && (!Number.isSafeInteger(parts) || (parts as number) < 1)) {
+      throw new TypeError('stopWhenCold.parts must be a whole number, 1 or more.');
     }
     // The dials name two different feeds and are never combined.
     if (options.everyRanked !== undefined) {

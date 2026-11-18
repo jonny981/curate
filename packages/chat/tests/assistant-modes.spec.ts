@@ -38,13 +38,14 @@ describe('the two assistant-chat modes', () => {
   });
 
   it('stops where the ratings go cold though the call sets no stop', async () => {
-    const parts = Array.from({ length: 40 }, (_, index) => part(index, index % 2 === 0 ? 'person' : 'agent'));
+    // Enough parts for more than two windows of 150 rated parts.
+    const parts = Array.from({ length: 400 }, (_, index) => part(index, index % 2 === 0 ? 'person' : 'agent'));
     const { asked, decide } = rater({ 'chat-0': 0.9 });
     const result = await pick(parts, { task: 'What did I ask about?', decide, modesBySource: { chats: longAssistantChats }, limits: { maxPerBatch: 4 } });
     const rated = new Set(asked.flat());
-    expect(rated.size).toBeLessThan(40);
+    expect(rated.size).toBeLessThan(400);
     const unread = result.record.candidates.filter((entry) => entry.status === 'unassessed' && 'reason' in entry && entry.reason === 'stopWhenCold');
-    expect(unread.length).toBe(40 - rated.size);
+    expect(unread.length).toBe(400 - rated.size);
     expect(result.selected.map((item) => item.id)).toContain('chat-0');
   });
 });

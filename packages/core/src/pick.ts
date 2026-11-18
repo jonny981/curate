@@ -642,31 +642,32 @@ export interface PickRecord {
      *  was cut in, the size given (absent when none was), and how many
      *  ranked reference parts the size left unjudged. */
     readonly feed?: { readonly order: 'combsum'; readonly size?: number; readonly unjudged: number };
-    /** Present when the rating stop read the fused order: the floor
-     *  and share it tested with, the waves of decision requests the
-     *  read sent, the batches of the order it rated, the parts of the
+    /** Present when the rating stop read the fused order: the floor,
+     *  share and window size it tested with, the waves of decision
+     *  requests the read sent, the windows of rated parts it judged, the parts of the
      *  order it rated, the parts of the order it never rated, the rated
      *  parts at or above their keep bar, the rated parts at or above the
      *  floor, and what ended the read: 'order' when it reached the order's end, 'cold'
      *  when the ratings went cold, or the stopping dial that ended it
      *  first ('limits', 'time', 'cancelled', 'error'). `cold` is
-     *  present when the ratings went cold: the batch, counted from 1
+     *  present when the ratings went cold: the window, counted from 1
      *  down the order, whose best rating failed a test, that best
-     *  rating, the best rating of every batch before it, and the test
-     *  it failed. The rest of that batch's wave was already sent, so
-     *  `batches` can pass `cold.batch` by the rest of one wave. */
+     *  rating, the best rating of every window before it, and the test
+     *  it failed. The rest of that window's wave was already sent and
+     *  rated, and is kept as usual. */
     readonly stopWhenCold?: {
       readonly floor: number;
       readonly share: number;
+      readonly parts: number;
       readonly waves: number;
-      readonly batches: number;
+      readonly windows: number;
       readonly rated: number;
       readonly unread: number;
       readonly kept: number;
       readonly atFloor: number;
       readonly ended: 'order' | 'cold' | 'limits' | 'time' | 'cancelled' | 'error';
       readonly cold?: {
-        readonly batch: number;
+        readonly window: number;
         readonly best: number;
         readonly bestBefore: number;
         readonly under: 'floor' | 'share';
@@ -876,12 +877,18 @@ export interface PickOptions {
    *  lane is one `searchRanks` index across every source) and its
    *  position in the history's own best-similarity ranking; the task's
    *  period and the label lane are members of the order too. With the
-   *  stop set (`{}` takes both defaults), the decide step reads the
+   *  stop set (`{}` takes every default), the decide step reads the
    *  order in the request-sized batches the limits form, two batches a
-   *  wave, and after each wave checks the wave's batches in order: the
-   *  read stops at the first batch whose best decision score is under
-   *  `floor` (default 0.1), or under `share` (default 0.2) times the
-   *  best score of every batch before it. It never stops before the
+   *  wave, and judges the rated parts in windows of `parts` (default
+   *  150), in order: the read stops at the first window whose best
+   *  decision score is under `floor` (default 0.1), or under `share`
+   *  (default 0.2) times the best score of every window before it. A
+   *  window is a count of parts, not a request: a request holds fewer
+   *  parts when they are long (about ten of a coding agent's), and a
+   *  stop judged per request then ended reads after a few dozen parts.
+   *  150 is the most parts one request carried when the floor and share
+   *  were measured, so a window passes wherever every request inside it
+   *  would have passed. It never stops before the
    *  read has kept a reference part on the bar the selection keeps it
    *  at, whatever sets that bar, and rated one at or above `floor`, so
    *  a question the history holds nothing for, and a history whose
@@ -891,7 +898,7 @@ export interface PickOptions {
    *  the stop is never asked by the read and records 'unassessed' with
    *  reason 'stopWhenCold'. A higher share stops sooner and spends
    *  less; a lower one reads further and finds more. The floor is both
-   *  the level a batch's best score must reach to keep the read going
+   *  the level a window's best score must reach to keep the read going
    *  and the level some part must reach before the stop may fire, so a
    *  higher floor can also make a read longer: it reads on until some
    *  part scores at or above it, to the end of the order if none does.
@@ -908,10 +915,12 @@ export interface PickOptions {
    *  the chat read reads it (see `pick.chatRead`), and that read's own
    *  stop decides, with the same wait for a kept part. */
   readonly stopWhenCold?: false | {
-    /** Stop when a batch's best decision score is under this. */
+    /** Stop when a window's best decision score is under this. */
     readonly floor?: number;
-    /** Or under this share of the best score of every batch before it. */
+    /** Or under this share of the best score of every window before it. */
     readonly share?: number;
+    /** How many rated parts one window holds: a whole number, 1 or more. */
+    readonly parts?: number;
   };
   /** Off unless set. Which reference parts of the fused order the
    *  decide step is asked about, and how many.
@@ -995,6 +1004,13 @@ export interface PickOptions {
  *  of 0.8 points of LoCoMo evidence. */
 const STOP_FLOOR = 0.1;
 const STOP_SHARE = 0.2;
+/** The rated parts the rating stop judges at a time when a call sets it
+ *  without `parts`: 150, `DEFAULT_MAX_PER_BATCH`, the most parts one
+ *  request carried when the floor and share were measured. On the saved
+ *  ratings of 23 coding-agent tasks, judging each request of about ten
+ *  long parts found 36 of the 103 known answer parts the ratings kept;
+ *  windows of 150 found 100. */
+const STOP_PARTS = 150;
 /** The batches the rating stop sends at once before it checks them.
  *  On the same saved ratings, two a wave read 3, 1 and 1 points more of
  *  LoCoMo's, DolphinBench's and BEAM's parts than one batch at a time,
@@ -1609,7 +1625,7 @@ function settingEffects(input: EffectInput): PickSettingEffect[] {
       const read = input.stopWhenCold.ratedBySource.get(id) ?? 0;
       const unread = order - read;
       const rating = (value: number) => Number(value.toFixed(3));
-      const went = cold === undefined ? '' : `the ratings went cold at batch ${cold.batch}, whose best rating ${rating(cold.best)} was under ${
+      const went = cold === undefined ? '' : `the ratings went cold at window ${cold.window}, whose best rating ${rating(cold.best)} was under ${
         cold.under === 'floor' ? `the floor ${floor}` : `${share} of the best before it, ${rating(cold.bestBefore)}`}`;
       const left = `${read} of ${count(order, 'part')} in the order and left ${unread} unread`;
       effects.push({ setting: 'stopWhenCold', source: id, actedOn: order, added: 0, dropped: null,
@@ -1795,6 +1811,7 @@ export async function pick(
   const stopRule = !fused || options.stopWhenCold === undefined || options.stopWhenCold === false ? undefined : {
     floor: options.stopWhenCold?.floor ?? STOP_FLOOR,
     share: options.stopWhenCold?.share ?? STOP_SHARE,
+    parts: options.stopWhenCold?.parts ?? STOP_PARTS,
   };
   // The levers as resolved, for the record. `pick`
   // never sees `wholeLanes`: the read request carries it, and only a
@@ -3261,7 +3278,7 @@ export async function pick(
       unjudged: [...cutBySource.values()].reduce((total, left) => total + left, 0),
     } }),
     ...(stopRule === undefined ? {} : { stopWhenCold: {
-      ...stopRule, waves: ranked?.waves ?? 0, batches: ranked?.batches ?? 0, rated: rankedRated.length,
+      ...stopRule, waves: ranked?.waves ?? 0, windows: ranked?.windows ?? 0, rated: rankedRated.length,
       unread: insideOrder.length - chatOrder.length - rankedRated.length, kept: readKept, atFloor: readAtFloor, ended: readEnded!,
       ...(ranked?.cold === undefined ? {} : { cold: ranked.cold }),
     } }),

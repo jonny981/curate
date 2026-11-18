@@ -174,13 +174,13 @@ describe('curate command input', () => {
     expect(parseSources({ sources }).maxInFlight).toBeUndefined();
   });
 
-  it.each([[false], [{}], [{ floor: 0.2 }], [{ floor: 0, share: 0.5 }]])('keeps stopWhenCold %j', (value) => {
+  it.each([[false], [{}], [{ floor: 0.2 }], [{ floor: 0, share: 0.5 }], [{ parts: 150 }]])('keeps stopWhenCold %j', (value) => {
     expect(parseSources({ sources: [{ type: 'markdown', path: 'documents' }], stopWhenCold: value }).stopWhenCold).toEqual(value);
   });
 
-  it.each([[true], [0.2], [{ floor: 2 }], [{ share: -1 }], [{ cutoff: 0.1 }], [null]])('rejects stopWhenCold %j', (value) => {
+  it.each([[true], [0.2], [{ floor: 2 }], [{ share: -1 }], [{ cutoff: 0.1 }], [null], [{ parts: 0 }], [{ parts: 1.5 }], [{ parts: '150' }]])('rejects stopWhenCold %j', (value) => {
     expect(() => parseSources({ sources: [{ type: 'markdown', path: 'documents' }], stopWhenCold: value }))
-      .toThrow('stopWhenCold must be false or { floor, share }, each a number between 0 and 1.');
+      .toThrow('stopWhenCold must be false or { floor, share, parts }: floor and share each a number between 0 and 1, parts a whole number, 1 or more.');
   });
 
   it.each(['quick', 'normal', 'deep'])('rejects the removed thoroughness setting %s, naming stopWhenCold', (level) => {
@@ -1309,11 +1309,11 @@ describe('a run through core decision calls', () => {
     // the stop may not fire, and the read reaches the end of the order.
     expect(record.pick?.pick?.stopWhenCold).toMatchObject({ floor: 0.9, share: 0.2, waves: 1,
       atFloor: 0, ended: 'order', unread: 0 });
-    expect(record.pick?.levers?.stopWhenCold).toEqual({ floor: 0.9, share: 0.2 });
+    expect(record.pick?.levers?.stopWhenCold).toEqual({ floor: 0.9, share: 0.2, parts: 150 });
     expect(record.pick?.levers).not.toHaveProperty('everyRanked');
   });
 
-  it.each([[{}, { floor: 0.1, share: 0.2 }], [{ stopWhenCold: false }, false]] as const)(
+  it.each([[{}, { floor: 0.1, share: 0.2, parts: 150 }], [{ stopWhenCold: false }, false]] as const)(
     'stops where the ratings go cold at the library\'s own levels unless the settings say false: %j', async (setting, levers) => {
       const directory = await folder();
       const home = join(directory, 'home');
@@ -1386,7 +1386,7 @@ describe('a run through core decision calls', () => {
     const { record } = await run(['--sources', sourcesFile, 'orchard'], call);
 
     expect(record.status).toBe('complete');
-    expect(record.pick.levers.stopWhenCold).toEqual({ floor: 0.1, share: 0.2 });
+    expect(record.pick.levers.stopWhenCold).toEqual({ floor: 0.1, share: 0.2, parts: 150 });
     const unread = (sourceId: (id: string) => boolean) => record.pick.candidates.filter((entry: { sourceId: string; status: string; reason?: string }) =>
       sourceId(entry.sourceId) && entry.status === 'unassessed' && entry.reason === 'stopWhenCold').length;
     // The notes' ranked read went cold and left parts unread; no transcript part is left unread by that stop.
@@ -1408,7 +1408,8 @@ describe('a run through core decision calls', () => {
     const sourcesFile = join(directory, 'sources.json');
     await writeFile(sourcesFile, JSON.stringify({
       records: true, sentenceCutoff: false,
-      sources: [{ type: 'markdown', path: notes }], stopWhenCold: { floor: 0.9 },
+      // One rated part a window, so the stop can fire inside the first wave.
+      sources: [{ type: 'markdown', path: notes }], stopWhenCold: { floor: 0.9, parts: 1 },
     }));
     vi.stubEnv('HOME', home);
     vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
@@ -1431,10 +1432,10 @@ describe('a run through core decision calls', () => {
     const { call } = subscriptionReply(searches());
     const { record } = await run(['--sources', sourcesFile, 'orchard'], call);
 
-    // The first batch is warm; the second scores under the floor of 0.9,
-    // and the read stops after its first wave.
+    // The first request's parts are warm; the first part of the second
+    // scores under the floor of 0.9, and the read stops after its first wave.
     const stop = record.pick.pick.stopWhenCold;
-    expect(stop).toMatchObject({ ended: 'cold', waves: 1, cold: { batch: 2, under: 'floor' } });
+    expect(stop).toMatchObject({ ended: 'cold', waves: 1, parts: 1, cold: { under: 'floor' } });
     expect(stop.unread).toBeGreaterThan(0);
     expect(warned.mock.calls.map(([line]) => String(line)).filter((line) => line.includes('stopWhenCold'))).toEqual([
       `The rating stop ended the read where the ratings went cold, with ${stop.unread} of ${stop.rated + stop.unread} ranked parts unread; set "stopWhenCold": false in ${sourcesFile} to read them all.`,
@@ -1472,7 +1473,7 @@ describe('a run through core decision calls', () => {
     const { record } = await run(['--sources', sourcesFile, 'orchard'], call);
 
     expect(record.status).toBe('complete');
-    expect(record.pick.levers.stopWhenCold).toEqual({ floor: 0.1, share: 0.2 });
+    expect(record.pick.levers.stopWhenCold).toEqual({ floor: 0.1, share: 0.2, parts: 150 });
     const stop = record.pick.pick.stopWhenCold;
     expect(stop).toMatchObject({ ended: 'order', unread: 0, atFloor: 0 });
     expect(stop.waves).toBeGreaterThan(1);

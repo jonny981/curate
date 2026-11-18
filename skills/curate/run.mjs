@@ -194,9 +194,10 @@ export function parseSources(value, base = process.cwd()) {
   if (value.stopWhenCold !== undefined && value.stopWhenCold !== false) {
     const stop = value.stopWhenCold;
     if (stop === null || typeof stop !== 'object' || Array.isArray(stop)
-      || Object.entries(stop).some(([key, number]) => !['floor', 'share'].includes(key)
-        || typeof number !== 'number' || !(number >= 0 && number <= 1))) {
-      throw new Error('stopWhenCold must be false or { floor, share }, each a number between 0 and 1.');
+      || Object.entries(stop).some(([key, number]) => !['floor', 'share', 'parts'].includes(key)
+        || (key === 'parts' ? !(Number.isSafeInteger(number) && number >= 1)
+          : typeof number !== 'number' || !(number >= 0 && number <= 1)))) {
+      throw new Error('stopWhenCold must be false or { floor, share, parts }: floor and share each a number between 0 and 1, parts a whole number, 1 or more.');
     }
   }
   if (value.answerTokens !== undefined && (!Number.isSafeInteger(value.answerTokens) || value.answerTokens < 1)) {
