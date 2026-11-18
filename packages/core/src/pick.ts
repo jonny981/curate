@@ -680,7 +680,8 @@ export interface PickRecord {
      *  read has seen. `requests` counts the requests read before the
      *  stop, `segments` the segments opened, `units` the units of agent
      *  work (a subagent's prompt or report) with a part answered, opened
-     *  after them, `rated` the parts the decide step answered for it,
+     *  after them, `rated` the parts a request of this pick answered for
+     *  it, `reused` those whose decision came from the decision store,
      *  `unread` the chat parts of the order it never reached,
      *  and `ended` what ended it: 'fall', 'order' when the order ran out
      *  first, or the stopping dial. */
@@ -689,6 +690,7 @@ export interface PickRecord {
       readonly segments: number;
       readonly units: number;
       readonly rated: number;
+      readonly reused: number;
       readonly unread: number;
       readonly ended: 'fall' | 'order' | 'limits' | 'time' | 'cancelled' | 'error';
     };
@@ -2990,8 +2992,13 @@ export async function pick(
   const ownRead = (candidate: MemoryCandidate) => readOf(candidate) !== rankedRead;
   const chatOrder = feed.filter(ownRead);
   if (chatOrder.length > 0) feed = feed.filter((candidate) => !ownRead(candidate));
+  // A part whose every answer came from the decision store.
+  const reusedOf = (candidate: MemoryCandidate) => {
+    const answer = combined.get(candidate);
+    return answer?.status === 'answered' && 'reused' in answer && answer.reused === true;
+  };
   const shared = { rate: evaluate, waves: nextWave, copied: (candidate: MemoryCandidate) => copied.has(candidate),
-    score: scoreOf, stopped: () => stop !== undefined,
+    score: scoreOf, stopped: () => stop !== undefined, reused: reusedOf,
     ...(stopRule === undefined ? {} : { stop: stopRule }) };
   // The ranked read of the rest of the feed. It holds its stop until
   // selection keeps a part it rated, on the bar the selection pass will
@@ -3098,9 +3105,11 @@ export async function pick(
         reason: result.reason === 'chatRead' ? stop ?? 'chatRead' : result.reason });
     }
     if (result.requests !== undefined) {
-      // A part counts as rated when the decide step answered it.
+      // A part counts as rated when a request of this pick answered it,
+      // and as reused when its decision came from the store.
       chatRecord = { requests: result.requests, segments: result.segments ?? 0, units: result.units ?? 0,
-        rated: result.read.filter((part) => scoreOf(part) !== undefined).length,
+        rated: result.read.filter((part) => scoreOf(part) !== undefined && !reusedOf(part)).length,
+        reused: result.read.filter(reusedOf).length,
         unread: result.unread.length, ended: result.ended === 'stopped' ? stop! : result.ended as 'fall' | 'order' };
     }
   }

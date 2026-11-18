@@ -102,6 +102,24 @@ describe('the chat read', () => {
     }
   });
 
+  it('does not count a reused decision toward its stop', async () => {
+    // As above, but request 1's ten warm parts were decided in an earlier
+    // pick of the call: only request 2's three are new, so the stop has
+    // nothing to measure them against and the read goes on to request 3.
+    const parts = personSessions(336);
+    const warm = (from: number, count: number) => Object.fromEntries(Array.from({ length: count },
+      (_, index) => [idOf(`s${from + index}`, 1), 0.9]));
+    const ratings = { ...warm(0, 10), ...warm(112, 3), ...warm(224, 50) };
+    const scores = new Map(parts.map((part) => [part, ratings[part.id] ?? 0.001]));
+    const reused = new Set(Object.keys(warm(0, 10)));
+    const asked: MemoryCandidate[] = [];
+    const result = await chatRead({ parts, order: parts.filter((part) => part.author === 'person'),
+      byKeyword: parts.filter((part) => part.author === 'person'), lanes: [], rate: async (some) => { asked.push(...some); },
+      score: (part) => scores.get(part), kept: () => true, stopped: () => false, reused: (part) => reused.has(part.id) });
+    expect(result.requests).toBe(3);
+    expect(asked.some((part) => part.id === idOf('s224', 1))).toBe(true);
+  });
+
   it('does not stop before the first warm part', async () => {
     const parts = personSessions(336);
     const rate = (from: number, count: number, value: number) => Object.fromEntries(Array.from({ length: count },
@@ -479,7 +497,7 @@ describe('the chat read under a caller\'s limits', () => {
       return Object.fromEntries(questions.map((question) => [question.key, { status: 'answered', probability: 0.9 }]));
     };
     const read = await pick(parts, { task, decide, ...agentRead, limits, signal: controller.signal });
-    expect(read.record.pick?.chatRead).toEqual({ requests: 1, segments: 0, units: 0, rated, unread: 336 - rated, ended });
+    expect(read.record.pick?.chatRead).toEqual({ requests: 1, segments: 0, units: 0, rated, reused: 0, unread: 336 - rated, ended });
     expect(read.record.candidates.filter((entry) => entry.status === 'selected')).toHaveLength(rated);
     expect(read.record.candidates.filter((entry) => entry.status === 'unassessed')
       .every((entry) => entry.status === 'unassessed' && entry.reason === ended)).toBe(true);

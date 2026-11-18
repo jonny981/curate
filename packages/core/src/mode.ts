@@ -61,6 +61,8 @@ export interface ModeReadInput {
   readonly stopped: () => boolean;
   /** The call's rating stop (`stopWhenCold`), when set. */
   readonly stop?: { readonly floor: number; readonly share: number };
+  /** True when a part's decision came from an earlier pick of the call. */
+  readonly reused?: (part: MemoryCandidate) => boolean;
   /** The search texts the read's sources read, the task first. */
   readonly queries?: readonly string[];
   /** The call's local embedder, when it has one. */
@@ -166,6 +168,7 @@ export function conversationRead(rules: ConversationRules = {}): ModeRead {
     const result = await chatRead({ parts: input.parts, order: input.order, byKeyword: input.byKeyword,
       lanes: input.lanes, rate: input.rate, score: input.score, kept: input.kept, stopped: input.stopped, rules,
       ...(input.queries === undefined ? {} : { queries: input.queries }),
+      ...(input.reused === undefined ? {} : { reused: input.reused }),
       ...(input.embed === undefined ? {} : { embed: input.embed }) });
     const reached = new Set(result.read);
     return { read: result.read, unread: input.order.filter((part) => !reached.has(part)), reason: 'chatRead',

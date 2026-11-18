@@ -105,6 +105,13 @@ describe('the second search on coding-agent transcripts', () => {
     expect(roundTwo).toContain(answer.id);
     expect(roundTwo.filter((id) => roundOne.has(id))).toEqual([]);
     expect(again.record.cache.reused).toBeGreaterThan(0);
+    // Its record counts the parts it rated anew apart from those whose
+    // decision round one made.
+    const reusedIds = new Set(again.record.candidates.filter((entry: { questions?: { reused?: boolean }[] }) =>
+      entry.questions?.length && entry.questions.every((question) => question.reused === true)).map((entry: { id: string }) => entry.id));
+    expect(again.record.pick.chatRead.rated).toBe(new Set(roundTwo).size);
+    expect(again.record.pick.chatRead.reused).toBe(reusedIds.size);
+    expect(again.record.pick.chatRead.reused).toBeGreaterThan(0);
     // The kept part joins round one's selection, with its own entry.
     expect(again.added).toBe(1);
     expect(again.picked.selected.map((candidate: MemoryCandidate) => candidate.id)).toContain(answer.id);

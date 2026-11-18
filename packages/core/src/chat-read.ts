@@ -84,6 +84,10 @@ export interface ChatReadInput {
   readonly kept: (parts: readonly MemoryCandidate[]) => boolean;
   /** True once a stopping dial has ended the call. */
   readonly stopped: () => boolean;
+  /** True when a part's decision came from an earlier pick of the call
+   *  (a stored decision), not from a request of this one. Such a part is
+   *  read for free and does not count toward the stop. */
+  readonly reused?: (part: MemoryCandidate) => boolean;
   /** The call's search texts, the task first: the units of agent work
    *  are ranked against them. None: no unit start. */
   readonly queries?: readonly string[];
@@ -490,7 +494,7 @@ export async function chatRead(input: ChatReadInput): Promise<ChatReadResult> {
         hot = hot.filter((_, index) => ring[index]!.some(walkable));
       }
     }
-    log.push({ ratings: read.slice(before).map(score), best });
+    log.push({ ratings: read.slice(before).filter((part) => input.reused?.(part) !== true).map(score), best });
   };
 
   let ended: ChatReadResult['ended'] = 'order';
