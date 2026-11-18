@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -2220,13 +2221,17 @@ export async function pick(
   // The first ask of each text: its part, its question's key, and when
   // its answer has applied, so a copy of a text another read has in
   // flight waits for it. Held by everything else the answer depends on
-  // (`askedWith`), then by the part's own text, so no key copies a text.
+  // (`askedWith`), then by a hash of the part's own text (`sameText`), so
+  // the map holds no text: a text a reader hands on demand is read again
+  // when it is asked, not kept.
   interface FirstAsk {
     readonly candidate: MemoryCandidate;
     readonly key: string;
     readonly settled: Promise<void>;
   }
   const decisionsByText = new Map<string, Map<string, FirstAsk>>();
+  // Two texts share one answer exactly when their hashes match (SHA-256).
+  const sameText = (text: string) => createHash('sha256').update(text).digest('base64');
   // Requests open, and batches packed whose answers have not applied:
   // reads that run at once share the caller's `maxInFlight` and
   // `maxBatches`.
@@ -2298,9 +2303,10 @@ export async function pick(
         const like = askedWith(item, question);
         let texts = decisionsByText.get(like);
         if (texts === undefined) decisionsByText.set(like, texts = new Map());
-        const first = texts.get(item.candidate.text);
+        const text = sameText(item.candidate.text);
+        const first = texts.get(text);
         if (first !== undefined) { copies.push({ item, first }); return false; }
-        texts.set(item.candidate.text, { candidate: item.candidate, key: item.spec.key, settled });
+        texts.set(text, { candidate: item.candidate, key: item.spec.key, settled });
         return true;
       });
     }
@@ -3056,7 +3062,7 @@ export async function pick(
         const question = questionOf(item);
         sized(item, question);
         const like = askedWith(item, question);
-        const text = item.candidate.text;
+        const text = sameText(item.candidate.text);
         if (decisionsByText.get(like)?.has(text) || shared.get(like)?.has(text)) continue;
         let texts = shared.get(like);
         if (texts === undefined) shared.set(like, texts = new Set());

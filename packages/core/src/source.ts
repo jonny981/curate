@@ -1271,7 +1271,13 @@ export async function pickFromSources(
   // Each source reads the call's task and search lines unless the
   // caller names its own; the units of agent work are ranked against them.
   const queries = [...new Set([request.task, ...(request.searchLines ?? [])].map((line) => line.trim()).filter(Boolean))];
-  const result = await pick(combined, {
+  // The lookups hand parts that read their text on demand: once the
+  // pick ends, the kept parts take their text, checked, and the lookups
+  // let go of their connections.
+  const closeLookups = () => { for (const parts of Object.values(partsBySource)) parts.close(); };
+  let picked: Awaited<ReturnType<typeof pick>>;
+  try {
+    picked = await pick(combined, {
     ...options, taskDate: asOf, timeZone,
     queriesBySource: Object.fromEntries(sources.map((source) => [source.id, options.queriesBySource?.[source.id] ?? queries])),
     ...(options.embed ?? request.meaning?.embed ? { embed: options.embed ?? request.meaning!.embed } : {}),
@@ -1280,7 +1286,20 @@ export async function pickFromSources(
     ruleBarBySource, modesBySource, readsBySource,
     ...(Object.keys(historySizeBySource).length === 0 ? {} : { historySizeBySource }),
     ...(Object.keys(partsBySource).length === 0 ? {} : { partsBySource }),
-  });
+    });
+  } catch (error) {
+    closeLookups();
+    throw error;
+  }
+  let selected = picked.selected;
+  const settledChanged: Record<string, number> = Object.create(null);
+  for (const [sourceId, parts] of Object.entries(partsBySource)) {
+    const settled = parts.settle(selected);
+    selected = settled.kept;
+    if (settled.changed > 0) settledChanged[sourceId] = settled.changed;
+  }
+  closeLookups();
+  const result = { ...picked, selected };
   // The read request's lever joins the pick's resolved set.
   // `meaning.wholeLanes` resolves the
   // meaning lanes' own state — the keyword lanes' when unset — so an
@@ -1327,6 +1346,9 @@ export async function pickFromSources(
   for (const [at, read] of reads.entries()) {
     if (read.status === 'read' && read.index !== undefined) index[sources[at]!.id] = read.index;
     if (read.status === 'read' && (read.changed ?? 0) > 0) changed[sources[at]!.id] = read.changed!;
+  }
+  for (const [sourceId, count] of Object.entries(settledChanged)) {
+    changed[sourceId] = (changed[sourceId] ?? 0) + count;
   }
   // The names found above, also when every source with name lanes on was absent.
   // A history's size went to the pick and stays out of the reads.

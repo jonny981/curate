@@ -26,6 +26,8 @@ const source = (id: string, byKey: boolean): CandidateSource => {
     *person() { for (const one of all) if (one.author === 'person') yield { ...one, poolOnly: true }; },
     units: () => [],
     place: (candidate) => { const at = place(candidate); return at < 0 ? Number.POSITIVE_INFINITY : at; },
+    settle: (selected) => ({ kept: selected, changed: 0 }),
+    close: () => {},
     dealt: (laneIds) => {
       const rest = all.filter((one) => !laneIds.has(one.id));
       return (candidate) => rest.findIndex((one) => one.id === candidate.id);

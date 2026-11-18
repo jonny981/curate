@@ -52,6 +52,14 @@ export interface ModeParts {
    *  given the whole pool would list them in. `laneIds` are the ids of
    *  the source's parts the lanes hold. */
   dealt(laneIds: ReadonlySet<string>): (part: MemoryCandidate) => number;
+  /** The parts the call keeps, in their order. A part this lookup made
+   *  holds no text of its own: its text is read once more and checked
+   *  against the text it was made from, and it comes back holding that
+   *  text. A part whose row no longer holds that text, then or at any
+   *  read during the call, is left out and counted in `changed`. */
+  settle(selected: readonly MemoryCandidate[]): { readonly kept: readonly MemoryCandidate[]; readonly changed: number };
+  /** Lets go of the index connection the lookup holds open. */
+  close(): void;
   /** The same parts with the pool order `compare` gives (a stable sort
    *  of the reader's own order): a caller that reorders the source's
    *  whole read reorders these the same way. The reader sorts one array

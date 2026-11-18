@@ -103,6 +103,18 @@ interface WalkContext {
   readonly countSkips?: { n: number };
 }
 
+/** The key under which a part the parts lookup made keeps its place in
+ *  the call's walk. */
+const PART = Symbol('part');
+
+/** A 32-bit FNV-1a hash of a text: whether a stored row still holds the
+ *  text a part was made from. */
+function textHash(text: string): number {
+  let hash = 2166136261;
+  for (let at = 0; at < text.length; at += 1) hash = Math.imul(hash ^ text.charCodeAt(at), 16777619);
+  return hash >>> 0;
+}
+
 function object(value: unknown): Json {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Json : {};
 }
@@ -1791,20 +1803,53 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           const path = stored!.path;
           const made = new Map<number, MemoryCandidate>();
           const madeAt = new WeakMap<MemoryCandidate, number>();
-          // The parts made, a few at a time, on a connection of their own.
+          // The lookup's own connection to the index, open until `close`.
+          let reader: IndexDatabase | undefined;
+          let textRow: ReturnType<IndexDatabase['prepare']> | undefined;
+          const own = () => reader ??= openIndexFileNow(path);
+          // A made part holds no text: it reads its text from its row each
+          // time it is asked for, and the hash of the text it was made from
+          // tells whether the row still holds that text.
+          const madeHash = new Map<number, number>();
+          const changedParts = new Set<number>();
+          const textAt = (index: number): string => {
+            textRow ??= own().prepare('SELECT line, block, piece, text FROM parts WHERE transcript = ? AND ordinal = ?');
+            const row = textRow.get(c.transcripts[index]!, c.ordinals[index]!) as
+              { line: number; block: number; piece: number; text: string } | undefined;
+            const same = row !== undefined && row.line === c.lines[index] && row.block === c.blocks[index]
+              && row.piece === c.pieces[index];
+            const text = same ? row.text : '';
+            if (!same || textHash(text) !== madeHash.get(index)) changedParts.add(index);
+            return text;
+          };
+          // A made part: its fields, its place in the walk, and its text
+          // read from its row whenever it is asked for (`textAt`). A copy
+          // that keeps the prototype and the fields reads the same text.
+          class MadePart {
+            readonly [PART]: number;
+            constructor(fields: Omit<MemoryCandidate, 'text'>, index: number) {
+              Object.assign(this, fields);
+              this[PART] = index;
+            }
+            get text(): string {
+              return textAt(this[PART]);
+            }
+          }
+          // The parts made, a few at a time, on the lookup's connection.
           const make = (indexes: readonly number[]): (MemoryCandidate | undefined)[] => {
             const wanted = indexes.filter((index) => !made.has(index));
             if (wanted.length > 0) {
               const previous = database;
-              database = openIndexFileNow(path);
+              database = own();
               try {
                 for (const [index, text] of textsOf(wanted)) {
-                  const candidate: MemoryCandidate = { ...held(index, text, { signals: {} }), searchRanks: undefined, poolOnly: true };
+                  const { text: _text, ...fields } = held(index, text, { signals: {} });
+                  const candidate = new MadePart({ ...fields, searchRanks: undefined, poolOnly: true }, index) as unknown as MemoryCandidate;
+                  madeHash.set(index, textHash(text));
                   made.set(index, candidate);
                   madeAt.set(candidate, index);
                 }
               } finally {
-                database.close();
                 database = previous;
               }
             }
@@ -1963,6 +2008,23 @@ export function chat(options: ChatOptions = {}): CandidateSource {
                   const own = position[at]!;
                   return own >= 0 ? own : position[(firsts ?? (first(at), firsts))!.get(c.places[at]!) ?? at]!;
                 };
+              },
+              settle(selected) {
+                const kept: MemoryCandidate[] = [];
+                let changed = 0;
+                for (const part of selected) {
+                  if (!(part instanceof MadePart)) { kept.push(part); continue; }
+                  const { [PART]: at, ...fields } = part as unknown as MadePart & Omit<MemoryCandidate, 'text'>;
+                  const text = textAt(at);
+                  if (changedParts.has(at)) { changed += 1; continue; }
+                  kept.push({ ...fields, text } as MemoryCandidate);
+                }
+                return { kept, changed };
+              },
+              close() {
+                reader?.close();
+                reader = undefined;
+                textRow = undefined;
               },
               ordered(compare) {
                 return withOrder(() => {

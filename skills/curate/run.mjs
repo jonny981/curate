@@ -460,9 +460,14 @@ export async function snapshotCodex(entry, folder) {
     ...(exclude === undefined ? {} : { exclude }), mode: chatMode(entry) });
   // A part's id and transcript name the snapshot path; the call sees the
   // original path, and the source is asked with the snapshot path again.
-  const named = (candidate, from, to) => ({ ...candidate, id: candidate.id.replace(from, to),
-    ...(candidate.place === undefined ? {} : { place: { ...candidate.place,
-      container: candidate.place.container.replace(from, to) } }) });
+  // The copy keeps the part's prototype and each field as the part
+  // defines it, so a part that reads its text on demand still holds none.
+  const named = (candidate, from, to) => {
+    const copy = Object.create(Object.getPrototypeOf(candidate), Object.getOwnPropertyDescriptors(candidate));
+    copy.id = candidate.id.replace(from, to);
+    if (candidate.place !== undefined) copy.place = { ...candidate.place, container: candidate.place.container.replace(from, to) };
+    return copy;
+  };
   const shown = (candidate) => named(candidate, folder, entry.path);
   const asked = (candidate) => named(candidate, entry.path, folder);
   const renamed = (parts) => ({
@@ -470,6 +475,18 @@ export async function snapshotCodex(entry, folder) {
     *person() { for (const part of parts.person()) yield shown(part); },
     units: () => parts.units().map(shown),
     place: (part) => parts.place(asked(part)),
+    settle: (selected) => {
+      const back = new Map();
+      const inner = selected.map((part) => {
+        if (part.sourceId !== source.id) return part;
+        const copy = asked(part);
+        back.set(copy, part);
+        return copy;
+      });
+      const { kept, changed } = parts.settle(inner);
+      return { kept: kept.map((part) => back.get(part) ?? (part.sourceId === source.id ? shown(part) : part)), changed };
+    },
+    close: () => parts.close(),
     dealt: (laneIds) => {
       const dealt = parts.dealt(new Set([...laneIds].map((id) => id.replace(entry.path, folder))));
       return (part) => dealt(asked(part));
