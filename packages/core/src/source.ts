@@ -9,7 +9,7 @@ import { cutLane, laneBend, laneScoreOf, type SearchLaneReport } from './lanes.j
 import {
   checkCascade, checkMode, checkPickOptions, checkReadRequest, checkWriteQuestions, findTaskNames,
 } from './options.js';
-import { rankedRead, type Mode, type ModeParts } from './mode.js';
+import { type Mode, type ModeParts } from './mode.js';
 import { LABEL_KINDS, type LabelKind } from './labels.js';
 import { datedIn, durationMs, taskMoment, taskPeriod, timeZoneOf, zonedIso, type TaskPeriod } from './time.js';
 import type { StoredIndexReport } from './stored-index.js';
@@ -248,9 +248,9 @@ export type CandidateReadResult =
        *  left out so far, because another call re-indexed their file and
        *  their stored row no longer holds them. */
       readonly changed?: number;
-      /** A sizing read's answer for a source whose mode reads on its own:
-       *  the parts no lane kept, found by key when that read reaches them
-       *  (see `ModeParts`). */
+      /** A sizing read's answer for a source whose mode's read walks each
+       *  part's whole transcript (`walks`): the parts no lane kept, found
+       *  by key when that read reaches them (see `ModeParts`). */
       readonly parts?: ModeParts;
       /** Set by pickFromSources on a source it sized by key (`parts`) in
        *  place of `parts`: visits every part of the source's whole read
@@ -753,10 +753,11 @@ async function readSearches(
   // source ID, the reader's own or its whole read's, are kept to size the
   // history once every lane is in.
   let poolKeys: Map<string, Set<string>> | undefined;
-  // A source whose mode reads on its own is sized only when its reader
-  // hands the parts no lane kept by key (`parts`); one that cannot keeps
-  // its whole pool, as a mode read of its own reaches any part.
-  const ownRead = (source.mode?.read ?? rankedRead) !== rankedRead;
+  // A source whose read walks each part's whole transcript (`walks`) is
+  // sized only when its reader hands the parts no lane kept by key
+  // (`parts`); one that cannot keeps its whole pool, as such a read
+  // reaches any part.
+  const ownRead = source.mode?.read.walks === true;
   let poolForm = request.labelPool;
   let parts: ModeParts | undefined;
   if (poolForm === 'size' && source.role === 'reference' && (laneCut || request.limit !== undefined)) {
@@ -774,7 +775,7 @@ async function readSearches(
     if (ownRead && sized.parts === undefined) {
       poolForm = 'count';
     } else {
-      // Only a mode's own read finds parts by key; a ranked read counts them.
+      // Only a read that walks finds parts by key; any other read counts them.
       parts = ownRead ? sized.parts : undefined;
       poolKeys = new Map(sized.poolIds === undefined || sized.poolIds.length === 0 ? [] : [[source.id, new Set(sized.poolIds)]]);
       for (const candidate of sized.candidates) {
@@ -1242,9 +1243,9 @@ export async function pickFromSources(
       // part the period brings in that no lane kept is ordered among the
       // pool's parts, so a period keeps the pool.
       labelPool: (source.labelKinds?.length ?? 0) > 0 ? 'gate'
-        // A mode read of its own walks each part's whole transcript: its
-        // source is sized when the reader hands the rest by key, and keeps
-        // the whole pool when it cannot (see `readSearches`).
+        // A read that walks each part's whole transcript: its source is
+        // sized when the reader hands the rest by key, and keeps the whole
+        // pool when it cannot (see `readSearches`).
         : poolSizing.on && options.everyRanked === undefined && period === undefined ? 'size'
           : options.everyRanked !== true ? 'count' : undefined,
       // The fused order reads every part's meaning position, so the

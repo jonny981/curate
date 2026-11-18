@@ -5,3 +5,9 @@ import { MARKDOWN_CASCADE } from './questions.js';
  *  `MARKDOWN_CASCADE` decision questions, the 0.0146 bar and the ranked
  *  read. */
 export const notes: Mode = { name: 'notes', questions: MARKDOWN_CASCADE, bar: 0.0146, read: rankedRead };
+
+/** Messages between people, the mode of `whatsapp()`: the
+ *  `MARKDOWN_CASCADE` decision questions, as the LoCoMo runs measured
+ *  them on sessions read as Markdown notes, the 0.0146 bar, the ranked
+ *  read, and a text of the parts weighing at least 0.1 of the best. */
+export const directMessages: Mode = { name: 'direct-messages', questions: MARKDOWN_CASCADE, bar: 0.0146, read: rankedRead, textShare: 0.1 };

@@ -9,7 +9,7 @@ import { curate, DEFAULT_MAX_QUESTION_TEXT, levelDistribution, pickFromSources, 
 import { jev } from '@curatejs/core/models';
 import { agentTranscripts, chat, scrubChat, AGENT_CHAT_CASCADE, CHAT_SEARCH_LINE_REGISTER, JUDGMENT_CHAT_CASCADE } from '@curatejs/chat';
 import { git, GIT_HISTORY_CASCADE, GIT_SEARCH_LINE_REGISTER } from '@curatejs/git';
-import { knowledgeBase, markdown, MARKDOWN_CASCADE, MARKDOWN_SEARCH_LINE_REGISTER } from '@curatejs/markdown';
+import { knowledgeBase, markdown, whatsapp, MARKDOWN_CASCADE, MARKDOWN_SEARCH_LINE_REGISTER } from '@curatejs/markdown';
 
 // A settings path: absolute, from the home folder (`~/`), or from `base`.
 const homePath = (path, base = process.cwd()) => resolve(base, path.startsWith('~/') ? join(homedir(), path.slice(2)) : path);
@@ -130,6 +130,7 @@ const SOURCE_ENTRY_KEYS = {
   codex: ['type', 'path', 'since', 'exclude', 'allowedCwd', 'questions', 'bar', 'always'],
   git: ['type', 'path', 'since', 'exclude', 'include', 'always'],
   markdown: ['type', 'path', 'since', 'exclude', 'always'],
+  whatsapp: ['type', 'path', 'since', 'dates', 'always'],
 };
 
 // The settings may list no source: a call inside a git repository reads the
@@ -141,7 +142,7 @@ export function parseSources(value, base = process.cwd()) {
   const sources = (value.sources ?? []).map((source) => {
     // A chat entry with no path reads the project's own transcripts for its tool.
     const pathless = source?.path === undefined && ['claude-code', 'codex'].includes(source?.type);
-    if (!source || !['claude-code', 'codex', 'git', 'markdown'].includes(source.type)
+    if (!source || !['claude-code', 'codex', 'git', 'markdown', 'whatsapp'].includes(source.type)
       || (!pathless && (typeof source.path !== 'string' || !source.path.trim()))) {
       throw new Error('Each source needs a type, and a path unless it is a claude-code or codex source.');
     }
@@ -171,6 +172,9 @@ export function parseSources(value, base = process.cwd()) {
       throw new Error('bar must be a number between 0 and 1.');
     }
     if (source.always !== undefined && typeof source.always !== 'boolean') throw new Error('always must be a boolean.');
+    if (source.dates !== undefined && !['day-first', 'month-first'].includes(source.dates)) {
+      throw new Error('dates must be "day-first" or "month-first".');
+    }
     const allowed = source.allowedCwd;
     if (source.type === 'codex' && !pathless) {
       const folders = Array.isArray(allowed) ? allowed : [allowed];
@@ -955,8 +959,8 @@ export async function pickFullSources(sources, call, options, context = { files:
 // words of its warmest rated parts become a second search's lines, and a
 // second pick reads that search's order with the same stop and round
 // one's decisions, so only parts round one never rated are rated; a
-// reused decision does not count toward that stop, and round two's record
-// counts its new and reused parts apart. The
+// reused decision counts toward that stop with its stored rating, and
+// round two's record counts its new and reused parts apart. The
 // parts round two keeps join round one's. Measured with the plain read
 // of the ranked list: on long chats with an assistant (BEAM, 40
 // questions, read as Markdown) round two's new parts held 99 evidence
@@ -987,12 +991,16 @@ const searchTokens = (text) => new Set((text.match(/[A-Za-z][A-Za-z'’-]{2,}|\d
  *  a key prefix the scrubber knows, or one the scrubber would mask. It
  *  never becomes a search line, which the record keeps. */
 const credentialShaped = (token) => /^(?:sk|xai|pk|rk|xox[abeoprs])-/i.test(token) || scrubChat(token) !== token;
+/** The word of the mark the scrubber leaves where it masked a secret,
+ *  `[redacted]`: it says nothing about the history, so it is never a
+ *  search line either. */
+const SCRUB_MARK = searchTokens('[redacted]');
 
 /** Round two's lines: for each seed text, its rarest words in `parts`
  *  (the history's parts) that the task does not use, of five or more
  *  characters or a number, rarest first and then alphabetical, leaving
- *  out any word shaped like a credential. A seed with no such word gives
- *  no line. */
+ *  out any word shaped like a credential and the scrubber's mark. A seed
+ *  with no such word gives no line. */
 export function rareLines(task, seeds, parts) {
   const counts = new Map();
   for (const part of parts) countWords(counts, part.text);
@@ -1010,7 +1018,7 @@ function rareFrom(task, seeds, counts, size) {
   const asked = searchTokens(task);
   return seeds.map((text) => [...searchTokens(text)]
     .filter((token) => counts.get(token) >= RARE_LEAST && counts.get(token) <= most && !asked.has(token)
-      && (token.length >= 5 || /^\d/.test(token)) && !credentialShaped(token))
+      && (token.length >= 5 || /^\d/.test(token)) && !credentialShaped(token) && !SCRUB_MARK.has(token))
     .sort((left, right) => counts.get(left) - counts.get(right) || (left < right ? -1 : left > right ? 1 : 0))
     .slice(0, SECOND_SEARCH_WORDS).join(' ')).filter((line) => line !== '');
 }
@@ -1144,7 +1152,10 @@ function keepAskedLines(searches, required, record) {
   return searches;
 }
 
-const sourceKind = (type) => type === 'git' ? 'git-history' : type === 'markdown' ? 'markdown' : 'chat';
+// A WhatsApp export is searched with the Markdown search lines, as its
+// sessions were measured, and a task that says to look in a chat reads it.
+const sourceKind = (type) => type === 'git' ? 'git-history' : type === 'markdown' || type === 'whatsapp' ? 'markdown' : 'chat';
+const readFor = (type, kinds_) => kinds_.includes('all') || kinds_.includes(sourceKind(type)) || (type === 'whatsapp' && kinds_.includes('chat'));
 
 // A kind counts as named only when the task says to look there, so a task
 // about chat transcripts or about Git history does not narrow to that source.
@@ -1230,7 +1241,7 @@ export function acceptScope(proposed, task, searchKinds, now = Date.now(), timeZ
 // its own look-back.
 export function scopedEntries(entries, scope, now = Date.now()) {
   const later = (own) => own === undefined || sinceCutoff(own, now) < sinceCutoff(scope.since, now) ? scope.since : own;
-  return entries.filter((entry) => scope.kinds.includes('all') || scope.kinds.includes(sourceKind(entry.type)))
+  return entries.filter((entry) => readFor(entry.type, scope.kinds))
     .map((entry) => scope.since === 'none' ? entry : { ...entry, since: later(entry.since) });
 }
 
@@ -1461,6 +1472,10 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
         return { source: entry.own === true
           ? markdown({ paths: [entry.path], kind: 'docs', maxQuestionText: DEFAULT_MAX_QUESTION_TEXT, ...options })
           : knowledgeBase(entry.path, options) };
+      }
+      if (entry.type === 'whatsapp') {
+        return { source: whatsapp(entry.path, { ...(entry.since === undefined ? {} : { since: entry.since }),
+          ...(entry.dates === undefined ? {} : { dates: entry.dates }) }) };
       }
       if (entry.type === 'codex') {
         const { source, filter } = await snapshotCodex(entry, snapshot);

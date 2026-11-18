@@ -184,6 +184,30 @@ Some fields have no handling of their own: `sources`, `verified`, `usage_window`
 Like all front matter, their words count toward the `file-words` signal, and a replaced word among them, such as `deprecated`, ranks the page lower.
 They are not part text, so the decision model does not read them.
 
+## WhatsApp exports
+
+`whatsapp(path)` reads the text file of WhatsApp's "Export chat" (`_chat.txt`): the messages between two people, or a group.
+
+```ts
+import { whatsapp } from '@curatejs/markdown';
+
+const source = whatsapp('exports/mel/_chat.txt');
+```
+
+- **Lines read:** the iOS form, `[13/05/2023, 14:02:51] Mel: text`, and the Android form, `13/05/2023, 14:02 - Mel: text`. The date may use `/`, `.` or `-`, with a two- or four-digit year, or the year first. The time may leave out seconds and may carry AM or PM. A line that does not open with a date continues the message before it.
+- **Senders:** the senders are learned from the export: the text before a line's first colon names one when it recurs on other lines or looks like a name, and a name always followed by the same colon and words, such as `Dr: Jones`, takes them in. A line's sender is the longest of these names it opens with, so `Dr: Jones: the ferry` is from `Dr: Jones`, and `Sam: Note: bring the tickets` is from `Sam`.
+- **Lines that only look like messages:** a line that opens with a date but no sender of the export, or with a date earlier than the message before it, is kept as part of that message, as a line pasted into it would be. With no message before it, or at or after that message's time, a line with a date and no sender is the app's own notice, such as the notice that messages are end-to-end encrypted or that someone changed the subject, and is left out.
+- **Day and month:** a number over 12 settles whether the export writes the day or the month first, and so does the order of the dates when it is clear: an export lists messages in the order they were sent, so a reading under which the dates go back at least three fewer times is taken. One line, such as an old message pasted into a new one, can move that count by two at most, so it never settles the order alone. When neither settles it, an export with a 12-hour clock and two-digit years, as a month-first phone writes it, reads month first and any other day first, and the read says so in `partial` (and is not `complete`) until `dates: 'day-first'` or `'month-first'` says which. `parseWhatsapp(text, dates?)` returns the messages with the order taken and whether the export settled it.
+- **Sessions:** the messages of one day are one session, by the date each was sent. The runs that measured this kind of history read sessions of one day each.
+- **Notes:** each session is written as a Markdown note, and the notes are read through `knowledgeBase()`, so the parts, search lanes, name lanes and stored index are the Markdown reader's. A note has the day as its `date`, a `# session session-NNN` heading, a `Date:` line, and each message as `<sender>: <text>`, the messages apart by a blank line. The notes of one export are kept in a folder of their own under `~/.cache/curate/messages/` (`$XDG_CACHE_HOME/curate/messages/` when it is set), or under `directory`. A note is written again only when its text changes, and a day the export no longer holds leaves no note.
+- **Speakers:** both senders are people. Each part lists the export's senders in `speakers`, so when `curate()` leaves out the first sentence of a message, the first kept sentence of that message still starts with the sender's name. The notes reader cuts a long message into parts of 700 characters; a part cut from inside a message opens with its sender's name, as the message's first part does, so the decision model and the layout see who said it.
+- **Mode:** `directMessages` asks `MARKDOWN_CASCADE`, keeps parts scored 0.0146 or more and reads down the ranked list, the settings the LoCoMo runs measured on sessions read as notes. Its text takes a kept part only when its weight is at least a tenth of the export's best (`textShare: 0.1`). Pass `mode` to change it.
+- **Shapes it cannot settle:** each needs a guess, and no setting changes it; when one matters, edit the export file itself.
+  - A sender whose name holds a colon and who writes one line only (`Dr: Jones`, once) is read as `Dr`, with the rest of the line as the message.
+  - A pasted line that opens with a date at or after the message it was pasted into is taken as the app's own notice and dropped, while the line after it stays in that message.
+  - A real message from another person, pasted with its earlier date between two of one person's messages, joins the first of those messages.
+- **Same parts as the LoCoMo runs:** LoCoMo's ten conversations written as iOS export lines and read through `whatsapp()` give the 272 session notes the LoCoMo harness writes, byte for byte, and the same 1,675 parts in the same order, except the 8 parts cut from inside a message, which open with the sender's name.
+
 ## Usage
 
 ```ts

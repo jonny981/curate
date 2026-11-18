@@ -44,8 +44,10 @@ const batchOf = (id: string) => Math.floor(index(id) / 2) + 1;
 const on = { stopWhenCold: {} } as const;
 
 describe('the rating stop', () => {
-  it('stops on the floor after the first batch when every rating is cold, rating only the first wave', async () => {
-    const { decide, calls, peak } = rated(() => 0.05);
+  it('stops on the floor after the first batch once its wave rated a part at the floor, rating only the first wave', async () => {
+    // p2, in the first wave's second batch, rates 0.5, at or above the
+    // floor, so the stop may fire; every other part rates 0.05, under it.
+    const { decide, calls, peak } = rated((id) => (id === 'p2' ? 0.5 : 0.05));
     const picked = await pick(ranked(20), { task: 'recall the plan', decide, ...on, limits: twoABatch });
 
     // The first wave is two batches, sent at once; the rule fires on the first.
@@ -53,7 +55,7 @@ describe('the rating stop', () => {
     expect(peak()).toBe(2);
     expect(asked(calls)).toEqual(['p0', 'p1', 'p2', 'p3']);
     expect(picked.record.pick!.stopWhenCold).toEqual({
-      floor: 0.1, share: 0.2, waves: 1, batches: 2, rated: 4, unread: 16, kept: 4, ended: 'cold',
+      floor: 0.1, share: 0.2, waves: 1, batches: 2, rated: 4, unread: 16, kept: 4, atFloor: 1, ended: 'cold',
       cold: { batch: 1, best: 0.05, bestBefore: 0, under: 'floor' },
     });
     expect(picked.record.levers.stopWhenCold).toEqual({ floor: 0.1, share: 0.2 });
@@ -63,7 +65,7 @@ describe('the rating stop', () => {
     expect(picked.record.pick!.kept).toBe(4);
 
     // maxInFlight still bounds the requests open at once inside a wave.
-    const one = rated(() => 0.05);
+    const one = rated((id) => (id === 'p2' ? 0.5 : 0.05));
     const serial = await pick(ranked(20), { task: 'recall the plan', decide: one.decide,
       ...on, limits: { ...twoABatch, maxInFlight: 1 } });
     expect(one.peak()).toBe(1);
@@ -98,7 +100,7 @@ describe('the rating stop', () => {
 
     expect(asked(calls)).toHaveLength(10);
     expect(picked.record.pick!.stopWhenCold).toEqual({
-      floor: 0.1, share: 0.2, waves: 3, batches: 5, rated: 10, unread: 0, kept: 5, ended: 'order' });
+      floor: 0.1, share: 0.2, waves: 3, batches: 5, rated: 10, unread: 0, kept: 5, atFloor: 5, ended: 'order' });
     expect(picked.record.candidates.some((entry) => entry.status === 'unassessed')).toBe(false);
   });
 
@@ -137,13 +139,14 @@ describe('the rating stop', () => {
   it('reads the decision score pick() keeps on, not a raw first answer', async () => {
     // Every first answer is 0.95, outside the band, so the score is the
     // first-only combine: 1 / (1 + e^-(-6 + logit 0.95)) = 0.045, cold.
+    // p2's is 0.999, which scores 0.71, at or above the floor.
     const questions = { notes: { bias: 0, first: 'relevant', band: [0.1, 0.9] as const,
       firstOnly: { bias: -6, weight: 1 },
       questions: [
         { key: 'relevant', instructions: 'Is it relevant?', true: 'yes', false: 'no', weight: 1 },
         { key: 'needed', instructions: 'Is it needed?', true: 'yes', false: 'no', weight: 1 },
       ] } };
-    const { decide, calls } = rated(() => 0.95);
+    const { decide, calls } = rated((id) => (id === 'p2' ? 0.999 : 0.95));
     const picked = await pick(ranked(10), { task: 'recall the plan', decide, ...on, limits: twoABatch,
       modesBySource: modesOf(questions), everyScored: true });
     expect(calls).toHaveLength(2);
@@ -193,9 +196,78 @@ describe('the rating stop', () => {
     const picked = await pick(ranked(20), { task: 'recall the plan', decide, ...on, limits: twoABatch });
     expect(asked(calls)).toEqual(Array.from({ length: 16 }, (_, i) => `p${i}`));
     expect(picked.record.pick!.stopWhenCold).toEqual({
-      floor: 0.1, share: 0.2, waves: 4, batches: 8, rated: 16, unread: 4, kept: 1, ended: 'cold',
+      floor: 0.1, share: 0.2, waves: 4, batches: 8, rated: 16, unread: 4, kept: 1, atFloor: 1, ended: 'cold',
       cold: { batch: 8, best: 0.001, bestBefore: 0.5, under: 'floor' } });
     expect(picked.selected.map((part) => part.id)).toEqual(['p13']);
+  });
+
+  it('does not stop before the read has rated a part at or above the floor: three long notes, the answer third', async () => {
+    // Three long notes, each its own batch. The first rates 0.05, over
+    // the keep bar (0.0146) and under the floor, so it is kept and its
+    // batch is cold; the second rates 0.03. The third holds the answer
+    // and rates 0.95: the read must reach it.
+    const rating: Record<string, number> = { p0: 0.05, p1: 0.03, p2: 0.95 };
+    const { decide, calls } = rated((id) => rating[id]!);
+    const picked = await pick(ranked(3, (i) => `note ${i} ${'words of a long note '.repeat(400)}`), {
+      task: 'recall the plan', decide, ...on, limits: { maxBatchChars: 10_000 } });
+    expect(calls).toHaveLength(3);
+    expect(asked(calls)).toEqual(['p0', 'p1', 'p2']);
+    expect(picked.record.pick!.stopWhenCold).toEqual({
+      floor: 0.1, share: 0.2, waves: 2, batches: 3, rated: 3, unread: 0, kept: 3, atFloor: 1, ended: 'order' });
+    expect(picked.selected.map((part) => part.id)).toContain('p2');
+  });
+
+  it('reads the whole order when no part reaches the floor, keeps what the bar keeps, and says why', async () => {
+    // Every part rates 0.05: kept, and under the floor. The first wave
+    // is cold, but nothing rated reaches the floor, so the read goes on
+    // to the end of the order.
+    const { decide, calls } = rated(() => 0.05);
+    const picked = await pick(ranked(20), { task: 'recall the plan', decide, ...on, limits: twoABatch });
+    expect(asked(calls)).toHaveLength(20);
+    expect(picked.selected).toHaveLength(20);
+    expect(picked.record.candidates.some((entry) => entry.status === 'unassessed')).toBe(false);
+    expect(picked.record.pick!.stopWhenCold).toEqual({
+      floor: 0.1, share: 0.2, waves: 5, batches: 10, rated: 20, unread: 0, kept: 20, atFloor: 0, ended: 'order' });
+    expect(picked.record.effects.find((entry) => entry.setting === 'stopWhenCold')!.summary)
+      .toBe('stopWhenCold on notes: no part rated at or above the floor 0.1, so the stop could not fire and '
+        + 'the read rated every one of 20 parts in the order.');
+  });
+
+  it('can read further with a higher floor: one above every rating reads to the end and says why', async () => {
+    // p0 rates 0.2 and every other part 0.05. At a floor of 0.1, p0 is at
+    // or above it, so the stop fires at the cold batch 2 after 4 parts.
+    // At a floor of 0.3 no part reaches it, so the stop may never fire
+    // and the read rates all 20: five times the parts.
+    const at = async (floor: number) => {
+      const { decide, calls } = rated((id) => (id === 'p0' ? 0.2 : 0.05));
+      const picked = await pick(ranked(20), { task: 'recall the plan', decide, limits: twoABatch, stopWhenCold: { floor } });
+      return { picked, asked: asked(calls) };
+    };
+    const low = await at(0.1);
+    expect(low.asked).toHaveLength(4);
+    expect(low.picked.record.pick!.stopWhenCold).toMatchObject({
+      floor: 0.1, rated: 4, atFloor: 1, ended: 'cold', cold: { batch: 2, under: 'floor' } });
+    const high = await at(0.3);
+    expect(high.asked).toHaveLength(20);
+    expect(high.picked.record.pick!.stopWhenCold).toEqual({
+      floor: 0.3, share: 0.2, waves: 5, batches: 10, rated: 20, unread: 0, kept: 20, atFloor: 0, ended: 'order' });
+    expect(high.picked.record.effects.find((entry) => entry.setting === 'stopWhenCold')!.summary)
+      .toBe('stopWhenCold on notes: no part rated at or above the floor 0.3, so the stop could not fire and '
+        + 'the read rated every one of 20 parts in the order.');
+  });
+
+  it('waits for a part at or above the call\'s own floor', async () => {
+    // The first wave rates 0.3: at the default floor, under a floor of
+    // 0.5, so it is cold and the stop may not fire yet. p4 rates 0.9 in
+    // batch 3; batch 4 rates 0.01 and stops the read.
+    const { decide, calls } = rated((id) => (index(id) < 4 ? 0.3 : id === 'p4' ? 0.9 : 0.01));
+    const picked = await pick(ranked(12), { task: 'recall the plan', decide, limits: twoABatch,
+      stopWhenCold: { floor: 0.5 } });
+    expect(asked(calls)).toEqual(['p0', 'p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7']);
+    expect(picked.record.pick!.stopWhenCold).toEqual({
+      floor: 0.5, share: 0.2, waves: 2, batches: 4, rated: 8, unread: 4, kept: 5, atFloor: 1, ended: 'cold',
+      cold: { batch: 4, best: 0.01, bestBefore: 0.9, under: 'floor' } });
+    expect(picked.selected.map((part) => part.id)).toContain('p4');
   });
 
   it('waits for a part at the size-based bar when everyScored sets one by size', async () => {
@@ -207,37 +279,47 @@ describe('the rating stop', () => {
     expect(asked(calls)).toHaveLength(10);
     expect(picked.selected.map((part) => part.id)).toEqual(['p8']);
     expect(picked.record.pick!.stopWhenCold).toEqual({
-      floor: 0.1, share: 0.2, waves: 3, batches: 5, rated: 10, unread: 0, kept: 1, ended: 'order' });
+      floor: 0.1, share: 0.2, waves: 3, batches: 5, rated: 10, unread: 0, kept: 1, atFloor: 1, ended: 'order' });
   });
 
   it.each([
-    ['the default bar', {}, 4],
-    ['everyScored: true', { everyScored: true }, 4],
-    ['a source bar', { modesBySource: { notes: { name: 'notes', bar: 0.5, read: rankedRead } } }, 1],
-    ['a flat everyScored bar', { everyScored: { bar: 0.8 } }, 1],
-    ['an everyScored size curve', { everyScored: { bySize: [[0, 0.8], [100, 0.8]] } }, 1],
-    ['a size curve that rises with the parts decided', { everyScored: { bySize: [[0, 0.01], [4, 0.01], [5, 0.8]] } }, 4],
+    ['the default bar', {}, 4, 10],
+    ['everyScored: true', { everyScored: true }, 4, 10],
+    ['a source bar', { modesBySource: { notes: { name: 'notes', bar: 0.5, read: rankedRead } } }, 1, 1],
+    ['a flat everyScored bar', { everyScored: { bar: 0.8 } }, 1, 1],
+    ['an everyScored size curve', { everyScored: { bySize: [[0, 0.8], [100, 0.8]] } }, 1, 1],
+    ['a size curve that rises with the parts decided', { everyScored: { bySize: [[0, 0.01], [4, 0.01], [5, 0.8]] } }, 4, 1],
     ['a rule kept at its own bar', { modesBySource: { notes: { name: 'notes', bar: 0.5, read: rankedRead } },
-      ruleBarBySource: { notes: 0.5 }, rule: true }, 1],
-  ] as const)('keeps the guard and selection on one bar: %s', async (_name, setting, kept) => {
-    // p8 scores 0.9, a rule 0.9, every other part 0.05.
-    const { rule, ...options } = { rule: false, ...setting };
-    const parts = [...ranked(10), ...(rule ? [{ sourceId: 'notes', id: 'r0', role: 'rule' as const,
-      title: 'r0', text: 'a rule', signals: { score: 0 } }] : [])];
-    const { decide } = rated((id) => (id === 'p8' || id === 'r0' ? 0.9 : 0.05));
-    const picked = await pick(parts, { task: 'recall the plan', decide, ...on, limits: twoABatch, ...options });
-    const stop = picked.record.pick!.stopWhenCold!;
-    const read = picked.record.candidates.filter((entry) => entry.role === 'reference'
-      && (entry.status === 'selected' || entry.status === 'rejected'));
-    const selected = read.filter((entry) => entry.status === 'selected');
-    // The guard's count is the selection's: the read references it kept.
-    expect(stop.kept).toBe(selected.length);
-    expect(stop.kept).toBe(kept);
-    // A stop never fires with nothing kept, and a read that kept only p8
-    // reached it.
-    expect(stop.ended === 'cold' ? stop.kept : 1).toBeGreaterThan(0);
-    if (kept === 1) expect(selected.map((entry) => entry.id)).toEqual(['p8']);
-    if (rule) expect(picked.selected.map((part) => part.id)).toContain('r0');
+      ruleBarBySource: { notes: 0.5 }, rule: true }, 1, 1],
+  ] as const)('keeps the guard, the floor gate and selection on one bar: %s', async (_name, setting, kept, keptWithNoEarlyFloor) => {
+    // p8 scores 0.9, a rule 0.9, p1 `early`, every other part 0.05. At
+    // 0.3, p1 is at the floor in the first wave, so only the guard can
+    // hold the stop; at 0.05, nothing reaches the floor before p8.
+    for (const [early, expected] of [[0.3, kept], [0.05, keptWithNoEarlyFloor]] as const) {
+      const { rule, ...options } = { rule: false, ...setting };
+      const parts = [...ranked(10), ...(rule ? [{ sourceId: 'notes', id: 'r0', role: 'rule' as const,
+        title: 'r0', text: 'a rule', signals: { score: 0 } }] : [])];
+      const { decide } = rated((id) => (id === 'p8' || id === 'r0' ? 0.9 : id === 'p1' ? early : 0.05));
+      const picked = await pick(parts, { task: 'recall the plan', decide, ...on, limits: twoABatch, ...options });
+      const stop = picked.record.pick!.stopWhenCold!;
+      const read = picked.record.candidates.filter((entry) => entry.role === 'reference'
+        && (entry.status === 'selected' || entry.status === 'rejected'));
+      const selected = read.filter((entry) => entry.status === 'selected');
+      // The guard's count is the selection's: the read references it kept.
+      expect(stop.kept).toBe(selected.length);
+      expect(stop.kept).toBe(expected);
+      // The gate's count is the read references rated at or above the floor.
+      expect(stop.atFloor).toBe(read.filter((entry) =>
+        (entry.status === 'selected' || entry.status === 'rejected') && entry.probability! >= stop.floor).length);
+      // A stop never fires with nothing kept or nothing at the floor, and
+      // a read that kept only p8 reached it.
+      if (stop.ended === 'cold') {
+        expect(stop.kept).toBeGreaterThan(0);
+        expect(stop.atFloor).toBeGreaterThan(0);
+      }
+      if (expected === 1) expect(selected.map((entry) => entry.id)).toEqual(['p8']);
+      if (rule) expect(picked.selected.map((part) => part.id)).toContain('r0');
+    }
   });
 
   it('reads the whole order when nothing reaches the keep bar, and says it kept none', async () => {
@@ -246,24 +328,24 @@ describe('the rating stop', () => {
     expect(asked(calls)).toHaveLength(10);
     expect(picked.selected).toEqual([]);
     expect(picked.record.pick!.stopWhenCold).toEqual({
-      floor: 0.1, share: 0.2, waves: 3, batches: 5, rated: 10, unread: 0, kept: 0, ended: 'order' });
+      floor: 0.1, share: 0.2, waves: 3, batches: 5, rated: 10, unread: 0, kept: 0, atFloor: 0, ended: 'order' });
     expect(picked.record.effects.find((entry) => entry.setting === 'stopWhenCold')!.summary)
       .toBe('stopWhenCold on notes: no part reached the keep bar, so the read rated every one of 10 parts in the order and kept none.');
   });
 
   it('keeps every part the stopped read rated at or above the keep bar', async () => {
-    // Every first-wave part scores 0.05: over the keep bar (0.0146),
-    // under the floor (0.1). The read stops after that wave and keeps
-    // all four; the text holds them.
+    // Every first-wave part but p2 scores 0.05: over the keep bar
+    // (0.0146), under the floor (0.1); p2 scores 0.5. The read stops
+    // after that wave and keeps all four; the text holds them.
     const source: CandidateSource = {
       id: 'notes', role: 'reference',
       read: async () => ({ status: 'read', complete: true, laneCutApplied: true, candidates: ranked(20) }),
     };
-    const { decide } = rated((id) => (index(id) < 4 ? 0.05 : 0.9));
+    const { decide } = rated((id) => (id === 'p2' ? 0.5 : index(id) < 4 ? 0.05 : 0.9));
     const recalled = await memory({ sources: [source], decide,
       pick: { ...on, limits: twoABatch }, curate: { sentenceCutoff: false } }).recall('recall the plan');
     expect(recalled.picked.record.pick!.stopWhenCold).toMatchObject({ rated: 4, ended: 'cold', cold: { batch: 1, under: 'floor' } });
-    expect(recalled.picked.selected.map((part) => part.id)).toEqual(['p0', 'p1', 'p2', 'p3']);
+    expect(recalled.picked.selected.map((part) => part.id).sort()).toEqual(['p0', 'p1', 'p2', 'p3']);
     for (const id of ['p0', 'p1', 'p2', 'p3']) expect(recalled.log).toContain(`text of ${id}`);
   });
 
@@ -281,7 +363,7 @@ describe('the rating stop', () => {
     const picked = await pick(ranked(10), { task: 'recall the plan', decide, ...on, limits: setup.limits,
       signal: controller.signal });
     expect(picked.record.pick!.stopWhenCold).toEqual({
-      floor: 0.1, share: 0.2, waves: 1, batches, rated: rated_, unread: 10 - rated_, kept: rated_, ended });
+      floor: 0.1, share: 0.2, waves: 1, batches, rated: rated_, unread: 10 - rated_, kept: rated_, atFloor: rated_, ended });
     expect(picked.record.candidates.filter((entry) => entry.status === 'unassessed')
       .every((entry) => entry.status === 'unassessed' && entry.reason === ended)).toBe(true);
     expect(picked.record.effects.find((entry) => entry.setting === 'stopWhenCold')!.summary)
@@ -310,11 +392,11 @@ describe('the rating stop', () => {
     expect(asked(calls)).toEqual(['p0', 'p1', 'p2', 'p3']);
     expect(picked.record.pick!.stopWhenCold).toMatchObject({ floor: 0.1, share: 0.5, cold: { batch: 2, under: 'share' } });
 
-    // A floor of 0.95 stops at the first batch.
+    // A floor of 0.5 stops at the second batch.
     const strict = rated((id) => best[batchOf(id) - 1]!);
     const early = await pick(ranked(6), { task: 'recall the plan', decide: strict.decide, limits: twoABatch,
-      stopWhenCold: { floor: 0.95 } });
-    expect(early.record.pick!.stopWhenCold).toMatchObject({ floor: 0.95, share: 0.2, cold: { batch: 1, under: 'floor' } });
+      stopWhenCold: { floor: 0.5 } });
+    expect(early.record.pick!.stopWhenCold).toMatchObject({ floor: 0.5, share: 0.2, cold: { batch: 2, under: 'floor' } });
   });
 
   it('stays inside a feed size, and the size\'s cut keeps its own reason', async () => {
@@ -327,7 +409,7 @@ describe('the rating stop', () => {
     expect(bounded.record.candidates.filter((entry) => entry.status === 'unassessed')
       .every((entry) => entry.reason === 'feed')).toBe(true);
 
-    const cold = rated(() => 0.05);
+    const cold = rated((id) => (id === 'p2' ? 0.5 : 0.05));
     const stopped = await pick(ranked(20), { task: 'recall the plan', decide: cold.decide, ...on, limits: twoABatch,
       feed: { order: 'combsum', size: 10 } });
     expect(asked(cold.calls)).toEqual(['p0', 'p1', 'p2', 'p3']);
@@ -366,7 +448,7 @@ describe('the rating stop', () => {
   });
 
   it('records what the stop did for each source in the effects', async () => {
-    const { decide } = rated(() => 0.05);
+    const { decide } = rated((id) => (id === 'p2' ? 0.5 : 0.05));
     const picked = await pick(ranked(20), { task: 'recall the plan', decide, ...on, limits: twoABatch });
     const effect = picked.record.effects.find((entry) => entry.setting === 'stopWhenCold')!;
     expect(effect).toMatchObject({ source: 'notes', actedOn: 20, added: 0, dropped: null });

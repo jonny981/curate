@@ -86,10 +86,6 @@ export interface ChatReadInput {
   readonly kept: (parts: readonly MemoryCandidate[]) => boolean;
   /** True once a stopping dial has ended the call. */
   readonly stopped: () => boolean;
-  /** True when a part's decision came from an earlier pick of the call
-   *  (a stored decision), not from a request of this one. Such a part is
-   *  read for free and does not count toward the stop. */
-  readonly reused?: (part: MemoryCandidate) => boolean;
   /** The call's search texts, the task first: the units of agent work
    *  are ranked against them. None: no unit start. */
   readonly queries?: readonly string[];
@@ -304,7 +300,8 @@ const unitVector = (vector: ArrayLike<number>) => {
  *  its own kind by keyword and, with an embedder, by meaning (its
  *  descriptor's best cosine against the queries), each list cut at its
  *  own bend (`cutScoreCurve`); every unit above either cut opens. A list
- *  whose scores are all equal opens none. */
+ *  that says nothing opens none: no query word in any descriptor, or one
+ *  meaning score for descriptors that differ. */
 export async function unitStarts(units: readonly AgentUnit[], queries: readonly string[],
   embed: EmbeddingFunction | undefined): Promise<AgentUnit[]> {
   if (units.length === 0 || queries.length === 0) return [];
@@ -324,10 +321,17 @@ export async function unitStarts(units: readonly AgentUnit[], queries: readonly 
   const open = new Set<number>();
   for (const kind of UNIT_KINDS) {
     const peers = ranked.filter((index) => units[index]!.kind === kind);
+    // A ranking that says nothing opens none, where the bend would keep
+    // every unit: no query word in any descriptor, or one meaning score
+    // for descriptors that differ, as from an embedder that scores every
+    // text alike. Equal scores of units that match, or that are alike, open
+    // as the bend says.
+    const silent = (scores: readonly number[]) => scores === keyword
+      ? peers.every((index) => scores[index] === 0)
+      : peers.every((index) => scores[index] === scores[peers[0]!])
+        && peers.some((index) => descriptors[index] !== descriptors[peers[0]!]);
     for (const scores of meaning === undefined ? [keyword] : [keyword, meaning]) {
-      // Scores all equal say nothing about which unit holds the answer,
-      // where the bend would keep every one: that list opens none.
-      if (peers.every((index) => scores[index] === scores[peers[0]!])) continue;
+      if (silent(scores)) continue;
       const order = [...peers].sort((left, right) => scores[right]! - scores[left]!);
       for (const index of order.slice(0, cutScoreCurve(order.map((at) => scores[at]!)))) open.add(index);
     }
@@ -556,7 +560,10 @@ export async function chatRead(input: ChatReadInput): Promise<ChatReadResult> {
         hot = hot.filter((_, index) => ring[index]!.some(walkable));
       }
     }
-    log.push({ ratings: read.slice(before).filter((part) => input.reused?.(part) !== true).map(score), best });
+    // A part whose decision came from the decision store counts with its
+    // stored rating, as it would have counted fresh: a run with its
+    // decisions stored reads as the run that stored them did.
+    log.push({ ratings: read.slice(before).map(score), best });
   };
 
   let ended: ChatReadResult['ended'] = 'order';

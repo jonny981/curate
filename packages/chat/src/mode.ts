@@ -1,4 +1,4 @@
-import { conversationRead, rankedRead, type Mode } from '@curatejs/core';
+import { conversationRead, rankedRead, type Mode, type ModeRead } from '@curatejs/core';
 import { AGENT_CHAT_CASCADE, CHAT_CASCADE } from './questions.js';
 
 /** Coding-agent transcripts, `chat()`'s mode: the agent question set,
@@ -9,8 +9,29 @@ export const agentTranscripts: Mode = {
   name: 'agent-transcripts', questions: AGENT_CHAT_CASCADE, bar: 0.0146, read: conversationRead(), needed: true,
 };
 
-/** A person's chats with an assistant, `chatSettings`' mode: the chat
- *  question set, the 0.0146 bar and the ranked read. */
-export const assistantChatHistory: Mode = {
-  name: 'assistant-chat-history', questions: CHAT_CASCADE, bar: 0.0146, read: rankedRead,
-};
+/** The read of a person's chats with an assistant: the fused order with
+ *  the person's own messages first, each group in the order's own order,
+ *  read two batches at a time and stopped where the ratings go cold, at
+ *  the call's `stopWhenCold` levels or, with none set, a floor of 0.1 and
+ *  a share of 0.2. Make it once per mode: modes that share a read are
+ *  read and stopped together. */
+export function assistantChatRead(): ModeRead {
+  return (input) => rankedRead({ ...input,
+    order: [...input.order.filter((part) => part.author === 'person'), ...input.order.filter((part) => part.author !== 'person')],
+    stop: input.stop ?? { floor: 0.1, share: 0.2 } });
+}
+
+/** The defaults both assistant-chat modes share: the chat question set,
+ *  the 0.0146 bar, `assistantChatRead()`, and a text of the parts
+ *  weighing at least 0.2 of the best. One set won or tied on both
+ *  measured kinds of history; each mode keeps its own name, so each can
+ *  be tuned on its own. */
+const assistantChat = (name: string): Mode => ({ name, questions: CHAT_CASCADE, bar: 0.0146, read: assistantChatRead(), textShare: 0.2 });
+
+/** A person's history of many short chats with an assistant,
+ *  `chatSettings`' mode. */
+export const assistantChatHistory: Mode = assistantChat('assistant-chat-history');
+
+/** A person's long chats with an assistant, each long enough that its
+ *  topic changes inside it. */
+export const longAssistantChats: Mode = assistantChat('long-assistant-chats');

@@ -66,8 +66,9 @@ export interface CurateOptions {
    *  headings, and `…` marks each place text was left out. An item with
    *  no sentence kept is left out. A sentence is the text up to a full
    *  stop, question mark or exclamation mark followed by a space, or to
-   *  the line's end; blank lines go. A line that opens `user: ` or
-   *  `assistant: ` names its speaker, and the first kept sentence of
+   *  the line's end; blank lines go. A line that opens `user: `,
+   *  `assistant: ` or `<name>: ` for a name in the item's `speakers`
+   *  names its speaker, and the first kept sentence of
    *  that speaker's turn carries the name. A sentence `decide` gives no
    *  rating stays. When the request fails, the whole text is returned as
    *  if no sentence were rated, and `record.sentences.failed` says why.
@@ -109,6 +110,10 @@ export interface CurateRecord {
     readonly strongestWeight?: number;
     readonly atHalfOrMore: number;
   };
+  /** Present when a source's mode sets `textShare`: how many selected
+   *  items were left out for weighing under that share of their
+   *  source's best item. They are not counted in `leftOut`. */
+  readonly underShare?: number;
   /** Present when sentences were rated: what the sentence pass did. */
   readonly sentences?: {
     readonly cutoff: number;
@@ -191,12 +196,15 @@ interface Sentence {
   readonly speaker?: string;
 }
 
-/** A text as sentences, in order. Blank lines hold none. */
-function sentencesOf(text: string): Sentence[] {
+const escaped = (name: string) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/** A text as sentences, in order. Blank lines hold none. A line opening
+ *  `user: `, `assistant: ` or one of `speakers` and a colon names who said it. */
+function sentencesOf(text: string, speakers: readonly string[] = []): Sentence[] {
   const sentences: Sentence[] = [];
   let turn = 0;
+  const opener = new RegExp(`^(${['user', 'assistant', ...speakers.filter((name) => name.trim() !== '')].map(escaped).join('|')}): `);
   text.split('\n').forEach((line, index) => {
-    const named = /^(user|assistant): /.exec(line);
+    const named = opener.exec(line);
     if (named) turn += 1;
     let speaker = named?.[1];
     for (const sentence of (named ? line.slice(named[0].length) : line).split(/(?<=[.!?])\s+/)) {
@@ -259,8 +267,14 @@ export async function curate(task: string, picked: PickResult, options: CurateOp
   });
   if (!items.length) throw new Error('curate: no selected reference items to curate.');
   const answerTokens = options.answerTokens ?? DEFAULT_ANSWER_TOKENS;
+  // A source whose mode sizes its text by the ratings gives only the
+  // parts within its share of its best part's weight.
+  const best = new Map<string, number>();
+  for (const { candidate, weight } of items) best.set(candidate.sourceId, Math.max(best.get(candidate.sourceId) ?? 0, weight));
+  const shareOf = (sourceId: string) => picked.record.levers.sources?.[sourceId]?.textShare;
+  const sized = items.filter(({ candidate, weight }) => weight >= (shareOf(candidate.sourceId) ?? 0) * best.get(candidate.sourceId)!);
   // `items` follows `picked.selected`, so a stable sort leaves equal weights in the fused order.
-  const ordered = [...items].sort((left, right) => right.weight - left.weight);
+  const ordered = [...sized].sort((left, right) => right.weight - left.weight);
   let taken: Item[] = [];
   let copies = new Map<Item, readonly Item[]>();
   let log = '';
@@ -284,11 +298,12 @@ export async function curate(task: string, picked: PickResult, options: CurateOp
       count: leftOut.length, ...(leftOut.length ? { strongestWeight: leftOut[0]!.weight } : {}),
       atHalfOrMore: leftOut.filter((item) => item.weight >= 0.5).length,
     },
+    ...(items.some(({ candidate }) => shareOf(candidate.sourceId) !== undefined) ? { underShare: items.length - sized.length } : {}),
   };
   const cutoff = options.sentenceCutoff ?? (options.decide === undefined ? false : DEFAULT_SENTENCE_CUTOFF);
   if (cutoff === false) return { log, record };
 
-  const split = taken.map((item) => sentencesOf(body(item)));
+  const split = taken.map((item) => sentencesOf(body(item), item.candidate.speakers));
   const batch: PickBatch = { task, questions: split.flatMap((sentences, part) => sentences.map((sentence, index) => ({
     key: `p${part}u${index}`, sourceId: `p${part}`, id: `u${index}`, role: 'reference' as const, title: '', anonymous: true,
     text: sentence.speaker === undefined ? sentence.text : `${sentence.speaker}: ${sentence.text}`,

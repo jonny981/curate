@@ -73,5 +73,34 @@ describe('settings per source', () => {
     const reader = { ...source('git'), mode: { name: 'commits', bar: 2, read: rankedRead } };
     await expect(pickFromSources([reader], { task }, { task, decide: recorder().decide })).rejects.toThrow(/modesBySource\.git\.bar/);
     expect(reader.read).not.toHaveBeenCalled();
+    const shared = { ...source('git'), mode: { name: 'commits', read: rankedRead, textShare: 1.5 } };
+    await expect(pickFromSources([shared], { task }, { task, decide: recorder().decide })).rejects.toThrow(/modesBySource\.git\.textShare/);
+  });
+
+  it('records the text share a source\'s mode sets, and the text keeps only the parts within it', async () => {
+    const decide: PickDecide = async (batch) => Object.fromEntries(batch.questions.map((q) =>
+      [q.key, { status: 'answered', probability: q.id === 'p0' ? 0.9 : 0.05 }]));
+    const chat = { ...source('chat', 4), mode: { name: 'messages', read: rankedRead, textShare: 0.1 } };
+    const result = await pickFromSources([chat, source('git', 4)], { task, wholeLanes: true }, { task, decide, everyRanked: true });
+    expect(result.record.levers.sources.chat).toMatchObject({ mode: 'messages', textShare: 0.1 });
+    expect(result.record.levers.sources.git?.textShare).toBeUndefined();
+    // The chat parts at 0.05 are under 0.1 of 0.9 and leave the text; git sets no share, so its parts at 0.05 stay.
+    const written = await curate(task, result);
+    expect(written.record.items.filter((item) => item.candidate.sourceId === 'chat').map((item) => item.candidate.id)).toEqual(['p0']);
+    // The chat part with p0's text takes p0's answer, so only the two plain ones weigh 0.05.
+    const under = result.record.candidates.filter((entry) => entry.sourceId === 'chat' && entry.status === 'selected'
+      && 'probability' in entry && entry.probability === 0.05).length;
+    expect(under).toBe(2);
+    expect(written.record.underShare).toBe(under);
+    expect(written.record.items.some((item) => item.candidate.sourceId === 'git' && item.weight === 0.05)).toBe(true);
+    // A share of 0 turns the rule off: the text is the one the fixed budget alone gives.
+    const off = await pickFromSources([{ ...chat, mode: { ...chat.mode, textShare: 0 } }, source('git', 4)], { task, wholeLanes: true },
+      { task, decide, everyRanked: true });
+    const plain = await pickFromSources([{ ...chat, mode: { name: 'messages', read: rankedRead } }, source('git', 4)], { task, wholeLanes: true },
+      { task, decide, everyRanked: true });
+    const [offText, plainText] = await Promise.all([curate(task, off), curate(task, plain)]);
+    expect(offText.log).toBe(plainText.log);
+    expect(offText.record.underShare).toBe(0);
+    expect(offText.log).not.toBe(written.log);
   });
 });

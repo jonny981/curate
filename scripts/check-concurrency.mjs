@@ -1,8 +1,9 @@
 // Run N calls at once in one process against one index, and report what
 // each call adds and whether each still returns what it returns alone.
 //
-// A generated history (Codex transcripts, a Markdown notes repository and
-// a code repository's commits, about `--parts` parts in all) is indexed
+// A generated history (Codex transcripts, a Markdown notes repository, a
+// code repository's commits and a WhatsApp export, about `--parts` parts
+// in all) is indexed
 // once. Then, in a fresh process for each N, N calls start together, each
 // with a task from a fixed list, through the skill's read and pick path
 // (`pickFullSources`, the second search on the coding-agent transcripts
@@ -200,6 +201,17 @@ function generate(dir, parts) {
   }
   git(code, ['fast-import', '--quiet'], undefined, stream);
   git(code, ['checkout', '-q', 'main']);
+
+  // A WhatsApp export between two people, one message a line, read as one
+  // note a day: calls at once write the same notes.
+  const messages = Math.max(60, Math.round(parts * 0.02));
+  const exported = Array.from({ length: messages }, (_, index) => {
+    const at = new Date(start + Math.floor(span * index / messages)).toISOString();
+    const [year, month, day] = at.slice(0, 10).split('-');
+    return `[${day}/${month}/${year}, ${at.slice(11, 19)}] ${index % 2 ? 'Sam' : 'Ann'}: ${paragraph(1 + Math.floor(rand() * 2))}`;
+  });
+  mkdirSync(join(dir, 'messages'), { recursive: true });
+  writeFileSync(join(dir, 'messages', '_chat.txt'), `${exported.join('\n')}\n`);
 }
 
 // ------------------------------------------------------------------ calls
@@ -290,7 +302,7 @@ async function child(config) {
   const core = await import('@curatejs/core');
   const { agentTranscripts, chat } = await import('@curatejs/chat');
   const { git } = await import('@curatejs/git');
-  const { knowledgeBase } = await import('@curatejs/markdown');
+  const { knowledgeBase, whatsapp } = await import('@curatejs/markdown');
   const { Worker } = await import('node:worker_threads');
 
   // A stand-in embedder: a vector from each word's hash, so texts that share
@@ -368,7 +380,8 @@ async function child(config) {
   const call = async (index) => {
     const { task, keywords, answers } = TASKS[index % TASKS.length];
     const lines = { keywords, answers };
-    const raw = [chat({ providers: ['codex'], paths: [join(dir, 'chat')] }), knowledgeBase(join(dir, 'notes')), git(join(dir, 'code'))];
+    const raw = [chat({ providers: ['codex'], paths: [join(dir, 'chat')] }), knowledgeBase(join(dir, 'notes')), git(join(dir, 'code')),
+      whatsapp(join(dir, 'messages', '_chat.txt'), { directory: join(dir, 'messages-notes') })];
     const searched = (source, searches) => run.searchSource({ ...source, labelKinds: [], rare: false }, searches, [], dir, { readAudit: false });
     const sources = raw.map((source) => searched(source, { chat: lines, 'git-history': lines, markdown: lines }));
     // The coding-agent transcripts, which the skill searches a second time.

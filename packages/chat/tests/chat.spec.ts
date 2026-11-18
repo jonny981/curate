@@ -1117,6 +1117,41 @@ describe('stored index', () => {
     again.close();
   });
 
+  it('reads two transcripts masked alike apart over an index of the format that gave them one id', async () => {
+    // Two files named by 32 hex characters, whose names the scrubber masks alike.
+    const root = await folder();
+    const directory = join(root, 'project');
+    await mkdir(directory, { recursive: true });
+    for (const [n, name] of ['0123456789abcdef0123456789abcdef', 'fedcba9876543210fedcba9876543210'].entries()) {
+      await writeFile(join(directory, `${name}.jsonl`), [
+        { type: 'user', timestamp: NEW, sessionId: `s${n}`, message: { content: [{ type: 'text', text: `orchard question ${n}` }] } },
+        { type: 'assistant', timestamp: NEW, sessionId: `s${n}`, message: { content: [{ type: 'text', text: `orchard answer ${n}` }] } },
+      ].map((record) => JSON.stringify(record)).join('\n') + '\n');
+    }
+    const cache = await folder();
+    const read = async (index: boolean) => {
+      const result = await chat({ providers: ['claude-code'], paths: [root], ...(index ? { index: { directory: cache } } : { index: false as const }) })
+        .read({ task: 'orchard', wholeLanes: true });
+      if (result.status !== 'read') throw new Error('Expected a read');
+      return { ids: new Set(result.candidates.map((part) => part.id)).size, containers: new Set(result.candidates.map((part) => part.place?.container)).size };
+    };
+    await read(true);
+    // What format 7 kept for them: the masked path with no hash, one id for
+    // both files' first lines, in a file of that format's name.
+    const sqlite = process.getBuiltinModule('node:sqlite') as unknown as {
+      DatabaseSync: new (path: string) => { exec(sql: string): void; close(): void } };
+    const now = `.v${STORED_INDEX_FORMAT}.`;
+    for (const name of await readdir(cache)) {
+      if (!name.endsWith(`${now}sqlite`)) continue;
+      const file = new sqlite.DatabaseSync(join(cache, name));
+      file.exec("UPDATE parts SET pid = substr(pid, 1, instr(pid, '#') - 1) || substr(pid, instr(pid, '#') + 17) WHERE instr(pid, '#') > 0");
+      file.close();
+      await rename(join(cache, name), join(cache, name.replace(now, '.v7.')));
+    }
+    expect(await read(true)).toEqual(await read(false));
+    expect(await read(false)).toEqual({ ids: 4, containers: 2 });
+  });
+
   it('rebuilds over an index of an earlier format and embeds no part again', { timeout: 60_000 }, async () => {
     const directory = await history();
     const cache = await folder();

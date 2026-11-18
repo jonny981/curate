@@ -102,22 +102,26 @@ describe('the chat read', () => {
     }
   });
 
-  it('does not count a reused decision toward its stop', async () => {
-    // As above, but request 1's ten warm parts were decided in an earlier
-    // pick of the call: only request 2's three are new, so the stop has
-    // nothing to measure them against and the read goes on to request 3.
-    const parts = personSessions(336);
-    const warm = (from: number, count: number) => Object.fromEntries(Array.from({ length: count },
-      (_, index) => [idOf(`s${from + index}`, 1), 0.9]));
-    const ratings = { ...warm(0, 10), ...warm(112, 3), ...warm(224, 50) };
-    const scores = new Map(parts.map((part) => [part, ratings[part.id] ?? 0.001]));
-    const reused = new Set(Object.keys(warm(0, 10)));
-    const asked: MemoryCandidate[] = [];
-    const result = await chatRead({ parts, order: parts.filter((part) => part.author === 'person'),
-      byKeyword: parts.filter((part) => part.author === 'person'), lanes: [], rate: async (some) => { asked.push(...some); },
-      score: (part) => scores.get(part), kept: () => true, stopped: () => false, reused: (part) => reused.has(part.id) });
-    expect(result.requests).toBe(3);
-    expect(asked.some((part) => part.id === idOf('s224', 1))).toBe(true);
+  it('reads with its decisions cached the parts it reads fresh: a reused rating counts toward its stop', async () => {
+    // 336 one-part person sessions, 112 a request: 10 warm parts in the
+    // first request, 112 in the second and 50 in the third.
+    const parts = personSessions(336).filter((part) => part.author === 'person');
+    const ratings = Object.fromEntries(parts.map((part, index) =>
+      [part.id, index < 10 || (index >= 112 && index < 274) ? 0.9 : 0.001]));
+    const fresh = rater(ratings);
+    const first = await pick(parts, { task, decide: fresh.decide, ...agentRead });
+    // A cache holding the second request's 112 decisions, from an earlier pick.
+    const store = new Map<string, unknown>();
+    const cache = { deciderId: 'test', store: { get: async (key: string) => store.get(key), set: async (key: string, value: unknown) => { store.set(key, value); } } };
+    await pick(parts.slice(112, 224), { task, decide: rater(ratings).decide, ...agentRead, cache });
+    const cached = rater(ratings);
+    const again = await pick(parts, { task, decide: cached.decide, ...agentRead, cache });
+    const read = (result: typeof first) => result.record.candidates.filter((entry) => entry.status === 'selected' || entry.status === 'rejected')
+      .map((entry) => entry.id).sort();
+    expect(read(again)).toEqual(read(first));
+    expect(again.selected.map((part) => part.id)).toContain(parts[224]!.id);
+    expect(again.record.pick?.chatRead?.chat).toMatchObject({ reused: 112, rated: first.record.pick?.chatRead?.chat?.rated! - 112 });
+    expect(new Set(cached.asked.flat()).size).toBe(new Set(fresh.asked.flat()).size - 112);
   });
 
   it('does not stop before the first warm part', async () => {
@@ -617,12 +621,25 @@ describe('the units of agent work as one more start', () => {
     expect(unitDescriptors(agentUnits(target))[0]!.split('\n')).toContain(`## Outage ${'and what followed it '.repeat(40)}`.trim().slice(0, 400));
   });
 
-  it('opens no unit from a ranking whose scores are all equal', async () => {
+  it('opens no unit from a ranking that says nothing: no query word anywhere, and one vector for different texts', async () => {
     // Every text has the same vector, and no query word is in a descriptor.
     const units = agentUnits(Array.from({ length: 3 }, (_, n) => [agentPart(`a${n}`, 1, 1, 'prompt', `Look at orchard row ${n}.`),
       agentPart(`a${n}`, 9, 1, 'report', `Orchard row ${n} has fruit trees.`)]).flat());
     const same = async (texts: readonly string[]) => texts.map(() => [1, 0]);
     expect(await unitStarts(units, ['What happened?'], same)).toEqual([]);
+  });
+
+  it('opens units whose scores are equal when they match: one report, or two alike', async () => {
+    // One report that names the query: its keyword score stands alone.
+    const one = agentUnits([agentPart('f', 9, 1, 'report', 'The ferry leaves at seven.')]);
+    expect(await unitStarts(one, ['ferry'], undefined)).toHaveLength(1);
+    // Two reports with the same text: equal keyword scores and, with an embedder, equal meaning scores.
+    const two = agentUnits(['f1', 'f2'].map((agent) => agentPart(agent, 9, 1, 'report', 'The ferry leaves at seven.')));
+    expect(await unitStarts(two, ['ferry'], undefined)).toHaveLength(2);
+    const alike = async (texts: readonly string[]) => texts.map((text) => [/ferry/i.test(text) ? 1 : 0, 1]);
+    expect(await unitStarts(two, ['ferry'], alike)).toHaveLength(2);
+    // Alike by meaning alone: no query word, and the same text gives the same vector.
+    expect(await unitStarts(two, ['boat timetable'], alike)).toHaveLength(2);
   });
 
   it('opens no unit when the call stops while the units are ranked, and counts no unit without a rated part', async () => {

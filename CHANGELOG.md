@@ -62,6 +62,15 @@ What each part does:
   `sentenceCutoff` or more, 0.1 by default. `…` marks where text was left
   out. `sentenceCutoff: false` keeps every sentence and makes no request.
   When the request fails, the whole text comes back and the record says why.
+- **A text sized by the ratings, per mode.** A mode's `textShare` lets its
+  source's parts into the text only at that share of the source's best
+  weight or more. `directMessages` sets a tenth, and the two assistant-chat
+  modes a fifth; `record.underShare` counts the parts it left out.
+- **Two modes for a person's chats with an assistant, one set of
+  defaults.** `assistantChatHistory`, for many short chats, and
+  `longAssistantChats`, for long ones, read the person's own messages
+  first, stop where the ratings go cold, and keep a text of the parts
+  weighing a fifth of the best or more.
 - **A stored index per source.** The chat, git and Markdown readers keep one
   SQLite file per source, through Node's built-in `node:sqlite`, under
   `$XDG_CACHE_HOME/curate/index` or `~/.cache/curate/index`. Each call brings
@@ -73,9 +82,15 @@ What each part does:
   a part. `pick.stopWhenCold` is off unless set; `{}` reads the order two
   batches at a time and stops at the first batch whose best decision score is
   under 0.1, or under 0.2 times the best score before it, never before the
-  read has kept a part, so a question the history holds nothing for reads the
-  whole order; `{ floor, share }` sets the two numbers for one call: a higher
-  one stops sooner and costs less, a lower one reads further and finds more.
+  read has kept a part and rated one at or above the floor, so a question the
+  history holds nothing for, and a history whose every part scores under the
+  floor, read the whole order at the cost of the stop off; `{ floor, share }`
+  sets the two numbers for one call. A higher share stops sooner and costs
+  less, a lower one reads further and finds more. The floor is both the level
+  a batch's best score must reach to keep the read going and the level some
+  part must reach before the stop may fire, so a higher floor can also make a
+  read longer: it reads on until some part scores at or above it, to the end
+  of the order if none does.
   On three benchmark runs' saved scores `{}` rated 64% (LoCoMo), 55%
   (DolphinBench) and 83% (BEAM) of the parts the runs rated and kept 98.5%,
   95.2% and 100% of their evidence. On the published runs it saved $0.0012 a
@@ -223,6 +238,11 @@ What each part does:
   in each part title, counts `/` links from the bundle root, skips `index.md`,
   dates each `log.md` entry by its heading, and ranks a page past its
   `stale_after` lower. A retire proposal's edit is `status: deprecated`.
+- **WhatsApp exports.** `whatsapp(path)` reads WhatsApp's "Export chat" text,
+  iOS and Android lines alike, as one session a day, each kept as a Markdown
+  note and read through `knowledgeBase()`, in the `directMessages` mode the
+  LoCoMo runs measured. The sentence pass keeps a sender's name on what they
+  said. The `/curate` skill takes it as `"type": "whatsapp"`.
 - **An optional decision cache** stores each answered decision per part, so
   a resumed run, a rerun or a repeated question asks only for what changed.
 - **Git reads have no time or size limit.** Each `git` call the git and

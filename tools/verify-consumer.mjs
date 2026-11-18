@@ -28,7 +28,7 @@ import { pick, pickFromSources, curate, addMeaningRanks, historySource, SourceRe
 import { asSourceReadError } from '@curatejs/core/internal';
 import { chat, chatSettings, CHAT_CASCADE, AGENT_CHAT_CASCADE, CHAT_KEYWORD_SETTINGS, CHAT_SEARCH_LINE_REGISTER, PERSONAL_CHAT_CASCADE, PERSONAL_CHAT_WRITTEN_CASCADE } from '@curatejs/chat';
 import { git, gitSettings, GIT_HISTORY_CASCADE, GIT_KEYWORD_SETTINGS, GIT_SEARCH_LINE_REGISTER } from '@curatejs/git';
-import { markdown, knowledgeBase, rules, reviewNotes, markdownSettings, rulesSettings, MARKDOWN_CASCADE, MARKDOWN_KEYWORD_SETTINGS, MARKDOWN_SEARCH_LINE_REGISTER } from '@curatejs/markdown';
+import { markdown, knowledgeBase, rules, reviewNotes, whatsapp, markdownSettings, rulesSettings, MARKDOWN_CASCADE, MARKDOWN_KEYWORD_SETTINGS, MARKDOWN_SEARCH_LINE_REGISTER } from '@curatejs/markdown';
 const cancelled = new SourceReadError('cancelled', 'Stopped');
 assert.equal(asSourceReadError(cancelled), cancelled);
 assert.equal(ANSWER_TYPES.length, 10);
@@ -132,7 +132,11 @@ const okf = await knowledgeBase('okf').read({ task: '', wholeLanes: true });
 assert.equal(okf.status, 'read');
 assert.equal(okf.candidates.length, 2);
 assert.ok(okf.candidates.every(c => c.date.value === '2026-05-28T14:30:00Z' && c.date.meaning === 'changed'));
-console.log('Clean consumer: core, chat, git, notes, rules, Markdown kinds, the note review and an OKF bundle passed.');
+writeFileSync('_chat.txt', '[08/05/2023, 13:56:00] Caroline: Backups stay encrypted.\\n[08/05/2023, 13:57:00] Melanie: Good.\\n');
+const messages = await whatsapp('_chat.txt', { directory: 'messages' }).read({ task: 'backups', wholeLanes: true });
+assert.deepEqual(messages.candidates.map(c => [c.speakers, c.date.value]), [[['Caroline', 'Melanie'], '2023-05-08']]);
+assert.equal(whatsapp('_chat.txt').mode.name, 'direct-messages');
+console.log('Clean consumer: core, chat, git, notes, rules, Markdown kinds, the note review, an OKF bundle and a WhatsApp export passed.');
 `);
   execFileSync(process.execPath, ['example.mjs'], { cwd: consumer, stdio: 'inherit', env: { ...process.env, XDG_CACHE_HOME: join(consumer, 'cache') } });
   writeFileSync(join(consumer, 'require.cjs'), `

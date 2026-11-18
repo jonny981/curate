@@ -116,6 +116,7 @@ describe('curate command input', () => {
       expect(() => parseSources({ sources: [{ type, path: 'here', always: 'yes' }] })).toThrow('always must be a boolean.');
     }
     expect(parseSources({ sources: [{ type: 'codex', path: 'here', allowedCwd: 'there', always: false }] }).sources[0].always).toBe(false);
+    expect(parseSources({ sources: [{ type: 'whatsapp', path: 'chat.txt', dates: 'month-first' }] }).sources[0].dates).toBe('month-first');
   });
 
   it.each([
@@ -130,6 +131,9 @@ describe('curate command input', () => {
     { sources: [{ type: 'codex', path: 'sessions', allowedCwd: [1] }] },
     { sources: [{ type: 'git' }] },
     { sources: [{ type: 'markdown' }] },
+    { sources: [{ type: 'whatsapp' }] },
+    { sources: [{ type: 'whatsapp', path: 'chat.txt', exclude: ['x'] }] },
+    { sources: [{ type: 'whatsapp', path: 'chat.txt', dates: 'year-first' }] },
     { sources: [{ type: 'claude-code', always: true }] },
     { sources: [{ type: 'codex', allowedCwd: 'projects' }] },
   ])('rejects invalid source settings %j', (value) => {
@@ -1255,6 +1259,41 @@ describe('a run through core decision calls', () => {
     expect(await readFile(join(runFolder, 'log.md'), 'utf8')).toContain('2026-01-01');
   });
 
+  it('reads a WhatsApp export in the direct-messages mode and keeps the sender on a kept sentence', async () => {
+    const directory = await folder();
+    const home = join(directory, 'home');
+    await mkdir(home);
+    const file = join(directory, '_chat.txt');
+    await writeFile(file, [
+      '[08/05/2023, 13:56:00] Caroline: Hey Mel! I went to the LGBTQ support group yesterday.',
+      '[08/05/2023, 13:57:00] Melanie: That sounds great. How was the support group?',
+      '[25/05/2023, 10:00:00] Caroline: I painted a sunrise.',
+      '',
+    ].join('\n'));
+    const sourcesFile = join(directory, 'sources.json');
+    await writeFile(sourcesFile, JSON.stringify({ records: true, sources: [{ type: 'whatsapp', path: file, always: true }] }));
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
+    vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
+    // The decision model rates the two greeting sentences low.
+    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as { state: { items: Record<string, { text: string }> };
+        questions: Record<string, { instructions: { question: string; item: string } }> };
+      const low = ({ question, item }: { question: string; item: string }) => /this sentence/.test(question)
+        && /Hey Mel!|That sounds great/.test(body.state.items[item.slice('items.'.length)]?.text ?? '');
+      return new Response(JSON.stringify({ usage: null, answers: Object.fromEntries(Object.entries(body.questions)
+        .map(([key, question]) => [key, { noul: low(question.instructions) ? 0.01 : 0.8 }])) }));
+    }));
+    const { call } = subscriptionReply(searches());
+    const { folder: runFolder } = await run(['--sources', sourcesFile, 'When did Caroline go to the LGBTQ support group?'], call);
+    const record = JSON.parse(await readFile(join(runFolder, 'record.json'), 'utf8'));
+    expect(record.status).toBe('complete');
+    expect(record.pick.levers.sources[`whatsapp:${file}`].mode).toBe('direct-messages');
+    const log = await readFile(join(runFolder, 'log.md'), 'utf8');
+    expect(log).toContain('… Caroline: I went to the LGBTQ support group yesterday.');
+    expect(log).toContain('… Melanie: How was the support group?');
+  });
+
   it('ranks the subagents\' reports and prompts against the source\'s own search lines', async () => {
     // Only agent a2 speaks of the orchard the search lines name, and the
     // task names nothing. The keyword ranking opens a2's prompt and report;
@@ -1319,9 +1358,10 @@ describe('a run through core decision calls', () => {
 
     const record = JSON.parse(await readFile(join(runFolder, 'record.json'), 'utf8'));
     expect(record.status).toBe('complete');
-    // Every answer is 0.8, under the floor of 0.9: the read stops at its first batch.
+    // Every answer is 0.8, so every part scores under the floor of 0.9:
+    // the stop may not fire, and the read reaches the end of the order.
     expect(record.pick?.pick?.stopWhenCold).toMatchObject({ floor: 0.9, share: 0.2, waves: 1,
-      cold: { batch: 1, under: 'floor' } });
+      atFloor: 0, ended: 'order', unread: 0 });
     expect(record.pick?.levers?.stopWhenCold).toEqual({ floor: 0.9, share: 0.2 });
     expect(record.pick?.levers).not.toHaveProperty('everyRanked');
   });
@@ -1426,22 +1466,74 @@ describe('a run through core decision calls', () => {
     vi.stubEnv('HOME', home);
     vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
     vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
-    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => new Response(JSON.stringify({
-      usage: null,
-      answers: Object.fromEntries(Object.keys(JSON.parse(String(init.body)).questions).map((key) => [key, { noul: 0.8 }])),
-    }))));
+    // The first request's parts score over the floor of 0.9; every
+    // answer after it is 0.8, which scores under it.
+    let requests = 0;
+    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => {
+      const warm = requests++ === 0;
+      const questions = JSON.parse(String(init.body)).questions as Record<string, { instructions: { question: string } }>;
+      return new Response(JSON.stringify({
+        usage: null,
+        answers: Object.fromEntries(Object.entries(questions).map(([key, question]) => [key, {
+          noul: !warm ? 0.8 : question.instructions.question.startsWith('Is this item about a different subject') ? 0.01 : 0.99,
+        }])),
+      }));
+    }));
     vi.spyOn(console, 'log').mockImplementation(() => {});
     const warned = vi.spyOn(console, 'error').mockImplementation(() => {});
     const { call } = subscriptionReply(searches());
     const { record } = await run(['--sources', sourcesFile, 'orchard'], call);
 
-    // Every answer is 0.8, under the floor of 0.9: the read stops after its first wave.
+    // The first batch is warm; the second scores under the floor of 0.9,
+    // and the read stops after its first wave.
     const stop = record.pick.pick.stopWhenCold;
-    expect(stop).toMatchObject({ ended: 'cold', waves: 1, cold: { batch: 1, under: 'floor' } });
+    expect(stop).toMatchObject({ ended: 'cold', waves: 1, cold: { batch: 2, under: 'floor' } });
     expect(stop.unread).toBeGreaterThan(0);
     expect(warned.mock.calls.map(([line]) => String(line)).filter((line) => line.includes('stopWhenCold'))).toEqual([
       `The rating stop ended the read where the ratings went cold, with ${stop.unread} of ${stop.rated + stop.unread} ranked parts unread; set "stopWhenCold": false in ${sourcesFile} to read them all.`,
     ]);
+  });
+
+  it('reads on past a first wave that scores under the floor by default, to the end of the order when nothing reaches it', async () => {
+    const directory = await folder();
+    const home = join(directory, 'home');
+    const notes = join(directory, 'notes');
+    await mkdir(home);
+    await mkdir(notes);
+    // Enough parts for more than one wave of two batches.
+    await writeFile(join(notes, 'orchard.md'), Array.from({ length: 400 }, (_, index) =>
+      `## Orchard row ${index}\n\nRow ${index} of the orchard has fruit trees. ${'The trees grow here. '.repeat(30)}\n`).join('\n'));
+    const sourcesFile = join(directory, 'sources.json');
+    await writeFile(sourcesFile, JSON.stringify({ records: true, sentenceCutoff: false, sources: [{ type: 'markdown', path: notes }] }));
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
+    vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
+    // A part counted as off the subject: every part scores over the keep
+    // bar and under the default floor of 0.1.
+    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => {
+      const questions = JSON.parse(String(init.body)).questions as Record<string, { instructions: { question: string } }>;
+      return new Response(JSON.stringify({
+        usage: null,
+        answers: Object.fromEntries(Object.entries(questions).map(([key, question]) => [key, {
+          noul: question.instructions.question.startsWith('Is this item about a different subject') ? 0.9 : 0.5,
+        }])),
+      }));
+    }));
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const warned = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { call } = subscriptionReply(searches());
+    const { record } = await run(['--sources', sourcesFile, 'orchard'], call);
+
+    expect(record.status).toBe('complete');
+    expect(record.pick.levers.stopWhenCold).toEqual({ floor: 0.1, share: 0.2 });
+    const stop = record.pick.pick.stopWhenCold;
+    expect(stop).toMatchObject({ ended: 'order', unread: 0, atFloor: 0 });
+    expect(stop.waves).toBeGreaterThan(1);
+    expect(stop.kept).toBe(stop.rated);
+    const scores = record.pick.candidates.flatMap((entry: { probability?: number }) =>
+      entry.probability === undefined ? [] : [entry.probability]);
+    expect(scores.every((score: number) => score >= 0.0146 && score < 0.1)).toBe(true);
+    expect(warned.mock.calls.map(([line]) => String(line)).filter((line) => line.includes('stopWhenCold'))).toEqual([]);
   });
 
   it('carries each entry\'s since, include and exclude into the recorded source settings', async () => {
@@ -2331,6 +2423,13 @@ describe('the question sets the search scope', () => {
     expect(accept('Which commit added the cache?', { kinds: ['git-history'], since: 'none' }).kinds).toEqual(['git-history']);
     expect(accept('What is in our notes about the cache?', { kinds: ['markdown'], since: 'none' }).kinds).toEqual(['markdown']);
     expect(accept('Should every commit carry a note?', { kinds: ['git-history'], since: 'none' }).kinds).toEqual(['all']);
+  });
+
+  it('reads a WhatsApp export for a question that says to look in a chat', () => {
+    const scope = accept('What did Mel say in our chats about the trip?', { kinds: ['chat'], since: 'none' });
+    expect(scope.kinds).toEqual(['chat']);
+    const entries = [{ type: 'claude-code', path: 'a' }, { type: 'whatsapp', path: 'b' }, { type: 'markdown', path: 'c' }];
+    expect(scopedEntries(entries, scope, NOW).map((entry: { type: string }) => entry.type)).toEqual(['claude-code', 'whatsapp']);
   });
 
   it("uses the later of the window and a source's own look-back", () => {

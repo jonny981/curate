@@ -62,6 +62,10 @@ export interface MemoryCandidate {
    *  conversation read reads a source's parts with one container as one
    *  sequence; a part with no place is a container of its own. */
   readonly place?: { readonly container: string; readonly at: readonly number[] };
+  /** The names that open a line of this part's text as `<name>: ` to say
+   *  who said it, as a messaging reader writes its turns; the layout
+   *  keeps the name on a speaker's first kept sentence. */
+  readonly speakers?: readonly string[];
   /** Transcript metadata; separate from the candidate's reference role. */
   readonly chat?: {
     readonly provider: 'claude-code' | 'codex';
@@ -649,7 +653,8 @@ export interface PickRecord {
      *  and share it tested with, the waves of decision requests the
      *  read sent, the batches of the order it rated, the parts of the
      *  order it rated, the parts of the order it never rated, the rated
-     *  parts at or above their keep bar, and what ended the read: 'order' when it reached the order's end, 'cold'
+     *  parts at or above their keep bar, the rated parts at or above the
+     *  floor, and what ended the read: 'order' when it reached the order's end, 'cold'
      *  when the ratings went cold, or the stopping dial that ended it
      *  first ('limits', 'time', 'cancelled', 'error'). `cold` is
      *  present when the ratings went cold: the batch, counted from 1
@@ -665,6 +670,7 @@ export interface PickRecord {
       readonly rated: number;
       readonly unread: number;
       readonly kept: number;
+      readonly atFloor: number;
       readonly ended: 'order' | 'cold' | 'limits' | 'time' | 'cancelled' | 'error';
       readonly cold?: {
         readonly batch: number;
@@ -884,12 +890,19 @@ export interface PickOptions {
    *  `floor` (default 0.1), or under `share` (default 0.2) times the
    *  best score of every batch before it. It never stops before the
    *  read has kept a reference part on the bar the selection keeps it
-   *  at, whatever sets that bar, so a question the history
-   *  holds nothing for reads the whole order even with the stop set.
+   *  at, whatever sets that bar, and rated one at or above `floor`, so
+   *  a question the history holds nothing for, and a history whose
+   *  every part scores under the floor, read the whole order even with
+   *  the stop set, at the full cost of the stop off.
    *  The rest of that wave is rated and kept as usual; a part below
    *  the stop is never asked by the read and records 'unassessed' with
-   *  reason 'stopWhenCold'. A higher floor or share stops sooner and
-   *  spends less; a lower one reads further and finds more. It applies
+   *  reason 'stopWhenCold'. A higher share stops sooner and spends
+   *  less; a lower one reads further and finds more. The floor is both
+   *  the level a batch's best score must reach to keep the read going
+   *  and the level some part must reach before the stop may fire, so a
+   *  higher floor can also make a read longer: it reads on until some
+   *  part scores at or above it, to the end of the order if none does.
+   *  It applies
    *  only when `everyRanked`
    *  is not given (passing both throws a TypeError). On three
    *  benchmarks' saved ratings the defaults rated 64% (LoCoMo), 55%
@@ -961,8 +974,8 @@ export interface PickOptions {
    *  given. The fused order places meaning against the whole history,
    *  and the record counts the parts not given in `unheld`. */
   readonly historySizeBySource?: Readonly<Record<string, number>>;
-  /** Internal to pickFromSources: for a sized source whose mode reads
-   *  on its own, the parts no lane kept, which that read finds by key. */
+  /** Internal to pickFromSources: for a sized source whose mode's read
+   *  walks (`walks`), the parts no lane kept, which that read finds by key. */
   readonly partsBySource?: Readonly<Record<string, ModeParts>>;
   readonly limits?: PickLimits;
   readonly thresholds?: PickThresholds;
@@ -1286,6 +1299,7 @@ interface EffectInput {
     readonly cold: NonNullable<NonNullable<PickRecord['pick']>['stopWhenCold']>['cold'];
     readonly ended: NonNullable<NonNullable<PickRecord['pick']>['stopWhenCold']>['ended'];
     readonly kept: number;
+    readonly atFloor: number;
     readonly orderBySource: ReadonlyMap<string, number>;
     readonly ratedBySource: ReadonlyMap<string, number>;
     /** The sources the chat read read, whose own stop decided. */
@@ -1600,7 +1614,7 @@ function settingEffects(input: EffectInput): PickSettingEffect[] {
       effects.push({ setting: 'stopWhenCold', source: id, actedOn: 0, added: 0, dropped: null,
         summary: `stopWhenCold on ${id}: the chat read read this source's parts, and its own stop decided how far.` });
     } else if (input.stopWhenCold !== undefined) {
-      const { floor, share, cold, ended, kept } = input.stopWhenCold;
+      const { floor, share, cold, ended, kept, atFloor } = input.stopWhenCold;
       const order = input.stopWhenCold.orderBySource.get(id) ?? 0;
       const read = input.stopWhenCold.ratedBySource.get(id) ?? 0;
       const unread = order - read;
@@ -1614,6 +1628,8 @@ function settingEffects(input: EffectInput): PickSettingEffect[] {
           : ended === 'order'
             ? kept === 0 && unread === 0
               ? `stopWhenCold on ${id}: no part reached the keep bar, so the read rated every one of ${count(order, 'part')} in the order and kept none.`
+            : atFloor === 0 && unread === 0
+              ? `stopWhenCold on ${id}: no part rated at or above the floor ${floor}, so the stop could not fire and the read rated every one of ${count(order, 'part')} in the order.`
             : unread === 0
               ? `stopWhenCold on ${id}: the ratings never went cold, so the read rated every one of ${count(order, 'part')} in the order and left 0 unread.`
               : `stopWhenCold on ${id}: the ratings never went cold and the read reached the end of the order, but ${unread} of its parts got no decision score: it rated ${left}.`
@@ -3108,7 +3124,7 @@ export async function pick(
     return answer?.status === 'answered' && 'reused' in answer && answer.reused === true;
   };
   const shared = { rate: evaluate, waves: nextWave, copied: (candidate: MemoryCandidate) => copied.has(candidate),
-    score: scoreOf, stopped: () => stop !== undefined, reused: reusedOf,
+    score: scoreOf, stopped: () => stop !== undefined,
     ...(stopRule === undefined ? {} : { stop: stopRule }) };
   // The ranked read of the rest of the feed. It holds its stop until
   // selection keeps a part it rated, on the bar the selection pass will
@@ -3444,8 +3460,10 @@ export async function pick(
   const readEnded = stopRule === undefined ? undefined
     : ranked?.cold !== undefined ? 'cold' as const : feedStop ?? 'order' as const;
   // The reference parts the read rated that the selection pass kept on
-  // its own bar.
+  // its own bar, and those it rated at or above the stop's floor.
   const readKept = rankedRated.filter(keepsAt(decided)).length;
+  const readAtFloor = stopRule === undefined ? 0
+    : rankedRated.filter((candidate) => (scoreOf(candidate) ?? 0) >= stopRule.floor).length;
   // A queued part the feed never held was never asked a question. The
   // 'gate' reason names only the gate's own call: a reference part the
   // keyword lanes never held — not one a lane's candidate limit cut —
@@ -3513,7 +3531,7 @@ export async function pick(
     } }),
     ...(stopRule === undefined ? {} : { stopWhenCold: {
       ...stopRule, waves: ranked?.waves ?? 0, batches: ranked?.batches ?? 0, rated: rankedRated.length,
-      unread: insideOrder.length - chatOrder.length - rankedRated.length, kept: readKept, ended: readEnded!,
+      unread: insideOrder.length - chatOrder.length - rankedRated.length, kept: readKept, atFloor: readAtFloor, ended: readEnded!,
       ...(ranked?.cold === undefined ? {} : { cold: ranked.cold }),
     } }),
     ranking: feedFused || fused ? 'fusion' : 'keyword',
@@ -3545,7 +3563,7 @@ export async function pick(
     fused,
     feedOption: options.feed,
     stopWhenCold: stopRule === undefined ? undefined : {
-      ...stopRule, cold: ranked?.cold, ended: readEnded!, kept: readKept,
+      ...stopRule, cold: ranked?.cold, ended: readEnded!, kept: readKept, atFloor: readAtFloor,
       orderBySource: bySource(insideOrder.filter((candidate) => !ownRead(candidate))),
       ratedBySource: bySource(rankedRated), chatSources: new Set(chatOrder.map((candidate) => candidate.sourceId)) },
     typedSources: new Map(Object.entries(questionsBySource ?? {}).flatMap(([id, set]) =>
@@ -3732,6 +3750,7 @@ export async function pick(
       bar: referenceBar(id),
       ...(candidates.some((c) => c.sourceId === id && c.role === 'rule') ? { ruleBar: ruleBarFor(id) } : {}),
       ...(questionsFor(id) === undefined ? {} : { questions: questionsFor(id) }),
+      ...(modeFor(id)?.textShare === undefined ? {} : { textShare: modeFor(id)!.textShare }),
     }])) },
     effects,
   };

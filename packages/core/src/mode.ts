@@ -18,6 +18,10 @@ export interface Mode {
   /** The decision state of a request of this mode's parts lists the
    *  facts the answer needs, when the call gives them (`needed`). */
   readonly needed?: boolean;
+  /** The text takes a kept part of this mode only when its decision
+   *  weight is at least this share of the best kept part's of its
+   *  source. Absent: every kept part, within the token budget. */
+  readonly textShare?: number;
   /** How the decide step reads the mode's parts on the fused order:
    *  `rankedRead` or a `conversationRead()`. Parts of modes that share
    *  a read are read together. */
@@ -25,12 +29,19 @@ export interface Mode {
 }
 
 /** One read of the fused order's parts. */
-export type ModeRead = (input: ModeReadInput) => Promise<ModeReadResult>;
+export type ModeRead = ((input: ModeReadInput) => Promise<ModeReadResult>) & {
+  /** True for a read that walks each part's whole container, such as a
+   *  `conversationRead()`: its source keeps every part of its history,
+   *  not only the parts a search lane kept. Any other read, like the
+   *  ranked read, has the parts no lane kept counted, never given. */
+  readonly walks?: boolean;
+};
 
-/** A source's parts that no lane kept, for a mode read of its own:
- *  found by key and made into candidates only when the read reaches
- *  them. A source whose mode reads on its own hands them on the read
- *  that sizes its history (`poolIds`), so the pick never holds them.
+/** A source's parts that no lane kept, for a read that walks each
+ *  part's whole transcript (`walks`): found by key and made into
+ *  candidates only when the read reaches them. A source whose mode's
+ *  read walks hands them on the read that sizes its history
+ *  (`poolIds`), so the pick never holds them.
  *  Each answers at once, from the source's own index: the read runs
  *  beside others, and a wait here would change when its requests go
  *  out against theirs. */
@@ -161,8 +172,6 @@ export interface ModeReadInput {
   readonly stopped: () => boolean;
   /** The call's rating stop (`stopWhenCold`), when set. */
   readonly stop?: { readonly floor: number; readonly share: number };
-  /** True when a part's decision came from an earlier pick of the call. */
-  readonly reused?: (part: MemoryCandidate) => boolean;
   /** The search texts the read's sources read, the task first. */
   readonly queries?: readonly string[];
   /** The call's local embedder, when it has one. */
@@ -239,10 +248,13 @@ export const rankedRead: ModeRead = async (input) => {
         batches += 1;
         if (input.stopped() || cold !== undefined) continue;
         const top = Math.max(0, ...own.map((part) => input.score(part) ?? 0));
-        // Until the read has kept a part, a cold request does not stop
-        // it, so a history whose evidence sits below a cold stretch
-        // never comes back empty.
-        if ((top < rule.floor || top < rule.share * best) && keptAny()) {
+        // Until the read has kept a part and rated one at or above the
+        // floor, a cold request does not stop it, so a history whose
+        // evidence sits below a cold stretch never comes back empty, and a
+        // read whose first ratings all sit under the floor goes on until
+        // one reaches it.
+        if ((top < rule.floor || top < rule.share * best)
+          && [...rated].some((part) => (input.score(part) ?? 0) >= rule.floor) && keptAny()) {
           cold = { batch: batches, best: top, bestBefore: best, under: top < rule.floor ? 'floor' : 'share' };
         } else best = Math.max(best, top);
       }
@@ -267,15 +279,14 @@ export const rankedRead: ModeRead = async (input) => {
  *  measured on coding-agent transcripts. Make it once per mode: modes
  *  that share one read are read together. */
 export function conversationRead(rules: ConversationRules = {}): ModeRead {
-  return async (input) => {
+  return Object.assign(async (input: ModeReadInput): Promise<ModeReadResult> => {
     const result = await chatRead({ parts: input.parts, order: input.order, byKeyword: input.byKeyword,
       lanes: input.lanes, rate: input.rate, score: input.score, kept: input.kept, stopped: input.stopped, rules,
       ...(input.reach === undefined ? {} : { reach: input.reach }),
       ...(input.queries === undefined ? {} : { queries: input.queries }),
-      ...(input.reused === undefined ? {} : { reused: input.reused }),
       ...(input.embed === undefined ? {} : { embed: input.embed }) });
     const reached = new Set(result.read);
     return { read: result.read, unread: input.order.filter((part) => !reached.has(part)), reason: 'chatRead',
       ended: result.ended, requests: result.requests, segments: result.segments, units: result.units };
-  };
+  }, { walks: true });
 }
