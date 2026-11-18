@@ -7,11 +7,22 @@
 // with a task from a fixed list, through the skill's read and pick path
 // (`pickFullSources`, then `curate`), with a stand-in embedder and a
 // stand-in decision service. Every call waits at its first decision
-// request until all N have arrived; at that moment, the call's fullest,
-// the live heap and the resident memory are read after a garbage
-// collection. The stand-in decision service answers from a hash of each
-// question after a fixed delay a request, behind one limit of tokens a
-// second that every call shares.
+// request until all N have arrived; then the live heap and the resident
+// memory are read after a garbage collection. Each task run alone is
+// also read through its whole call: at its first decision request, at
+// every eighth, after the pick and after the layout.
+//
+// The stand-in decision service answers after a fixed delay a request,
+// behind one limit of tokens a second that every call shares. With
+// `--ratings uniform` (the default) each answer comes from a hash of the
+// question, so most parts rate warm and a read goes far: the worst case.
+// With `--ratings lifelike` each part's rating is drawn from the spread
+// of live decision ratings, higher the more of the task's search words
+// the part holds; a chat part rates warm only in the eight days of
+// transcripts that hold the task's strongest matches, so warm parts
+// gather in a few sessions as live ones do. The call stops its ranked
+// read where the ratings go cold, as the skill does by default: the
+// expected case.
 //
 // Reported for each N: memory each call adds (live heap and resident,
 // over the process before the calls, divided by N), the peak resident
@@ -25,7 +36,7 @@
 //
 //   node scripts/check-concurrency.mjs [--parts 2000] [--calls 1,4]
 //     [--delay-ms 0] [--tokens-per-second 0] [--tokens-per-part 440]
-//     [--dir <folder>] [--max-own-mb <MB>] [--json]
+//     [--dir <folder>] [--max-own-mb <MB>] [--ratings uniform|lifelike] [--json]
 //
 // `--tokens-per-second 0` sets no limit. `--dir` keeps the history and its
 // index for the next run of the same size. Run `pnpm build` first: the
@@ -33,7 +44,7 @@
 
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir, totalmem } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -58,7 +69,7 @@ const TASKS = [
 
 function parse(argv) {
   const options = { parts: 2000, calls: [1, 4], delayMs: 0, tokensPerSecond: 0, tokensPerPart: 440, dir: undefined,
-    maxOwnMb: undefined, json: false };
+    maxOwnMb: undefined, json: false, ratings: 'uniform' };
   for (let at = 0; at < argv.length; at += 1) {
     const flag = argv[at];
     const value = () => {
@@ -74,6 +85,10 @@ function parse(argv) {
     else if (flag === '--dir') options.dir = resolve(value());
     else if (flag === '--max-own-mb') options.maxOwnMb = Number(value());
     else if (flag === '--json') options.json = true;
+    else if (flag === '--ratings') {
+      options.ratings = value();
+      if (!['uniform', 'lifelike'].includes(options.ratings)) throw new Error('--ratings must be uniform or lifelike');
+    }
     else throw new Error(`unknown option ${flag}`);
   }
   const counts = [options.parts, ...options.calls, options.delayMs, options.tokensPerSecond, options.tokensPerPart];
@@ -192,8 +207,84 @@ const MB = (bytes) => bytes / 2 ** 20;
 
 /** Runs in a child process: either every task once, alone (`alone`), or
  *  `n` calls at once held together at their first decision request. */
+// Quantiles of the live decision ratings (Climb 8, eight tasks, 17,212 rated parts): [share, rating].
+const LIVE = [[0.0, 0.0034], [0.05, 0.00579], [0.1, 0.00848], [0.15, 0.01143], [0.2, 0.01341], [0.25, 0.0146], [0.3, 0.01619], [0.35, 0.01799], [0.4, 0.0191], [0.45, 0.02159], [0.5, 0.02237], [0.55, 0.02539], [0.6, 0.02737], [0.65, 0.03313], [0.7, 0.04068], [0.75, 0.05332], [0.8, 0.07225], [0.85, 0.10667], [0.9, 0.18092], [0.95, 0.34519], [0.96, 0.39905], [0.97, 0.4682], [0.98, 0.55636], [0.99, 0.90995], [0.995, 0.93492], [1, 0.97834]];
+// Set from `--ratings` in each child.
+let lifelike = false;
+const logit = (p) => Math.log(p / (1 - p));
+const sigmoid = (z) => 1 / (1 + Math.exp(-z));
+// One answer for every question of a part: the agent set scores relevant (0.7031) and needed (0.5134)
+// with bias -1.7305 while the first answer is inside [0.1, 0.9], and the first answer alone
+// (bias -0.6674, weight 1.2882) outside it.
+// The days of transcripts a task is about: the eight days whose chat parts hold the most of the task's search
+// words (most in one record, then most in all), worked out once a child from the generated history. A live read's
+// warm parts gather in the few sessions a task is about; without this the read finds warm parts all through a large
+// history and reads far deeper than a live one.
+const TOPIC_DAYS = 8;
+const topicCache = new Map();
+function topicDaysOf(dir, terms) {
+  const key = [...terms].join(' ');
+  if (topicCache.has(key)) return topicCache.get(key);
+  const days = new Map();
+  const walk = (folder) => {
+    for (const entry of readdirSync(folder, { withFileTypes: true })) {
+      const path = join(folder, entry.name);
+      if (entry.isDirectory()) { walk(path); continue; }
+      const day = /\d{4}\/\d{2}\/\d{2}\//.exec(path)?.[0];
+      if (!entry.name.endsWith('.jsonl') || day === undefined) continue;
+      const score = days.get(day) ?? [0, 0];
+      for (const line of readFileSync(path, 'utf8').split('\n')) {
+        if (!line.includes('"text"')) continue;
+        const words = new Set(line.toLowerCase().split(/[^a-z]+/));
+        let held = 0;
+        for (const term of terms) if (words.has(term)) held += 1;
+        score[0] = Math.max(score[0], held);
+        score[1] += held;
+      }
+      days.set(day, score);
+    }
+  };
+  walk(join(dir, 'chat'));
+  const chosen = [...days].sort(([left, a], [right, b]) => b[0] - a[0] || b[1] - a[1] || left.localeCompare(right))
+    .slice(0, TOPIC_DAYS).map(([day]) => day);
+  topicCache.set(key, chosen);
+  return chosen;
+}
+
+function liveAnswer(question, fnv, terms, topicDays) {
+  const hashed = fnv(`${question.sourceId}|${question.id}`) / 2 ** 32;
+  const words = new Set(`${question.title} ${question.text}`.toLowerCase().split(/[^a-z]+/));
+  let held = 0;
+  for (const term of terms) if (words.has(term)) held += 1;
+  // Up to one search word: the cold 80 percent; two: the cold 85; three: the middle; four or more: the warm 15 percent.
+  // A chat part outside the days the task is about rates cold. Inside them: no search word cold, one in the middle,
+  // two or more warm. A source other than chat goes by words alone: up to one cold, two the cold 85 percent, three
+  // the middle, four or more warm.
+  const day = /\d{4}\/\d{2}\/\d{2}\//.exec(question.id)?.[0];
+  const u = !question.sourceId.startsWith('chat:')
+    ? (held <= 1 ? hashed * 0.8 : held === 2 ? hashed * 0.85 : held === 3 ? 0.5 + hashed * 0.45 : 0.85 + hashed * 0.15)
+    : day === undefined || !topicDays.has(day) || held === 0 ? hashed * 0.8
+      : held === 1 ? 0.5 + hashed * 0.45 : 0.85 + hashed * 0.15;
+  let at = 1;
+  while (at < LIVE.length - 1 && LIVE[at][0] < u) at += 1;
+  const [u0, r0] = LIVE[at - 1];
+  const [u1, r1] = LIVE[at];
+  const rating = Math.min(0.999, Math.max(0.001, r0 + (r1 - r0) * (u1 === u0 ? 0 : (u - u0) / (u1 - u0))));
+  // The Markdown and Git sets weigh current (0.2884) and when (0.7034) for a part and needed (-0.1165) and
+  // offtopic (-0.8565) against it, with bias -1.7920: the two against are answered the other way.
+  if (!question.sourceId.startsWith('chat:')) {
+    const answer = sigmoid((logit(rating) + 1.7920) / 1.9648);
+    return question.questionKey === 'needed' || question.questionKey === 'offtopic' ? 1 - answer : answer;
+  }
+  const inside = sigmoid((logit(rating) + 1.7305) / 1.2165);
+  if (inside >= 0.1 && inside <= 0.9) return inside;
+  const outside = sigmoid((logit(rating) + 0.6674) / 1.2882);
+  return outside < 0.1 || outside > 0.9 ? outside : inside;
+}
+
 async function child(config) {
   const { dir, n, alone, delayMs, tokensPerSecond, tokensPerPart } = config;
+  lifelike = config.ratings === 'lifelike';
   const run = await import(pathToFileURL(join(root, 'skills/curate/run.mjs')).href);
   const core = await import('@curatejs/core');
   const { chat } = await import('@curatejs/chat');
@@ -281,7 +372,26 @@ async function child(config) {
         { chat: lines, 'git-history': lines, markdown: lines }, [], dir, { readAudit: false }));
     let first = true;
     const waits = [];
+    const live = () => { globalThis.gc(); return process.memoryUsage().heapUsed; };
+    // After the pick and the layout, work the call started may still be
+    // settling; the heap is read once it has.
+    const settled = async () => { await new Promise((done) => setImmediate(done)); await new Promise((done) => setTimeout(done, 50)); return live(); };
+    // Alone, a call's live heap is read through the whole call: at its
+    // first decision request, at every eighth, after the pick and after
+    // the layout, each after a garbage collection, less the heap before it.
+    const watched = alone;
+    const base = watched ? live() : 0;
+    const marks = { first: 0, peak: 0, picked: 0, laid: 0 };
+    let requests = 0;
+    const terms = new Set(keywords.join(' ').toLowerCase().split(/[^a-z]+/).filter((word) => word.length >= 4));
+    const topicDays = new Set(lifelike ? topicDaysOf(dir, terms) : []);
     const decide = Object.assign(async (batch) => {
+      if (watched && (requests === 0 || requests % 8 === 0)) {
+        const heap = live() - base;
+        if (requests === 0) marks.first = heap;
+        marks.peak = Math.max(marks.peak, heap);
+      }
+      requests += 1;
       if (first) { first = false; arrive(); if (!alone) await gate; }
       const parts = new Set(batch.questions.map((question) => JSON.stringify([question.sourceId, question.id]))).size;
       waits.push(await service(parts * tokensPerPart));
@@ -292,7 +402,7 @@ async function child(config) {
           const sum = raw.reduce((total, value) => total + value, 0);
           return [question.key, { status: 'answered', probabilities: raw.map((value) => value / sum) }];
         }
-        return [question.key, { status: 'answered', probability: hash }];
+        return [question.key, { status: 'answered', probability: lifelike ? liveAnswer(question, fnv, terms, topicDays) : hash }];
       }));
     }, { deciderId: 'check-concurrency-standin' });
     const started = performance.now();
@@ -301,13 +411,15 @@ async function child(config) {
       const picked = await run.pickFullSources(sources, {
         task, taskDate: '2026-11-13T12:00:00Z', searchLines: [...keywords, ...answers].map((_, at) => `curate-search:${at}`),
         meaning: { embed },
-      }, { task, decide, limits: { maxBatchChars: 120_000 }, cache: false });
+      }, { task, decide, limits: { maxBatchChars: 120_000 }, cache: false, ...(lifelike ? { stopWhenCold: {} } : {}) });
+      if (watched) { marks.picked = (await settled()) - base; marks.peak = Math.max(marks.peak, marks.picked); }
       const result = await core.curate(task, picked, { sentenceCutoff: false });
+      if (watched) { marks.laid = (await settled()) - base; marks.peak = Math.max(marks.peak, marks.laid); }
       const output = createHash('sha256').update(JSON.stringify({ selected: picked.selected.map((part) => [part.sourceId, part.id]),
         record: strip(picked.record), log: result.log })).digest('hex');
       const used = process.cpuUsage(cpu);
       return { task: index % TASKS.length, output, ms: performance.now() - started, waitMs: covered(waits),
-        cpuMs: (used.user + used.system) / 1000, selected: picked.selected.length };
+        cpuMs: (used.user + used.system) / 1000, selected: picked.selected.length, marks, requests };
     } finally {
       if (first) arrive();
     }
@@ -359,7 +471,8 @@ async function main() {
       generate(dir, options.parts);
       writeFileSync(marker, JSON.stringify({ parts: options.parts }));
     }
-    const service = { delayMs: options.delayMs, tokensPerSecond: options.tokensPerSecond, tokensPerPart: options.tokensPerPart };
+    const service = { delayMs: options.delayMs, tokensPerSecond: options.tokensPerSecond, tokensPerPart: options.tokensPerPart,
+      ratings: options.ratings };
     // Every task alone, after one call that brings the index up to date.
     const alone = spawnChild({ dir, alone: true, ...service }, dir).calls;
     const expected = new Map(alone.map((call) => [call.task, call.output]));
@@ -383,12 +496,20 @@ async function main() {
     }
     // Each task's output alone, so two builds can be compared.
     const report = { parts: options.parts, ...service,
-      alone: alone.map((call) => ({ task: call.task, output: call.output, s: call.ms / 1000, cpuS: call.cpuMs / 1000 })), rows };
+      alone: alone.map((call) => ({ task: call.task, output: call.output, s: call.ms / 1000, cpuS: call.cpuMs / 1000,
+        heapMb: Object.fromEntries(Object.entries(call.marks).map(([point, bytes]) => [point, MB(bytes)])),
+        requests: call.requests })), rows };
     if (options.json) console.log(JSON.stringify(report));
     else {
       const fixed = (value, digits = 1) => value.toFixed(digits);
       console.log(`${options.parts} parts; decision service: ${options.delayMs} ms a request, ${
-        options.tokensPerSecond === 0 ? 'no token limit' : `${options.tokensPerSecond} tokens a second`}, ${options.tokensPerPart} tokens a part`);
+        options.tokensPerSecond === 0 ? 'no token limit' : `${options.tokensPerSecond} tokens a second`}, ${options.tokensPerPart} tokens a part, ${
+        options.ratings} ratings`);
+      // The first alone call brings the index up to date; the rest are one a task.
+      const tasks = report.alone.slice(1);
+      const middle = (point) => fixed(median(tasks.map((call) => call.heapMb[point])));
+      console.log(`a call alone, median of the tasks: heap ${middle('first')} MB at its first decision request, ${
+        middle('peak')} MB at its highest, ${middle('picked')} MB after the pick`);
       console.log('N | own heap MB/call | own RSS MB/call | peak RSS MB | time/call s (median, slowest) | without limit wait | CPU s/call | same as alone');
       for (const row of rows) {
         console.log(`${row.n} | ${fixed(row.ownHeapMb)} | ${fixed(row.ownRssMb)} | ${fixed(row.peakRssMb, 0)} | ${fixed(row.medianS)}, ${
