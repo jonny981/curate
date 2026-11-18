@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 // @ts-expect-error The standalone JavaScript command has no type declarations.
-import { CHAT_LEVERS, CHAT_MODES, neededFrom, parseSources, searchLinesPrompt, wantedFrom } from '../skills/curate/run.mjs';
+import { CHAT_LEVERS, CHAT_MODES, NOTE_MODES, neededFrom, parseSources, searchLinesPrompt, wantedFrom } from '../skills/curate/run.mjs';
 import { ANSWER_CASCADE } from '@curatejs/core';
 
 describe('the facts the answer needs, from the search-line call', () => {
@@ -63,5 +63,22 @@ describe('values on a chat source\'s levers, and the narrow question in two as i
     expect(parseSources({ sources: [{ type: 'claude-code', questions: 'answers' }] }).sources[0].questions).toBe('answers');
     expect(CHAT_MODES.answers).toMatchObject({ name: 'answers', questions: ANSWER_CASCADE, needed: true });
     expect(CHAT_MODES.answers.read).toBe(CHAT_MODES.default.read);
+  });
+});
+
+describe('a Markdown entry\'s question set and levers', () => {
+  it('takes the narrow question in two and the levers that act on notes', () => {
+    const parsed = parseSources({ sources: [{ type: 'markdown', path: '/notes', questions: 'answers',
+      levers: { itemsPerRequest: 1, roles: true, choicePerFact: { candidates: 20 } } }] });
+    expect(parsed.sources[0]).toMatchObject({ questions: 'answers', levers: { itemsPerRequest: 1, roles: true, choicePerFact: { candidates: 20 } } });
+    expect(NOTE_MODES.answers).toMatchObject({ name: 'answers', questions: ANSWER_CASCADE, needed: true });
+    expect(NOTE_MODES.answers.read).toBe(NOTE_MODES.default.read);
+  });
+
+  it('refuses the chat question sets and the levers that read a conversation\'s messages', () => {
+    expect(() => parseSources({ sources: [{ type: 'markdown', path: '/notes', questions: 'judgments' }] }))
+      .toThrow('Unknown questions "judgments"; allowed names are default, answers.');
+    expect(() => parseSources({ sources: [{ type: 'markdown', path: '/notes', levers: { wholeMessages: true } }] }))
+      .toThrow('levers must be an object of booleans named roles, choicePerFact;');
   });
 });

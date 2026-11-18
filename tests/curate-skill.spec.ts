@@ -1262,6 +1262,76 @@ describe('a run through core decision calls', () => {
       replies_to: { text: 'I propose keeping the orchard cache layered.' } });
   });
 
+  it('asks a chat source that names the narrow question in two with the facts the answer needs', async () => {
+    const directory = await folder();
+    const home = join(directory, 'home');
+    const transcripts = join(directory, 'transcripts');
+    await mkdir(home);
+    await mkdir(transcripts);
+    await writeFile(join(transcripts, 'session.jsonl'), [
+      JSON.stringify({ type: 'user', sessionId: 's1', timestamp: '2026-01-01T12:00:00Z', origin: { kind: 'human' },
+        message: { content: 'Should we keep the orchard cache layered?' } }),
+      JSON.stringify({ type: 'assistant', sessionId: 's1', timestamp: '2026-01-01T12:01:00Z',
+        message: { content: [{ type: 'text', text: 'We keep the orchard cache layered.' }] } }),
+    ].join('\n'));
+    const sourcesFile = join(directory, 'sources.json');
+    await writeFile(sourcesFile, JSON.stringify({ records: true, sources: [{ type: 'claude-code', path: transcripts, questions: 'answers' }] }));
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
+    vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
+    const bodies: { state: Record<string, unknown>; questions: Record<string, { instructions: { question: string } }> }[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => {
+      const body = JSON.parse(String(init.body));
+      bodies.push(body);
+      return new Response(JSON.stringify({ usage: null,
+        answers: Object.fromEntries(Object.keys(body.questions).map((key) => [key, { noul: 0.8 }])) }));
+    }));
+    const { call } = subscriptionReply({ ...searches(), needed: ['Whether the cache stays layered'] });
+    await run(['--sources', sourcesFile, 'Is the orchard cache layered?'], call);
+    expect(bodies.length).toBeGreaterThan(0);
+    for (const body of bodies) {
+      expect(body.state).toMatchObject({ needed: ['Whether the cache stays layered'] });
+      expect(Object.values(body.questions).map((question) => question.instructions.question))
+        .toContain('Does this item state this needed fact: Whether the cache stays layered');
+    }
+  });
+
+  it('keeps notes by the narrow question in two, one note a request, with the facts the answer needs, when a Markdown entry names it', async () => {
+    const directory = await folder();
+    const home = join(directory, 'home');
+    const notesFolder = join(directory, 'notes');
+    await mkdir(home);
+    await mkdir(notesFolder);
+    await writeFile(join(notesFolder, 'orchard.md'), '# Orchard cache\n\nWe keep the orchard cache layered.\n');
+    await writeFile(join(notesFolder, 'garden.md'), '# Garden\n\nThe garden gate is painted green.\n');
+    const sourcesFile = join(directory, 'sources.json');
+    await writeFile(sourcesFile, JSON.stringify({ records: true,
+      sources: [{ type: 'markdown', path: notesFolder, questions: 'answers', levers: { itemsPerRequest: 1 } }] }));
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
+    vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
+    const bodies: { state: Record<string, unknown>; questions: Record<string, { instructions: { question: string } }> }[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => {
+      const body = JSON.parse(String(init.body));
+      bodies.push(body);
+      return new Response(JSON.stringify({ usage: null,
+        answers: Object.fromEntries(Object.keys(body.questions).map((key) => [key, { noul: 0.8 }])) }));
+    }));
+    const { call, calls } = subscriptionReply({ ...searches(), needed: ['Whether the cache stays layered'] });
+    const { record } = await run(['--sources', sourcesFile, 'Is the orchard cache layered?'], call);
+    expect(calls[0]!.prompt).toContain('"needed"');
+    const rated = bodies.filter((body) => Object.values(body.questions).some((question) => question.instructions.question === 'Does this item answer the task?'));
+    expect(rated.length).toBeGreaterThan(0);
+    for (const body of rated) {
+      expect(body.state).toMatchObject({ needed: ['Whether the cache stays layered'] });
+      expect(body.state.item).toBeDefined();
+      expect(Object.values(body.questions).map((question) => question.instructions.question)).toEqual(['Does this item answer the task?',
+        'Does this item state this needed fact: Whether the cache stays layered']);
+    }
+    expect(Object.values(record.pick.levers.sources as Record<string, { questions: unknown; itemsPerRequest: number }>))
+      .toContainEqual(expect.objectContaining({ itemsPerRequest: 1 }));
+  });
+
   it('leaves the search-line call and every request without them when no source turns the lever on', async () => {
     const asked = searchLinesPrompt('the task', ['chat'], undefined, true);
     expect(asked).not.toContain('"wanted"');

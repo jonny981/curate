@@ -9,7 +9,7 @@ import { ANSWER_CASCADE, curate, DEFAULT_MAX_QUESTION_TEXT, levelDistribution, p
 import { jev } from '@curatejs/core/models';
 import { agentTranscripts, chat, scrubChat, AGENT_CHAT_CASCADE, CHAT_SEARCH_LINE_REGISTER, JUDGMENT_CHAT_CASCADE } from '@curatejs/chat';
 import { git, GIT_HISTORY_CASCADE, GIT_SEARCH_LINE_REGISTER } from '@curatejs/git';
-import { knowledgeBase, markdown, whatsapp, MARKDOWN_CASCADE, MARKDOWN_SEARCH_LINE_REGISTER } from '@curatejs/markdown';
+import { knowledgeBase, markdown, notes, whatsapp, MARKDOWN_CASCADE, MARKDOWN_SEARCH_LINE_REGISTER } from '@curatejs/markdown';
 
 // A settings path: absolute, from the home folder (`~/`), or from `base`.
 const homePath = (path, base = process.cwd()) => resolve(base, path.startsWith('~/') ? join(homedir(), path.slice(2)) : path);
@@ -137,12 +137,25 @@ const chatMode = (entry) => {
   return entry.bar === undefined && entry.levers === undefined ? mode
     : { ...mode, ...(entry.bar === undefined ? {} : { bar: entry.bar }), ...entry.levers };
 };
+// The question sets a Markdown entry's notes can be kept by: the notes
+// mode's own, or the narrow question in two with the facts the answer
+// needs in each request's state.
+export const NOTE_MODES = { default: notes, answers: { ...notes, name: 'answers', questions: ANSWER_CASCADE, needed: true } };
+// The levers that act on notes: whole messages and hard facts read a
+// conversation's placed messages, which notes do not have.
+export const NOTE_LEVERS = ['roles', 'choicePerFact', 'itemsPerRequest'];
+// A Markdown entry's mode, or undefined to keep the reader's own.
+const noteMode = (entry) => entry.questions === undefined && entry.levers === undefined ? undefined
+  : { ...NOTE_MODES[entry.questions ?? 'default'], ...entry.levers };
+// Whether an entry's mode needs the facts the answer needs from the
+// search lines: in its requests' state, or for a Choice per needed fact.
+const modeNeeds = (mode) => mode !== undefined && (mode.needed === true || (mode.choicePerFact ?? false) !== false);
 
 const SOURCE_ENTRY_KEYS = {
   'claude-code': ['type', 'path', 'since', 'exclude', 'questions', 'bar', 'levers', 'always'],
   codex: ['type', 'path', 'since', 'exclude', 'allowedCwd', 'questions', 'bar', 'levers', 'always'],
   git: ['type', 'path', 'since', 'exclude', 'include', 'always'],
-  markdown: ['type', 'path', 'since', 'exclude', 'always'],
+  markdown: ['type', 'path', 'since', 'exclude', 'questions', 'levers', 'always'],
   whatsapp: ['type', 'path', 'since', 'dates', 'always'],
 };
 
@@ -177,16 +190,18 @@ export function parseSources(value, base = process.cwd()) {
         throw new Error(`${key} must be an array of paths.`);
       }
     }
-    if (source.questions !== undefined && !Object.hasOwn(CHAT_MODES, source.questions)) {
-      throw new Error(`Unknown questions "${source.questions}"; allowed names are ${Object.keys(CHAT_MODES).join(', ')}.`);
+    const modes = source.type === 'markdown' ? NOTE_MODES : CHAT_MODES;
+    if (source.questions !== undefined && !Object.hasOwn(modes, source.questions)) {
+      throw new Error(`Unknown questions "${source.questions}"; allowed names are ${Object.keys(modes).join(', ')}.`);
     }
     if (source.bar !== undefined
       && (typeof source.bar !== 'number' || !Number.isFinite(source.bar) || source.bar < 0 || source.bar > 1)) {
       throw new Error('bar must be a number between 0 and 1.');
     }
+    const levers = source.type === 'markdown' ? NOTE_LEVERS : CHAT_LEVERS;
     if (source.levers !== undefined && (source.levers === null || typeof source.levers !== 'object' || Array.isArray(source.levers)
-      || Object.entries(source.levers).some(([key, on]) => !CHAT_LEVERS.includes(key) || !leverValue(key, on)))) {
-      throw new Error(`levers must be an object of booleans named ${CHAT_LEVERS.filter((name) => name !== 'itemsPerRequest').join(', ')}; itemsPerRequest, a positive whole number; and choicePerFact may instead be { candidates, enough }, candidates a positive whole number and enough a boolean.`);
+      || Object.entries(source.levers).some(([key, on]) => !levers.includes(key) || !leverValue(key, on)))) {
+      throw new Error(`levers must be an object of booleans named ${levers.filter((name) => name !== 'itemsPerRequest').join(', ')}; itemsPerRequest, a positive whole number; and choicePerFact may instead be { candidates, enough }, candidates a positive whole number and enough a boolean.`);
     }
     if (source.always !== undefined && typeof source.always !== 'boolean') throw new Error('always must be a boolean.');
     if (source.dates !== undefined && !['day-first', 'month-first'].includes(source.dates)) {
@@ -1271,7 +1286,8 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
     const scoped = settings.scope !== false;
     // A mode that lists the facts the answer needs gets them from the
     // same call as the search lines.
-    const askNeeded = callSources.some((entry) => sourceKind(entry.type) === 'chat' && chatMode(entry).needed === true);
+    const askNeeded = callSources.some((entry) => modeNeeds(sourceKind(entry.type) === 'chat' ? chatMode(entry)
+      : entry.type === 'markdown' ? noteMode(entry) : undefined));
     // A mode that writes hard facts gets how many answers are wanted from it too.
     const askWanted = callSources.some((entry) => sourceKind(entry.type) === 'chat' && chatMode(entry).hardFacts === true);
     const searchPrompt = searchLinesPrompt(options.task, searchKinds, scoped ? today : undefined, askNeeded, askWanted);
@@ -1294,9 +1310,10 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
         };
         // The project's own Markdown goes through the reader that leaves out
         // what git ignores and any node_modules folder.
+        const mode = noteMode(entry);
         return { source: entry.own === true
           ? markdown({ paths: [entry.path], kind: 'docs', maxQuestionText: DEFAULT_MAX_QUESTION_TEXT, ...options })
-          : knowledgeBase(entry.path, options) };
+          : mode === undefined ? knowledgeBase(entry.path, options) : { ...knowledgeBase(entry.path, options), mode } };
       }
       if (entry.type === 'whatsapp') {
         return { source: whatsapp(entry.path, { ...(entry.since === undefined ? {} : { since: entry.since }),
@@ -1502,8 +1519,8 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
     const pickStart = Date.now();
     const lineNames = (length) => Array.from({ length }, (_, i) => `curate-search:${i}`);
     const request = { task: options.task, searchLines: lineNames(count), meaning: { embed: local.embed } };
-    // The coding-agent transcripts: the sources in the agent mode.
-    const agentIds = new Set(sources.filter((source) => source.mode?.name === agentTranscripts.name).map((source) => source.id));
+    // The coding-agent transcripts: the sources read as the agent mode reads.
+    const agentIds = new Set(sources.filter((source) => source.mode?.read === agentTranscripts.read).map((source) => source.id));
     // Their second search reuses round one's decisions, from a store
     // that lasts this call only.
     const decisions = new Map();
@@ -1519,7 +1536,7 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
       stopWhenCold: settings.stopWhenCold ?? {},
       ...(settings.feed === undefined ? {} : { feed: settings.feed }),
       ...(settings.threshold === undefined ? {} : { everyScored: { bar: settings.threshold } }),
-      ...(agentIds.size === 0 || needed?.facts === undefined ? {} : { needed: needed.facts }),
+      ...(needed?.facts === undefined ? {} : { needed: needed.facts }),
       ...(settings.person === undefined ? {} : { person: settings.person }),
       ...(wanted?.value === undefined ? {} : { wanted: wanted.value }),
       ...(agentIds.size === 0 ? {} : { cache: { deciderId: decide.deciderId, store: {
