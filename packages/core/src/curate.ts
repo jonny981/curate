@@ -31,7 +31,9 @@ function estimateAnswerTokens(text: string): number {
  *  selected reference items, strongest first, for the answering model to
  *  read. The two items with the highest decision weight (ties broken by
  *  the fused order) sit under `### Most likely answer`, each under its own
- *  `#### <source> (said <date>)` heading. Every other item is grouped by
+ *  `#### <source> (said <date>)` heading; when a Choice per needed fact
+ *  picked items (the record entries' `chosen`), the picks sit there
+ *  instead, in the order picked: each round's picks, fact by fact. Every other item is grouped by
  *  said date and source, under `### <source> (said <date>)`, groups
  *  oldest first and items in weight order inside a group. An item with
  *  no date shows `(said unknown)` and its group comes last. A date that
@@ -160,7 +162,7 @@ const body = (item: Item) => item.candidate.text.trim() ? item.candidate.text : 
 
 /** The memory text for the items taken, strongest first. A taken item's
  *  heading also names each other place and date its copies were said. */
-function layOutItems(taken: readonly Item[], copies: ReadonlyMap<Item, readonly Item[]>): string {
+function layOutItems(taken: readonly Item[], copies: ReadonlyMap<Item, readonly Item[]>, lead = 2): string {
   const source = (item: Item) => {
     const said = dayOf(item.candidate.date?.value);
     // A file's last-changed date is not when anything in it was said.
@@ -175,9 +177,9 @@ function layOutItems(taken: readonly Item[], copies: ReadonlyMap<Item, readonly 
     if (!elsewhere.length) return own;
     return `${own}, also ${elsewhere.length === 1 ? elsewhere[0] : `${elsewhere.slice(0, -1).join(', ')} and ${elsewhere[elsewhere.length - 1]}`}`;
   };
-  const top = taken.slice(0, 2).map((item) => `#### ${heading(item)}\n\n${body(item)}`);
+  const top = taken.slice(0, lead).map((item) => `#### ${heading(item)}\n\n${body(item)}`);
   const groups = new Map<string, Item[]>();
-  for (const item of taken.slice(2)) {
+  for (const item of taken.slice(lead)) {
     // The heading closes the key, so an item whose copies were said elsewhere never shares a heading with one whose were not.
     const key = `${source(item).said}|${item.candidate.sourceId}|${source(item).where}|${source(item).label}|${heading(item)}`;
     groups.set(key, [...(groups.get(key) ?? []), item]);
@@ -301,8 +303,19 @@ export async function curate(task: string, picked: PickResult, options: CurateOp
   for (const { candidate, weight } of items) best.set(candidate.sourceId, Math.max(best.get(candidate.sourceId) ?? 0, weight));
   const shareOf = (sourceId: string) => picked.record.levers.sources?.[sourceId]?.textShare;
   const sized = items.filter(({ candidate, weight }) => weight >= (shareOf(candidate.sourceId) ?? 0) * best.get(candidate.sourceId)!);
+  // The parts a Choice per needed fact picked lead, in the order they were
+  // picked: each round's picks, fact by fact. Every other part follows.
+  const pickOf = (item: Item) => entries.get(JSON.stringify([item.candidate.sourceId, item.candidate.id]))?.chosen
+    ?.reduce((first, pick) => pick.round < first.round || (pick.round === first.round && pick.fact < first.fact) ? pick : first);
+  const leading = (left: Item, right: Item) => {
+    const [a, b] = [pickOf(left), pickOf(right)];
+    return a === undefined || b === undefined ? Number(a === undefined) - Number(b === undefined) : a.round - b.round || a.fact - b.fact;
+  };
   // `items` follows `picked.selected`, so a stable sort leaves equal weights in the fused order.
-  const ordered = [...sized].sort((left, right) => right.weight - left.weight);
+  const ordered = [...sized].sort((left, right) => leading(left, right) || right.weight - left.weight);
+  // With picks, they make the `Most likely answer` section; without, the two strongest parts do.
+  const anyPick = sized.some((item) => pickOf(item) !== undefined);
+  const leadOf = (taken: readonly Item[]) => anyPick ? taken.filter((item) => pickOf(item) !== undefined).length : 2;
   let taken: Item[] = [];
   let copies = new Map<Item, readonly Item[]>();
   let log = '';
@@ -317,7 +330,7 @@ export async function curate(task: string, picked: PickResult, options: CurateOp
       if (original === undefined) { firstWith.set(shown, item); taken.push(item); }
       else copies.set(original, [...(copies.get(original) ?? []), item]);
     }
-    log = layOutItems(taken, copies);
+    log = layOutItems(taken, copies, leadOf(taken));
   } else {
     for (const [index, item] of ordered.entries()) {
       // A copy of an item already taken adds only a place and date to that item's heading.
@@ -325,7 +338,7 @@ export async function curate(task: string, picked: PickResult, options: CurateOp
       const original = taken.find((kept) => body(kept).trim() === shown);
       const nextTaken = original === undefined ? [...taken, item] : taken;
       const nextCopies = original === undefined ? copies : new Map(copies).set(original, [...(copies.get(original) ?? []), item]);
-      const text = layOutItems(nextTaken, nextCopies);
+      const text = layOutItems(nextTaken, nextCopies, leadOf(nextTaken));
       if (taken.length > 0 && estimateAnswerTokens(text) > answerTokens) { stopped = index; break; }
       [taken, copies, log] = [nextTaken, nextCopies, text];
     }
@@ -382,7 +395,7 @@ export async function curate(task: string, picked: PickResult, options: CurateOp
   });
   const left = [...shown.values()];
   const trimmed = left.length === 0 ? '' : layOutItems(left,
-    new Map([...copies].flatMap(([item, list]) => shown.has(item) ? [[shown.get(item)!, list] as const] : [])));
+    new Map([...copies].flatMap(([item, list]) => shown.has(item) ? [[shown.get(item)!, list] as const] : [])), leadOf(left));
   return { log: trimmed, record: {
     ...record, items: left, estimatedTokens: estimateAnswerTokens(trimmed),
     sentences: { ...counts, kept, unanswered, itemsTrimmed, itemsLeftOut: taken.length - left.length },

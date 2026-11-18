@@ -15,6 +15,7 @@ import {
 } from './task.js';
 import { conversationRead, rankedRead, type Mode, type ModeRead, type ModeReadResult } from './mode.js';
 import { messageKey, messageKind, messagePieces, messageText, transcriptMessages } from './chat-read.js';
+import { choosePerFact } from './choice.js';
 import type { EmbeddingFunction } from './meaning.js';
 import type { LeverStates } from './levers.js';
 import type { StoredIndexReport } from './stored-index.js';
@@ -181,6 +182,40 @@ export type PickDecide = ((
 ) => Promise<Record<string, PickAnswer>>) & {
   /** Stable model and prompt identity for stored labels. */
   readonly deciderId?: string;
+  /** Answers a request about a list of items at once, for the steps that
+   *  compare parts (`choicePerFact`). `jev()` supplies one. */
+  readonly list?: PickListDecide;
+};
+
+/** An item as a decision request shows it: a part's fields, without a
+ *  question. */
+export type PickItem = Pick<PickQuestion, 'sourceId' | 'id' | 'title' | 'text' | 'role' | 'date' | 'kind' | 'author' | 'anonymous' | 'facts'>;
+
+/** A question about a list request's items as a whole: a Choice among
+ *  them, its options the item keys in the order given, or a yes/no. */
+export type PickListQuestion =
+  | { readonly type: 'choice'; readonly question: string; readonly options: readonly string[] }
+  | { readonly type: 'noul'; readonly question: string; readonly trueCriterion: string; readonly falseCriterion: string };
+
+/** One request about a list of items at once: the task, the fields its
+ *  state carries beside it, and each item under its own key, in order. */
+export interface PickListRequest extends Pick<PickBatch, 'task' | 'needed' | 'person' | 'wanted'> {
+  readonly items: readonly (readonly [string, PickItem])[];
+  readonly questions: Readonly<Record<string, PickListQuestion>>;
+}
+
+/** A list question's answer: a Choice's probability for each option,
+ *  adding to one, or a yes/no's probability. */
+export type PickListAnswer =
+  | { readonly status: 'answered'; readonly probabilities: Readonly<Record<string, number>> }
+  | { readonly status: 'answered'; readonly probability: number }
+  | { readonly status: 'refused' | 'missing' | 'error'; readonly detail?: string };
+
+/** Answers a list request, each answer under its question's name.
+ *  `maxChars` is the most characters its state plus its longest question
+ *  may hold, when the service has such a limit. */
+export type PickListDecide = ((request: PickListRequest, signal: AbortSignal) => Promise<Record<string, PickListAnswer>>) & {
+  readonly maxChars?: number;
 };
 
 /** Label storage settings. Each source supplies its own kind questions;
@@ -365,6 +400,10 @@ export type PickRecordEntry = {
     readonly value?: string;
     readonly answers: readonly ({ readonly key: string; readonly reused?: boolean } & PickAnswer)[];
   }>>;
+  /** Present on a kept part a Choice per needed fact picked: for each
+   *  fact that picked it, the fact's place in `needed`, the round that
+   *  picked it from 1, and the Choice's probability for it. */
+  readonly chosen?: readonly { readonly fact: number; readonly round: number; readonly probability: number }[];
 } & PickEntryStatus;
 
 export interface PickCriterion {
@@ -723,6 +762,24 @@ export interface PickRecord {
    *  applied to, counted from this pick alone. A setting that was off
    *  has no entry. */
   readonly effects: readonly PickSettingEffect[];
+  /** Present when a mode compared its kept parts for each needed fact:
+   *  the companion's bar, each fact's picks in order (the item's id, the
+   *  round, the Choice's probability and the companion's answer) and
+   *  why its loop ended, the rounds and the list requests sent. `skipped`
+   *  says why no Choice was asked (no needed facts, or a stop); `error`
+   *  holds a failed request's message, and the text then keeps its order. */
+  readonly choicePerFact?: {
+    readonly bar: number;
+    readonly facts: readonly {
+      readonly fact: string;
+      readonly ended: 'no' | 'empty';
+      readonly picks: readonly { readonly id: string; readonly round: number; readonly probability: number; readonly any: number }[];
+    }[];
+    readonly rounds: number;
+    readonly requests: number;
+    readonly skipped?: string;
+    readonly error?: string;
+  };
 }
 
 export interface PickResult {
@@ -1064,6 +1121,9 @@ const DEFAULT_BAR = 0.0146;
  *  pick itself shows full candidate text unless a caller supplies a cut. */
 export const DEFAULT_MAX_QUESTION_TEXT = 700;
 const DEFAULT_LINKED_PATH_BAR = 0.4;
+/** The companion's bar a Choice per needed fact stops under by default:
+ *  0.3, the decision model's maker's starting point for a clear no. */
+const CHOICE_BAR = 0.3;
 /** The bar `answerTypes: true` asks the answer types at. */
 const ANSWER_TYPE_BAR = 0.5;
 const TIMED_OUT = Symbol('timed out');
@@ -1748,6 +1808,10 @@ export async function pick(
   // The facts the answer needs, for the requests of parts whose mode lists them.
   const needed = options.needed !== undefined && options.needed.length > 0 ? options.needed : undefined;
   const carriesNeeded = (candidate: MemoryCandidate) => needed !== undefined && modeFor(candidate.sourceId)?.needed === true;
+  if (Object.values(modes).some((mode) => mode.choicePerFact !== undefined && mode.choicePerFact !== false)
+    && typeof options.decide.list !== 'function') {
+    throw new TypeError('choicePerFact needs a decider that answers list requests, such as jev().');
+  }
   // Hard facts: a part of a mode that writes them gets fields code knows,
   // and its requests carry the call's person and wanted.
   const factsFor = (candidate: MemoryCandidate) => candidate.role === 'reference' && modeFor(candidate.sourceId)?.hardFacts === true;
@@ -3454,6 +3518,56 @@ export async function pick(
     });
   }
 
+  // A Choice per needed fact over the kept parts of the modes that ask
+  // for it: one item per kept message or part, in the order they were
+  // said; the picks lead the text and nothing is dropped.
+  const picked = new Map<MemoryCandidate, { fact: number; round: number; probability: number }[]>();
+  let choiceRecord: PickRecord['choicePerFact'];
+  const choiceBar = (candidate: MemoryCandidate) => {
+    const setting = modeFor(candidate.sourceId)?.choicePerFact;
+    return setting === undefined || setting === false ? undefined
+      : typeof setting === 'object' && setting.bar !== undefined ? setting.bar : CHOICE_BAR;
+  };
+  const choosing = selected.filter((candidate) => candidate.role === 'reference' && choiceBar(candidate) !== undefined);
+  if (choosing.length > 0) {
+    const bar = choiceBar(choosing[0]!)!;
+    const said = (candidate: MemoryCandidate) => {
+      const ms = Date.parse(candidate.date?.value ?? '');
+      return Number.isFinite(ms) ? ms : 0;
+    };
+    const items = [...new Set(choosing.flatMap(itemsFor))]
+      .sort((left, right) => said(left) - said(right) || left.id.localeCompare(right.id));
+    const keyed = items.map((item, index): [string, MemoryCandidate] => [`P${index + 1}`, item]);
+    const itemOf = new Map(keyed);
+    if (needed === undefined || stop !== undefined) {
+      choiceRecord = { bar, facts: [], rounds: 0, requests: 0, skipped: stop ?? 'the call gave no needed facts' };
+    } else {
+      try {
+        const list = options.decide.list!;
+        const result = await choosePerFact({ task: options.task, facts: needed, header: headerOf(items[0]!), list, signal: decideSignal, bar,
+          maxChars: Math.min(limits.maxBatchChars, list.maxChars ?? Number.POSITIVE_INFINITY),
+          items: keyed.map(([key, item]) => {
+            const { sourceId, id, title, text, role, date, kind, author, anonymous, facts } = pending(item, specsFor(item)[0]!).question;
+            return [key, { sourceId, id, title, text, role, date, kind, author, anonymous, facts }] as const;
+          }) });
+        result.facts.forEach(({ picks }, fact) => {
+          for (const pick of picks) {
+            const item = itemOf.get(pick.key)!;
+            const key = messageOfItem.get(item);
+            for (const piece of key === undefined ? [item] : messages.get(key) ?? [item]) {
+              picked.set(piece, [...picked.get(piece) ?? [], { fact, round: pick.round, probability: pick.probability }]);
+            }
+          }
+        });
+        choiceRecord = { bar, rounds: result.rounds, requests: result.requests,
+          facts: result.facts.map(({ fact, picks, ended }) => ({ fact, ended,
+            picks: picks.map(({ key, round, probability, any }) => ({ id: itemOf.get(key)!.id, round, probability, any })) })) };
+      } catch (error) {
+        choiceRecord = { bar, facts: [], rounds: 0, requests: 0, error: error instanceof Error ? error.message : String(error) };
+      }
+    }
+  }
+
   // The pick numbers on every pick: the history's size, the ranked
   // parts that went on to the decide step, the parts and task
   // questions the decide port was actually asked, the dial or level
@@ -3616,6 +3730,7 @@ export async function pick(
           .map((q) => ({ key: q.key, ...(answered.get(candidate)!.get(q.key) ?? { status: 'missing' as const }) })),
       } : {}),
       ...(tags === undefined ? {} : { tags }),
+      ...(picked.has(candidate) ? { chosen: picked.get(candidate)! } : {}),
     };
     return status.status === 'unanswered'
       ? { ...base, status: 'unanswered', answer: status.answer, detail: status.detail }
@@ -3668,6 +3783,7 @@ export async function pick(
     ...(options.writeQuestions === undefined ? {} : { writtenQuestions: { questions: writtenQuestions } }),
     ...(names === undefined ? {} : { names }),
     ...(pickRecord === undefined ? {} : { pick: pickRecord }),
+    ...(choiceRecord === undefined ? {} : { choicePerFact: choiceRecord }),
     levers: { ...levers, sources: Object.fromEntries([...new Set([
       ...Object.keys(labelKindsBySource), ...candidates.map((candidate) => candidate.sourceId),
       ...Object.keys(modes), ...Object.keys(options.ruleBarBySource ?? {}),
@@ -3682,6 +3798,8 @@ export async function pick(
       ...(modeFor(id)?.textShare === undefined ? {} : { textShare: modeFor(id)!.textShare }),
       ...(modeFor(id)?.wholeMessages === true ? { wholeMessages: true as const } : {}),
       ...(modeFor(id)?.hardFacts === true ? { hardFacts: true as const } : {}),
+      ...(modeFor(id) === undefined || choiceBar({ sourceId: id } as MemoryCandidate) === undefined ? {}
+        : { choicePerFact: { bar: choiceBar({ sourceId: id } as MemoryCandidate)! } }),
     }])) },
     effects,
   };

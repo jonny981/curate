@@ -121,7 +121,7 @@ export const CHAT_MODES = { default: agentTranscripts,
   judgments: { name: 'judgments', questions: JUDGMENT_CHAT_CASCADE, read: rankedRead } };
 // The decision levers a chat entry can switch on for its mode, each off by
 // default (core's Mode documents them).
-export const CHAT_LEVERS = ['wholeMessages', 'hardFacts'];
+export const CHAT_LEVERS = ['wholeMessages', 'hardFacts', 'choicePerFact'];
 // A chat entry's mode, with its own bar and levers when it sets them.
 const chatMode = (entry) => {
   const mode = CHAT_MODES[entry.questions ?? 'default'];

@@ -944,6 +944,39 @@ never carry them, and an answer asked with them is stored apart from
 one asked without. The record names the setting under
 `levers.sources`.
 
+### A Choice per needed fact
+
+Off by default. A mode with `choicePerFact: true` (or `{ bar }`)
+compares its kept parts for each fact the call gives in `needed`, after
+selection, the way the decision model's maker builds a search over many
+candidates: one request holds the kept parts in its state, each a
+record under a key (`P1`, `P2`, …, in the order they were said), and
+asks a Choice whose options are those keys with no descriptions, "Which
+item states this needed fact: {fact}", beside a companion yes/no,
+"Does any item state this needed fact: {fact}", whose `false` names
+the confusing case (parts that share the subject, plan it, ask about it
+or report work toward it). The pick is removed and the Choice asked
+again until the companion answers under `bar` (0.3 unless set, the
+maker's starting point for a clear no) or no part is left; the facts'
+loops advance a round together. A list too long for one request (the
+smaller of `limits.maxBatchChars` and the decider's own limit, and at
+most 255 options, the service's limit) is cut into consecutive windows,
+each asked on its own, and a window the service refuses as too large
+is asked again in halves, since three characters a token is only an
+estimate; when more than one window's companion says yes,
+one more Choice among their picks decides, and a window that lost no
+part is not asked again. The picks lead the text, under `### Most
+likely answer`, in the order picked; every other kept part follows, so
+nothing is dropped. Each picked part's record entry carries `chosen`,
+and the record's `choicePerFact` holds each fact's picks, why its loop
+ended, the rounds and the requests. A call with no needed facts asks
+nothing and the record says so; a failed request leaves the text in its
+order with the error in the record. It needs a decider with a `list`
+function, as `jev()` has; `choosePerFact()` runs the same loop on any
+list, and its `reverseOptions` sends each Choice's options in reverse
+order, the state unchanged, to check the model's lean toward the first
+option.
+
 ### Decision tags
 
 `tags` asks extra yes/no questions of each reference that passes
@@ -1736,7 +1769,7 @@ Each source carries six settings, tuned for its kind of history:
 - **`labelBar`:** the label bar, from 0 to 1, for which kinds the task needs and which of this source's parts join the label lane; absent means 0.5.
 - **`names`:** open one exact-phrase lane per name the task names ([names in the task](#names-in-the-task)). The reason is recall.
 - **`ruleBar`:** keep a rule scored at or above this; absent means 0. Only sources whose parts are rules use it.
-- **`mode`:** how the source's parts are judged and read: `name`; `questions`, the decision questions asked of each reference part (absent: the built-in question for the part's kind); `bar`, keep a reference part scored at or above this (absent: the set's fitted bar, or 0.0146); and `read`, `rankedRead` down the fused order or a `conversationRead()` ([the chat read](#the-chat-read)), which takes `walksOn`, `opens` and `stops` rules in place of the measured ones. Absent: the built-in question, 0.0146 and the ranked read. Off by default: `wholeMessages`, judge each ranked piece's whole message ([whole messages](#whole-messages)); `hardFacts`, fields code knows in each item's record ([hard facts](#hard-facts)).
+- **`mode`:** how the source's parts are judged and read: `name`; `questions`, the decision questions asked of each reference part (absent: the built-in question for the part's kind); `bar`, keep a reference part scored at or above this (absent: the set's fitted bar, or 0.0146); and `read`, `rankedRead` down the fused order or a `conversationRead()` ([the chat read](#the-chat-read)), which takes `walksOn`, `opens` and `stops` rules in place of the measured ones. Absent: the built-in question, 0.0146 and the ranked read. Off by default: `wholeMessages`, judge each ranked piece's whole message ([whole messages](#whole-messages)); `hardFacts`, fields code knows in each item's record ([hard facts](#hard-facts)); `choicePerFact`, a Choice per needed fact over the kept parts, whose picks lead the text ([a Choice per needed fact](#a-choice-per-needed-fact)).
 - **`decay`:** rank older notes lower by their age at the task date, as `{ halfLife: '365 days' }`; absent or `false` is off, as in every preset. Markdown sources only; see the [Markdown reader](https://github.com/jonny981/curate/blob/main/packages/markdown/README.md#decay).
 
 A source can also carry the look-back and path settings its reader ran

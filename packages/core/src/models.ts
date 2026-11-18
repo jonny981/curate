@@ -1,5 +1,7 @@
 import { levelDistribution } from './decisions.js';
-import type { PickAnswer, PickBatch, PickDecide, PickQuestion } from './pick.js';
+import type {
+  PickAnswer, PickBatch, PickDecide, PickItem, PickListAnswer, PickListDecide, PickListRequest, PickQuestion,
+} from './pick.js';
 
 function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === 'object' ? value as Record<string, unknown> : {};
@@ -242,7 +244,7 @@ function itemState(question: PickQuestion): string {
  *  fields code knows about it (`facts`). A missing date is null. An
  *  anonymous item keeps only its date and its text, so its identifying
  *  fields, author and facts never reach the request. */
-function itemRecord(question: PickQuestion) {
+function itemRecord(question: PickItem) {
   const date = question.date === undefined ? null : `${question.date.meaning} ${question.date.value}`;
   if (question.anonymous === true) return { date, text: anonymousText(question.text) };
   return { id: question.id, date, title: question.title, text: question.text,
@@ -283,6 +285,36 @@ export function jevRequest(batch: PickBatch, model = 'jev-latest') {
           type: 'score',
           instructions: instructions(question),
           criteria: [...question.levels],
+        }])),
+  };
+}
+
+/** Jev's request body for a list request: the state holds the task, the
+ *  fields the request carries beside it, and each item as a record under
+ *  its own key in `items`; every question is about `items` as a whole. A
+ *  Choice's options are the item keys it names, in its order, with no
+ *  descriptions: the records hold each option's text. */
+export function jevListRequest(request: PickListRequest, model = 'jev-latest') {
+  return {
+    model,
+    state: {
+      task: request.task,
+      ...(request.needed === undefined ? {} : { needed: request.needed }),
+      ...(request.person === undefined ? {} : { person: request.person }),
+      ...(request.wanted === undefined ? {} : { wanted: request.wanted }),
+      items: Object.fromEntries(request.items.map(([key, item]) => [key, itemRecord(item)])),
+    },
+    questions: Object.fromEntries(Object.entries(request.questions).map(([name, question]) => [name,
+      question.type === 'choice'
+        ? {
+          type: 'choice',
+          instructions: { question: question.question, items: 'items' },
+          criteria: Object.fromEntries(question.options.map((key) => [key, null])),
+        }
+        : {
+          type: 'noul',
+          instructions: { question: question.question, items: 'items' },
+          criteria: { true: question.trueCriterion, false: question.falseCriterion },
         }])),
   };
 }
@@ -398,8 +430,10 @@ export function jev({ apiKey, model = 'jev-latest', url = JEV_URL, onCall }: {
     if (domain === undefined) { domain = { stopped: false }; domains.set(signal, domain); }
     return domain;
   };
-  const send = async (part: PickBatch, signal: AbortSignal): Promise<[string, PickAnswer][]> => {
-    const text = JSON.stringify(jevRequest(part, model));
+  // One request sent until a reply other than a rate limit lands: its
+  // allowance, a reply that never came, and the rate-limit waits, each
+  // attempt reported. The caller reports the reply it returns.
+  const exchange = async (text: string, questions: number, signal: AbortSignal) => {
     const domain = domainFor(signal);
     // When the service first answered this request 429.
     let limitedSince: number | undefined;
@@ -418,7 +452,7 @@ export function jev({ apiKey, model = 'jev-latest', url = JEV_URL, onCall }: {
           // then let that error fail the pick.
           allow.stop(domain, error);
           await onCall?.({
-            started: new Date(then).toISOString(), questions: part.questions.length,
+            started: new Date(then).toISOString(), questions,
             size: text.length, status: 0, ms: Date.now() - then,
             error: error instanceof Error ? error.message : String(error),
             splits: 0,
@@ -429,7 +463,7 @@ export function jev({ apiKey, model = 'jev-latest', url = JEV_URL, onCall }: {
         }
         const raw = (() => { try { return record(JSON.parse(reply.text)); } catch { return {}; } })();
         const call = {
-          started: new Date(then).toISOString(), questions: part.questions.length,
+          started: new Date(then).toISOString(), questions,
           size: text.length, status: reply.status, ms: Date.now() - then,
           ...(raw.usage === undefined ? {} : { usage: raw.usage }),
           ...(raw.answers === undefined ? {} : { answers: raw.answers }),
@@ -457,26 +491,7 @@ export function jev({ apiKey, model = 'jev-latest', url = JEV_URL, onCall }: {
           await wait(pause, signal);
           continue;
         }
-        if (!reply.ok) return await fail(part, signal, call, reply.text, domain);
-        accepted = Math.max(accepted, call.size);
-        await onCall?.(call);
-        const answers = record(raw.answers);
-        return part.questions.map((q, index): [string, PickAnswer] => {
-          const answer = record(answers[`q${index}`]);
-          if (q.levels !== undefined) {
-            // A score answer's level probabilities arrive keyed "0"
-            // onward; the score field itself is never a substitute.
-            const raw = answer.probabilities;
-            const probabilities = Array.isArray(raw) ? raw
-              : typeof raw === 'object' && raw !== null
-                ? q.levels.map((_, level) => (raw as Record<string, unknown>)[String(level)])
-                : undefined;
-            return [q.key, probabilities !== undefined && levelDistribution(probabilities, q.levels.length)
-              ? { status: 'answered', probabilities: [...probabilities] }
-              : { status: 'missing' }];
-          }
-          return [q.key, probabilityAnswer(answer.noul)];
-        });
+        return { reply, raw, call, domain };
       } catch (error) {
         // A terminal failure ends the sends still waiting for allowance —
         // inside this batch's splits and inside other batches — with the
@@ -485,6 +500,65 @@ export function jev({ apiKey, model = 'jev-latest', url = JEV_URL, onCall }: {
         allow.stop(domain, error);
         throw error;
       }
+    }
+  };
+  const send = async (part: PickBatch, signal: AbortSignal): Promise<[string, PickAnswer][]> => {
+    const { reply, raw, call, domain } = await exchange(JSON.stringify(jevRequest(part, model)), part.questions.length, signal);
+    try {
+      if (!reply.ok) return await fail(part, signal, call, reply.text, domain);
+      accepted = Math.max(accepted, call.size);
+      await onCall?.(call);
+      const answers = record(raw.answers);
+      return part.questions.map((q, index): [string, PickAnswer] => {
+        const answer = record(answers[`q${index}`]);
+        if (q.levels !== undefined) {
+          // A score answer's level probabilities arrive keyed "0"
+          // onward; the score field itself is never a substitute.
+          const raw = answer.probabilities;
+          const probabilities = Array.isArray(raw) ? raw
+            : typeof raw === 'object' && raw !== null
+              ? q.levels.map((_, level) => (raw as Record<string, unknown>)[String(level)])
+              : undefined;
+          return [q.key, probabilities !== undefined && levelDistribution(probabilities, q.levels.length)
+            ? { status: 'answered', probabilities: [...probabilities] }
+            : { status: 'missing' }];
+        }
+        return [q.key, probabilityAnswer(answer.noul)];
+      });
+    } catch (error) {
+      allow.stop(domain, error);
+      throw error;
+    }
+  };
+  // A list request: no size split here, since its caller sizes its
+  // windows inside `maxChars`. A request refused as too large (400 or
+  // 413) fails alone, so the caller can ask again in halves; any other
+  // rejection stops every send still waiting under the same signal.
+  const list: PickListDecide = async (request, signal) => {
+    const { reply, raw, call, domain } = await exchange(JSON.stringify(jevListRequest(request, model)),
+      Object.keys(request.questions).length, signal);
+    try {
+      if (!reply.ok) {
+        const error = new DecisionServiceError(call.status, reply.text, saidIn(reply.text));
+        if (call.status !== 400 && call.status !== 413) allow.stop(domain, error);
+        await onCall?.(call);
+        throw error;
+      }
+      await onCall?.(call);
+      const answers = record(raw.answers);
+      return Object.fromEntries(Object.entries(request.questions).map(([name, question]): [string, PickListAnswer] => {
+        const answer = record(answers[name]);
+        if (question.type === 'noul') return [name, probabilityAnswer(answer.noul) as PickListAnswer];
+        const given = record(answer.probabilities);
+        const probabilities = Object.fromEntries(question.options.map((key) => [key, given[key]]));
+        const values = Object.values(probabilities);
+        return [name, values.every((p) => typeof p === 'number' && Number.isFinite(p) && p >= 0 && p <= 1)
+          && Math.abs((values as number[]).reduce((sum, p) => sum + p, 0) - 1) <= 0.01
+          ? { status: 'answered', probabilities: probabilities as Record<string, number> } : { status: 'missing' }];
+      }));
+    } catch (error) {
+      if (!(error instanceof DecisionServiceError && (error.status === 400 || error.status === 413))) allow.stop(domain, error);
+      throw error;
     }
   };
   const fail = async (part: PickBatch, signal: AbortSignal, call: {
@@ -548,7 +622,7 @@ export function jev({ apiKey, model = 'jev-latest', url = JEV_URL, onCall }: {
     }
     return Object.fromEntries(answered);
   };
-  return Object.assign(decide, { deciderId });
+  return Object.assign(decide, { deciderId, list: Object.assign(list, { maxChars: JEV_STATE_CHARS }) });
 }
 
 /** Create a decision function using OpenAI's named predicate answers. */

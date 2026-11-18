@@ -53,6 +53,17 @@ export interface Mode {
    *  and nothing else. The request's state also carries the call's
    *  `person` and `wanted`, when the call gives them. */
   readonly hardFacts?: boolean;
+  /** Compare the kept parts for each needed fact, off by default. After
+   *  selection, for each fact the call gives (`needed`), one Choice over
+   *  the mode's kept parts, each a record in the state under its key,
+   *  the keys its options with no descriptions, asks which states the
+   *  fact, with a companion yes/no in the same request asking whether
+   *  any does. The pick is removed and the Choice asked again until the
+   *  companion answers under `bar` (default 0.3, the decision model's
+   *  maker's starting point for a clear no). The picks lead the text;
+   *  every other kept part still follows, and nothing is dropped. It
+   *  needs a decider that answers list requests, such as `jev()`. */
+  readonly choicePerFact?: boolean | { readonly bar?: number };
   /** How the decide step reads the mode's parts on the fused order:
    *  `rankedRead` or a `conversationRead()`. Parts of modes that share
    *  a read are read together. */
