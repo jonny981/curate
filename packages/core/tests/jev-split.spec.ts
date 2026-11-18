@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { jev, type JevCall } from '../src/models.js';
+import { DecisionServiceError, jev, type JevCall } from '../src/models.js';
 import { pick, type MemoryCandidate, type PickBatch } from '../src/pick.js';
 import { modesOf } from './fixtures/modes.js';
 
@@ -221,9 +221,10 @@ describe('Jev request dispatch', () => {
       await vi.advanceTimersByTimeAsync(59_500);
       expect(outcome).toBeUndefined();
       await vi.advanceTimersByTimeAsync(1_000);
-      expect(outcome).toBeInstanceOf(Error);
-      expect((outcome as Error).message).toBe(
-        `Model request failed: HTTP 429 for 60 s. A rate-limited request waits at most 60 s, and the last reply asked for 1 s more (Retry-After: 1). slow down ${calls}`);
+      expect(outcome).toBeInstanceOf(DecisionServiceError);
+      expect(outcome).toMatchObject({ status: 429, reason: 'busy', said: `slow down ${calls}`, reply: `slow down ${calls}` });
+      expect((outcome as Error).message).toBe('The decision service is still rate-limiting requests (HTTP 429) after 60 s; a rate-limited '
+        + `request waits at most 60 s, and the last reply asked for 1 s more (Retry-After: 1): slow down ${calls}`);
       // One reply a second from 0 s to 60 s, each one in the record.
       expect(calls).toBe(61);
       expect(recorded.map((call) => call.status)).toEqual(Array(61).fill(429));
@@ -239,8 +240,9 @@ describe('Jev request dispatch', () => {
       let outcome: unknown;
       void decide(oneQuestion, new AbortController().signal).then(() => { outcome = 'answered'; }, (error: unknown) => { outcome = error; });
       await vi.advanceTimersByTimeAsync(1);
-      expect((outcome as Error).message).toBe(
-        'Model request failed: HTTP 429 for 0 s. A rate-limited request waits at most 60 s, and the last reply asked for 120 s more (Retry-After: 120). quota spent');
+      expect(outcome).toMatchObject({ status: 429, reason: 'busy', said: 'quota spent' });
+      expect((outcome as Error).message).toBe('The decision service is still rate-limiting requests (HTTP 429) after 0 s; a rate-limited '
+        + 'request waits at most 60 s, and the last reply asked for 120 s more (Retry-After: 120): quota spent');
       expect(fetch).toHaveBeenCalledTimes(1);
     } finally { vi.useRealTimers(); }
   });

@@ -1020,6 +1020,15 @@ describe('a call the decision service refuses', () => {
       + 'so it stopped before deciding which parts answer the question. Check the network connection, then ask again.');
   });
 
+  it('says the service is still rate-limiting when a 429 outlasts the wait, and exits with the decision code', async () => {
+    const { error } = await decisionCall(() => new Response('quota spent', { status: 429, headers: { 'retry-after': '120' } }));
+    expect(error?.exitCode).toBe(DECISION_EXIT);
+    const [first, second] = error!.message.split('\n');
+    expect(first).toBe('The decision service is still asking Curate to wait (HTTP 429), so Curate stopped before deciding which parts '
+      + 'answer the question. Ask again in a few minutes. The service said: quota spent');
+    expect(second).toMatch(/^\d+ parts? (was|were) left undecided; set `records` to true to keep their ids\.$/);
+  });
+
   it('names any other refusal with its status and the service\'s reply', async () => {
     const { error } = await decisionCall(() => new Response('upstream overloaded', { status: 503 }));
     expect(error?.exitCode).toBe(DECISION_EXIT);

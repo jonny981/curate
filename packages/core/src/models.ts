@@ -43,8 +43,9 @@ async function jevPost(url: string, apiKey: string | undefined, text: string, si
 
 /** Why the decision service gave no answers: it has no credit (HTTP
  *  402), it refused the key (401 or 403), it could not be reached (no
- *  reply), or it refused the request for another reason. */
-export type DecisionServiceFailure = 'credit' | 'key' | 'unreachable' | 'refused';
+ *  reply), it still rate-limited the request when the retry budget ran
+ *  out (429), or it refused the request for another reason. */
+export type DecisionServiceFailure = 'credit' | 'key' | 'unreachable' | 'busy' | 'refused';
 
 /** A Jev request that failed for a reason no smaller request can fix.
  *  `status` is the reply's HTTP status, or 0 when no reply came; `reply`
@@ -55,12 +56,15 @@ export class DecisionServiceError extends Error {
   readonly reason: DecisionServiceFailure;
   readonly reply: string;
   readonly said: string;
-  constructor(status: number, reply: string, said: string, options?: ErrorOptions) {
+  /** `waited`, for a 429, says how long the request waited and what the
+   *  last reply asked for. */
+  constructor(status: number, reply: string, said: string, options?: ErrorOptions & { readonly waited?: string }) {
     const reason: DecisionServiceFailure = status === 0 ? 'unreachable' : status === 402 ? 'credit'
-      : status === 401 || status === 403 ? 'key' : 'refused';
+      : status === 401 || status === 403 ? 'key' : status === 429 ? 'busy' : 'refused';
     super(reason === 'unreachable' ? `The decision service could not be reached: ${said}`
-      : `The decision service ${reason === 'credit' ? 'has no credit' : reason === 'key' ? 'refused the API key'
-        : 'refused the request'} (HTTP ${status}): ${said}`, options);
+      : reason === 'busy' ? `The decision service is still rate-limiting requests (HTTP 429) after ${options?.waited ?? 'its retries'}: ${said}`
+        : `The decision service ${reason === 'credit' ? 'has no credit' : reason === 'key' ? 'refused the API key'
+          : 'refused the request'} (HTTP ${status}): ${said}`, options);
     this.name = 'DecisionServiceError';
     this.status = status;
     this.reason = reason;
@@ -438,9 +442,9 @@ export function jev({ apiKey, model = 'jev-latest', url = JEV_URL, onCall }: {
           limitedSince ??= now;
           if (now - limitedSince + pause > JEV_RATE_LIMITED_MS) {
             const seconds = (ms: number) => Math.round(ms / 1000);
-            const error = new Error(`Model request failed: HTTP 429 for ${seconds(now - limitedSince)} s. `
-              + `A rate-limited request waits at most ${seconds(JEV_RATE_LIMITED_MS)} s, and the last reply asked for `
-              + `${seconds(pause)} s more (${reply.retryAfter === null ? 'no Retry-After' : `Retry-After: ${reply.retryAfter}`}). ${reply.text}`);
+            const error = new DecisionServiceError(429, reply.text, saidIn(reply.text), { waited: `${seconds(now - limitedSince)} s; `
+              + `a rate-limited request waits at most ${seconds(JEV_RATE_LIMITED_MS)} s, and the last reply asked for `
+              + `${seconds(pause)} s more (${reply.retryAfter === null ? 'no Retry-After' : `Retry-After: ${reply.retryAfter}`})` });
             allow.stop(domain, error);
             await onCall?.(call);
             throw error;

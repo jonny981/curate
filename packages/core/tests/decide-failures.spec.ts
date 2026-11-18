@@ -48,6 +48,14 @@ describe('a decide call the decision service refuses', () => {
     expect(error.cause).toMatchObject({ status: 503, reason: 'refused' });
   });
 
+  it('says the service is still rate-limiting when a 429 asks for a wait past the minute', async () => {
+    const error = await failure(() => new Response('quota spent', { status: 429, headers: { 'retry-after': '120' } }));
+    expect(error.message.split('\n')[0]).toBe('The decide call failed. The decision service is still rate-limiting requests (HTTP 429) '
+      + 'after 0 s; a rate-limited request waits at most 60 s, and the last reply asked for 120 s more (Retry-After: 120): quota spent');
+    expect(error.cause).toBeInstanceOf(DecisionServiceError);
+    expect(error.cause).toMatchObject({ status: 429, reason: 'busy' });
+  });
+
   it('waits out a 429 and decides as usual', async () => {
     let calls = 0;
     vi.stubGlobal('fetch', vi.fn<typeof globalThis.fetch>().mockImplementation(async (_url, init) => {

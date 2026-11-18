@@ -1565,9 +1565,11 @@ function decisionFailure(error, recordFile) {
       ? `The decision service refused the key in \`TYPESAFE_API_KEY\` (HTTP ${cause.status}), ${stopped} Set a current key from TypeSafe (https://typesafe.ai), then ask again.${said}`
       : cause?.reason === 'unreachable'
         ? `Curate could not reach the decision service (${masked(cause.said)}), ${stopped.replace('Curate ', 'it ')} Check the network connection, then ask again.`
-        : cause?.reason === 'refused'
-          ? `The decision service refused a request (HTTP ${cause.status}), ${stopped}${said}`
-          : `The decision step failed (${masked(error.record.decideError.message)}), ${stopped}`;
+        : cause?.reason === 'busy'
+          ? `The decision service is still asking Curate to wait (HTTP 429), ${stopped} Ask again in a few minutes.${said}`
+          : cause?.reason === 'refused'
+            ? `The decision service refused a request (HTTP ${cause.status}), ${stopped}${said}`
+            : `The decision step failed (${masked(error.record.decideError.message)}), ${stopped}`;
   const count = error.record.decideError.candidates.length;
   return `${lead}\n${count === 1 ? 'One part was' : `${count} parts were`} left undecided; `
     + (recordFile === undefined ? 'set `records` to true to keep their ids.' : `${recordFile} lists them under pick.decideError.`);
