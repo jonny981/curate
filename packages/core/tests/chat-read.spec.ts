@@ -621,12 +621,25 @@ describe('the units of agent work as one more start', () => {
     expect(unitDescriptors(agentUnits(target))[0]!.split('\n')).toContain(`## Outage ${'and what followed it '.repeat(40)}`.trim().slice(0, 400));
   });
 
-  it('opens no unit from a ranking whose scores are all equal', async () => {
+  it('opens no unit from a ranking that says nothing: no query word anywhere, and one vector for different texts', async () => {
     // Every text has the same vector, and no query word is in a descriptor.
     const units = agentUnits(Array.from({ length: 3 }, (_, n) => [agentPart(`a${n}`, 1, 1, 'prompt', `Look at orchard row ${n}.`),
       agentPart(`a${n}`, 9, 1, 'report', `Orchard row ${n} has fruit trees.`)]).flat());
     const same = async (texts: readonly string[]) => texts.map(() => [1, 0]);
     expect(await unitStarts(units, ['What happened?'], same)).toEqual([]);
+  });
+
+  it('opens units whose scores are equal when they match: one report, or two alike', async () => {
+    // One report that names the query: its keyword score stands alone.
+    const one = agentUnits([agentPart('f', 9, 1, 'report', 'The ferry leaves at seven.')]);
+    expect(await unitStarts(one, ['ferry'], undefined)).toHaveLength(1);
+    // Two reports with the same text: equal keyword scores and, with an embedder, equal meaning scores.
+    const two = agentUnits(['f1', 'f2'].map((agent) => agentPart(agent, 9, 1, 'report', 'The ferry leaves at seven.')));
+    expect(await unitStarts(two, ['ferry'], undefined)).toHaveLength(2);
+    const alike = async (texts: readonly string[]) => texts.map((text) => [/ferry/i.test(text) ? 1 : 0, 1]);
+    expect(await unitStarts(two, ['ferry'], alike)).toHaveLength(2);
+    // Alike by meaning alone: no query word, and the same text gives the same vector.
+    expect(await unitStarts(two, ['boat timetable'], alike)).toHaveLength(2);
   });
 
   it('opens no unit when the call stops while the units are ranked, and counts no unit without a rated part', async () => {

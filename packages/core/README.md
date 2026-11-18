@@ -1435,8 +1435,12 @@ is rated at least 0.1 times the best rating this read has seen.
    the call's search texts, the task first, `queriesBySource`) and by
    meaning (each descriptor's best cosine against them, with the call's
    embedder); each list is cut at its own bend, and every unit above
-   either cut opens. A list whose scores are all equal says nothing about
-   which unit holds the answer, so it opens none. In the word statistics a summary counts as a unit
+   either cut opens. A list that says nothing about which unit holds the
+   answer opens none: a keyword list with no query word in any
+   descriptor, or a meaning list with one score for descriptors that
+   differ, as from an embedder that scores every text alike. Equal scores
+   of units that match the queries, or whose descriptors are the same,
+   open as the bend says, so one matching report opens. In the word statistics a summary counts as a unit
    too: each line an agent wrote in the user's turn of a transcript with
    no prompt or report, of three parts or more, compaction summaries and
    other agents' messages among them. The
