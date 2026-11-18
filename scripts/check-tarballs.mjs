@@ -55,6 +55,7 @@ export const EXPECTED_FILES = {
     'package/dist/models.js',
     'package/dist/models.js.map',
     'package/dist/options.d.ts',
+    'package/dist/part-copy.d.ts',
     'package/dist/pick.d.ts',
     'package/dist/search.d.ts',
     'package/dist/source.d.ts',
