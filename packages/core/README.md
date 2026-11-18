@@ -1031,6 +1031,30 @@ maker's starting point for a clear yes) every fact's loop ends. The
 record's `choicePerFact.enough` holds the bar and the answer after each
 round.
 
+### A keep bar set by measurement
+
+No default changes. `scripts/keep-bar.mjs` in the repository sets a
+source's `bar` from saved decision scores and marked answers rather
+than by hand, by conformal risk control (Angelopoulos and others,
+2022): a task loses when any of its marked answers scores under the
+bar, and over n tasks the bar is the highest at which
+(losing tasks + 1) / (n + 1) stays at or under a chosen risk, so that
+a new task like them loses an answer with at most that chance. It
+needs at least 1 / risk − 1 tasks: 19 for 0.05, 99 for 0.01. It reports
+the bar, the bound, the calibration tasks that lose with the exact 95%
+range of that rate, the tasks that lose when each is judged by the bar
+the others set, and the share of parts (and tokens, when given) the
+bar keeps; `--relative` reads each score as a share of its task's best.
+
+```sh
+node scripts/keep-bar.mjs ratings.json --risk 0.05
+```
+
+On 22 tasks of one person's coding-agent history, three labelled
+answers had no score, so any bar above 0 loses them: at a risk of 0.05
+or 0.1 the bar is 0, which keeps every rated part; at 0.2 it is 0.050,
+which keeps a median 31% of the parts with 3 tasks losing an answer.
+
 ### Decision tags
 
 `tags` asks extra yes/no questions of each reference that passes
