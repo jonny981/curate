@@ -471,7 +471,12 @@ export async function snapshotCodex(entry, folder) {
   const shown = (candidate) => named(candidate, folder, entry.path);
   const asked = (candidate) => named(candidate, entry.path, folder);
   const renamed = (parts) => ({
-    transcript: (part) => parts.transcript(asked(part)).map(shown),
+    transcript: (part) => {
+      const rows = parts.transcript(asked(part));
+      return rows === undefined ? undefined : { length: rows.length, ties: rows.ties,
+        id: (position) => rows.id(position).replace(folder, entry.path),
+        part: (position) => shown(rows.part(position)), texts: () => rows.texts() };
+    },
     *person() { for (const part of parts.person()) yield shown(part); },
     units: () => parts.units().map(shown),
     place: (part) => parts.place(asked(part)),

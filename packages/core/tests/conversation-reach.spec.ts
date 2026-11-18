@@ -22,7 +22,8 @@ const source = (id: string, byKey: boolean): CandidateSource => {
   const place = (candidate: MemoryCandidate) => all.findIndex((one) => one.id === candidate.id);
   const parts: ModeParts = {
     // A part handed by key is made afresh, as no lane read it.
-    transcript: () => all.map((one) => ({ ...one, poolOnly: true })),
+    transcript: () => ({ length: all.length, id: (position) => all[position]!.id,
+      part: (position) => ({ ...all[position]!, poolOnly: true }), texts: () => all.map((one) => one.text), ties: false }),
     *person() { for (const one of all) if (one.author === 'person') yield { ...one, poolOnly: true }; },
     units: () => [],
     place: (candidate) => { const at = place(candidate); return at < 0 ? Number.POSITIVE_INFINITY : at; },

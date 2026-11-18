@@ -1855,6 +1855,18 @@ export function chat(options: ChatOptions = {}): CandidateSource {
             }
             return indexes.map((index) => made.get(index));
           };
+          // A part whose row another call re-indexed away after the read
+          // first found it: made from the walk with no text, and counted
+          // as changed, so the call never keeps it.
+          const gone = (index: number): MemoryCandidate => {
+            const { text: _text, ...fields } = held(index, '', { signals: {} });
+            const candidate = new MadePart({ ...fields, searchRanks: undefined, poolOnly: true }, index) as unknown as MemoryCandidate;
+            madeHash.set(index, textHash(''));
+            changedParts.add(index);
+            made.set(index, candidate);
+            madeAt.set(candidate, index);
+            return candidate;
+          };
           // The task's keyword score of every part, as the pool read scores it.
           let scored: Float64Array | undefined;
           const scores = () => {
@@ -1962,9 +1974,41 @@ export function chat(options: ChatOptions = {}): CandidateSource {
                 const spans = spansOf(part.place?.container ?? '');
                 const indexes: number[] = [];
                 for (let span = 0; span < spans.length; span += 2) {
-                  for (let index = spans[span]!; index < spans[span + 1]!; index += 1) indexes.push(index);
+                  for (let index = spans[span]!; index < spans[span + 1]!; index += 1) if (first(index)) indexes.push(index);
                 }
-                return listed(indexes);
+                // The parts whose row still holds them, in place order; a
+                // part another call re-indexed away is left out and counted.
+                const previous = database;
+                database = own();
+                let present: Map<number, Record<string, unknown>>;
+                try {
+                  present = rowsOf(indexes, 'NULL AS none');
+                } finally {
+                  database = previous;
+                }
+                const rows = Uint32Array.from(indexes.filter((index) => present.has(index))).sort((left, right) =>
+                  c.lines[left]! - c.lines[right]! || c.blocks[left]! - c.blocks[right]! || c.pieces[left]! - c.pieces[right]!);
+                let ties = false;
+                for (let at = 1; at < rows.length && !ties; at += 1) {
+                  const [left, right] = [rows[at - 1]!, rows[at]!];
+                  ties = c.lines[left] === c.lines[right] && c.blocks[left] === c.blocks[right] && c.pieces[left] === c.pieces[right];
+                }
+                return {
+                  length: rows.length,
+                  ties,
+                  id: (position) => c.ids[rows[position]!]!,
+                  part: (position) => listed([rows[position]!])[0] ?? gone(rows[position]!),
+                  texts: () => {
+                    const before = database;
+                    database = own();
+                    try {
+                      const texts = textsOf(rows);
+                      return Array.from(rows, (index) => texts.get(index) ?? '');
+                    } finally {
+                      database = before;
+                    }
+                  },
+                };
               },
               *person() {
                 const places = placeOf();

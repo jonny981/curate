@@ -35,8 +35,10 @@ export type ModeRead = (input: ModeReadInput) => Promise<ModeReadResult>;
  *  beside others, and a wait here would change when its requests go
  *  out against theirs. */
 export interface ModeParts {
-  /** Every part of the transcript `part` sits in, in place order. */
-  transcript(part: MemoryCandidate): readonly MemoryCandidate[];
+  /** The transcript `part` sits in, as positions in place order; a part
+   *  is made only when asked for. Undefined when the source does not
+   *  hold the part. */
+  transcript(part: MemoryCandidate): ModeTranscript | undefined;
   /** The person's own parts, newest first; equal dates in pool order. */
   person(): Iterable<MemoryCandidate>;
   /** Every part that can belong to a unit of agent work (marked a
@@ -78,10 +80,43 @@ export interface PoolPart {
   readonly sessionLatest: number;
 }
 
+/** A transcript a source hands by key: its parts by position, in place
+ *  order, each made only when asked for. Parts that share an id count
+ *  once, at the first of them. */
+export interface ModeTranscript {
+  /** How many parts it holds. */
+  readonly length: number;
+  /** The id of the part at a position. */
+  id(position: number): string;
+  /** The part at a position, made when first asked for. */
+  part(position: number): MemoryCandidate;
+  /** Each position's text, read again from the source and not kept. */
+  texts(): readonly string[];
+  /** True when two of its parts share a place, so place order alone
+   *  does not order them. */
+  readonly ties: boolean;
+}
+
+/** A transcript the conversation read reaches: its parts by position in
+ *  place order. The read makes a part only when it rates or returns it;
+ *  the rest it knows by position. */
+export interface ReachedTranscript {
+  readonly length: number;
+  /** The part at a position, made if the call does not hold it yet. */
+  at(position: number): MemoryCandidate;
+  /** The part at a position if the call holds it already. */
+  held(position: number): MemoryCandidate | undefined;
+  /** Where a part of this transcript sits. */
+  positionOf(part: MemoryCandidate): number;
+  /** The topic split's text for each position: the part's text, or its
+   *  title when the text is blank. */
+  texts(): readonly string[];
+}
+
 /** The parts a conversation read may reach beyond `parts`, from every
  *  source of the read, made into one candidate a part per call. */
 export interface ModeReach {
-  readonly transcript: (part: MemoryCandidate) => readonly MemoryCandidate[];
+  readonly transcript: (part: MemoryCandidate) => ReachedTranscript;
   readonly person: () => Iterable<MemoryCandidate>;
   readonly units: () => readonly MemoryCandidate[];
   /** Where a part sits in the pick's order of the read's parts, as

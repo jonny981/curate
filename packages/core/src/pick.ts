@@ -14,7 +14,7 @@ import { judgmentFacts, judgmentPopulation, modelScore, type JudgmentPopulation 
 import {
   ANSWER_TYPES, classifyTask, ROUTE_QUESTIONS, routeOptions, type AnswerType, type RouteKey, type RouteOption,
 } from './task.js';
-import { conversationRead, rankedRead, type Mode, type ModeParts, type ModeReach, type ModeRead, type ModeReadResult } from './mode.js';
+import { conversationRead, rankedRead, type Mode, type ModeParts, type ModeReach, type ModeRead, type ModeReadResult, type ModeTranscript, type ReachedTranscript } from './mode.js';
 import type { EmbeddingFunction } from './meaning.js';
 import type { LeverStates } from './levers.js';
 import type { StoredIndexReport } from './stored-index.js';
@@ -1886,8 +1886,16 @@ export async function pick(
   // own. Each part is one candidate per call: the lane's candidate when a
   // lane holds it, else the first made, every time it is reached.
   const given = new Set(candidates);
-  const known = new Map<string, MemoryCandidate>();
-  for (const candidate of candidates) if (!known.has(questionKey(candidate))) known.set(questionKey(candidate), candidate);
+  // The call's one candidate for each part, by source and id: the ids
+  // are the parts' own strings, so the table makes no key of its own.
+  const known = new Map<string, Map<string, MemoryCandidate>>();
+  const knownAs = (sourceId: string, id: string) => known.get(sourceId)?.get(id);
+  const remember = (candidate: MemoryCandidate) => {
+    let ids = known.get(candidate.sourceId);
+    if (ids === undefined) known.set(candidate.sourceId, ids = new Map());
+    if (!ids.has(candidate.id)) ids.set(candidate.id, candidate);
+  };
+  for (const candidate of candidates) remember(candidate);
   // Where a part sits in the order `rankAndInterleave` deals the parts
   // in: its place in its own source's order, then its source's place.
   // A part no lane held comes after its source's lane parts, in the
@@ -1916,10 +1924,9 @@ export async function pick(
     return [(groupSize.get(part.sourceId) ?? 0) + dealt(part), source];
   };
   const canonical = (part: MemoryCandidate): MemoryCandidate => {
-    const key = questionKey(part);
-    const held = known.get(key);
+    const held = knownAs(part.sourceId, part.id);
     if (held !== undefined) return held;
-    known.set(key, part);
+    remember(part);
     priority.set(part, queued(part)[0]);
     return part;
   };
@@ -3155,9 +3162,9 @@ export async function pick(
   // sources: by key from a source that hands its parts so, and from the
   // pick's own parts of any other source.
   const reachOf = (parts: readonly MemoryCandidate[], sources: readonly string[]): ModeReach => {
-    const memory = (id: string): Pick<ModeParts, 'transcript' | 'person' | 'units'> => {
+    const container = (part: MemoryCandidate) => part.place?.container ?? part.id;
+    const memory = (id: string): Pick<ModeParts, 'person' | 'units'> & { transcript(part: MemoryCandidate): readonly MemoryCandidate[] } => {
       const own = parts.filter((candidate) => candidate.sourceId === id);
-      const container = (part: MemoryCandidate) => part.place?.container ?? part.id;
       return {
         transcript: (part) => own.filter((candidate) => container(candidate) === container(part)),
         person: () => own.filter((candidate) => candidate.author === 'person')
@@ -3169,7 +3176,50 @@ export async function pick(
       const ms = Date.parse(part.date?.value ?? '');
       return Number.isFinite(ms) ? ms : 0;
     };
-    const from = new Map(sources.map((id) => [id, options.partsBySource?.[id] ?? memory(id)] as const));
+    const byKey = new Map(sources.flatMap((id) => options.partsBySource?.[id] === undefined ? [] : [[id, options.partsBySource[id]!] as const]));
+    const from = new Map(sources.map((id) => [id, byKey.get(id) ?? memory(id)] as const));
+    const compareAt = (left: readonly number[], right: readonly number[]) => {
+      for (let index = 0; index < Math.min(left.length, right.length); index += 1) {
+        if (left[index] !== right[index]) return left[index]! - right[index]!;
+      }
+      return left.length - right.length;
+    };
+    // A transcript of parts the call holds, in the dealt order and then
+    // in place order, as one sort after the other.
+    const listView = (list: readonly MemoryCandidate[]): ReachedTranscript => {
+      const members = once(list.map(canonical)).sort(byQueue)
+        .sort((left, right) => compareAt(left.place?.at ?? [], right.place?.at ?? []));
+      const at = new Map(members.map((part, position) => [part, position]));
+      return { length: members.length, at: (position) => members[position]!, held: (position) => members[position],
+        positionOf: (part) => at.get(part)!,
+        texts: () => members.map((member) => /\S/.test(member.text) ? member.text : member.title) };
+    };
+    // A transcript a source hands by key: a part is made only when the
+    // read asks for it, and the call's own candidate for it stands in.
+    const keyView = (sourceId: string, rows: ModeTranscript): ReachedTranscript => {
+      let positions: Map<string, number> | undefined;
+      const view: ReachedTranscript = {
+        length: rows.length,
+        at: (position) => knownAs(sourceId, rows.id(position)) ?? canonical(rows.part(position)),
+        held: (position) => position >= 0 && position < rows.length ? knownAs(sourceId, rows.id(position)) : undefined,
+        positionOf: (part) => {
+          if (positions === undefined) {
+            positions = new Map();
+            for (let position = 0; position < rows.length; position += 1) positions.set(rows.id(position), position);
+          }
+          return positions.get(part.id)!;
+        },
+        // A part the call already holds gives its own text, as when the
+        // whole transcript was made: a lane's part can carry an id it
+        // shares with a part of another transcript of the same name.
+        texts: () => rows.texts().map((text, position) => {
+          const held = knownAs(sourceId, rows.id(position));
+          const own = held === undefined ? text : held.text;
+          return /\S/.test(own) ? own : (held ?? view.at(position)).title;
+        }),
+      };
+      return view;
+    };
     // A source's person parts newest first, equal dates in the dealt order.
     const newest = function* (id: string): Generator<MemoryCandidate> {
       let run: MemoryCandidate[] = [];
@@ -3184,8 +3234,17 @@ export async function pick(
       yield* run.sort(byQueue);
     };
     return {
-      // In the dealt order, which a transcript's equal places keep.
-      transcript: (part) => once((from.get(part.sourceId)?.transcript(part) ?? []).map(canonical)).sort(byQueue),
+      // In place order; parts that share a place keep the dealt order.
+      transcript: (part) => {
+        const lookup = byKey.get(part.sourceId);
+        if (lookup === undefined) {
+          return listView((from.get(part.sourceId) as ReturnType<typeof memory> | undefined)?.transcript(part) ?? []);
+        }
+        const rows = lookup.transcript(part);
+        if (rows === undefined) return listView([]);
+        return rows.ties ? listView(Array.from({ length: rows.length }, (_, position) => rows.part(position)))
+          : keyView(part.sourceId, rows);
+      },
       *person() {
         const seen = new Set<MemoryCandidate>();
         const streams = sources.map((id) => newest(id));

@@ -1,6 +1,6 @@
 import { cutScoreCurve } from './lanes.js';
 import type { EmbeddingFunction } from './meaning.js';
-import type { ModeReach } from './mode.js';
+import type { ModeReach, ReachedTranscript } from './mode.js';
 import type { MemoryCandidate } from './pick.js';
 
 // The numbers below were measured on one history: about 116,000 parts of
@@ -427,33 +427,59 @@ export async function chatRead(input: ChatReadInput): Promise<ChatReadResult> {
   }
   // A transcript's parts in their order and its topic segments, worked
   // out the first time the read reaches one of its parts: a transcript
-  // the read never touches is never ordered or split.
-  const sessions = new Map<string, { readonly session: readonly MemoryCandidate[];
-    readonly at: ReadonlyMap<MemoryCandidate, number>; readonly segments: ReadonlyMap<MemoryCandidate, readonly MemoryCandidate[]> }>();
+  // the read never touches is never ordered or split. The read knows a
+  // transcript's parts by position, and makes a part only when it rates
+  // it or opens its segment.
+  interface Segment { readonly view: ReachedTranscript; readonly start: number; readonly end: number }
+  const sessions = new Map<string, { readonly view: ReachedTranscript; readonly segments: readonly Segment[];
+    readonly segmentAt: Int32Array }>();
+  const arrayView = (parts: readonly MemoryCandidate[]): ReachedTranscript => {
+    const at = new Map(parts.map((part, position) => [part, position]));
+    return { length: parts.length, at: (position) => parts[position]!, held: (position) => parts[position],
+      positionOf: (part) => at.get(part)!,
+      texts: () => parts.map((member) => /\S/.test(member.text) ? member.text : member.title) };
+  };
   const sessionOf = (part: MemoryCandidate) => {
     const transcript = transcriptOf(part);
     let found = sessions.get(transcript);
     if (found === undefined) {
-      const session = [...reach === undefined ? transcripts.get(transcript)! : reach.transcript(part)]
-        .sort((left, right) => compareAt(left.place?.at ?? [], right.place?.at ?? []));
-      const segments = new Map<MemoryCandidate, readonly MemoryCandidate[]>();
-      const cuts = session.length < TILE_MIN ? []
-        : topicShifts(session.map((member) => /\S/.test(member.text) ? member.text : member.title));
+      const view = reach === undefined ? arrayView([...transcripts.get(transcript)!]
+        .sort((left, right) => compareAt(left.place?.at ?? [], right.place?.at ?? []))) : reach.transcript(part);
+      const cuts = view.length < TILE_MIN ? [] : topicShifts(view.texts());
+      const segments: Segment[] = [];
+      const segmentAt = new Int32Array(view.length);
       let from = 0;
-      for (const to of [...cuts, session.length]) {
-        const segment = session.slice(from, to);
-        for (const member of segment) segments.set(member, segment);
+      for (const to of [...cuts, view.length]) {
+        for (let position = from; position < to; position += 1) segmentAt[position] = segments.length;
+        segments.push({ view, start: from, end: to });
         from = to;
       }
-      sessions.set(transcript, found = { session, at: new Map(session.map((member, at) => [member, at])), segments });
+      sessions.set(transcript, found = { view, segments, segmentAt });
     }
     return found;
   };
   const where = (part: MemoryCandidate) => {
-    const { session, at } = sessionOf(part);
-    return { session, at: at.get(part)! };
+    const { view } = sessionOf(part);
+    return { view, at: view.positionOf(part) };
   };
-  const segmentOf = (part: MemoryCandidate) => sessionOf(part).segments.get(part)!;
+  const segmentOf = (part: MemoryCandidate) => {
+    const { view, segments, segmentAt } = sessionOf(part);
+    return segments[segmentAt[view.positionOf(part)]!]!;
+  };
+  // A segment's parts the call already holds, and all its parts, made.
+  const heldIn = (segment: Segment) => {
+    const parts: MemoryCandidate[] = [];
+    for (let position = segment.start; position < segment.end; position += 1) {
+      const part = segment.view.held(position);
+      if (part !== undefined) parts.push(part);
+    }
+    return parts;
+  };
+  const partsOf = (segment: Segment) => Array.from({ length: segment.end - segment.start },
+    (_, offset) => segment.view.at(segment.start + offset));
+  // The part at a position, made, when the position is inside the transcript.
+  const near = (view: ReachedTranscript, position: number) =>
+    position >= 0 && position < view.length ? view.at(position) : undefined;
   // An order's parts, then every other part newest first; equal dates
   // keep the pick's order of the read's parts.
   const listed = (order: readonly MemoryCandidate[]) => {
@@ -497,11 +523,11 @@ export async function chatRead(input: ChatReadInput): Promise<ChatReadResult> {
   const rated = (part: MemoryCandidate) => seen.has(part) ? score(part) : undefined;
   // A walk decision about a part, with the facts the read has about it.
   const walkable = (part: MemoryCandidate) => {
-    const { session, at } = where(part);
+    const { view, at } = where(part);
     return rules.walksOn({ rating: score(part), best,
-      neighbours: () => bestOf([session[at - 2], session[at - 1], session[at + 1], session[at + 2]]
+      neighbours: () => bestOf([view.held(at - 2), view.held(at - 1), view.held(at + 1), view.held(at + 2)]
         .map((next) => next === undefined ? undefined : rated(next))),
-      segment: () => bestOf(segmentOf(part).map((next) => next === part ? undefined : rated(next))) });
+      segment: () => bestOf(heldIn(segmentOf(part)).map((next) => next === part ? undefined : rated(next))) });
   };
 
   // Each request's new parts' ratings and the best rating when it ended.
@@ -511,8 +537,8 @@ export async function chatRead(input: ChatReadInput): Promise<ChatReadResult> {
     await rate(batch);
     if (rings) {
       const reply = (part: MemoryCandidate) => {
-        const { session, at } = where(part);
-        return session[at + 1];
+        const { view, at } = where(part);
+        return near(view, at + 1);
       };
       const warmPeople = batch.filter(walkable);
       await rate(warmPeople.flatMap((part) => reply(part) ?? []));
@@ -522,8 +548,8 @@ export async function chatRead(input: ChatReadInput): Promise<ChatReadResult> {
       });
       for (let width = 2; hot.length > 0 && !stopped(); width += 1) {
         const ring = hot.map((part) => {
-          const { session, at } = where(part);
-          return [session[at - width + 1], session[at + width]]
+          const { view, at } = where(part);
+          return [near(view, at - width + 1), near(view, at + width)]
             .filter((next): next is MemoryCandidate => next !== undefined && !seen.has(next));
         });
         await rate(ring.flat());
@@ -565,13 +591,17 @@ export async function chatRead(input: ChatReadInput): Promise<ChatReadResult> {
   if (ended === 'stopped') return { read, requests, segments: 0, units: 0, ended };
 
   // The segments to open, in the order's ranking of their best part.
-  const heads = new Set<readonly MemoryCandidate[]>();
+  const heads = new Set<Segment>();
   for (const lane of input.lanes) {
     for (const part of lane.slice(0, HEADS)) if (members.has(part)) heads.add(segmentOf(part));
   }
-  const opened = [...new Set([...read.map((part) => segmentOf(part)), ...heads])].filter((segment) => rules.opens({
-    person: bestOf(segment.map((part) => person(part) ? rated(part) : undefined)),
-    rating: bestOf(segment.map(rated)), best, laneHead: heads.has(segment) }));
+  // A part the read never rated has no rating, so the facts about a
+  // segment come from the parts the call holds.
+  const opened = [...new Set([...read.map((part) => segmentOf(part)), ...heads])].filter((segment) => {
+    const held = heldIn(segment);
+    return rules.opens({ person: bestOf(held.map((part) => person(part) ? rated(part) : undefined)),
+      rating: bestOf(held.map(rated)), best, laneHead: heads.has(segment) });
+  }).map(partsOf);
   const first = (segment: readonly MemoryCandidate[]) =>
     segment.reduce((lowest, part) => byPlace(part, lowest) < 0 ? part : lowest);
   const segments = opened.sort((left, right) => byPlace(first(left), first(right)));
