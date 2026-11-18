@@ -42,13 +42,13 @@ describe('items per request', () => {
     }
     expect(state.most).toBe(6);
     expect(result.record.levers.sources.notes!.itemsPerRequest).toBe(1);
-    // As sent: the task and the needed facts beside the one item.
+    // As sent: the task and the needed facts beside the one item, judged on its own.
     expect(jevRequest(batches.find((batch) => batch.questions[0]!.id === 'n2')!)).toEqual({
       model: 'jev-latest',
-      state: { task, needed, items: { 1: { id: 'n2', date: null, title: 'n2', text: 'Note 2: we chose Postgres.' } } },
+      state: { task, needed, item: { id: 'n2', date: null, title: 'n2', text: 'Note 2: we chose Postgres.' } },
       questions: {
-        q0: { type: 'noul', instructions: { question: 'Relevant?', item: 'items.1' }, criteria: { true: 'Yes', false: 'No' } },
-        q1: { type: 'noul', instructions: { question: 'Answers?', item: 'items.1' }, criteria: { true: 'Yes', false: 'No' } },
+        q0: { type: 'noul', instructions: { question: 'Relevant?', item: 'item' }, criteria: { true: 'Yes', false: 'No' } },
+        q1: { type: 'noul', instructions: { question: 'Answers?', item: 'item' }, criteria: { true: 'Yes', false: 'No' } },
       },
     });
   });

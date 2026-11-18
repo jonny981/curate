@@ -112,7 +112,7 @@ describe('whole messages', () => {
     });
   });
 
-  it('sends a message too large for one request as numbered parts, each after the first with the opening', async () => {
+  it('sends a message too large for one request as numbered parts, each after the first with its first 1,000 characters', async () => {
     const long = Array.from({ length: 6 }, (_, index) =>
       piece('s2', 5, index + 1, `${index === 4 ? 'We chose Postgres. ' : ''}${'word '.repeat(40)}\n`, index === 0 ? { rank: 0 } : {}));
     const { batches, decide } = recording((text) => text.includes('Postgres') ? 0.8 : 0.01);
@@ -121,7 +121,8 @@ describe('whole messages', () => {
     expect(asked.length).toBeGreaterThan(1);
     const n = asked.length;
     asked.forEach((question, index) => {
-      expect(question.facts).toEqual({ part: `${index + 1} of ${n}`, ...(index === 0 ? {} : { opening: long[0]!.text }) });
+      expect(question.facts).toEqual({ part: `${index + 1} of ${n}`,
+        ...(index === 0 ? {} : { opening: long.map((part) => part.text).join('').slice(0, 1000) }) });
     });
     // Every piece is sent once, in order, across the parts.
     expect(asked.map((question) => question.text).join('')).toBe(long.map((part) => part.text).join(''));

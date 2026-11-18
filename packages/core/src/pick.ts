@@ -162,6 +162,9 @@ export interface PickBatch {
   /** How many answers the task wants (`PickOptions.wanted`), present on
    *  a request whose parts' mode writes hard facts. */
   readonly wanted?: PickWanted;
+  /** True on a request of a mode that sends each item alone
+   *  (`itemsPerRequest: 1`): its one item is judged on its own. */
+  readonly alone?: true;
 }
 
 export type PickAnswer =
@@ -1149,6 +1152,14 @@ const DEFAULT_BAR = 0.0146;
  *  pick itself shows full candidate text unless a caller supplies a cut. */
 export const DEFAULT_MAX_QUESTION_TEXT = 700;
 const DEFAULT_LINKED_PATH_BAR = 0.4;
+/** How much of another message an item's record carries: the start of
+ *  the message it replies to and of the person's reply to it, of a
+ *  report's request, and a long message's opening, 1,000 characters. On
+ *  one person's coding-agent history, whole messages judged one a
+ *  request with these fields put 19 labelled answers in each fact's top
+ *  five on held tasks, against 14 without the replied-to and reply text
+ *  and 12 for the pieces' ranking. */
+const OPENING_CHARS = 1_000;
 /** The sufficiency question's bar by default: 0.7, the decision model's
  *  maker's starting point for a clear yes. */
 const ENOUGH_BAR = 0.7;
@@ -2034,9 +2045,11 @@ export async function pick(
     && modeFor(candidate.sourceId)?.wholeMessages === true && candidate.chat !== undefined && (candidate.place?.at.length ?? 0) >= 3;
   const messages = messagePieces(references.filter(wholeFor));
   // Each transcript's subagent request, the message its report answers.
+  // A message's start, as an item's record carries another message.
+  const opening = (pieces: readonly MemoryCandidate[]) => Array.from(messageText(pieces)).slice(0, OPENING_CHARS).join('');
   const requests = new Map<string, string>();
   for (const pieces of messages.values()) {
-    if (pieces[0]!.chat?.unit === 'prompt') requests.set(JSON.stringify([pieces[0]!.sourceId, pieces[0]!.place!.container]), messageText(pieces));
+    if (pieces[0]!.chat?.unit === 'prompt') requests.set(JSON.stringify([pieces[0]!.sourceId, pieces[0]!.place!.container]), opening(pieces));
   }
   // Hard facts: what code knows about each message of a mode that writes
   // them. Where a part replies, what answered it and its position need
@@ -2047,27 +2060,26 @@ export async function pick(
   for (const list of transcriptMessages(references.filter((candidate) => (factsFor(candidate) || rolesFor(candidate))
     && placed(candidate))).values()) {
     const walks = modeFor(list[0]!.pieces[0]!.sourceId)?.read.walks === true;
-    const kinds = list.map(({ pieces }) => messageKind(pieces[0]!));
-    const said = (pieces: readonly MemoryCandidate[], at: 'first' | 'last') => {
-      const piece = at === 'first' ? pieces[0]! : pieces[pieces.length - 1]!;
-      return { id: piece.id, text: piece.text };
-    };
+    const own = list.map(({ pieces }) => pieces[0]!.author === 'person');
+    const said = (pieces: readonly MemoryCandidate[]) => ({ id: pieces[0]!.id, text: opening(pieces) });
+    // The message each replies to: the nearest earlier one by the other
+    // side, the person or anyone else.
     let person: number | undefined;
-    let step: number | undefined;
+    let other: number | undefined;
     const facts = list.map(({ pieces }, index): Record<string, unknown> => {
-      const kind = kinds[index];
-      const repliesTo = !walks ? undefined : kind === "person's message" ? step : kind === 'agent step' ? person : undefined;
-      if (kind === "person's message") person = index;
-      if (kind === 'agent step') step = index;
-      return { ...(kind === undefined ? {} : { kind }), session: pieces[0]!.chat!.sessionId,
+      const kind = messageKind(pieces[0]!, options.person);
+      const repliesTo = !walks ? undefined : own[index] ? other : person;
+      if (own[index]) person = index; else other = index;
+      return { ...(own[index] && options.person !== undefined ? { author: options.person } : {}),
+        ...(kind === undefined ? {} : { kind }), session: pieces[0]!.chat!.sessionId,
         ...(walks ? { position: index + 1 } : {}), pieces: pieces.length,
-        ...(repliesTo === undefined ? {} : { replies_to: said(list[repliesTo]!.pieces, 'last') }) };
+        ...(repliesTo === undefined ? {} : { replies_to: said(list[repliesTo]!.pieces) }) };
     });
-    // The person's next message after each agent step.
+    // The person's next message after each message that is not the person's.
     let next: number | undefined;
     for (let index = list.length - 1; walks && index >= 0; index -= 1) {
-      if (kinds[index] === 'agent step' && next !== undefined) facts[index]!.answered_by = said(list[next]!.pieces, 'first');
-      if (kinds[index] === "person's message") next = index;
+      if (!own[index] && next !== undefined) facts[index]!.answered_by = said(list[next]!.pieces);
+      if (own[index]) next = index;
     }
     list.forEach(({ key }, index) => messageFacts.set(key, facts[index]!));
   }
@@ -2551,13 +2563,13 @@ export async function pick(
     }
     const room = limits.maxBatches - batches - packedBatches;
     const slices: Pending[][] = [];
-    const headers = new Map<Pending[], Pick<PickBatch, 'needed' | 'person' | 'wanted'>>();
+    const headers = new Map<Pending[], Pick<PickBatch, 'needed' | 'person' | 'wanted' | 'alone'>>();
     for (const [key, items] of [...groups].sort(([left], [right]) =>
       Number(JSON.parse(right)[0].needed !== undefined) - Number(JSON.parse(left)[0].needed !== undefined))) {
       const [header, perRequest] = JSON.parse(key) as [Pick<PickBatch, 'needed' | 'person' | 'wanted'>, number | null];
       for (const slice of pack(items, task, whole, room - slices.length, perRequest ?? undefined)) {
         slices.push(slice);
-        headers.set(slice, header);
+        headers.set(slice, perRequest === 1 ? { ...header, alone: true } : header);
       }
     }
     packedBatches += slices.length;
@@ -3092,7 +3104,7 @@ export async function pick(
     const specs = specsFor(first);
     const beside = options.task.length + (carriesNeeded(first) ? JSON.stringify(needed).length : 0)
       + first.id.length + first.title.length + (first.date === undefined ? 0 : first.date.value.length + first.date.meaning.length)
-      + JSON.stringify({ ...own, part: `${pieces.length} of ${pieces.length}`, opening: first.text }).length
+      + JSON.stringify({ ...own, part: `${pieces.length} of ${pieces.length}`, opening: opening(pieces) }).length
       + specs.reduce((sum, spec) => sum + spec.question.length
         + (spec.levels ?? [spec.trueCriterion ?? '', spec.falseCriterion ?? '']).join('').length, 0);
     // Consecutive pieces, as many as fit, measured as the request sends them.
@@ -3106,7 +3118,7 @@ export async function pick(
       : ranges.map((range) => ({ ...range[0]!, text: messageText(range) }));
     items.forEach((item, index) => {
       const facts = { ...own, ...(ranges.length === 1 ? {} : { part: `${index + 1} of ${ranges.length}` }),
-        ...(index === 0 ? {} : { opening: first.text }) };
+        ...(index === 0 ? {} : { opening: opening(pieces) }) };
       if (Object.keys(facts).length > 0) itemFacts.set(item, facts);
       messageOfItem.set(item, key);
     });

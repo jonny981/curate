@@ -215,9 +215,9 @@ describe('score questions through jevRequest and jev', () => {
       }],
     } as const;
     const { state } = jevRequest(batch as never);
-    expect(state.items['1']).toEqual({ date: null, text: 'user: kept line' });
+    expect(state.items!['1']).toEqual({ date: null, text: 'user: kept line' });
     // Identified items keep their text verbatim.
-    expect(state.items['2']).toEqual({ id: 'i2', date: null, title: 't2', text: '# session bbb\nuser: kept too' });
+    expect(state.items!['2']).toEqual({ id: 'i2', date: null, title: 't2', text: '# session bbb\nuser: kept too' });
   });
 
   it('keeps an anonymous item\'s author out of the request', () => {
@@ -225,7 +225,7 @@ describe('score questions through jevRequest and jev', () => {
       key: 'k0', role: 'reference', question: 'q', trueCriterion: 't', falseCriterion: 'f',
       sourceId: 's', id: 'i1', title: 't1', anonymous: true, author: 'person', text: 'kept',
     }] });
-    expect(state.items['1']).toEqual({ date: null, text: 'kept' });
+    expect(state.items!['1']).toEqual({ date: null, text: 'kept' });
   });
 
   it('reads score answers into probabilities and fails malformed ones', async () => {

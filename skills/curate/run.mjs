@@ -121,7 +121,7 @@ export const CHAT_MODES = { default: agentTranscripts,
   judgments: { name: 'judgments', questions: JUDGMENT_CHAT_CASCADE, read: rankedRead } };
 // The decision levers a chat entry can switch on for its mode, each off by
 // default (core's Mode documents them).
-export const CHAT_LEVERS = ['wholeMessages', 'hardFacts', 'roles', 'choicePerFact'];
+export const CHAT_LEVERS = ['wholeMessages', 'hardFacts', 'roles', 'choicePerFact', 'itemsPerRequest'];
 // A chat entry's mode, with its own bar and levers when it sets them.
 const chatMode = (entry) => {
   const mode = CHAT_MODES[entry.questions ?? 'default'];
@@ -176,8 +176,9 @@ export function parseSources(value, base = process.cwd()) {
       throw new Error('bar must be a number between 0 and 1.');
     }
     if (source.levers !== undefined && (source.levers === null || typeof source.levers !== 'object' || Array.isArray(source.levers)
-      || Object.entries(source.levers).some(([key, on]) => !CHAT_LEVERS.includes(key) || typeof on !== 'boolean'))) {
-      throw new Error(`levers must be an object of booleans named ${CHAT_LEVERS.join(', ')}.`);
+      || Object.entries(source.levers).some(([key, on]) => !CHAT_LEVERS.includes(key)
+        || (key === 'itemsPerRequest' ? !Number.isSafeInteger(on) || on < 1 : typeof on !== 'boolean')))) {
+      throw new Error(`levers must be an object of booleans named ${CHAT_LEVERS.filter((name) => name !== 'itemsPerRequest').join(', ')}, and itemsPerRequest, a positive whole number.`);
     }
     if (source.always !== undefined && typeof source.always !== 'boolean') throw new Error('always must be a boolean.');
     if (source.dates !== undefined && !['day-first', 'month-first'].includes(source.dates)) {

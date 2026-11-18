@@ -263,8 +263,10 @@ export function jevRequest(batch: PickBatch, model = 'jev-latest') {
     if (!items.has(key)) items.set(key, question);
   }
   const numbers = new Map([...items.keys()].map((key, index) => [key, index + 1]));
+  // An item judged on its own is the state's one `item`.
+  const alone = batch.alone === true && items.size === 1;
   const instructions = (question: PickQuestion) =>
-    ({ question: question.question, item: `items.${numbers.get(`${question.sourceId}\n${question.id}`)}` });
+    ({ question: question.question, item: alone ? 'item' : `items.${numbers.get(`${question.sourceId}\n${question.id}`)}` });
   return {
     model,
     state: {
@@ -272,7 +274,14 @@ export function jevRequest(batch: PickBatch, model = 'jev-latest') {
       ...(batch.needed === undefined ? {} : { needed: batch.needed }),
       ...(batch.person === undefined ? {} : { person: batch.person }),
       ...(batch.wanted === undefined ? {} : { wanted: batch.wanted }),
-      items: Object.fromEntries([...items.values()].map((question, index) => [String(index + 1), itemRecord(question)])),
+      ...(alone ? { item: itemRecord([...items.values()][0]!) }
+        : { items: Object.fromEntries([...items.values()].map((question, index) => [String(index + 1), itemRecord(question)])) }),
+    } as {
+      task: string; needed?: readonly string[]; person?: string; wanted?: PickBatch['wanted'];
+      /** Every item's record under its number; absent when the one item is judged alone. */
+      items?: Record<string, ReturnType<typeof itemRecord>>;
+      /** The one item's record, when it is judged alone. */
+      item?: ReturnType<typeof itemRecord>;
     },
     questions: Object.fromEntries(batch.questions.map((question, index) => [`q${index}`,
       question.options !== undefined

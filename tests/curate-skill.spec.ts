@@ -1258,7 +1258,7 @@ describe('a run through core decision calls', () => {
       for (const item of Object.values(body.state.items)) expect(item).toMatchObject({ session: 's1', pieces: 1 });
     }
     const items = bodies.flatMap((body) => Object.values(body.state.items));
-    expect(items.find((item) => item.text === 'Yes, do that.')).toMatchObject({ kind: "person's message",
+    expect(items.find((item) => item.text === 'Yes, do that.')).toMatchObject({ author: 'Ada', kind: 'Ada message',
       replies_to: { text: 'I propose keeping the orchard cache layered.' } });
   });
 

@@ -945,25 +945,36 @@ under `levers.sources`.
 
 Off by default. A mode with `hardFacts: true` writes into each item's
 record in the decision state the fields code knows for certain, never
-prose in its text. A transcript part gets its `kind` (the person's
-message, an agent step, an agent's message, tool output, a compaction
-summary, a subagent's request or final report, or a system message),
-its `session`, and how many `pieces` its message was cut into, with
-its own `piece` number when it is one of several. When the mode's read
-walks whole transcripts (`conversationRead()`), so the pick holds every
-part, the record also gets the message's `position` in its session,
-`replies_to` (the message it answers: for the person's message the
-agent step before it, for an agent step the person's message before
-it; that message's last piece, as `{ id, text }`) and, for an agent
-step, `answered_by` (the person's next message's first piece). A commit
-gets only `kind: 'commit'` and a note only `kind: 'note'`. The
-request's state also carries the pick's `person`, the person's name as
-tasks word it, and `wanted`, `'one decision'` or `'everything said'`
-as the caller's writer judged the task, when the pick gives them:
-`{ task, needed, person, wanted, items }`. Requests of other modes
-never carry them, and an answer asked with them is stored apart from
-one asked without. The record names the setting under
+prose in its text. A transcript part gets its `kind` ("<person>
+message", "agent step", "tool output", "compaction summary", "subagent
+prompt", "subagent final report" or "system message"), its `session`,
+and how many `pieces` its message was cut into, with its own `piece`
+number when it is one of several; the person's messages carry the
+pick's `person` as their `author`. When the mode's read walks whole
+transcripts (`conversationRead()`), so the pick holds every part, the
+record also gets the message's `position` in its session, `replies_to`
+(the nearest earlier message by the other side: for the person's
+message, anyone else's; for anyone else's, the person's) and, for a
+message not the person's, `answered_by` (the person's next message),
+each as `{ id, text }`: that message's first piece's id and its first
+1,000 characters. A commit gets only `kind: 'commit'` and a note only
+`kind: 'note'`. The request's state also carries the pick's `person`,
+the person's name as tasks word it, and `wanted`, `'one decision'` or
+`'everything said'` as the caller's writer judged the task, when the
+pick gives them: `{ task, needed, person, wanted, items }`. Requests of
+other modes never carry them, and an answer asked with them is stored
+apart from one asked without. The record names the setting under
 `levers.sources`.
+
+The three settings work as one: with `wholeMessages`, `hardFacts` and
+`itemsPerRequest: 1`, each message is judged whole and alone, its
+record the state's `item`, in every request the read sends (the
+person's parts, the rings around a warm one, the opened segments and
+the units of agent work). On the 22 short lists of one person's
+coding-agent history this form put 19 labelled answers in each needed
+fact's top five on held tasks, against 12 for pieces batched about 25 a
+request, and 14 without the `replies_to` and `answered_by` text;
+batched about 25 a request, the same fields did not help.
 
 ### The narrow question in two
 

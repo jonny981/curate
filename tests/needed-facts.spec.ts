@@ -30,18 +30,20 @@ describe('how many answers the task wants, from the search-line call', () => {
 
 describe('the person and a chat source\'s levers in the settings', () => {
   it('take a name and named boolean levers on a chat source', () => {
-    const parsed = parseSources({ person: 'Ada', sources: [{ type: 'claude-code', levers: { hardFacts: true, wholeMessages: false } }] });
+    const parsed = parseSources({ person: 'Ada', sources: [{ type: 'claude-code', levers: { hardFacts: true, wholeMessages: false, itemsPerRequest: 1 } }] });
     expect(parsed.person).toBe('Ada');
-    expect(parsed.sources[0].levers).toEqual({ hardFacts: true, wholeMessages: false });
-    expect(CHAT_LEVERS).toEqual(['wholeMessages', 'hardFacts', 'roles', 'choicePerFact']);
+    expect(parsed.sources[0].levers).toEqual({ hardFacts: true, wholeMessages: false, itemsPerRequest: 1 });
+    expect(CHAT_LEVERS).toEqual(['wholeMessages', 'hardFacts', 'roles', 'choicePerFact', 'itemsPerRequest']);
   });
 
-  it('refuse a blank name, an unknown lever, a lever that is not a boolean, and levers on a non-chat source', () => {
+  it('refuse a blank name, an unknown lever, a lever of the wrong type, and levers on a non-chat source', () => {
+    expect(() => parseSources({ sources: [{ type: 'claude-code', levers: { itemsPerRequest: 0 } }] }))
+      .toThrow('itemsPerRequest, a positive whole number.');
     expect(() => parseSources({ person: ' ', sources: [] })).toThrow('person must be your name as your tasks word it.');
     expect(() => parseSources({ sources: [{ type: 'claude-code', levers: { faster: true } }] }))
-      .toThrow('levers must be an object of booleans named wholeMessages, hardFacts, roles, choicePerFact.');
+      .toThrow('levers must be an object of booleans named wholeMessages, hardFacts, roles, choicePerFact, and itemsPerRequest, a positive whole number.');
     expect(() => parseSources({ sources: [{ type: 'claude-code', levers: { hardFacts: 'yes' } }] }))
-      .toThrow('levers must be an object of booleans named wholeMessages, hardFacts, roles, choicePerFact.');
+      .toThrow('levers must be an object of booleans named wholeMessages, hardFacts, roles, choicePerFact, and itemsPerRequest, a positive whole number.');
     expect(() => parseSources({ sources: [{ type: 'git', path: '.', levers: { hardFacts: true } }] }))
       .toThrow('Unknown key "levers" on a git source');
   });

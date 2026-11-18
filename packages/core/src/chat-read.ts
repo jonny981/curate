@@ -218,15 +218,16 @@ export function transcriptMessages(parts: Iterable<MemoryCandidate>):
 }
 
 /** What kind of message a transcript part is in, from what its reader
- *  marked: undefined when the reader marked nothing certain. */
-export function messageKind(part: MemoryCandidate): string | undefined {
+ *  marked, the person's messages named by `person` when given:
+ *  undefined when the reader marked nothing certain. */
+export function messageKind(part: MemoryCandidate, person?: string): string | undefined {
   const unit = part.chat?.unit;
   if (unit === 'summary') return 'compaction summary';
-  if (unit === 'report') return "subagent's final report";
-  if (unit === 'prompt') return "subagent's request";
-  if (part.author === 'person') return "person's message";
+  if (unit === 'report') return 'subagent final report';
+  if (unit === 'prompt') return 'subagent prompt';
+  if (part.author === 'person') return `${person ?? 'person'} message`;
   if (part.author === 'tool' || part.chat?.role === 'tool-call' || part.chat?.role === 'tool-result') return 'tool output';
-  if (part.author === 'agent') return part.chat?.role === 'assistant' ? 'agent step' : "agent's message";
+  if (part.author === 'agent') return 'agent step';
   if (part.author === 'system') return 'system message';
   return undefined;
 }
