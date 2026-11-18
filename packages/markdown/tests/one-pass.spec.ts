@@ -112,6 +112,24 @@ const kinds: [string, (root: string, cache: string) => CandidateSource][] = [
   ['docs from two paths', (root, cache) => markdown({ paths: [join(root, 'notes'), join(root, 'log.md')], kind: 'docs', index: { directory: cache } })],
 ];
 
+it('leaves out and counts a part whose row another call re-indexed away', { timeout: 60_000 }, async () => {
+  const root = await folder();
+  const cache = await folder();
+  await write(root, { 'notes/note.md': '## First\n\nThe orchard grows quince.\n\n## Second\n\nThe quince needs pruning.\n' });
+  const source = () => knowledgeBase(root, { index: { directory: cache } });
+  const held = source();
+  const context = { files: new Map<string, Promise<string>>(), shared: new Map<object, unknown>() };
+  await held.read({ task: 'orchard', wholeLanes: true }, context);
+  // Another call indexes the note cut to one section: a part keeps its
+  // place's id, so the first holds the new text and the second is gone.
+  await write(root, { 'notes/note.md': '## Other\n\nThe quince orchard was sold.\n' });
+  await source().read({ task: 'quince' }, { files: new Map(), shared: new Map() });
+  const read = await held.read({ task: 'quince', phraseLane: true }, context);
+  expect(read.status === 'read' ? read.candidates.map((candidate) => candidate.text) : undefined)
+    .toEqual(['## Other\n\nThe quince orchard was sold.\n']);
+  expect(read.status === 'read' ? read.changed : undefined).toBe(1);
+});
+
 describe('one-pass phrase lanes on generated notes', () => {
   // The per-read path counts every part; the one-pass path counts only
   // the parts the phrase index names.
@@ -219,7 +237,7 @@ describe.each(kinds)('one-pass read of %s', (_name, make) => {
     expect(unlinked ?? 0).toBeLessThan(linked!);
   });
 
-  it('keeps a phrase lane to the parts the call holds when another call indexes an edit between its lanes', { timeout: 60_000 }, async () => {
+  it('reads a phrase lane\'s texts as the index holds them when another call indexes an edit between its lanes', { timeout: 60_000 }, async () => {
     const root = await folder();
     const cache = await folder();
     await write(root, { 'notes/note.md': 'The orchard grows quince.\n', 'log.md': 'Nothing here.\n' });
@@ -240,14 +258,15 @@ describe.each(kinds)('one-pass read of %s', (_name, make) => {
     const before = await count();
     await source().read({ task: 'apples' }, { files: new Map(), shared: new Map() });
     expect(await count()).toEqual(before);
-    // Another call indexes an edit while this call holds the old text.
+    // Another call indexes an edit after this call's walk. The walk holds
+    // no text, so a later lane reads the edited part's text as it stands.
     await write(root, { 'notes/note.md': 'The orchard grows apples and pears instead.\n' });
     await source().read({ task: 'apples' }, { files: new Map(), shared: new Map() });
-    for (const [phrase, found] of [['quince', 1], ['apples', 0]] as const) {
+    for (const [phrase, found] of [['quince', 0], ['apples', 1]] as const) {
       const read = await held.read({ task: phrase, phraseLane: true }, context);
       const texts = read.status === 'read' ? read.candidates.map((candidate) => candidate.text) : [];
       expect(texts, phrase).toHaveLength(found);
-      expect(texts.every((text) => text.includes('quince')), phrase).toBe(true);
+      expect(texts.every((text) => text.includes('apples')), phrase).toBe(true);
     }
   });
 

@@ -1009,13 +1009,18 @@ function storeEntry(entry: NoteEntry): StoredNote {
 }
 
 /** A note read from the stored index: its row's JSON cell and its parts' rows. */
-function storedEntry(note: number, cell: string, rows: readonly PartRow[]): NoteEntry {
-  const stored = JSON.parse(cell) as Omit<StoredNote, 'parts'>;
-  const parts: StoredPart[] = rows.map((row) => ({
+/** A part as its stored row gives it. */
+function storedPartOf(row: PartRow): StoredPart {
+  return {
     id: row.id, title: row.title, text: row.text, heading: row.heading, contentRef: row.content_ref,
     ...(row.date === null ? {} : { date: JSON.parse(row.date) as MemoryCandidate['date'] }),
     tokens: { length: row.length, words: row.words }, vec: row.vec,
-  }));
+  };
+}
+
+function storedEntry(note: number, cell: string, rows: readonly PartRow[]): NoteEntry {
+  const stored = JSON.parse(cell) as Omit<StoredNote, 'parts'>;
+  const parts: StoredPart[] = rows.map(storedPartOf);
   return {
     note,
     fields: new Map(stored.fields),
@@ -1246,7 +1251,7 @@ export const onePass = { on: true, served: 0 };
 
 /** What one call knows about a reader's whole corpus, built once and
  *  shared by every read of the call. It holds nothing a request sets:
- *  each read derives its own word hits from it. */
+ *  each read derives its own word hits from it. It holds no part's text. */
 interface Corpus {
   readonly groups: readonly CorpusGroup[];
   readonly metas: readonly FileMeta[];
@@ -1254,10 +1259,10 @@ interface Corpus {
   readonly stale: readonly number[];
   /** The words of each file's name and frontmatter. */
   readonly fileWords: readonly ReadonlySet<string>[];
-  /** Every part with no request-set hit on it. */
+  /** Every part with no request-set hit on it. Its text, title, words
+   *  and vector key stay in the stored index, read by key for the parts a
+   *  read needs. */
   readonly parts: readonly PartStat[];
-  /** Each part as stored, for its title and text. */
-  readonly refs: readonly NotePart[];
   /** The parts whose heading holds a word. */
   readonly headings: ReadonlyMap<string, readonly number[]>;
   readonly totalLength: number;
@@ -1271,6 +1276,9 @@ interface Corpus {
   readonly units: Map<number, Float64Array>;
   /** Each note's file by its row in the stored index, once a phrase lane asks. */
   byNote?: Map<number, FileMeta>;
+  /** The parts the call's reads have left out because their stored row
+   *  no longer held them, by place in the walk. */
+  readonly changed: Set<number>;
   /** The index's `indexVersion` the parts were read at; unset when an
    *  update landed while they were read. */
   readonly version: number | undefined;
@@ -1373,6 +1381,24 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
         }
         for await (const { file, text } of fileTexts(state, files, context, request.signal)) {
           yield { file, entry: textEntry(text, file, nameOf(state, file), legacy, role === 'rule', partBudget) };
+        }
+      };
+      /** Each listed note from the stored index, its parts without their
+       *  title, text, words or vector key: what the call's one walk keeps. */
+      const outlines = async function* (files: readonly string[]) {
+        const database = await openIndexFile(indexPath!, indexFolder!);
+        try {
+          const noteOf = database.prepare('SELECT id, note FROM notes WHERE path = ?');
+          const partsOf = database.prepare(`SELECT id, '' AS title, '' AS text, heading, '' AS content_ref, date, length,
+            '' AS words, '' AS vec FROM parts WHERE note = ? ORDER BY ordinal`);
+          for (const file of files) {
+            if (request.signal?.aborted) throw new SourceReadError('cancelled', 'The read was cancelled.');
+            const row = noteOf.get(file) as { id: number; note: string } | undefined;
+            if (row === undefined) throw new SourceReadError('failed', `The stored index is missing ${file}.`);
+            yield { file, entry: storedEntry(row.id, row.note, partsOf.all(row.id) as PartRow[]) };
+          }
+        } finally {
+          database.close();
         }
       };
       const seen = new Set<string>();
@@ -1607,7 +1633,6 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
           const stale: number[] = [];
           const fileWords: Set<string>[] = [];
           const corpusParts: PartStat[] = [];
-          const refs: NotePart[] = [];
           const headings = new Map<string, number[]>();
           let total = 0;
           for (const { state, files } of selected) {
@@ -1615,7 +1640,7 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
             const group: CorpusGroup = { state, files, metas: [] };
             const linksByMeta: string[][] = [];
             let anyUndeclared = false;
-            for await (const { file, entry } of entries(state, files)) {
+            for await (const { file, entry } of outlines(files)) {
               const name = nameOf(state, file);
               const declared = declaredDate(entry.fields, legacy === undefined);
               if (legacy !== undefined && declared === undefined) anyUndeclared = true;
@@ -1638,7 +1663,6 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
                 }
                 corpusParts.push({ file: meta.index, id: part.id, len, headingHits: 0, namedPath: false,
                   ...(part.date === undefined ? {} : { date: part.date }) });
-                refs.push(part);
               }
               meta.partCount = corpusParts.length - meta.partStart;
               corpusMetas.push(meta);
@@ -1657,10 +1681,50 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
             rank[byId[place]!] = corpusParts[byId[place]!]!.id === corpusParts[byId[place - 1]!]!.id
               ? rank[byId[place - 1]!]! : place;
           }
-          return { groups: corpusGroups, metas: corpusMetas, stale, fileWords, parts: corpusParts, refs, headings,
-            totalLength: total, rank, postings: new Map(), units: new Map(),
+          return { groups: corpusGroups, metas: corpusMetas, stale, fileWords, parts: corpusParts, headings,
+            totalLength: total, rank, postings: new Map(), units: new Map(), changed: new Set(),
             version: await versionNow() === version ? version : undefined };
         });
+      /** Parts of the call's one walk at their stored rows, read by key a
+       *  note at a time with the columns `select` names, on an open
+       *  connection: a part whose row no longer holds it, because another
+       *  call re-indexed its note since the walk, has none. */
+      const rowsAt = (database: IndexDatabase, indexes: Iterable<number>, select: string) => {
+        const byNote = new Map<number, Map<number, number>>();
+        for (const index of indexes) {
+          const meta = corpus!.metas[corpus!.parts[index]!.file]!;
+          if (meta.note === undefined) continue;
+          let wanted = byNote.get(meta.note);
+          if (wanted === undefined) byNote.set(meta.note, wanted = new Map());
+          wanted.set(index - meta.partStart, index);
+        }
+        const found = new Map<number, Record<string, unknown>>();
+        if (byNote.size === 0) return found;
+        const statement = database.prepare(`SELECT ordinal, id, ${select} FROM parts
+          WHERE note = ? AND ordinal IN (SELECT value FROM json_each(?))`);
+        for (const [note, wanted] of byNote) {
+          if (request.signal?.aborted) throw new SourceReadError('cancelled', 'The read was cancelled.');
+          for (const row of statement.iterate(note, JSON.stringify([...wanted.keys()])) as Iterable<Record<string, unknown>>) {
+            const index = wanted.get(row.ordinal as number);
+            if (index !== undefined && row.id === corpus!.parts[index]!.id) found.set(index, row);
+          }
+          for (const index of wanted.values()) if (!found.has(index)) corpus!.changed.add(index);
+        }
+        return found;
+      };
+      /** `rowsAt` on a connection of its own. */
+      const readRows = async (indexes: Iterable<number>, select: string) => {
+        const database = await openIndexFile(indexPath!, indexFolder!);
+        try {
+          return rowsAt(database, indexes, select);
+        } finally {
+          database.close();
+        }
+      };
+      const PART_COLUMNS = 'title, text, heading, content_ref, date, length, words, vec';
+      // A part whose stored row no longer holds it is left out of every
+      // read of the call, and the record counts it.
+      const changed = () => (corpus?.changed.size ?? 0) === 0 ? {} : { changed: corpus!.changed.size };
       /** The parts of the call's one walk whose text or title can hold
        *  `phrase`, in walk order: the phrase index names them, and each is
        *  counted again with `phraseCount`, so the counts are exact. Once
@@ -1714,9 +1778,12 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
           }
           for (const [index, hit] of headingHits) parts[index] = { ...parts[index]!, headingHits: hit };
           if (kindLane) {
-            for (const index of await phraseCandidates(request.task)) {
-              const part = corpus.refs[index]!;
-              const phrased = phraseCount(part.text, request.task) + phraseCount(part.title, request.task);
+            const indexes = await phraseCandidates(request.task);
+            const rows = await readRows(indexes, 'title, text');
+            for (const index of indexes) {
+              const row = rows.get(index);
+              if (row === undefined) continue;
+              const phrased = phraseCount(row.text as string, request.task) + phraseCount(row.title as string, request.task);
               if (phrased > 0) parts[index] = { ...parts[index]!, phrased };
             }
           }
@@ -1724,11 +1791,27 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
       }
       /** The notes of some of a group's files, in that order: from the
        *  call's one walk when there is one, else read again. */
-      const walk = (group: CorpusGroup, list: readonly FileMeta[]): AsyncIterable<{ readonly entry: Pick<NoteEntry, 'parts'> }> =>
+      const walk = (
+        group: CorpusGroup, list: readonly FileMeta[],
+      ): AsyncIterable<{ readonly entry: { parts(): Iterable<NotePart | undefined> } }> =>
         corpus === undefined ? entries(group.state, list.map((meta) => meta.file)) : (async function* () {
-          for (const meta of list) {
-            if (request.signal?.aborted) throw new SourceReadError('cancelled', 'The read was cancelled.');
-            yield { entry: { parts: () => corpus.refs.slice(meta.partStart, meta.partStart + meta.partCount) } };
+          // The walk holds no text: each note's parts are read by key, and
+          // a part whose row no longer holds it comes back as none.
+          const database = await openIndexFile(indexPath!, indexFolder!);
+          try {
+            const partsOf = database.prepare(`SELECT id, ${PART_COLUMNS} FROM parts WHERE note = ? ORDER BY ordinal`);
+            for (const meta of list) {
+              if (request.signal?.aborted) throw new SourceReadError('cancelled', 'The read was cancelled.');
+              const rows = meta.note === undefined ? [] : partsOf.all(meta.note) as unknown as PartRow[];
+              yield { entry: { parts: () => Array.from({ length: meta.partCount }, (_, at) => {
+                const row = rows[at];
+                if (row !== undefined && row.id === corpus.parts[meta.partStart + at]!.id) return storedPartOf(row);
+                corpus.changed.add(meta.partStart + at);
+                return undefined;
+              }) } };
+            }
+          } finally {
+            database.close();
           }
         })();
       /** Ties order by id. */
@@ -1971,13 +2054,28 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
           const stored = 'eachVector' in embed;
           if (corpus !== undefined && stored) {
             const inWindow = parts.map((_, index) => index).filter(inside);
-            await eachPartVector(embed, inWindow.length,
-              (at) => corpus.refs[inWindow[at]!]!.vec ?? textKey(corpus.refs[inWindow[at]!]!.text),
-              (at) => corpus.refs[inWindow[at]!]!.text,
-              (at, vector) => {
-                const unit = normalized(vector, queryVectors[0]!.length);
-                lite.sims.set(inWindow[at]!, queryVectors.map((query) => similarity(unit, query)));
-              }, request.signal);
+            // Each part's vector key is read by key for this pass only, and
+            // a text only for a part whose vector must be made.
+            const database = await openIndexFile(indexPath!, indexFolder!);
+            try {
+              const keys = rowsAt(database, inWindow, 'vec');
+              const textAt = database.prepare('SELECT id, text FROM parts WHERE note = ? AND ordinal = ?');
+              const textOf = (index: number) => {
+                const meta = corpus.metas[corpus.parts[index]!.file]!;
+                const row = meta.note === undefined ? undefined
+                  : textAt.get(meta.note, index - meta.partStart) as { id: string; text: string } | undefined;
+                return row?.id === corpus.parts[index]!.id ? row.text : '';
+              };
+              await eachPartVector(embed, inWindow.length,
+                (at) => (keys.get(inWindow[at]!)?.vec as string | undefined) ?? textKey(textOf(inWindow[at]!)),
+                (at) => textOf(inWindow[at]!),
+                (at, vector) => {
+                  const unit = normalized(vector, queryVectors[0]!.length);
+                  lite.sims.set(inWindow[at]!, queryVectors.map((query) => similarity(unit, query)));
+                }, request.signal);
+            } finally {
+              database.close();
+            }
             return lite;
           }
           if (corpus !== undefined && corpus.units.size > 0) {
@@ -2022,7 +2120,7 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
                 const index = meta.partStart + local;
                 local += 1;
                 // A part outside the look-back is never embedded.
-                if (!inside(index)) continue;
+                if (!inside(index) || part === undefined) continue;
                 pending.push({ key: index, text: part.text });
                 if (pending.length === 32) await flush();
               }
@@ -2085,7 +2183,7 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
             for (const part of entry.parts()) {
               const index = meta.partStart + local;
               local += 1;
-              if (!wanted.has(index)) continue;
+              if (!wanted.has(index) || part === undefined) continue;
               const similarity = sim[index]!;
               byIndex.set(index, {
                 ...emit(meta, part, { similarity }),
@@ -2103,7 +2201,7 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
         }
         if (skipped > 0) partial.push(`skipped ${skipped} symbolic-link ${skipped === 1 ? 'entry' : 'entries'}`);
         return {
-          status: 'read' as const,
+          status: 'read' as const, ...changed(),
           ...(revision === undefined ? {} : { revision }),
           candidates: emitted,
           meaningLane: true as const,
@@ -2128,10 +2226,14 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
         const matched: { candidate: MemoryCandidate; count: number }[] = [];
         // With the call's one walk, the phrase index names the parts that
         // can hold the phrase; each is counted again exactly.
-        for (const index of corpus === undefined ? [] : await phraseCandidates(request.task)) {
+        const found = corpus === undefined ? [] : (await phraseCandidates(request.task))
+          .filter((index) => !metas[corpus.parts[index]!.file]!.scopeSkipped);
+        const rows = found.length === 0 ? new Map<number, Record<string, unknown>>() : await readRows(found, PART_COLUMNS);
+        for (const index of found) {
           const meta = metas[corpus!.parts[index]!.file]!;
-          if (meta.scopeSkipped) continue;
-          const part = corpus!.refs[index]!;
+          const row = rows.get(index);
+          if (row === undefined) continue;
+          const part = storedPartOf(row as unknown as PartRow);
           const count = phraseCount(part.text, request.task) + phraseCount(part.title, request.task);
           if (count > 0) matched.push({ candidate: emit(meta, part, { phrase: count }), count });
         }
@@ -2141,6 +2243,7 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
             const meta = group.metas[cursor++]!;
             if (meta.scopeSkipped) continue;
             for (const part of entry.parts()) {
+              if (part === undefined) continue;
               const count = phraseCount(part.text, request.task) + phraseCount(part.title, request.task);
               if (count === 0) continue;
               matched.push({ candidate: emit(meta, part, { phrase: count }), count });
@@ -2157,7 +2260,7 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
         const candidates = kept.map(({ candidate, count }) => ({ ...candidate, laneScore: count }));
         if (reasons.length === 0) {
           return {
-            status: 'read',
+            status: 'read', ...changed(),
             ...(revision === undefined ? {} : { revision }),
             candidates,
             ...indexed,
@@ -2167,7 +2270,7 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
           };
         }
         return {
-          status: 'read',
+          status: 'read', ...changed(),
           ...(revision === undefined ? {} : { revision }),
           candidates,
           ...indexed,
@@ -2183,7 +2286,7 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
         const period = request.taskPeriod;
         const partial = skipped > 0 ? [`skipped ${skipped} symbolic-link ${skipped === 1 ? 'entry' : 'entries'}`] : [];
         return {
-          status: 'read',
+          status: 'read', ...changed(),
           ...(revision === undefined ? {} : { revision }),
           candidates: [],
           poolIds: parts.flatMap((part, index) => inside(index)
@@ -2366,7 +2469,7 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
           for (const part of entry.parts()) {
             const index = meta.partStart + local;
             local += 1;
-            if (!wanted.has(index)) continue;
+            if (!wanted.has(index) || part === undefined) continue;
             const descriptor = parts[index]!;
             const signals: Record<string, number> = {};
             if (legacy !== 'rules' && descriptor.headingHits > 0) signals['heading-words'] = Math.min(keyword.headingCap, descriptor.headingHits * keyword.headingWeight);
@@ -2397,7 +2500,7 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
       }
       if (skipped > 0) partial.push(`skipped ${skipped} symbolic-link ${skipped === 1 ? 'entry' : 'entries'}`);
       return {
-        status: 'read',
+        status: 'read', ...changed(),
         ...(revision === undefined ? {} : { revision }),
         candidates: emitted,
         ...indexed,
