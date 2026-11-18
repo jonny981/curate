@@ -63,6 +63,18 @@ export interface Mode {
    *  maker's starting point for a clear no). The picks lead the text;
    *  every other kept part still follows, and nothing is dropped. It
    *  needs a decider that answers list requests, such as `jev()`. */
+  /** What each kept part is doing, off by default: after selection, a
+   *  Choice per kept part, "What does this item do with the subject of
+   *  the task?", among eight concrete situations (states a settled
+   *  decision, proposes, reports a work step, asks, approves, repeats
+   *  what was said, tool output, only mentions the subject). Its answer
+   *  goes in the record entry as `doing`, and in the item's record in the
+   *  state of a later step (a Choice per needed fact) as `doing`. Where
+   *  the read walks whole transcripts, code marks an agent's proposal
+   *  that the person's next message approves with `approvedBy`, the
+   *  person's part, and `approved_by` in the later step's state. No
+   *  weight is put on any role. */
+  readonly roles?: boolean;
   readonly choicePerFact?: boolean | {
     readonly bar?: number;
     /** After each round, ask whether the parts picked so far state

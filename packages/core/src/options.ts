@@ -342,13 +342,13 @@ export function checkPickOptions(options: PickOptions): void {
  *  bar from 0 to 1 and a read. */
 export function checkMode(mode: Mode, at: string): void {
   if (typeof mode !== 'object' || mode === null) throw new TypeError(`${at} must be a mode.`);
-  checkKeys(mode, ['name', 'questions', 'bar', 'read', 'needed', 'textShare', 'wholeMessages', 'hardFacts', 'choicePerFact'], at);
+  checkKeys(mode, ['name', 'questions', 'bar', 'read', 'needed', 'textShare', 'wholeMessages', 'hardFacts', 'roles', 'choicePerFact'], at);
   if (mode.textShare !== undefined && (typeof mode.textShare !== 'number' || !Number.isFinite(mode.textShare)
     || mode.textShare < 0 || mode.textShare > 1)) {
     throw new TypeError(`${at}.textShare must be a number between 0 and 1.`);
   }
   if (mode.needed !== undefined && typeof mode.needed !== 'boolean') throw new TypeError(`${at}.needed must be a boolean.`);
-  for (const key of ['wholeMessages', 'hardFacts'] as const) {
+  for (const key of ['wholeMessages', 'hardFacts', 'roles'] as const) {
     if (mode[key] !== undefined && typeof mode[key] !== 'boolean') throw new TypeError(`${at}.${key} must be a boolean.`);
   }
   const choice: unknown = mode.choicePerFact;

@@ -80,6 +80,8 @@ export interface SourceSettings {
   /** Present and true when its mode writes hard facts into each item's
    *  record in the decision state. */
   readonly hardFacts?: true;
+  /** Present and true when its mode asked what each kept part is doing. */
+  readonly roles?: true;
   /** Present when its mode compares its kept parts for each needed fact:
    *  the companion's bar the loop stopped under. */
   readonly choicePerFact?: { readonly bar: number };

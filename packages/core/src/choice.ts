@@ -34,6 +34,22 @@ export const FACT_QUESTION = {
   false: 'It is about the same subject, a plan or a step toward it, without stating the fact',
 } as const;
 
+/** What a part is doing with the task's subject: a Choice per item, each
+ *  option a concrete situation, as the decision model's maker advises. */
+export const ROLE_QUESTION = {
+  question: 'What does this item do with the subject of the task?',
+  options: [
+    ['decision', 'It states a decision, result or fact about the subject as settled'],
+    ['proposal', 'It proposes or plans something about the subject that is not yet settled'],
+    ['step', 'It reports a step of the work on the subject while the work is going on'],
+    ['question', 'It asks about the subject'],
+    ['approval', 'It agrees to or approves what came before it'],
+    ['repeat', 'It repeats or quotes something said earlier'],
+    ['tool', 'It is the output of a tool or a command'],
+    ['mention', 'It only mentions the subject in passing'],
+  ],
+} as const satisfies { readonly question: string; readonly options: readonly (readonly [string, string])[] };
+
 /** The question that says whether the parts picked so far suffice: asked
  *  of them alone, in their own request. */
 export const ENOUGH_QUESTION = {

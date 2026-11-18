@@ -47,6 +47,7 @@ export function decisionKey(
       // The fields code wrote into the item's record, only when it
       // carries them: a plain item's key is the one already stored.
       ...(question.facts === undefined ? [] : [{ facts: question.facts }]),
+      ...(question.options === undefined ? [] : [{ options: question.options }]),
       question.questionKey ?? null, question.tagSet ?? null,
       question.sourceId, question.id, question.title, question.role, question.kind ?? null,
       question.date === undefined ? null : [question.date.value, question.date.meaning],

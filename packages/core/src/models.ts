@@ -275,7 +275,13 @@ export function jevRequest(batch: PickBatch, model = 'jev-latest') {
       items: Object.fromEntries([...items.values()].map((question, index) => [String(index + 1), itemRecord(question)])),
     },
     questions: Object.fromEntries(batch.questions.map((question, index) => [`q${index}`,
-      question.levels === undefined
+      question.options !== undefined
+        ? {
+          type: 'choice',
+          instructions: instructions(question),
+          criteria: Object.fromEntries(question.options),
+        }
+        : question.levels === undefined
         ? {
           type: 'noul',
           instructions: instructions(question),
@@ -328,9 +334,11 @@ const JEV_REQUEST_CHARS = 64_000 * 3;
 
 function fitsJev(body: ReturnType<typeof jevRequest>, maxChars = JEV_REQUEST_CHARS): boolean {
   const longest = Math.max(0, ...Object.values(body.questions).map((question) =>
-    JSON.stringify(question.instructions).length + (Array.isArray(question.criteria)
-      ? question.criteria.join('').length
-      : (question.criteria.true ?? '').length + (question.criteria.false ?? '').length)));
+    JSON.stringify(question.instructions).length + (question.type === 'choice'
+      ? JSON.stringify(question.criteria).length
+      : Array.isArray(question.criteria)
+        ? question.criteria.join('').length
+        : (question.criteria.true ?? '').length + (question.criteria.false ?? '').length)));
   return JSON.stringify(body.state).length + longest <= JEV_STATE_CHARS && JSON.stringify(body).length <= maxChars;
 }
 
@@ -511,6 +519,14 @@ export function jev({ apiKey, model = 'jev-latest', url = JEV_URL, onCall }: {
       const answers = record(raw.answers);
       return part.questions.map((q, index): [string, PickAnswer] => {
         const answer = record(answers[`q${index}`]);
+        if (q.options !== undefined) {
+          // A Choice's probabilities arrive keyed by option; they are kept
+          // in the options' order.
+          const given = record(answer.probabilities);
+          const probabilities = q.options.map(([key]) => given[key]);
+          return [q.key, levelDistribution(probabilities, q.options.length)
+            ? { status: 'answered', probabilities: [...probabilities] } : { status: 'missing' }];
+        }
         if (q.levels !== undefined) {
           // A score answer's level probabilities arrive keyed "0"
           // onward; the score field itself is never a substitute.
@@ -635,11 +651,12 @@ export function openAIDecisions({ apiKey, model = 'gpt-6-luna' }: {
     const raw = await post('https://api.openai.com/v1/decisions', apiKey, {
       model,
       input: batch.task,
-      questions: batch.questions.map((q, index) => ({
+      // A Choice has no predicate form: it goes unasked and comes back missing.
+      questions: batch.questions.flatMap((q, index) => q.options !== undefined ? [] : [{
         type: 'predicate',
         name: `q${index}`,
         instructions: `${q.question}\nTrue: ${q.trueCriterion}\nFalse: ${q.falseCriterion}\nEvidence: ${itemText(q)}`,
-      })),
+      }]),
     }, signal);
     const rawAnswers = record(raw).answers;
     const answers = new Map((Array.isArray(rawAnswers) ? rawAnswers : []).map((value: unknown) => {
@@ -688,6 +705,8 @@ export function localDecisions({ url, model, apiKey }: {
   const decide: PickDecide = async (batch, signal) => {
     const answers: Record<string, PickAnswer> = {};
     for (const q of batch.questions) {
+      // A Choice has no yes/no form: it goes unasked and comes back missing.
+      if (q.options !== undefined) { answers[q.key] = { status: 'missing' }; continue; }
       answers[q.key] = yesProbability(await post(url, apiKey, {
         model,
         messages: [

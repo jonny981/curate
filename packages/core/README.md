@@ -969,6 +969,27 @@ const answers: PickCascade = { bias: 0, questions: [{ ...ANSWER_QUESTION, weight
 
 The weights are the caller's: none are fitted for these questions.
 
+### What each kept part is doing
+
+Off by default. A mode with `roles: true` asks, after selection, one
+Choice per kept part (per message under `wholeMessages`), "What does
+this item do with the subject of the task?" (`ROLE_QUESTION`), among
+eight options, each described as a concrete situation: it states a
+decision, result or fact as settled; proposes or plans; reports a step
+of the work; asks; agrees to or approves what came before; repeats or
+quotes something said earlier; is tool or command output; only
+mentions the subject. The answer goes in the part's record entry as
+`doing`, the option chosen and every option's probability, and in its
+record in the state of a later step, a Choice per needed fact, as
+`doing`. Where the mode's read walks whole transcripts, code also marks
+an agent's proposal that the person's next message approves:
+`approvedBy`, that message's part id, in the entry, and `approved_by`
+in the later step's state. No weight is put on any role, so the
+selection and the text are unchanged. The request asks a per-item
+Choice: a question's `options`, each a key and what it means, sent as
+the Choice's criteria. `openAIDecisions()` and `localDecisions()` have
+no Choice form and leave such a question unanswered.
+
 ### A Choice per needed fact
 
 Off by default. A mode with `choicePerFact: true` (or `{ bar }`)
@@ -1802,7 +1823,7 @@ Each source carries six settings, tuned for its kind of history:
 - **`labelBar`:** the label bar, from 0 to 1, for which kinds the task needs and which of this source's parts join the label lane; absent means 0.5.
 - **`names`:** open one exact-phrase lane per name the task names ([names in the task](#names-in-the-task)). The reason is recall.
 - **`ruleBar`:** keep a rule scored at or above this; absent means 0. Only sources whose parts are rules use it.
-- **`mode`:** how the source's parts are judged and read: `name`; `questions`, the decision questions asked of each reference part (absent: the built-in question for the part's kind); `bar`, keep a reference part scored at or above this (absent: the set's fitted bar, or 0.0146); and `read`, `rankedRead` down the fused order or a `conversationRead()` ([the chat read](#the-chat-read)), which takes `walksOn`, `opens` and `stops` rules in place of the measured ones. Absent: the built-in question, 0.0146 and the ranked read. Off by default: `wholeMessages`, judge each ranked piece's whole message ([whole messages](#whole-messages)); `hardFacts`, fields code knows in each item's record ([hard facts](#hard-facts)); `choicePerFact`, a Choice per needed fact over the kept parts, whose picks lead the text ([a Choice per needed fact](#a-choice-per-needed-fact)).
+- **`mode`:** how the source's parts are judged and read: `name`; `questions`, the decision questions asked of each reference part (absent: the built-in question for the part's kind); `bar`, keep a reference part scored at or above this (absent: the set's fitted bar, or 0.0146); and `read`, `rankedRead` down the fused order or a `conversationRead()` ([the chat read](#the-chat-read)), which takes `walksOn`, `opens` and `stops` rules in place of the measured ones. Absent: the built-in question, 0.0146 and the ranked read. Off by default: `wholeMessages`, judge each ranked piece's whole message ([whole messages](#whole-messages)); `hardFacts`, fields code knows in each item's record ([hard facts](#hard-facts)); `roles`, what each kept part is doing ([what each kept part is doing](#what-each-kept-part-is-doing)); `choicePerFact`, a Choice per needed fact over the kept parts, whose picks lead the text ([a Choice per needed fact](#a-choice-per-needed-fact)).
 - **`decay`:** rank older notes lower by their age at the task date, as `{ halfLife: '365 days' }`; absent or `false` is off, as in every preset. Markdown sources only; see the [Markdown reader](https://github.com/jonny981/curate/blob/main/packages/markdown/README.md#decay).
 
 A source can also carry the look-back and path settings its reader ran

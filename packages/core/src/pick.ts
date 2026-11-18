@@ -15,7 +15,7 @@ import {
 } from './task.js';
 import { conversationRead, rankedRead, type Mode, type ModeRead, type ModeReadResult } from './mode.js';
 import { messageKey, messageKind, messagePieces, messageText, transcriptMessages } from './chat-read.js';
-import { choosePerFact } from './choice.js';
+import { choosePerFact, ROLE_QUESTION } from './choice.js';
 import type { EmbeddingFunction } from './meaning.js';
 import type { LeverStates } from './levers.js';
 import type { StoredIndexReport } from './stored-index.js';
@@ -132,6 +132,9 @@ export interface PickQuestion {
   readonly falseCriterion?: string;
   /** A levelled question's ordered levels, lowest first. */
   readonly levels?: readonly string[];
+  /** A Choice's options, each a key and what it means, in the order
+   *  sent; its answer's probabilities follow this order. */
+  readonly options?: readonly (readonly [string, string])[];
   /** Render the item as a date and its text only, keeping its id,
    *  title and other identifying fields out of the model request. */
   readonly anonymous?: boolean;
@@ -404,6 +407,12 @@ export type PickRecordEntry = {
    *  fact that picked it, the fact's place in `needed`, the round that
    *  picked it from 1, and the Choice's probability for it. */
   readonly chosen?: readonly { readonly fact: number; readonly round: number; readonly probability: number }[];
+  /** Present on a kept part when its mode asked what each kept part is
+   *  doing: the option chosen and every option's probability. */
+  readonly doing?: { readonly choice: string; readonly probabilities: Readonly<Record<string, number>> };
+  /** Present on an agent's proposal the person's next message approved:
+   *  that message's part id, marked by code from the two roles. */
+  readonly approvedBy?: string;
 } & PickEntryStatus;
 
 export interface PickCriterion {
@@ -1230,7 +1239,7 @@ function itemChars(question: PickQuestion): number {
  *  wording and its true and false criteria or its levels. */
 function questionChars(question: PickQuestion): number {
   return question.question.length
-    + (question.levels ?? [question.trueCriterion ?? '', question.falseCriterion ?? '']).join('').length;
+    + (question.options?.flat() ?? question.levels ?? [question.trueCriterion ?? '', question.falseCriterion ?? '']).join('').length;
 }
 
 function takeCharacters(
@@ -2032,7 +2041,9 @@ export async function pick(
   // the whole transcript, so they come only from a read that walks it.
   const messageFacts = new Map<string, Record<string, unknown>>();
   const placed = (candidate: MemoryCandidate) => candidate.chat !== undefined && (candidate.place?.at.length ?? 0) >= 3;
-  for (const list of transcriptMessages(references.filter((candidate) => factsFor(candidate) && placed(candidate))).values()) {
+  const rolesFor = (candidate: MemoryCandidate) => candidate.role === 'reference' && modeFor(candidate.sourceId)?.roles === true;
+  for (const list of transcriptMessages(references.filter((candidate) => (factsFor(candidate) || rolesFor(candidate))
+    && placed(candidate))).values()) {
     const walks = modeFor(list[0]!.pieces[0]!.sourceId)?.read.walks === true;
     const kinds = list.map(({ pieces }) => messageKind(pieces[0]!));
     const said = (pieces: readonly MemoryCandidate[], at: 'first' | 'last') => {
@@ -2292,6 +2303,7 @@ export async function pick(
     readonly key: string;
     readonly question: string;
     readonly levels?: readonly string[];
+    readonly options?: readonly (readonly [string, string])[];
     readonly trueCriterion?: string;
     readonly falseCriterion?: string;
   }
@@ -2344,7 +2356,7 @@ export async function pick(
       ...(candidate.author === undefined ? {} : { author: candidate.author }),
       ...(facts === undefined ? {} : { facts }),
       role: candidate.role, question: spec.question,
-      ...(spec.levels === undefined
+      ...(spec.options !== undefined ? { options: spec.options } : spec.levels === undefined
         ? { trueCriterion: spec.trueCriterion, falseCriterion: spec.falseCriterion }
         : { levels: spec.levels }),
       // The set's anonymousItems renders every ask about its part
@@ -2387,7 +2399,7 @@ export async function pick(
     question.role, question.kind, question.questionKey, question.question,
     question.trueCriterion ?? null, question.falseCriterion ?? null,
     question.levels ?? null, question.anonymous ?? null, question.author ?? null, JSON.stringify(headerOf(candidate)),
-    question.facts ?? null]);
+    question.facts ?? null, question.options ?? null]);
   // Asks packed into request-sized batches, at most `most` of them.
   const pack = (fresh: readonly Pending[], task: string, whole: boolean, most: number): Pending[][] => {
     const slices: Pending[][] = [];
@@ -2639,7 +2651,7 @@ export async function pick(
           : answers === undefined
             ? { status: 'error', detail: decideError instanceof Error ? decideError.message
                 : decideError === undefined ? 'The decide call failed.' : String(decideError) }
-            : checkAnswer(answers[question.key], question.levels?.length);
+            : checkAnswer(answers[question.key], question.levels?.length ?? question.options?.length);
         let got = sink.get(candidate);
         if (!got) { got = new Map(); sink.set(candidate, got); }
         got.set(spec.key, answer);
@@ -3551,6 +3563,36 @@ export async function pick(
     });
   }
 
+  // What each kept part of a mode that asks it is doing: one Choice per
+  // kept message or part, its answer carried by every piece. Then code
+  // marks an agent's proposal the person's next message approves.
+  const roleOf = new Map<MemoryCandidate, { choice: string; probabilities: Record<string, number> }>();
+  const approvedBy = new Map<MemoryCandidate, string>();
+  const roling = selected.filter((candidate) => rolesFor(candidate));
+  if (roling.length > 0 && !stop) {
+    const roleAnswers = new Map<MemoryCandidate, Map<string, CheckedAnswer>>();
+    const items = [...new Set(roling.flatMap(itemsFor))];
+    await ask(items.map((item) => pending(item, { key: 'role', question: ROLE_QUESTION.question, options: ROLE_QUESTION.options })),
+      roleAnswers);
+    for (const item of items) {
+      const answer = roleAnswers.get(item)?.get('role');
+      if (answer?.status !== 'answered' || !('probabilities' in answer)) continue;
+      const probabilities = Object.fromEntries(ROLE_QUESTION.options.map(([key], index) => [key, answer.probabilities[index]!]));
+      const choice = ROLE_QUESTION.options.map(([key]) => key)
+        .reduce((best, key) => probabilities[key]! > probabilities[best]! ? key : best);
+      const key = messageOfItem.get(item);
+      for (const piece of key === undefined ? [item] : messages.get(key) ?? [item]) roleOf.set(piece, { choice, probabilities });
+    }
+    const byId = new Map(references.map((candidate) => [candidate.id, candidate]));
+    for (const candidate of roling) {
+      if (candidate.author !== 'person' || roleOf.get(candidate)?.choice !== 'approval') continue;
+      const reply = messageFacts.get(messageKey(candidate))?.replies_to as { readonly id: string } | undefined;
+      const proposal = reply === undefined ? undefined : byId.get(reply.id);
+      if (proposal === undefined || roleOf.get(proposal)?.choice !== 'proposal') continue;
+      for (const piece of messages.get(messageKey(proposal)) ?? [proposal]) approvedBy.set(piece, candidate.id);
+    }
+  }
+
   // A Choice per needed fact over the kept parts of the modes that ask
   // for it: one item per kept message or part, in the order they were
   // said; the picks lead the text and nothing is dropped.
@@ -3600,7 +3642,13 @@ export async function pick(
           maxChars: Math.min(limits.maxBatchChars, list.maxChars ?? Number.POSITIVE_INFINITY),
           items: keyed.map(([key, item]) => {
             const { sourceId, id, title, text, role, date, kind, author, anonymous, facts } = pending(item, specsFor(item)[0]!).question;
-            return [key, { sourceId, id, title, text, role, date, kind, author, anonymous, facts }] as const;
+            // What a part is doing, when its mode asked, rides in its record.
+            const doing = roleOf.get(item);
+            const later = doing === undefined && !approvedBy.has(item) ? facts : { ...facts,
+              ...(doing === undefined ? {} : { doing: doing.choice }),
+              ...(approvedBy.has(item) ? { approved_by: approvedBy.get(item)! } : {}) };
+            return [key, { sourceId, id, title, text, role, date, kind, author, anonymous,
+              ...(later === undefined ? {} : { facts: later }) }] as const;
           }) });
         result.facts.forEach(({ picks }, fact) => {
           for (const pick of picks) {
@@ -3787,6 +3835,8 @@ export async function pick(
       } : {}),
       ...(tags === undefined ? {} : { tags }),
       ...(picked.has(candidate) ? { chosen: picked.get(candidate)! } : {}),
+      ...(roleOf.has(candidate) ? { doing: roleOf.get(candidate)! } : {}),
+      ...(approvedBy.has(candidate) ? { approvedBy: approvedBy.get(candidate)! } : {}),
     };
     return status.status === 'unanswered'
       ? { ...base, status: 'unanswered', answer: status.answer, detail: status.detail }
@@ -3854,6 +3904,7 @@ export async function pick(
       ...(modeFor(id)?.textShare === undefined ? {} : { textShare: modeFor(id)!.textShare }),
       ...(modeFor(id)?.wholeMessages === true ? { wholeMessages: true as const } : {}),
       ...(modeFor(id)?.hardFacts === true ? { hardFacts: true as const } : {}),
+      ...(modeFor(id)?.roles === true ? { roles: true as const } : {}),
       ...(modeFor(id) === undefined || choiceBar({ sourceId: id } as MemoryCandidate) === undefined ? {}
         : { choicePerFact: { bar: choiceBar({ sourceId: id } as MemoryCandidate)! } }),
     }])) },
