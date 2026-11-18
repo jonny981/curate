@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
-  cachedEmbeddings, pickFromSources, type CandidateReadRequest, type CandidateSource, type MemoryCandidate, type PickDecide,
+  cachedEmbeddings, curate, pickFromSources, type CandidateReadRequest, type CandidateSource, type MemoryCandidate, type PickDecide,
 } from '@curatejs/core';
 import { chat, type ChatProvider } from '../src/index.js';
 import { onePass } from '../src/chat.js';
@@ -416,6 +416,44 @@ describe('one-pass chat read', () => {
     expect(asked).toContain('yaczf');
     expect(result.selected.map((part) => part.text)).toEqual([]);
     expect(result.record.changed).toEqual({ [held.id]: 1 });
+  });
+
+  it('lays out no text another call wrote after the parts were rated, though a later lookup makes them again', { timeout: 60_000 }, async () => {
+    // A subagent's prompt and report, rated on one text in both requests.
+    // Another call rewrites them during the last request; the units
+    // lookup then makes both parts again from the new text. The check at
+    // the end of the pick compares with the text the call first made.
+    const root = await folder();
+    const cache = await folder();
+    const nested = join(root, 's', 'subagents');
+    await mkdir(nested, { recursive: true });
+    const file = join(nested, 'agent-one.jsonl');
+    const said = (suffix: string) => writeFile(file, [
+      { type: 'user', isSidechain: true, sessionId: 's', timestamp: '2026-11-01T12:00:00Z', message: { role: 'user', content: `orchard instruction ${suffix}` } },
+      { type: 'assistant', isSidechain: true, sessionId: 's', timestamp: '2026-11-01T12:01:00Z', message: { role: 'assistant', content: `orchard report ${suffix}` } },
+    ].map((record) => JSON.stringify(record)).join('\n') + '\n');
+    await said('BEFORE');
+    const options = { providers: ['claude-code' as const], paths: [root], index: { directory: cache } };
+    const source = { ...chat(options), labelKinds: [], names: false };
+    const seen: string[] = [];
+    let requests = 0;
+    const decide: PickDecide = async (batch) => {
+      requests += 1;
+      seen.push(...batch.questions.map((question) => question.text));
+      if (requests === 2) {
+        await said('AFTER');
+        await chat(options).read({ task: 'orchard', wholeLanes: true });
+      }
+      return Object.fromEntries(batch.questions.map((question) => [question.key, { status: 'answered', probability: 0.9 }]));
+    };
+    const picked = await pickFromSources([source], { task: 'orchard' }, { task: 'orchard', cache: false, decide });
+    expect(requests).toBe(2);
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.every((text) => text.endsWith('BEFORE'))).toBe(true);
+    const laid = picked.selected.length === 0 ? '' : (await curate('orchard', picked, { sentenceCutoff: false })).log;
+    expect(laid).not.toContain('AFTER');
+    expect(picked.selected.map((part) => part.text)).toEqual([]);
+    expect(picked.record.changed).toEqual({ [source.id]: 2 });
   });
 
   it('serves a history with one part', { timeout: 60_000 }, async () => {

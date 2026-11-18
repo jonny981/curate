@@ -1378,8 +1378,8 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           const path = stored!.path;
           let reader: IndexDatabase | undefined;
           let textRow: ReturnType<IndexDatabase['prepare']> | undefined;
-          // A part's text, from its row; the hash of the text it was made
-          // from tells whether the row still holds that text.
+          // A part's text, from its row; the hash of the text the call
+          // first made it from tells whether the row still holds that text.
           const madeHash = new Map<number, string>();
           const changedParts = new Set<number>();
           const textAt = (index: number): string => {
@@ -1452,11 +1452,18 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           };
           return shared!.lazy = {
             make(index, text, extra) {
-              madeHash.set(index, textHash(text));
+              // The text the call first made the part from is the one its
+              // decisions could have seen: a later make of the same part
+              // never replaces it, and one from another text marks the
+              // part changed.
+              const hash = textHash(text);
+              const first = madeHash.get(index);
+              if (first === undefined) madeHash.set(index, hash);
+              else if (first !== hash) changedParts.add(index);
               return new LanePart(fieldsAt(index, extra), index) as unknown as MemoryCandidate;
             },
             gone(index, extra) {
-              madeHash.set(index, textHash(''));
+              if (!madeHash.has(index)) madeHash.set(index, textHash(''));
               changedParts.add(index);
               return new LanePart(fieldsAt(index, extra), index) as unknown as MemoryCandidate;
             },
