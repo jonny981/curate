@@ -466,6 +466,28 @@ describe('the rating stop', () => {
     expect(windowed.record.pick!.stopWhenCold).toMatchObject({ parts: 4, windows: 3, rated: 12, unread: 8, cold: { window: 3, under: 'floor' } });
   });
 
+  it.each([
+    // Requests of 120; a warm part at the start of one request and the end
+    // of the next leave a cold run of 150 parts between them, though no
+    // request is cold.
+    ['warm parts at request edges', 720, [0, 120, 359, 360, 480, 600]],
+    // A window carries 120 cold parts of one request into the next, whose
+    // warm parts fall just outside it, at the end and the start of requests.
+    ['warm parts just outside a carried window', 960, [0, 239, 240, 479, 480, 719]],
+  ] as const)('never stops earlier than judging each request alone: %s', async (_name, count, warmAt) => {
+    const warm = new Set<number>(warmAt);
+    const rating = (id: string) => (warm.has(index(id)) ? 0.9 : 0.001);
+    const perRequest = await pick(ranked(count), { task: 'recall the plan', decide: rated(rating).decide,
+      stopWhenCold: { parts: 1 }, limits: { maxPerBatch: 120 } });
+    const windowed = await pick(ranked(count), { task: 'recall the plan', decide: rated(rating).decide,
+      stopWhenCold: {}, limits: { maxPerBatch: 120 } });
+    const kept = (picked: typeof windowed) => picked.selected.map((part) => part.id);
+    expect(kept(perRequest).length).toBeGreaterThan(0);
+    for (const id of kept(perRequest)) expect(kept(windowed)).toContain(id);
+    expect(windowed.record.pick!.stopWhenCold!.rated).toBeGreaterThanOrEqual(perRequest.record.pick!.stopWhenCold!.rated);
+    expect(kept(windowed).sort()).toEqual([...warm].map((at) => `p${at}`).sort());
+  });
+
   it('judges 150 rated parts at a time when the call sets no window', async () => {
     const { decide } = rated((id) => (id === 'p2' ? 0.5 : 0.05));
     const picked = await pick(ranked(20), { task: 'recall the plan', decide, stopWhenCold: {}, limits: twoABatch });

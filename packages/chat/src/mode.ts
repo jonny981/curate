@@ -13,7 +13,7 @@ export const agentTranscripts: Mode = {
  *  the person's own messages first, each group in the order's own order,
  *  read two batches at a time and stopped where the ratings go cold, at
  *  the call's `stopWhenCold` levels or, with none set, a floor of 0.1 and
- *  a share of 0.2, judged in windows of 150 rated parts. Make it once per mode: modes that share a read are
+ *  a share of 0.2, judged in windows of whole requests holding at least 150 rated parts. Make it once per mode: modes that share a read are
  *  read and stopped together. */
 export function assistantChatRead(): ModeRead {
   return (input) => rankedRead({ ...input,
