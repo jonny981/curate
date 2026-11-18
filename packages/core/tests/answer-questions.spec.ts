@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  ANSWER_QUESTION, FACT_QUESTION, jevRequest, pick, rankedRead, type MemoryCandidate, type PickBatch, type PickCascade, type PickDecide,
+  ANSWER_CASCADE, ANSWER_QUESTION, FACT_QUESTION, jevRequest, pick, rankedRead, type MemoryCandidate, type PickBatch, type PickCascade, type PickDecide,
 } from '../src/index.js';
 
 const task = 'Which database did we choose, and why?';
@@ -72,6 +72,15 @@ describe('the narrow question in two, in the answers wording', () => {
     expect(batches.flatMap((batch) => batch.questions).map((question) => question.questionKey)).toEqual(['answers']);
     const entry = result.record.candidates[0]!;
     expect('probability' in entry && entry.probability).toBeCloseTo(0.8, 9);
+  });
+
+  it('keeps by the answers probability itself in the named set, its fact answers recorded beside it', async () => {
+    const { batches, decide } = recording();
+    const result = await pick([part], { task, decide, needed, modesBySource: { notes: mode(ANSWER_CASCADE) } });
+    expect(batches.flatMap((batch) => batch.questions).map((question) => question.questionKey)).toEqual(['answers', 'fact1', 'fact2']);
+    const entry = result.record.candidates[0]!;
+    expect('probability' in entry && entry.probability).toBeCloseTo(0.8, 9);
+    expect(entry.questions!.map((answer) => answer.key)).toEqual(['answers', 'fact1', 'fact2']);
   });
 
   it('checks the facts question', async () => {

@@ -1,5 +1,5 @@
 import { DecisionServiceError, jevListRequest } from './models.js';
-import type { PickItem, PickListAnswer, PickListDecide, PickListQuestion, PickListRequest } from './pick.js';
+import type { PickCascade, PickItem, PickListAnswer, PickListDecide, PickListQuestion, PickListRequest } from './pick.js';
 
 /** The most options one Choice may hold: the decision service's own
  *  limit. */
@@ -36,6 +36,18 @@ export const FACT_QUESTION = {
   true: 'It states the fact itself',
   false: 'It is about the same subject, a plan or a step toward it, without stating the fact',
 } as const;
+
+/** The narrow question in two as a question set a mode can keep by:
+ *  its score is the "answers" probability itself (weight 1, no bias),
+ *  the wording measured to calibrate, and the needed-fact question is
+ *  asked once per fact beside it at weight 0, so its answers are
+ *  recorded and screen a Choice per needed fact without moving the
+ *  score. No weight is fitted. */
+export const ANSWER_CASCADE: PickCascade = {
+  bias: 0,
+  questions: [{ ...ANSWER_QUESTION, weight: 1 }],
+  facts: { question: FACT_QUESTION, highest: 0 },
+};
 
 /** What a part is doing with the task's subject: a Choice per item, each
  *  option a concrete situation, as the decision model's maker advises. */

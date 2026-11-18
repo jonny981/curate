@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 // @ts-expect-error The standalone JavaScript command has no type declarations.
-import { CHAT_LEVERS, neededFrom, parseSources, searchLinesPrompt, wantedFrom } from '../skills/curate/run.mjs';
+import { CHAT_LEVERS, CHAT_MODES, neededFrom, parseSources, searchLinesPrompt, wantedFrom } from '../skills/curate/run.mjs';
+import { ANSWER_CASCADE } from '@curatejs/core';
 
 describe('the facts the answer needs, from the search-line call', () => {
   it('are asked in the same call only when a mode in the call lists them', () => {
@@ -38,13 +39,29 @@ describe('the person and a chat source\'s levers in the settings', () => {
 
   it('refuse a blank name, an unknown lever, a lever of the wrong type, and levers on a non-chat source', () => {
     expect(() => parseSources({ sources: [{ type: 'claude-code', levers: { itemsPerRequest: 0 } }] }))
-      .toThrow('itemsPerRequest, a positive whole number.');
+      .toThrow('itemsPerRequest, a positive whole number;');
+    expect(() => parseSources({ sources: [{ type: 'claude-code', levers: { choicePerFact: { candidates: 0 } } }] }))
+      .toThrow('choicePerFact may instead be { candidates, enough }');
     expect(() => parseSources({ person: ' ', sources: [] })).toThrow('person must be your name as your tasks word it.');
     expect(() => parseSources({ sources: [{ type: 'claude-code', levers: { faster: true } }] }))
-      .toThrow('levers must be an object of booleans named wholeMessages, hardFacts, roles, choicePerFact, and itemsPerRequest, a positive whole number.');
+      .toThrow('levers must be an object of booleans named wholeMessages, hardFacts, roles, choicePerFact; itemsPerRequest, a positive whole number;');
     expect(() => parseSources({ sources: [{ type: 'claude-code', levers: { hardFacts: 'yes' } }] }))
-      .toThrow('levers must be an object of booleans named wholeMessages, hardFacts, roles, choicePerFact, and itemsPerRequest, a positive whole number.');
+      .toThrow('levers must be an object of booleans named wholeMessages, hardFacts, roles, choicePerFact; itemsPerRequest, a positive whole number;');
     expect(() => parseSources({ sources: [{ type: 'git', path: '.', levers: { hardFacts: true } }] }))
       .toThrow('Unknown key "levers" on a git source');
+  });
+});
+
+describe('values on a chat source\'s levers, and the narrow question in two as its keep question', () => {
+  it('take the Choice\'s candidates and sufficiency question, and items per request', () => {
+    const parsed = parseSources({ sources: [{ type: 'claude-code',
+      levers: { choicePerFact: { candidates: 10, enough: false }, itemsPerRequest: 1 } }] });
+    expect(parsed.sources[0].levers).toEqual({ choicePerFact: { candidates: 10, enough: false }, itemsPerRequest: 1 });
+  });
+
+  it('name the two-question set "answers", read as the default mode reads', () => {
+    expect(parseSources({ sources: [{ type: 'claude-code', questions: 'answers' }] }).sources[0].questions).toBe('answers');
+    expect(CHAT_MODES.answers).toMatchObject({ name: 'answers', questions: ANSWER_CASCADE, needed: true });
+    expect(CHAT_MODES.answers.read).toBe(CHAT_MODES.default.read);
   });
 });

@@ -5,7 +5,7 @@ import { createRequire } from 'node:module';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { curate, DEFAULT_MAX_QUESTION_TEXT, levelDistribution, pickFromSources, rankedRead, sinceCutoff, taskPeriod } from '@curatejs/core';
+import { ANSWER_CASCADE, curate, DEFAULT_MAX_QUESTION_TEXT, levelDistribution, pickFromSources, rankedRead, sinceCutoff, taskPeriod } from '@curatejs/core';
 import { jev } from '@curatejs/core/models';
 import { agentTranscripts, chat, scrubChat, AGENT_CHAT_CASCADE, CHAT_SEARCH_LINE_REGISTER, JUDGMENT_CHAT_CASCADE } from '@curatejs/chat';
 import { git, GIT_HISTORY_CASCADE, GIT_SEARCH_LINE_REGISTER } from '@curatejs/git';
@@ -118,10 +118,19 @@ const engineFound = () => (createRequire(import.meta.url).resolve.paths('node-ll
 // asks the only measured model-scored set, read down the ranked list,
 // and it fails closed inside chat() while its weights file is unfitted.
 export const CHAT_MODES = { default: agentTranscripts,
+  // The narrow question in two: kept by the "answers" probability, read
+  // as the default mode reads.
+  answers: { ...agentTranscripts, name: 'answers', questions: ANSWER_CASCADE },
   judgments: { name: 'judgments', questions: JUDGMENT_CHAT_CASCADE, read: rankedRead } };
 // The decision levers a chat entry can switch on for its mode, each off by
 // default (core's Mode documents them).
 export const CHAT_LEVERS = ['wholeMessages', 'hardFacts', 'roles', 'choicePerFact', 'itemsPerRequest'];
+// Whether a lever's value is one it takes: on or off, a count of items
+// per request, or the Choice's candidates and sufficiency question.
+const wholeNumber = (value) => Number.isSafeInteger(value) && value >= 1;
+const leverValue = (key, value) => key === 'itemsPerRequest' ? wholeNumber(value)
+  : typeof value === 'boolean' || (key === 'choicePerFact' && value !== null && typeof value === 'object' && !Array.isArray(value)
+    && Object.entries(value).every(([name, own]) => (name === 'candidates' && wholeNumber(own)) || (name === 'enough' && typeof own === 'boolean')));
 // A chat entry's mode, with its own bar and levers when it sets them.
 const chatMode = (entry) => {
   const mode = CHAT_MODES[entry.questions ?? 'default'];
@@ -176,9 +185,8 @@ export function parseSources(value, base = process.cwd()) {
       throw new Error('bar must be a number between 0 and 1.');
     }
     if (source.levers !== undefined && (source.levers === null || typeof source.levers !== 'object' || Array.isArray(source.levers)
-      || Object.entries(source.levers).some(([key, on]) => !CHAT_LEVERS.includes(key)
-        || (key === 'itemsPerRequest' ? !Number.isSafeInteger(on) || on < 1 : typeof on !== 'boolean')))) {
-      throw new Error(`levers must be an object of booleans named ${CHAT_LEVERS.filter((name) => name !== 'itemsPerRequest').join(', ')}, and itemsPerRequest, a positive whole number.`);
+      || Object.entries(source.levers).some(([key, on]) => !CHAT_LEVERS.includes(key) || !leverValue(key, on)))) {
+      throw new Error(`levers must be an object of booleans named ${CHAT_LEVERS.filter((name) => name !== 'itemsPerRequest').join(', ')}; itemsPerRequest, a positive whole number; and choicePerFact may instead be { candidates, enough }, candidates a positive whole number and enough a boolean.`);
     }
     if (source.always !== undefined && typeof source.always !== 'boolean') throw new Error('always must be a boolean.');
     if (source.dates !== undefined && !['day-first', 'month-first'].includes(source.dates)) {

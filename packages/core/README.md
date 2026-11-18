@@ -994,12 +994,21 @@ fact the call gives in `needed`, in the same request, keyed `fact1`,
 `fact2` and so on; `highest` × logit(the highest fact answer) joins the
 score, as a `named` question's does:
 
+`ANSWER_CASCADE` is the two as a set a mode can keep by: its score is
+the "answers" probability itself (weight 1, no bias), and the
+needed-fact question is asked beside it at weight 0, so its answers are
+recorded, and screen a Choice per needed fact, without moving the
+score. On the short lists of two tasks of one person's coding-agent
+history, the "answers" probabilities summed to 16.4 and 20.1 against 15
+and 12 parts that state or restate the answer, where the single narrow
+question summed to 23.3 and 47.5: a calibrated probability, which a
+keep bar can rest on. No weight is fitted; a set that weighs the fact
+answers in names its own:
+
 ```ts
-const answers: PickCascade = { bias: 0, questions: [{ ...ANSWER_QUESTION, weight: 1 }],
+const weighed: PickCascade = { bias: 0, questions: [{ ...ANSWER_QUESTION, weight: 1 }],
   facts: { question: FACT_QUESTION, highest: 1 } };
 ```
-
-The weights are the caller's: none are fitted for these questions.
 
 ### What each kept part is doing
 
