@@ -33,6 +33,17 @@ describe('identical decision text', () => {
     expect(result.selected.map((part) => part.id)).toEqual(['first', 'second']);
   });
 
+  it('asks texts that differ only in a lone surrogate once each', async () => {
+    // Two pieces cut inside different emoji: as UTF-8 both lone halves
+    // become the same replacement character, so only the code units differ.
+    const cut = (id: string, half: string): MemoryCandidate => ({ ...said(id, 'person', 1), text: `Use Postgres ${half}` });
+    const asked: PickQuestion[] = [];
+    await pick([cut('first', '\uD83D'), cut('second', '\uD83E')], {
+      task: 'What did the person choose?', everyRanked: true, everyScored: { bar: 0.0146 }, decide: byAuthor(asked),
+    });
+    expect(asked.map((question) => question.id)).toEqual(['first', 'second']);
+  });
+
   it.each([
     { maxPerBatch: 150, bestPartFirst: false },
     { maxPerBatch: 1, bestPartFirst: false },

@@ -2237,8 +2237,9 @@ export async function pick(
     readonly settled: Promise<void>;
   }
   const decisionsByText = new Map<string, Map<string, FirstAsk>>();
-  // Two texts share one answer exactly when their hashes match (SHA-256).
-  const sameText = (text: string) => createHash('sha256').update(text).digest('base64');
+  // Two texts share one answer exactly when their hashes match (SHA-256
+  // of the UTF-16 code units, so a lone surrogate counts as itself).
+  const sameText = (text: string) => createHash('sha256').update(text, 'utf16le').digest('base64');
   // Requests open, and batches packed whose answers have not applied:
   // reads that run at once share the caller's `maxInFlight` and
   // `maxBatches`.
