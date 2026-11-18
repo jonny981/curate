@@ -918,22 +918,26 @@ reader placed (`chat` and `place`) are joined. The record names the
 setting under `levers.sources`. On the 22 short lists of one person's
 coding-agent history (1,489 ranked pieces, 1,028 messages), the
 requests carried 2.47 times the text: the messages held 4.47 times the
-ranked pieces' text, and 32 reports carried their request.
+ranked pieces' text, and 32 reports carried their request. Cost: the
+decision model bills by the text, so 2.47 times the dollars on those
+lists, and at the client's default pace a read of 1,000 items needs at
+least 13.8 seconds against 3.8 for pieces. Notes have no messages: a
+Markdown source does not take it.
 
 ### Items per request
 
 Off by default: unset, a decision request holds as many items as the
-request limits allow, each item once with all its questions. A mode
-with `itemsPerRequest: 1` sends each item in a request of its own, with
-all of its questions, the task and the fields beside it (the needed
-facts, the person, how many answers are wanted) repeated in every
-request; `itemsPerRequest: n` holds at most n. The decision model's
-maker shows many questions about one document in a request, and its
-re-ranking recipe sends one candidate per request; it shows no request
-judging many separate items. The requests of a round go out at once,
-inside `limits.maxInFlight` and the decider's own rate. `jev()` queues
-every request inside 80 requests and 100,000 estimated tokens a second
-unless given the organization's own limits (`requestsPerSecond`,
+request limits allow, each item once with all its questions. A mode with
+`itemsPerRequest: 1` sends each item in a request of its own, with all
+of its questions, the task and the fields beside it (the needed facts,
+the person, how many answers are wanted) repeated in every request;
+`itemsPerRequest: n` holds at most n. The decision model's maker shows
+many questions about one document in a request, and its re-ranking
+recipe sends one candidate per request; it shows no request judging many
+separate items. The requests of a round go out at once, inside
+`limits.maxInFlight` and the decider's own rate. `jev()` queues every
+request inside 80 requests and 100,000 estimated tokens a second unless
+given the organization's own limits (`requestsPerSecond`,
 `tokensPerSecond`, as TypeSafe's console shows them; its documentation
 sets them per organization), and waits out a 429 or a 529 as the reply
 directs. At that pace a read of 1,000 items needs at least: pieces 3.8
@@ -942,12 +946,21 @@ whole messages 13.8 and 15.2 seconds; whole messages with hard facts
 15.8 and 17.3 seconds (bound by the tokens either way), worked from the
 average request sizes below. The service's own time comes on top: 182
 whole messages with hard facts, one a request and four at a time, came
-back in 7.3 seconds with none refused, about 0.15 seconds a request. A rating stop still plans its waves in parts. On the 22 short lists of one person's coding-agent
-history, one item per request carried 1.38 times the request text of
-today's batching on pieces (1,489 requests in place of 27), 2.72 times
-on whole messages (against 2.47 batched) and 3.11 times on whole
-messages with hard facts (against 2.84). The record names the setting
-under `levers.sources`.
+back in 7.3 seconds with none refused, about 0.15 seconds a request. A
+rating stop still plans its waves in parts. On the 22 short lists of one
+person's coding-agent history, one item per request carried 1.38 times
+the request text of today's batching on pieces (1,489 requests in place
+of 27), 2.72 times on whole messages (against 2.47 batched) and 3.11
+times on whole messages with hard facts (against 2.84). The record names
+the setting under `levers.sources`.
+
+Cost: on LongMemEval's histories read as Markdown notes, at 333 rated
+parts a question, where the notes mode's four questions batched cost 8
+requests, USD 0.0077 and 1.4 seconds a question (worked from the
+requests a complete rating of 149 questions sent, at its measured 0.2842
+billed tokens a character and USD 0.042 a million), one part a request
+sends 333 requests, 1.09 times the text (USD 0.0084), and needs at least
+4.2 seconds at the client's default pace.
 
 ### Hard facts
 
@@ -972,7 +985,9 @@ the person's name as tasks word it, and `wanted`, `'one decision'` or
 pick gives them: `{ task, needed, person, wanted, items }`. Requests of
 other modes never carry them, and an answer asked with them is stored
 apart from one asked without. The record names the setting under
-`levers.sources`.
+`levers.sources`. Cost: 1.48 times the request text, so the dollars, on
+the 22 short lists, batched; a note's `kind` alone adds about 20
+characters a part, so a Markdown source does not take it.
 
 The three settings work as one: with `wholeMessages`, `hardFacts` and
 `itemsPerRequest: 1`, each message is judged whole and alone, its
@@ -1018,6 +1033,15 @@ const weighed: PickCascade = { bias: 0, questions: [{ ...ANSWER_QUESTION, weight
   facts: { question: FACT_QUESTION, highest: 1 } };
 ```
 
+Cost: the search-line call also writes the needed facts, which costs the
+decision model nothing. On LongMemEval's histories read as Markdown
+notes, at 333 rated parts a question, where the notes mode's four
+questions batched cost 8 requests, USD 0.0077 and 1.4 seconds a
+question, `ANSWER_CASCADE` with two needed facts in place of the four
+questions sends 7 requests and 0.90 times the text (USD 0.0070), in
+about the same time; one part a request, 333 requests and 1.06 times the
+text (USD 0.0082), at least 4.2 seconds.
+
 ### What each kept part is doing
 
 Off by default. A mode with `roles: true` asks, after selection, one
@@ -1037,7 +1061,10 @@ in the later step's state. No weight is put on any role, so the
 selection and the text are unchanged. The request asks a per-item
 Choice: a question's `options`, each a key and what it means, sent as
 the Choice's criteria. `openAIDecisions()` and `localDecisions()` have
-no Choice form and leave such a question unanswered.
+no Choice form and leave such a question unanswered. Cost: added after
+selection, on the kept parts only, batched: on LongMemEval's notes, at
+the median 19 kept parts a question, about one request, USD 0.0005 and
+0.4 seconds more a question.
 
 ### A Choice per needed fact
 
@@ -1091,6 +1118,16 @@ them. On one task of one person's coding-agent history, 12 of its 20
 options held an answer and the top took 0.20. In that measurement it
 held its order across option orders (40 to 44 of 57 facts agreed) but
 did not move answers marked right.
+
+Cost: added after selection, its rounds one after another: each round
+asks one Choice per fact and, with `enough` on, the sufficiency
+question, about 0.33 seconds a round as measured (two option orders of
+20 rounds each, 118 requests in 13.0 seconds). On LongMemEval's notes,
+with two needed facts, one round costs 3 requests, about USD 0.0002 and
+0.3 seconds a question; five rounds 14 requests, USD 0.0010 and 1.6
+seconds; a loop that picks every candidate (at most 20 rounds, about 15
+where a question keeps fewer parts) 44 requests, USD 0.0035 and 4.8
+seconds.
 
 ### A keep bar set by measurement
 
