@@ -126,12 +126,12 @@ interface LazyParts {
   close(): void;
 }
 
-/** A 32-bit FNV-1a hash of a text: whether a stored row still holds the
- *  text a part was made from. */
-function textHash(text: string): number {
-  let hash = 2166136261;
-  for (let at = 0; at < text.length; at += 1) hash = Math.imul(hash ^ text.charCodeAt(at), 16777619);
-  return hash >>> 0;
+/** A SHA-256 digest of a text's UTF-16 code units: whether a stored row
+ *  still holds exactly the text a part was made from. The code units are
+ *  hashed, not UTF-8, so texts that differ only in a lone surrogate (a
+ *  piece cut inside a pair) differ here too. */
+function textHash(text: string): string {
+  return createHash('sha256').update(text, 'utf16le').digest('binary');
 }
 
 function object(value: unknown): Json {
@@ -1380,7 +1380,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
           let textRow: ReturnType<IndexDatabase['prepare']> | undefined;
           // A part's text, from its row; the hash of the text it was made
           // from tells whether the row still holds that text.
-          const madeHash = new Map<number, number>();
+          const madeHash = new Map<number, string>();
           const changedParts = new Set<number>();
           const textAt = (index: number): string => {
             textRow ??= (reader ??= openIndexFileNow(path)).prepare('SELECT line, block, piece, text FROM parts WHERE transcript = ? AND ordinal = ?');

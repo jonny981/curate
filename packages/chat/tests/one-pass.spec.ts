@@ -1,10 +1,12 @@
-import { appendFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, mkdtemp, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { cachedEmbeddings, type CandidateReadRequest, type CandidateSource, type MemoryCandidate } from '@curatejs/core';
+import {
+  cachedEmbeddings, pickFromSources, type CandidateReadRequest, type CandidateSource, type MemoryCandidate, type PickDecide,
+} from '@curatejs/core';
 import { chat, type ChatProvider } from '../src/index.js';
 import { onePass } from '../src/chat.js';
 
@@ -388,6 +390,32 @@ describe('one-pass chat read', () => {
     expect(read.status === 'read' ? read.candidates.map((candidate) => candidate.text) : undefined)
       .toEqual(['The quince orchard was sold.']);
     expect(read.status === 'read' ? read.changed : undefined).toBe(1);
+  });
+
+  it('leaves out and counts a kept part whose row another call rewrote in place after its decision', { timeout: 60_000 }, async () => {
+    // 'yaczf' and 'glbpp' share one 32-bit FNV-1a hash (2931895284), so
+    // only a check of the whole text tells them apart.
+    const root = await folder();
+    const cache = await folder();
+    const said = async (text: string, at: Date) => {
+      const file = await transcript('claude-code', [message('claude-code', 'user', text)], root, 'session');
+      await utimes(file, at, at);
+    };
+    await said('yaczf', new Date('2026-10-02T12:00:00Z'));
+    const source = () => ({ ...chat({ providers: ['claude-code'], paths: [root], index: { directory: cache } }), labelKinds: [] });
+    const asked: string[] = [];
+    const decide: PickDecide = async (batch) => {
+      asked.push(...batch.questions.map((question) => question.text));
+      // Another call indexes an edit of the same message once it was rated.
+      await said('glbpp', new Date('2026-10-03T12:00:00Z'));
+      await source().read({ task: 'glbpp' }, { files: new Map(), shared: new Map() });
+      return Object.fromEntries(batch.questions.map((question) => [question.key, { status: 'answered', probability: 0.9 }]));
+    };
+    const held = source();
+    const result = await pickFromSources([held], { task: 'yaczf' }, { task: 'yaczf', decide });
+    expect(asked).toContain('yaczf');
+    expect(result.selected.map((part) => part.text)).toEqual([]);
+    expect(result.record.changed).toEqual({ [held.id]: 1 });
   });
 
   it('serves a history with one part', { timeout: 60_000 }, async () => {
