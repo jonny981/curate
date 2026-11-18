@@ -96,7 +96,8 @@ What each part does:
   walk a ring a round together. `stopWhenCold` acts on every other source.
   Live on one person's ~116,000-part history it found 51 of 56 known
   answers in 5,900 rated parts, 1.84% of the history. The record's
-  `pick.chatRead` says how far it read and what ended it, and the skill's
+  `pick.chatRead` says, under each mode's name, how far each read went and
+  what ended it, and the skill's
   chat searches keep their match order, so `userFirst` is gone. The skill
   then searches those transcripts a second time: the rarest names, numbers
   and words of the three best-rated parts become new search lines, a second

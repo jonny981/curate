@@ -79,7 +79,7 @@ describe('the chat read', () => {
     const found = opened.record.candidates.find((entry) => entry.id === answer);
     expect(found?.status).toBe('selected');
     expect(found && 'probability' in found ? found.probability : 0).toBeCloseTo(0.8, 12);
-    expect(opened.record.pick?.chatRead?.segments).toBe(2);
+    expect(opened.record.pick?.chatRead?.chat?.segments).toBe(2);
 
     // Without the lane's top part in that session nothing leads there.
     const unopened = await pick([...talk, part('talk', 5, 'agent', { ranks: [null, 0] }), ...agents(false)],
@@ -94,7 +94,7 @@ describe('the chat read', () => {
     // Request 1 adds 10 warm parts, request 2 adds 3: 3 is 0.3 times 10.
     const { asked, decide } = rater({ ...warm(0, 10), ...warm(112, 3), ...warm(224, 50) });
     const result = await pick(parts, { task, decide, ...agentRead });
-    expect(result.record.pick?.chatRead).toMatchObject({ requests: 2, ended: 'fall', unread: 112 });
+    expect(result.record.pick?.chatRead?.chat).toMatchObject({ requests: 2, ended: 'fall', unread: 112 });
     const third = new Set(Array.from({ length: 112 }, (_, index) => idOf(`s${224 + index}`, 1)));
     expect(asked.flat().some((id) => third.has(id))).toBe(false);
     for (const entry of result.record.candidates.filter((item) => third.has(item.id))) {
@@ -128,7 +128,7 @@ describe('the chat read', () => {
     const first = new Set(Array.from({ length: 112 }, (_, index) => idOf(`s${index}`, 1)));
     const { decide } = rater({ ...rate(112, 10, 0.9), ...rate(224, 2, 0.9) }, first);
     const result = await pick(parts, { task, decide, ...agentRead });
-    expect(result.record.pick?.chatRead).toMatchObject({ requests: 3, ended: 'fall' });
+    expect(result.record.pick?.chatRead?.chat).toMatchObject({ requests: 3, ended: 'fall' });
   });
 
   it('keeps the ranked read for any set unless the mode says otherwise', async () => {
@@ -139,11 +139,11 @@ describe('the chat read', () => {
     for (const set of [agentSet, { bias: 0, questions: [question('personal_fact')] }]) {
       const ranked = await pick(parts, { task, decide: rater(ratings).decide, sourceKinds: chatKind,
         modesBySource: modesOf({ chat: set }) });
-      expect(ranked.record.pick?.chatRead).toBeUndefined();
+      expect(ranked.record.pick?.chatRead?.chat).toBeUndefined();
       expect(ranked.selected.map((item) => item.id)).toContain(parts[300]!.id);
       const own = await pick(parts, { task, decide: rater(ratings).decide, sourceKinds: chatKind,
         modesBySource: modesOf({ chat: set }, conversationRead()) });
-      expect(own.record.pick?.chatRead).toBeDefined();
+      expect(own.record.pick?.chatRead?.chat).toBeDefined();
     }
   });
 
@@ -161,12 +161,12 @@ describe('the chat read', () => {
     // The mode chooses the read, not the set: the set in a mode with the
     // ranked read keeps the current read, and another set in a mode with
     // the conversation read gets the chat read.
-    expect(before.record.pick?.chatRead).toBeUndefined();
-    expect(after.record.pick?.chatRead).toMatchObject({ ended: 'order', unread: 0 });
+    expect(before.record.pick?.chatRead?.chat).toBeUndefined();
+    expect(after.record.pick?.chatRead?.chat).toMatchObject({ ended: 'order', unread: 0 });
     const plainSet: PickCascade = { bias: 0, questions: [question('personal_fact')] };
     const conversation = await pick(parts, { task, decide: rater(ratings).decide,
       modesBySource: modesOf({ chat: plainSet }, conversationRead()) });
-    expect(conversation.record.pick?.chatRead).toMatchObject({ ended: 'order', unread: 0 });
+    expect(conversation.record.pick?.chatRead?.chat).toMatchObject({ ended: 'order', unread: 0 });
     expect(conversation.record.levers.sources.chat?.mode).toBe('chat');
     const reached = new Set(chat.asked.flat());
     expect(current.asked.flat().filter((id) => !reached.has(id))).toEqual([]);
@@ -187,7 +187,7 @@ describe('the chat read', () => {
       { task, decide: both.decide, ...agentRead, sourceKinds: { chat: 'chat', notes: 'markdown' } });
     const alone = rater(ratings);
     const apart = await pick(notes, { task, decide: alone.decide, sourceKinds: { notes: 'markdown' } });
-    expect(together.record.pick?.chatRead?.ended).toBe('fall');
+    expect(together.record.pick?.chatRead?.chat?.ended).toBe('fall');
     const isNote = (id: string) => id.startsWith('notes/');
     expect(both.asked.map((ids) => ids.filter(isNote)).filter((ids) => ids.length > 0)).toEqual(alone.asked);
     const entries = (result: typeof apart) => result.record.candidates.filter((entry) => isNote(entry.id))
@@ -212,8 +212,8 @@ describe('the chat read', () => {
     const alone = rater(ratings);
     const apart = await pick(diary, { task, decide: alone.decide,
       sourceKinds: { diary: 'chat' }, modesBySource: modesOf({ diary: personalSet }) });
-    expect(together.record.pick?.chatRead?.ended).toBe('fall');
-    expect(apart.record.pick?.chatRead).toBeUndefined();
+    expect(together.record.pick?.chatRead?.chat?.ended).toBe('fall');
+    expect(apart.record.pick?.chatRead?.chat).toBeUndefined();
     const diaryAsked = (asked: string[][]) => asked.map((ids) => ids.filter(isDiary)).filter((ids) => ids.length > 0);
     expect(diaryAsked(both.asked)).toEqual(diaryAsked(alone.asked));
     const entries = (result: typeof apart) => result.record.candidates.filter((entry) => entry.sourceId === 'diary')
@@ -301,7 +301,23 @@ describe('reads of several modes in one call', () => {
     const together = await pick([...talk, ...others, ...agents, ...ahead], { task, decide: rater(ratings).decide, ...mixed });
     expect(alone.record.candidates.find((entry) => entry.id === answer)?.status).toBe('selected');
     expect(together.record.candidates.find((entry) => entry.id === answer)?.status).toBe('selected');
-    expect(together.record.pick?.chatRead?.segments).toBe(alone.record.pick?.chatRead?.segments);
+    expect(together.record.pick?.chatRead?.chat?.segments).toBe(alone.record.pick?.chatRead?.chat?.segments);
+  });
+
+  it('keeps each conversation read\'s numbers under its own mode', async () => {
+    // A second source in a mode of its own with a conversation read of its own.
+    const diary = personSessions(6).map((item) => ({ ...item, sourceId: 'diary', id: item.id.replace('app/', 'diary/') }));
+    const ratings = { [idOf('s0', 1)]: 0.9, [diary[0]!.id]: 0.9, [diary[2]!.id]: 0.8 };
+    const result = await pick([...personSessions(4), ...diary], { task, decide: rater(ratings).decide,
+      sourceKinds: { chat: 'chat', diary: 'chat' },
+      modesBySource: { ...modesOf({ chat: agentSet }, conversationRead()), ...modesOf({ diary: agentSet }, conversationRead()) } });
+    const reads = result.record.pick?.chatRead ?? {};
+    expect(Object.keys(reads).sort()).toEqual(['chat', 'diary']);
+    // Each read's rated count is its own source's.
+    const rated = (sourceId: string) => result.record.candidates.filter((entry) => entry.sourceId === sourceId
+      && (entry.status === 'selected' || entry.status === 'rejected')).length;
+    expect(reads.chat?.rated).toBe(rated('chat'));
+    expect(reads.diary?.rated).toBe(rated('diary'));
   });
 
   it('runs the ranked read and the conversation read at once', async () => {
@@ -400,8 +416,8 @@ describe('the chat read beside stopWhenCold', () => {
     const withStop = await pick(personSessions(336), { task, decide: cold.decide, ...agentRead,
       stopWhenCold: { floor: 0.99, share: 0.99 } });
     expect(cold.asked).toEqual(plain.asked);
-    expect(withStop.record.pick?.chatRead).toEqual(without.record.pick?.chatRead);
-    expect(withStop.record.pick?.chatRead).toMatchObject({ requests: 2, ended: 'fall' });
+    expect(withStop.record.pick?.chatRead?.chat).toEqual(without.record.pick?.chatRead?.chat);
+    expect(withStop.record.pick?.chatRead?.chat).toMatchObject({ requests: 2, ended: 'fall' });
     expect(withStop.record.candidates.some((entry) => 'reason' in entry && entry.reason === 'stopWhenCold')).toBe(false);
     expect(withStop.record.effects.find((entry) => entry.setting === 'stopWhenCold' && entry.source === 'chat')?.summary)
       .toBe("stopWhenCold on chat: the chat read read this source's parts, and its own stop decided how far.");
@@ -419,7 +435,7 @@ describe('the chat read beside stopWhenCold', () => {
     for (const stopWhenCold of [undefined, {}] as const) {
       const result = await pick(parts, { task, decide: rater(ratings).decide, ...agentRead,
         ...(stopWhenCold === undefined ? {} : { stopWhenCold }) });
-      expect(result.record.pick?.chatRead).toMatchObject({ requests: 4, ended: 'fall' });
+      expect(result.record.pick?.chatRead?.chat).toMatchObject({ requests: 4, ended: 'fall' });
       expect(result.selected).toHaveLength(11);
     }
   });
@@ -447,9 +463,9 @@ describe('the conversation read\'s rules', () => {
     const ratingsMany = Object.fromEntries(Array.from({ length: 336 }, (_, index) => [idOf(`s${index}`, 1), 0.9]));
     const stopped = await pick(personSessions(336), { task, decide: rater(ratingsMany).decide, sourceKinds: chatKind,
       modesBySource: modesOf({ chat: agentSet }, conversationRead({ stops: () => true })) });
-    expect(stopped.record.pick?.chatRead).toMatchObject({ requests: 1, ended: 'fall' });
+    expect(stopped.record.pick?.chatRead?.chat).toMatchObject({ requests: 1, ended: 'fall' });
     const measuredMany = await pick(personSessions(336), { task, decide: rater(ratingsMany).decide, ...agentRead });
-    expect(measuredMany.record.pick?.chatRead?.requests).toBe(3);
+    expect(measuredMany.record.pick?.chatRead?.chat?.requests).toBe(3);
   });
 });
 
@@ -518,7 +534,7 @@ describe('the chat read under a caller\'s limits', () => {
       return Object.fromEntries(questions.map((question) => [question.key, { status: 'answered', probability: 0.9 }]));
     };
     const read = await pick(parts, { task, decide, ...agentRead, limits, signal: controller.signal });
-    expect(read.record.pick?.chatRead).toEqual({ requests: 1, segments: 0, units: 0, rated, reused: 0, unread: 336 - rated, ended });
+    expect(read.record.pick?.chatRead?.chat).toEqual({ requests: 1, segments: 0, units: 0, rated, reused: 0, unread: 336 - rated, ended });
     expect(read.record.candidates.filter((entry) => entry.status === 'selected')).toHaveLength(rated);
     expect(read.record.candidates.filter((entry) => entry.status === 'unassessed')
       .every((entry) => entry.status === 'unassessed' && entry.reason === ended)).toBe(true);
@@ -556,7 +572,7 @@ describe('the units of agent work as one more start', () => {
     const result = await pick([...personSessions(4), ...agents], { task, decide, ...agentRead,
       queriesBySource: { chat: [task, 'postgres database decision'] }, embed });
     expect(result.selected.map((part) => part.id)).toContain(answer.id);
-    expect(result.record.pick?.chatRead?.units).toBe(2);
+    expect(result.record.pick?.chatRead?.chat?.units).toBe(2);
     // Only agent a7's prompt and report were read among the agents' parts.
     const agentIds = new Set(agents.map((part) => part.id));
     expect(new Set(asked.flat().filter((id) => agentIds.has(id)).map((id) => id.replace(/:\d+:1:\d+$/, ''))))
@@ -573,8 +589,8 @@ describe('the units of agent work as one more start', () => {
       queriesBySource: { chat: queries }, embed });
     const together = await pick([...personSessions(4), ...agents, ...ahead], { task, decide: rater(ratings).decide, ...agentRead,
       sourceKinds: { chat: 'chat', notes: 'markdown' }, queriesBySource: { chat: queries, notes: queries }, embed });
-    expect(alone.record.pick?.chatRead?.units).toBe(2);
-    expect(together.record.pick?.chatRead?.units).toBe(2);
+    expect(alone.record.pick?.chatRead?.chat?.units).toBe(2);
+    expect(together.record.pick?.chatRead?.chat?.units).toBe(2);
     expect(together.selected.map((part) => part.id)).toContain(answer.id);
   });
 
@@ -583,7 +599,7 @@ describe('the units of agent work as one more start', () => {
       queriesBySource: { chat: [task, 'postgres database decision'] } });
     expect(keyword.selected.map((part) => part.id)).toContain(answer.id);
     const none = await pick([...personSessions(4), ...agents], { task, decide: rater(ratings).decide, ...agentRead, embed });
-    expect(none.record.pick?.chatRead?.units).toBe(0);
+    expect(none.record.pick?.chatRead?.chat?.units).toBe(0);
     expect(none.selected.map((part) => part.id)).not.toContain(answer.id);
   });
 
@@ -637,8 +653,8 @@ describe('the units of agent work as one more start', () => {
       .map((question) => [question.key, { status: 'answered', probability: question.id === idOf('s0', 1) ? 0.9 : 0.001 }]));
     const result = await pick(parts, { task, decide, ...agentRead, queriesBySource: { chat: [task, 'postgres report'] } });
     const rated = result.record.candidates.filter((entry) => entry.status === 'selected' || entry.status === 'rejected').length;
-    expect(result.record.pick?.chatRead?.rated).toBe(rated);
-    expect(result.record.pick?.chatRead?.units).toBe(0);
+    expect(result.record.pick?.chatRead?.chat?.rated).toBe(rated);
+    expect(result.record.pick?.chatRead?.chat?.units).toBe(0);
   });
 
   it('describes a unit by its first 600 characters, its headings, its rarest words and, for a report, its prompt', () => {

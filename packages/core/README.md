@@ -1410,7 +1410,7 @@ is rated at least 0.1 times the best rating this read has seen.
    read would reach is read. When the stop fires, the chat parts of the
    order after it are left unread, even ones the ranked read would have
    kept: each is recorded `unassessed` with reason `'chatRead'`, and
-   `pick.chatRead.unread` counts them.
+   the read's `unread` in `pick.chatRead` counts them.
 4. **Topic segments.** A part's `place` names its transcript and its
    position there, which order the transcript's parts; a part with no
    `place` stands alone. It splits each transcript where its words change
@@ -1452,7 +1452,10 @@ caller's limits hold for the read: with `maxCandidates` set it reaches
 only the parts some lane's slice admitted, and a batch limit, time
 limit or cancellation that ends a request leaves that request's
 unrated parts unread, with the stopping dial's reason. The
-record's `pick.chatRead` holds the requests read before the stop, the
+record's `pick.chatRead` holds one entry for each conversation read of
+the call, under the name of the mode it read (`agent-transcripts` for
+`chat()`'s), so a call with two such modes keeps both reads' numbers.
+Each entry holds the requests read before the stop, the
 segments opened, the units of agent work opened, the parts its own requests rated (`rated`) and those whose decision came from the decision store (`reused`, which never count toward its stop), the chat parts of the order left
 unread, and what ended the read: `'fall'`, `'order'` when the order ran
 out first, or the stopping dial. The stop never fires before the read

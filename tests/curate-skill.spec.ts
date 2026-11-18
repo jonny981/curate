@@ -1229,7 +1229,7 @@ describe('a run through core decision calls', () => {
     const { folder: runFolder } = await run(['--sources', sourcesFile, 'What happened?'], call);
     const record = JSON.parse(await readFile(join(runFolder, 'record.json'), 'utf8'));
     expect(record.status).toBe('complete');
-    expect(record.pick?.pick?.chatRead?.units).toBe(2);
+    expect(record.pick?.pick?.chatRead?.['agent-transcripts']?.units).toBe(2);
   });
 
   it('runs the pick with the rating stop the sources file names', async () => {

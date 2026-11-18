@@ -684,8 +684,10 @@ export interface PickRecord {
      *  it, `reused` those whose decision came from the decision store,
      *  `unread` the chat parts of the order it never reached,
      *  and `ended` what ended it: 'fall', 'order' when the order ran out
-     *  first, or the stopping dial. */
-    readonly chatRead?: {
+     *  first, or the stopping dial. Each conversation read of the call
+     *  has its own entry, under the name of the mode it read, or the
+     *  names joined by ' + ' when modes of several names share it. */
+    readonly chatRead?: Readonly<Record<string, {
       readonly requests: number;
       readonly segments: number;
       readonly units: number;
@@ -693,7 +695,7 @@ export interface PickRecord {
       readonly reused: number;
       readonly unread: number;
       readonly ended: 'fall' | 'order' | 'limits' | 'time' | 'cancelled' | 'error';
-    };
+    }>>;
   };
   /** The tag sets every kept reference answered, when supplied. */
   readonly tags?: readonly PickTagSet[];
@@ -3100,8 +3102,8 @@ export async function pick(
     for (const candidate of rankedUnread) statuses.set(candidate, { status: 'unassessed', reason: 'stopWhenCold' });
   }
   const rankedRated = ranked?.read ?? [];
-  let chatRecord: NonNullable<PickRecord['pick']>['chatRead'];
-  for (const result of results) {
+  let chatRecord: Record<string, NonNullable<NonNullable<PickRecord['pick']>['chatRead']>[string]> | undefined;
+  for (const [index, result] of results.entries()) {
     feed = feed.concat(result.read);
     for (const candidate of result.unread) {
       statuses.set(candidate, { status: 'unassessed',
@@ -3110,7 +3112,11 @@ export async function pick(
     if (result.requests !== undefined) {
       // A part counts as rated when a request of this pick answered it,
       // and as reused when its decision came from the store.
-      chatRecord = { requests: result.requests, segments: result.segments ?? 0, units: result.units ?? 0,
+      // Each read under its mode's name, so a second read never
+      // overwrites the first's numbers.
+      const name = [...new Set(chatOrder.filter((candidate) => readOf(candidate) === ownReads[index])
+        .map((candidate) => modeFor(candidate.sourceId)?.name))].sort().join(' + ');
+      (chatRecord ??= {})[name] = { requests: result.requests, segments: result.segments ?? 0, units: result.units ?? 0,
         rated: result.read.filter((part) => scoreOf(part) !== undefined && !reusedOf(part)).length,
         reused: result.read.filter(reusedOf).length,
         unread: result.unread.length, ended: result.ended === 'stopped' ? stop! : result.ended as 'fall' | 'order' };
@@ -3264,7 +3270,7 @@ export async function pick(
         : []),
       ...(rankedUnread.size > 0 ? ['a stop when the ratings went cold (stopWhenCold)'] : []),
       ...(feedStop === undefined ? [] : [`a stop (${feedStop})`]),
-      ...(chatRecord?.ended === 'fall' && chatRecord.unread > 0
+      ...(Object.values(chatRecord ?? {}).some((read) => read.ended === 'fall' && read.unread > 0)
         ? ["a stop when the chat read's new warm parts fell (chatRead)"] : []),
     ],
     fused,
