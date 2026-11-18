@@ -96,7 +96,8 @@ What each part does:
   walk a ring a round together. `stopWhenCold` acts on every other source.
   Live on one person's ~116,000-part history it found 51 of 56 known
   answers in 5,900 rated parts, 1.84% of the history. The record's
-  `pick.chatRead` says how far it read and what ended it, and the skill's
+  `pick.chatRead` says, under each mode's name, how far each read went and
+  what ended it, and the skill's
   chat searches keep their match order, so `userFirst` is gone. The skill
   then searches those transcripts a second time: the rarest names, numbers
   and words of the three best-rated parts become new search lines, a second
@@ -232,9 +233,12 @@ What each part does:
   Codex sessions, plus the sources `curate.json` and `~/.curate/sources.json`
   list. One call on a Claude or ChatGPT login writes the search lines, Jev
   decides, and the laid-out parts are printed for the agent to summarise.
-  `--check` lists each need as ready or missing with its fix, `--prepare`
-  brings the stored index and embeddings up to date, and a call that misses
-  a need exits with code 3.
+  A call stops reading where the ratings go cold, at the library's own
+  levels, unless the settings set `stopWhenCold` to `false`, and says on
+  standard error how many ranked parts the stop left unread. `--check`
+  lists each need as ready or missing with its fix, `--prepare` brings the
+  stored index and embeddings up to date, and a call that misses a need
+  exits with code 3.
 
 Every library package runs on Node.js 22.20 or later and loads through
 `import` or `require`. The `curate` command needs Node.js 22.20 or later.

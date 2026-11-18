@@ -996,20 +996,21 @@ describe('the sentence cutoff, and what the skill tells the caller', () => {
 /** A call on a notes folder whose decision requests get `reply`; the
  *  search-line and label requests are answered. Resolves to the call's
  *  result or failure, and the home folder its records go under. */
-async function decisionCall(reply: (payload: { questions: Record<string, unknown> }) => Response | Promise<Response>, records = false) {
+async function decisionCall(reply: (payload: { questions: Record<string, unknown> }) => Response | Promise<Response>, records = false,
+  key = 'test-key', count = 6) {
   const directory = await folder();
   const home = join(directory, 'home');
   const notes = join(directory, 'notes');
   await mkdir(home);
   await mkdir(notes);
-  for (let at = 0; at < 6; at += 1) {
+  for (let at = 0; at < count; at += 1) {
     await writeFile(join(notes, `orchard-${at}.md`), `# Orchard ${at}\n\nThe orchard has trees. Fruit trees grow here, row ${at}.\n`);
   }
   const sourcesFile = join(directory, 'sources.json');
   await writeFile(sourcesFile, JSON.stringify({ records, sources: [{ type: 'markdown', path: notes }] }));
   vi.stubEnv('HOME', home);
   vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
-  vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
+  vi.stubEnv('TYPESAFE_API_KEY', key);
   vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => {
     const payload = JSON.parse(String(init.body));
     if (payload.state.task.startsWith('Label short excerpts') || payload.state.task.startsWith('QUESTION the user asked:')) {
@@ -1072,11 +1073,65 @@ describe('a call the decision service refuses', () => {
       + 'so it stopped before deciding which parts answer the question. Check the network connection, then ask again.');
   });
 
+  it('says the service is still rate-limiting when a 429 outlasts the wait, and exits with the decision code', async () => {
+    const { error } = await decisionCall(() => new Response('quota spent', { status: 429, headers: { 'retry-after': '120' } }));
+    expect(error?.exitCode).toBe(DECISION_EXIT);
+    const [first, second] = error!.message.split('\n');
+    expect(first).toBe('The decision service is still asking Curate to wait (HTTP 429), so Curate stopped before deciding which parts '
+      + 'answer the question. Ask again in a few minutes. The service said: quota spent');
+    expect(second).toMatch(/^\d+ parts? (was|were) left undecided; set `records` to true to keep their ids\.$/);
+  });
+
   it('names any other refusal with its status and the service\'s reply', async () => {
     const { error } = await decisionCall(() => new Response('upstream overloaded', { status: 503 }));
     expect(error?.exitCode).toBe(DECISION_EXIT);
     expect(error!.message.split('\n')[0]).toBe('The decision service refused a request (HTTP 503), so Curate stopped before '
       + 'deciding which parts answer the question. The service said: upstream overloaded');
+  });
+
+  // A reply can echo the key the call sent or other credentials; what the
+  // command prints and records keeps the cause and masks them.
+  const KEY = 'fake-review-secret-937';
+  const secrets = [['the configured key', `Invalid key: ${KEY}`, KEY],
+    ['a bearer token', 'Authorization: Bearer sk-fakeReviewOnlyABCDEFGHIJKLMNOPQRSTUVWXYZ', 'sk-fakeReviewOnly'],
+    ['a password', 'password=tinyFakePassword', 'tinyFakePassword']] as const;
+  const paths = [
+    ['no credit', (said: string) => new Response(JSON.stringify({ detail: { error_type: 'billing_error',
+      message: `${said}. Please add more credits at https://console.typesafe.ai/settings/billing` } }), { status: 402 }),
+    ['The decision service has no credit', 'https://console.typesafe.ai/settings/billing']],
+    ['a refused key', (said: string) => Response.json({ detail: said }, { status: 401 }), ['(HTTP 401)', 'TYPESAFE_API_KEY']],
+    ['no reply', (said: string) => { throw new TypeError('fetch failed', { cause: new Error(said) }); }, ['could not reach the decision service']],
+    ['another refusal', (said: string) => new Response(said, { status: 503 }), ['(HTTP 503)']],
+  ] as const;
+  it.each(paths.flatMap(([path, reply, kept]) => secrets.map(([what, said, secret]) => [path, what, reply, kept, said, secret] as const)))(
+    'on %s, masks %s in what it prints and records, and keeps the cause', async (_path, _what, reply, kept, said, secret) => {
+      const { error, home } = await decisionCall(() => reply(said), true, KEY);
+      expect(error?.exitCode).toBe(DECISION_EXIT);
+      expect(error!.message).not.toContain(secret);
+      for (const words of kept) expect(error!.message.split('\n')[0]).toContain(words);
+      const folders = await readdir(join(home, '.curate', 'runs'));
+      const saved = await readFile(join(home, '.curate', 'runs', folders[0]!, 'record.json'), 'utf8');
+      expect(saved).not.toContain(secret);
+      expect(saved).not.toContain(KEY);
+    });
+
+  it('masks the key in every error the record keeps when requests in flight fail with different words', async () => {
+    // Enough notes for several requests at once, each refused with its own text.
+    let request = 0;
+    const { error, home } = await decisionCall(() => {
+      request += 1;
+      return Response.json({ detail: `Invalid key: ${KEY}; request ${request}` }, { status: 401 });
+    }, true, KEY, 80);
+    expect(request).toBeGreaterThan(1);
+    expect(error!.message).not.toContain(KEY);
+    const folders = await readdir(join(home, '.curate', 'runs'));
+    const saved = await readFile(join(home, '.curate', 'runs', folders[0]!, 'record.json'), 'utf8');
+    expect(saved).not.toContain(KEY);
+    // The record keeps what it held: every candidate, with its id, and the refused parts' ids.
+    const record = JSON.parse(saved);
+    expect(record.pick.candidates.length).toBeGreaterThanOrEqual(80);
+    expect(record.pick.candidates.every((entry: { id: string }) => entry.id.includes('orchard-'))).toBe(true);
+    expect(record.pick.decideError.candidates.length).toBeGreaterThan(0);
   });
 
   it('waits out a 429 and answers as usual', async () => {
@@ -1201,8 +1256,10 @@ describe('a run through core decision calls', () => {
   });
 
   it('ranks the subagents\' reports and prompts against the source\'s own search lines', async () => {
-    // Every report and prompt speaks of the orchard and the task does not,
-    // so a unit opens only when the read ranks them against the real lines.
+    // Only agent a2 speaks of the orchard the search lines name, and the
+    // task names nothing. The keyword ranking opens a2's prompt and report;
+    // the meaning ranking scores every unit the same (a2's through the
+    // lines, the others through the task), so it opens none.
     const directory = await folder();
     const home = join(directory, 'home');
     const transcripts = join(directory, 'transcripts');
@@ -1215,9 +1272,10 @@ describe('a run through core decision calls', () => {
     for (const n of [1, 2, 3]) {
       const side = { isSidechain: true, agentId: `a${n}` };
       await writeFile(join(transcripts, 'main', 'subagents', `agent-a${n}.jsonl`), lines([
-        { type: 'user', sessionId: 'main', timestamp: `2026-01-01T12:0${n}:00Z`, ...side, message: { content: `Look at orchard row ${n}.` } },
+        { type: 'user', sessionId: 'main', timestamp: `2026-01-01T12:0${n}:00Z`, ...side,
+          message: { content: n === 2 ? 'Look at orchard row 2.' : `Look at pear row ${n}.` } },
         { type: 'assistant', sessionId: 'main', timestamp: `2026-01-01T12:0${n}:30Z`, ...side,
-          message: { content: [{ type: 'text', text: `Orchard row ${n} has fruit trees.` }] } },
+          message: { content: [{ type: 'text', text: n === 2 ? 'Orchard row 2 has fruit trees.' : `Pear row ${n} is fine.` }] } },
       ]));
     }
     const sourcesFile = join(directory, 'sources.json');
@@ -1233,7 +1291,7 @@ describe('a run through core decision calls', () => {
     const { folder: runFolder } = await run(['--sources', sourcesFile, 'What happened?'], call);
     const record = JSON.parse(await readFile(join(runFolder, 'record.json'), 'utf8'));
     expect(record.status).toBe('complete');
-    expect(record.pick?.pick?.chatRead?.units).toBeGreaterThan(0);
+    expect(record.pick?.pick?.chatRead?.['agent-transcripts']?.units).toBe(2);
   });
 
   it('runs the pick with the rating stop the sources file names', async () => {
@@ -1266,6 +1324,124 @@ describe('a run through core decision calls', () => {
       cold: { batch: 1, under: 'floor' } });
     expect(record.pick?.levers?.stopWhenCold).toEqual({ floor: 0.9, share: 0.2 });
     expect(record.pick?.levers).not.toHaveProperty('everyRanked');
+  });
+
+  it.each([[{}, { floor: 0.1, share: 0.2 }], [{ stopWhenCold: false }, false]] as const)(
+    'stops where the ratings go cold at the library\'s own levels unless the settings say false: %j', async (setting, levers) => {
+      const directory = await folder();
+      const home = join(directory, 'home');
+      const notes = join(directory, 'notes');
+      await mkdir(home);
+      await mkdir(notes);
+      await writeFile(join(notes, 'orchard.md'), '# Orchard\n\nThe orchard has trees. Fruit trees grow here.\n');
+      const sourcesFile = join(directory, 'sources.json');
+      await writeFile(sourcesFile, JSON.stringify({ records: true, sources: [{ type: 'markdown', path: notes }], ...setting }));
+      vi.stubEnv('HOME', home);
+      vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
+      vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
+      vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => new Response(JSON.stringify({
+        usage: null,
+        answers: Object.fromEntries(Object.keys(JSON.parse(String(init.body)).questions).map((key) => [key, { noul: 0.8 }])),
+      }))));
+      const warned = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const { call } = subscriptionReply(searches());
+      const { record } = await run(['--sources', sourcesFile, 'orchard'], call);
+
+      expect(record.status).toBe('complete');
+      expect(record.pick.levers.stopWhenCold).toEqual(levers);
+      if (levers === false) expect(record.pick.pick).not.toHaveProperty('stopWhenCold');
+      // One small batch: the read reaches the end of the order and leaves nothing unread.
+      else expect(record.pick.pick.stopWhenCold).toMatchObject({ ...levers, ended: 'order', unread: 0 });
+      expect(warned.mock.calls.map(([line]) => String(line)).filter((line) => line.includes('stopWhenCold'))).toEqual([]);
+    });
+
+  it('stops the ranked read of notes by default, while transcripts keep the chat read\'s own stop', async () => {
+    const directory = await folder();
+    const home = join(directory, 'home');
+    const notes = join(directory, 'notes');
+    const transcripts = join(directory, 'transcripts');
+    await mkdir(home);
+    await mkdir(notes);
+    await mkdir(transcripts);
+    await writeFile(join(notes, 'orchard.md'), Array.from({ length: 400 }, (_, index) =>
+      `## Orchard row ${index}\n\nRow ${index} of the orchard has fruit trees. ${'The trees grow here. '.repeat(30)}\n`).join('\n'));
+    await writeFile(join(transcripts, 'session.jsonl'), Array.from({ length: 30 }, (_, index) => JSON.stringify({
+      type: index % 2 === 0 ? 'user' : 'assistant', sessionId: 's1', timestamp: `2026-01-01T12:${String(index).padStart(2, '0')}:00Z`,
+      ...(index % 2 === 0 ? { origin: { kind: 'human' }, message: { content: `Orchard row ${index}: should we prune the fruit trees?` } }
+        : { message: { content: [{ type: 'text', text: `Prune orchard row ${index} in winter.` }] } }),
+    })).join('\n') + '\n');
+    const sourcesFile = join(directory, 'sources.json');
+    await writeFile(sourcesFile, JSON.stringify({ records: true, sentenceCutoff: false,
+      sources: [{ type: 'markdown', path: notes }, { type: 'claude-code', path: transcripts }] }));
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
+    vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
+    // Row 0 of the notes and every transcript part rate warm; every answer about the rest of the notes is
+    // near 0, so their decision scores go cold under any question set's weights.
+    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as { state: { items: Record<string, { text: string }> };
+        questions: Record<string, { type: string; criteria: unknown; instructions: { question: string; item: string } }> };
+      const warm = (item: string) => /Row 0 of|prune/i.test(body.state.items[item.slice('items.'.length)]?.text ?? '');
+      return new Response(JSON.stringify({ usage: null, answers: Object.fromEntries(Object.entries(body.questions)
+        .map(([key, question]) => {
+          const hot = warm(question.instructions.item);
+          // A scored question gets all its weight on its top level or its bottom one.
+          // The question whether a part is off the subject counts against it, so it is answered the other way.
+          const against = /different subject/.test(question.instructions.question);
+          if (question.type !== 'score') return [key, { noul: hot !== against ? 0.8 : 0.000001 }];
+          const levels = (question.criteria as unknown[]).length;
+          return [key, { probabilities: Object.fromEntries(Array.from({ length: levels }, (_, level) =>
+            [String(level), level === (hot ? levels - 1 : 0) ? 1 : 0])) }];
+        })) }));
+    }));
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { call } = subscriptionReply(searches());
+    const { record } = await run(['--sources', sourcesFile, 'orchard'], call);
+
+    expect(record.status).toBe('complete');
+    expect(record.pick.levers.stopWhenCold).toEqual({ floor: 0.1, share: 0.2 });
+    const unread = (sourceId: (id: string) => boolean) => record.pick.candidates.filter((entry: { sourceId: string; status: string; reason?: string }) =>
+      sourceId(entry.sourceId) && entry.status === 'unassessed' && entry.reason === 'stopWhenCold').length;
+    // The notes' ranked read went cold and left parts unread; no transcript part is left unread by that stop.
+    expect(record.pick.pick.stopWhenCold).toMatchObject({ ended: 'cold' });
+    expect(unread((id) => id.startsWith('knowledge-base:'))).toBeGreaterThan(0);
+    expect(unread((id) => id.startsWith('chat:'))).toBe(0);
+    expect(['fall', 'order']).toContain(record.pick.pick.chatRead['agent-transcripts'].ended);
+  });
+
+  it('says on standard error how many ranked parts the stop left unread, and which file turns it off', async () => {
+    const directory = await folder();
+    const home = join(directory, 'home');
+    const notes = join(directory, 'notes');
+    await mkdir(home);
+    await mkdir(notes);
+    // Enough parts for more than one wave of two batches.
+    await writeFile(join(notes, 'orchard.md'), Array.from({ length: 400 }, (_, index) =>
+      `## Orchard row ${index}\n\nRow ${index} of the orchard has fruit trees. ${'The trees grow here. '.repeat(30)}\n`).join('\n'));
+    const sourcesFile = join(directory, 'sources.json');
+    await writeFile(sourcesFile, JSON.stringify({
+      records: true, sentenceCutoff: false,
+      sources: [{ type: 'markdown', path: notes }], stopWhenCold: { floor: 0.9 },
+    }));
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
+    vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
+    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => new Response(JSON.stringify({
+      usage: null,
+      answers: Object.fromEntries(Object.keys(JSON.parse(String(init.body)).questions).map((key) => [key, { noul: 0.8 }])),
+    }))));
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const warned = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { call } = subscriptionReply(searches());
+    const { record } = await run(['--sources', sourcesFile, 'orchard'], call);
+
+    // Every answer is 0.8, under the floor of 0.9: the read stops after its first wave.
+    const stop = record.pick.pick.stopWhenCold;
+    expect(stop).toMatchObject({ ended: 'cold', waves: 1, cold: { batch: 1, under: 'floor' } });
+    expect(stop.unread).toBeGreaterThan(0);
+    expect(warned.mock.calls.map(([line]) => String(line)).filter((line) => line.includes('stopWhenCold'))).toEqual([
+      `The rating stop ended the read where the ratings went cold, with ${stop.unread} of ${stop.rated + stop.unread} ranked parts unread; set "stopWhenCold": false in ${sourcesFile} to read them all.`,
+    ]);
   });
 
   it('carries each entry\'s since, include and exclude into the recorded source settings', async () => {

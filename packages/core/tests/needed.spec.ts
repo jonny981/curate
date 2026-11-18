@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { jev } from '../src/models.js';
 import { jevRequest, pick, rankedRead, type MemoryCandidate, type PickBatch, type PickCascade, type PickDecide } from '../src/index.js';
 
 const task = 'Which database did we choose?';
@@ -87,5 +88,66 @@ describe('the facts the answer needs', () => {
   it('must be nonempty strings', async () => {
     await expect(pick(parts, { task, decide: recording().decide, modesBySource, needed: ['ok', ' '] }))
       .rejects.toThrow('needed must be a list of facts, each a nonempty string.');
+  });
+});
+
+describe('the facts the answer needs, as jev() posts them', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  type Body = { state: { task: string; needed?: string[]; items: Record<string, { text: string }> }; questions: Record<string, unknown> };
+  /** A stubbed decision service that keeps every posted body and answers
+   *  each question, or answers `reject(body)` when it gives a status. */
+  const service = (reject: (body: Body) => number | undefined = () => undefined) => {
+    const bodies: Body[] = [];
+    vi.stubGlobal('fetch', vi.fn<typeof globalThis.fetch>().mockImplementation(async (_url, init) => {
+      const body = JSON.parse(String(init!.body)) as Body;
+      bodies.push(body);
+      const status = reject(body);
+      if (status !== undefined) return new Response('request too large', { status });
+      return Response.json({ answers: Object.fromEntries(Object.keys(body.questions).map((key) => [key, { noul: 0.9 }])) });
+    }));
+    return bodies;
+  };
+  const question = (id: string, text: string) => ({ key: `${id}:relevant`, sourceId: 'agents', id, role: 'reference' as const,
+    title: id, text, question: 'Relevant?', trueCriterion: 'Yes', falseCriterion: 'No' });
+
+  it('carries the list in the posted state of a mode that asks for it, and not in another', async () => {
+    const bodies = service();
+    await pick(parts, { task, decide: jev({ apiKey: 'test-key' }), everyRanked: true, everyScored: true, modesBySource, needed: facts });
+    expect(bodies.length).toBeGreaterThan(1);
+    for (const body of bodies) {
+      const agents = Object.values(body.state.items).some((item) => item.text.startsWith('agents'));
+      expect(body.state.needed).toEqual(agents ? facts : undefined);
+    }
+  });
+
+  it('keeps the list in each half of a request the service rejects as too large, and in a halved resend', async () => {
+    // Two items: the first request is rejected, each half is accepted.
+    const split = service((body) => Object.keys(body.state.items).length > 1 ? 400 : undefined);
+    await jev({ apiKey: 'test-key' })({ task, needed: facts, questions: [question('a', 'first part'), question('b', 'second part')] },
+      new AbortController().signal);
+    expect(split.map((body) => Object.keys(body.state.items).length)).toEqual([2, 1, 1]);
+    expect(split.every((body) => JSON.stringify(body.state.needed) === JSON.stringify(facts))).toBe(true);
+    vi.unstubAllGlobals();
+    // One item: its text is halved until the service accepts it.
+    const halved = service((body) => Object.values(body.state.items)[0]!.text.length > 10 ? 400 : undefined);
+    await jev({ apiKey: 'test-key' })({ task, needed: facts, questions: [question('a', 'a part long enough to halve twice')] },
+      new AbortController().signal);
+    expect(halved.length).toBeGreaterThan(1);
+    expect(halved.every((body) => JSON.stringify(body.state.needed) === JSON.stringify(facts))).toBe(true);
+  });
+
+  it('counts the list when it plans requests inside the size limits', async () => {
+    // Items that fit two to a request without the list, and one to a
+    // request with it.
+    const bodies = service();
+    const long = (n: number) => `${'word '.repeat(6_000)}${n}`;
+    const needed = ['x'.repeat(40_000)];
+    await jev({ apiKey: 'test-key' })({ task, needed, questions: [question('a', long(1)), question('b', long(2)), question('c', long(3))] },
+      new AbortController().signal);
+    for (const body of bodies) {
+      expect(body.state.needed).toEqual(needed);
+      expect(JSON.stringify(body.state).length).toBeLessThanOrEqual(32_000 * 3);
+    }
+    expect(bodies.length).toBe(3);
   });
 });

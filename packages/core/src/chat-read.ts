@@ -72,7 +72,8 @@ export interface ChatReadInput {
    *  person's own parts are read in. Any other person part comes after
    *  them, newest first. */
   readonly byKeyword: readonly MemoryCandidate[];
-  /** Each search lane's parts in lane order, across every source. */
+  /** Each search lane's parts in lane order, across the sources this
+   *  read reads: no other source's parts take its lane heads. */
   readonly lanes: readonly (readonly MemoryCandidate[])[];
   /** Rate these parts; resolves once their ratings are in. */
   readonly rate: (parts: readonly MemoryCandidate[]) => Promise<void>;
@@ -84,6 +85,10 @@ export interface ChatReadInput {
   readonly kept: (parts: readonly MemoryCandidate[]) => boolean;
   /** True once a stopping dial has ended the call. */
   readonly stopped: () => boolean;
+  /** True when a part's decision came from an earlier pick of the call
+   *  (a stored decision), not from a request of this one. Such a part is
+   *  read for free and does not count toward the stop. */
+  readonly reused?: (part: MemoryCandidate) => boolean;
   /** The call's search texts, the task first: the units of agent work
    *  are ranked against them. None: no unit start. */
   readonly queries?: readonly string[];
@@ -107,13 +112,14 @@ export interface ConversationRules {
 }
 
 export interface ChatReadResult {
-  /** The parts rated, in the order the read reached them. */
+  /** The parts the read asked about, in the order it reached them; a
+   *  part the decide step left unanswered is among them. */
   readonly read: readonly MemoryCandidate[];
   /** Requests of the order read before the read moved to segments. */
   readonly requests: number;
   /** Topic segments opened. */
   readonly segments: number;
-  /** Units of agent work opened. */
+  /** Units of agent work opened: those with a part the decide step answered. */
   readonly units: number;
   /** 'fall' when the new warm parts fell, 'order' when the order ran
    *  out first, 'stopped' when a stopping dial ended the call. */
@@ -231,7 +237,7 @@ const unitWords = (text: string) => (text.toLowerCase().match(/[a-z0-9]+/g) ?? [
 const head = (text: string, count: number) => Array.from(text).slice(0, count).join('');
 
 /** Each unit's descriptor, made by code: its first `UNIT_HEAD`
- *  characters, its headings, its `UNIT_RARE` rarest words (fewest units
+ *  characters, the headings that start a line of any of its parts, its `UNIT_RARE` rarest words (fewest units
  *  holding them, then alphabetical), and for a report the first
  *  `UNIT_HEAD` characters of its transcript's prompt. */
 export function unitDescriptors(units: readonly AgentUnit[]): string[] {
@@ -241,7 +247,10 @@ export function unitDescriptors(units: readonly AgentUnit[]): string[] {
   const prompts = new Map(units.flatMap((unit, index) => unit.kind === 'prompt' ? [[unit.container, texts[index]!] as const] : []));
   return units.map((unit, index) => {
     const text = texts[index]!;
-    const headings = head((text.match(/^#+ .*$/gm) ?? []).join(' '), UNIT_HEADINGS);
+    // Headings are found in each part's own text, so one that starts a
+    // part the reader cut off its message is found too.
+    const headings = head(unit.parts.flatMap((part) => (part.text || part.title || '').match(/^#+ .*$/gm) ?? []).join(' '),
+      UNIT_HEADINGS);
     const rare = [...new Set(unitWords(text))]
       .sort((left, right) => holding.get(left)! - holding.get(right)! || (left < right ? -1 : left > right ? 1 : 0))
       .slice(0, UNIT_RARE);
@@ -289,7 +298,8 @@ const unitVector = (vector: ArrayLike<number>) => {
 /** The units to open: for reports and for prompts, each ranked among
  *  its own kind by keyword and, with an embedder, by meaning (its
  *  descriptor's best cosine against the queries), each list cut at its
- *  own bend (`cutScoreCurve`); every unit above either cut opens. */
+ *  own bend (`cutScoreCurve`); every unit above either cut opens. A list
+ *  whose scores are all equal opens none. */
 export async function unitStarts(units: readonly AgentUnit[], queries: readonly string[],
   embed: EmbeddingFunction | undefined): Promise<AgentUnit[]> {
   if (units.length === 0 || queries.length === 0) return [];
@@ -310,6 +320,9 @@ export async function unitStarts(units: readonly AgentUnit[], queries: readonly 
   for (const kind of UNIT_KINDS) {
     const peers = ranked.filter((index) => units[index]!.kind === kind);
     for (const scores of meaning === undefined ? [keyword] : [keyword, meaning]) {
+      // Scores all equal say nothing about which unit holds the answer,
+      // where the bend would keep every one: that list opens none.
+      if (peers.every((index) => scores[index] === scores[peers[0]!])) continue;
       const order = [...peers].sort((left, right) => scores[right]! - scores[left]!);
       for (const index of order.slice(0, cutScoreCurve(order.map((at) => scores[at]!)))) open.add(index);
     }
@@ -496,7 +509,7 @@ export async function chatRead(input: ChatReadInput): Promise<ChatReadResult> {
         hot = hot.filter((_, index) => ring[index]!.some(walkable));
       }
     }
-    log.push({ ratings: read.slice(before).map(score), best });
+    log.push({ ratings: read.slice(before).filter((part) => input.reused?.(part) !== true).map(score), best });
   };
 
   let ended: ChatReadResult['ended'] = 'order';
@@ -542,10 +555,12 @@ export async function chatRead(input: ChatReadInput): Promise<ChatReadResult> {
     }
   };
   await walk(segments);
-  // Then the units of agent work the queries rank above their bends,
+  // Then the units of agent work above the bend of either ranking,
   // read as the segments are: each unit's starts, its parts the order
   // ranks first and then in its own order, and walks inside the unit.
-  const units = stopped() ? [] : await unitStarts(agentUnits(input.parts), input.queries ?? [], input.embed);
+  const found = stopped() ? [] : await unitStarts(agentUnits(input.parts), input.queries ?? [], input.embed);
+  // The ranking can take long enough for another read to stop the call.
+  const units = stopped() ? [] : found;
   // A part the order does not rank comes after those it does.
   const ordered = new Map(ranked.map((part, index) => [part, index]));
   const rankOf = (part: MemoryCandidate) => ordered.get(part) ?? Number.MAX_SAFE_INTEGER;
@@ -553,5 +568,8 @@ export async function chatRead(input: ChatReadInput): Promise<ChatReadResult> {
   const reading = [...units].sort((left, right) => firstOf(left) - firstOf(right));
   await rate(reading.flatMap((unit) => [...unit.parts].sort((left, right) => rankOf(left) - rankOf(right)).slice(0, STARTS)));
   await walk(reading.map((unit) => unit.parts));
-  return { read, requests, segments: segments.length, units: reading.length, ended: stopped() ? 'stopped' : ended };
+  // A unit counts as opened when the decide step answered one of its parts.
+  return { read, requests, segments: segments.length,
+    units: reading.filter((unit) => unit.parts.some((part) => score(part) !== undefined)).length,
+    ended: stopped() ? 'stopped' : ended };
 }

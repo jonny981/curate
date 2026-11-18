@@ -15,7 +15,7 @@ The last line installs the `/curate` skill for Claude Code and Codex. The skill 
 ## Requirements
 
 - **Node.js 22.20 or later.** Tested on macOS and Linux; Windows is untested.
-- **A paid decision key.** Curate asks TypeSafe's Jev to rate the parts of your history, at a few pence a call. Get a key at [typesafe.ai](https://typesafe.ai) and set `TYPESAFE_API_KEY`, or put it in the private file `curate setup` creates.
+- **A paid decision key.** Curate asks TypeSafe's Jev to rate the parts of your history, at about $0.00002 a part; a call rates them from the top of its ranked list and stops where the ratings go cold. Get a key at [typesafe.ai](https://typesafe.ai) and set `TYPESAFE_API_KEY`, or put it in the private file `curate setup` creates.
 - **A Claude or ChatGPT login.** One small call writes the search lines, through `claude auth login` or `codex login`.
 - **An embedding model file.** `curate setup` offers to download EmbeddingGemma 300M (about 330 MB).
 
@@ -34,8 +34,8 @@ The command hides Node's experimental-feature warning for SQLite, which the stor
 ## Settings and data
 
 The settings, the history a call reads, and what each setting does are in the skill's [settings reference](https://github.com/jonny981/curate/blob/main/skills/curate/references/settings.md).
-A call has Jev rate every part of the ranked history the search lanes keep, so its cost grows with that number: about $0.00002 a part.
-`stopWhenCold` in the settings file ends the read sooner: `{}` rates the history from the top, two batches of parts at a time, and stops at the first batch whose best rating is under 0.1, or under 0.2 times the best rating before it; higher numbers stop sooner and cost less, lower ones read further and find more. It never stops before the read has kept a part, so a question the history holds nothing for reads the whole order even with the stop on.
+A call has Jev rate the ranked history from the top, two batches of parts at a time, and stops at the first batch whose best rating is under 0.1, or under 0.2 times the best rating before it. It never stops before the read has kept a part, so a question the history holds nothing for reads the whole order. When the stop leaves ranked parts unread, one line on standard error says how many and names the settings file to turn it off in.
+`stopWhenCold` in the settings file sets the stop: `{ "floor": 0.2, "share": 0.1 }` and the like change the two numbers, where higher numbers stop sooner and cost less, and lower ones read further and find more. `false` turns it off: Jev then rates every part of the ranked history the search lanes keep, so a call's cost grows with that number: about $0.00002 a part.
 On three benchmark runs' saved scores, `{}` rated 64% (LoCoMo), 55% (DolphinBench) and 83% (BEAM) of the parts the runs rated and kept 98.5%, 95.2% and 100% of the evidence they found. On the published runs it saved $0.0012 a LoCoMo question and $0.0067 a LongMemEval question; it cost about 5 to 12 of LoCoMo's 1,540 right answers, the 4 lost in both answer runs each because evidence left the text, and stayed inside the noise on LongMemEval. On DolphinBench's 5,800-part transcripts it rated about half the parts, about $0.026 saved a test; its effect on answers there is not measured.
 What a call sends to the decision service and to the search-line model is in [What leaves your machine](https://github.com/jonny981/curate#what-leaves-your-machine).
 

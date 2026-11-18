@@ -42,7 +42,8 @@ export interface ModeReadInput {
   readonly between?: () => boolean;
   /** The parts the keyword lanes ranked, best first. */
   readonly byKeyword: readonly MemoryCandidate[];
-  /** Each search lane's parts in lane order, across every source. */
+  /** Each search lane's parts in lane order, across the sources this
+   *  read reads: no other source's parts take its lane heads. */
   readonly lanes: readonly (readonly MemoryCandidate[])[];
   /** Rate these parts; resolves once their ratings are in. One
    *  function serves every read of the call. */
@@ -61,6 +62,8 @@ export interface ModeReadInput {
   readonly stopped: () => boolean;
   /** The call's rating stop (`stopWhenCold`), when set. */
   readonly stop?: { readonly floor: number; readonly share: number };
+  /** True when a part's decision came from an earlier pick of the call. */
+  readonly reused?: (part: MemoryCandidate) => boolean;
   /** The search texts the read's sources read, the task first. */
   readonly queries?: readonly string[];
   /** The call's local embedder, when it has one. */
@@ -155,7 +158,8 @@ export const rankedRead: ModeRead = async (input) => {
  *  new warm parts fall, then the topic segments that hold a warm person
  *  part or a search lane's top part, walked out from their warm parts,
  *  then the units of agent work (a subagent's prompt or report) that
- *  the queries rank above their bends among their own kind, read the
+ *  rank above the bend of the keyword ranking or of the meaning ranking
+ *  against the queries, among their own kind, read the
  *  same way, each container read in the order its parts' `place` gives. `rules`
  *  replaces any of its three decisions; with none it is the read
  *  measured on coding-agent transcripts. Make it once per mode: modes
@@ -165,6 +169,7 @@ export function conversationRead(rules: ConversationRules = {}): ModeRead {
     const result = await chatRead({ parts: input.parts, order: input.order, byKeyword: input.byKeyword,
       lanes: input.lanes, rate: input.rate, score: input.score, kept: input.kept, stopped: input.stopped, rules,
       ...(input.queries === undefined ? {} : { queries: input.queries }),
+      ...(input.reused === undefined ? {} : { reused: input.reused }),
       ...(input.embed === undefined ? {} : { embed: input.embed }) });
     const reached = new Set(result.read);
     return { read: result.read, unread: input.order.filter((part) => !reached.has(part)), reason: 'chatRead',

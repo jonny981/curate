@@ -80,7 +80,7 @@ const decide = jev({ apiKey: process.env.TYPESAFE_API_KEY });
 - **OpenAI Decisions:** `openAIDecisions({ apiKey, model? })` returns a `PickDecide` function for the [Decisions API](https://developers.openai.com/api/docs/guides/decisions), with `deciderId: openai:${model}`. The model defaults to `'gpt-6-luna'`. Predicate answers become probabilities; refusals become `{ status: 'refused' }`. Missing or invalid probabilities become missing answers.
 - **Local decisions:** `localDecisions({ url, model, apiKey? })` returns a `PickDecide` function for an OpenAI-compatible chat completions address, with `deciderId: local:${host}${path}:${model}`. It sends one request a question, one after another. Each request holds the task, the question with its true and false criteria, and the item's id, date, title and text, and asks for one token with `temperature: 0`, `logprobs: true` and `top_logprobs: 20`. The answer is the probability of the "yes" tokens over the "yes" and "no" tokens among the first token's top log-probabilities, with case and leading whitespace ignored. When neither is there, the answer is missing. No `authorization` header is sent without a key.
 - **Separate IDs per server:** the IDs built from `url` leave out its scheme and query. Set `labels.deciderId` yourself for two servers that differ only there. A decision cache keeps its own `deciderId`, so give it a different one for each server.
-- **Errors:** `jev()` rejects a missing API key at its default address, and `openAIDecisions()` always does. A `localDecisions()` reply with no log-probabilities throws `The model server at <url> returned no log-probabilities; localDecisions needs a server that does.` An HTTP 429 reply to a `jev()` request waits as its Retry-After header directs, then sends the same request again. Other failures throw a `DecisionServiceError` (exported from `@curatejs/core/models`) whose message leads with the reason: `The decision service has no credit (HTTP 402): ...` for a 402, `refused the API key` for a 401 or 403, `could not be reached` for a request that got no reply, and `refused the request` for any other status, each followed by the message the service gave. It carries `status` (0 with no reply), `reason` (`credit`, `key`, `unreachable` or `refused`), `reply`, the reply's whole body, and `said`, the service's message. Cancellation reaches `fetch` and stays a cancellation.
+- **Errors:** `jev()` rejects a missing API key at its default address, and `openAIDecisions()` always does. A `localDecisions()` reply with no log-probabilities throws `The model server at <url> returned no log-probabilities; localDecisions needs a server that does.` An HTTP 429 reply to a `jev()` request waits as its Retry-After header directs, one second when it names none, then sends the same request again, for at most 60 seconds from the first 429: a wait that would end later throws a `DecisionServiceError` with reason `busy`, whose message gives the seconds waited, the wait the last reply asked for and the service's message. Other failures throw a `DecisionServiceError` too (exported from `@curatejs/core/models`) whose message leads with the reason: `The decision service has no credit (HTTP 402): ...` for a 402, `refused the API key` for a 401 or 403, `could not be reached` for a request that got no reply, and `refused the request` for any other status, each followed by the message the service gave. It carries `status` (0 with no reply), `reason` (`credit`, `key`, `unreachable`, `busy` or `refused`), `reply`, the reply's whole body, and `said`, the service's message. Cancellation reaches `fetch` and stays a cancellation.
 
 > [!NOTE]
 > At their default addresses, `jev()` and `openAIDecisions()` make paid model calls. A local model server needs no hosted service. You can also supply a plain `decide` function using any model route.
@@ -1406,8 +1406,11 @@ is rated at least 0.1 times the best rating this read has seen.
    stops after a request that adds at most 0.3 times the most any
    earlier request added, and never before the first warm part. When
    the person's parts run out first, it reads the order's other chat
-   parts the same way, so every chat part of the order stays in reach
-   until the stop fires.
+   parts the same way. With no stop firing, every chat part the ranked
+   read would reach is read. When the stop fires, the chat parts of the
+   order after it are left unread, even ones the ranked read would have
+   kept: each is recorded `unassessed` with reason `'chatRead'`, and
+   the read's `unread` in `pick.chatRead` counts them.
 4. **Topic segments.** A part's `place` names its transcript and its
    position there, which order the transcript's parts; a part with no
    `place` stands alone. It splits each transcript where its words change
@@ -1415,6 +1418,8 @@ is rated at least 0.1 times the best rating this read has seen.
    stays whole) and opens the segments that hold a warm person part or
    one of each search lane's top 10 parts. A lane's top parts lead the
    read to answers the agents wrote, which no person part sits near.
+   Each lane's top 10 are counted among the parts of the sources the read
+   reads, so notes or commits in the same call never take them.
 5. **Walks inside.** In each opened segment it rates the 3 parts the
    fused order ranks first, then reads one part further on each side of
    every warm part while that ring holds a warm part. The walks of every
@@ -1430,7 +1435,8 @@ is rated at least 0.1 times the best rating this read has seen.
    the call's search texts, the task first, `queriesBySource`) and by
    meaning (each descriptor's best cosine against them, with the call's
    embedder); each list is cut at its own bend, and every unit above
-   either cut opens. In the word statistics a summary counts as a unit
+   either cut opens. A list whose scores are all equal says nothing about
+   which unit holds the answer, so it opens none. In the word statistics a summary counts as a unit
    too: each line an agent wrote in the user's turn of a transcript with
    no prompt or report, of three parts or more, compaction summaries and
    other agents' messages among them. The
@@ -1446,8 +1452,11 @@ caller's limits hold for the read: with `maxCandidates` set it reaches
 only the parts some lane's slice admitted, and a batch limit, time
 limit or cancellation that ends a request leaves that request's
 unrated parts unread, with the stopping dial's reason. The
-record's `pick.chatRead` holds the requests read before the stop, the
-segments opened, the units of agent work opened, the parts rated, the chat parts of the order left
+record's `pick.chatRead` holds one entry for each conversation read of
+the call, under the name of the mode it read (`agent-transcripts` for
+`chat()`'s), so a call with two such modes keeps both reads' numbers.
+Each entry holds the requests read before the stop, the
+segments opened, the units of agent work opened, the parts its own requests rated (`rated`) and those whose decision came from the decision store (`reused`, which never count toward its stop), the chat parts of the order left
 unread, and what ended the read: `'fall'`, `'order'` when the order ran
 out first, or the stopping dial. The stop never fires before the read
 has kept a part on the bar selection keeps it at, so a call does not

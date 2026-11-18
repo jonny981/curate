@@ -62,7 +62,7 @@ export const SETUP = [
     why: 'A call downloads none, and any embedding model in GGUF form works. Stored vectors are kept per model, so a different model embeds the history again.',
     fix: `Put EmbeddingGemma 300M in 8-bit GGUF (about 330 MB) at \`~/.cache/curate/models/embeddinggemma-300M-Q8_0.gguf\`, or under \`$XDG_CACHE_HOME/curate/models\` when \`XDG_CACHE_HOME\` is set: \`curate setup\` offers to download it, or run \`mkdir -p ~/.cache/curate/models && curl -L -o ~/.cache/curate/models/embeddinggemma-300M-Q8_0.gguf ${MODEL_URL}\`. Or name the model file you chose with \`embeddingModel\` in \`~/.curate/sources.json\`.` },
   { id: 'key', need: 'The decision key (`TYPESAFE_API_KEY`)',
-    why: 'It is a paid Jev key from TypeSafe. Jev decides which parts of the history answer the question, at a few pence a call.',
+    why: 'It is a paid Jev key from TypeSafe. Jev decides which parts of the history answer the question, at about $0.00002 for each part it rates.',
     fix: 'Get a key from TypeSafe (https://typesafe.ai), then set `TYPESAFE_API_KEY` in the environment, or put `TYPESAFE_API_KEY=<key>` in a private file and name that file with `envFile` in `~/.curate/sources.json`. Never put the key in `curate.json`.' },
   { id: 'login', need: 'A login for the search lines',
     why: 'One small call on a subscription writes the search lines: Claude Haiku on the Claude login, or GPT-6 Luna through Codex on the ChatGPT login. `searchModel` picks one.',
@@ -873,7 +873,9 @@ export async function pickFullSources(sources, call, options, context = { files:
 // measured in. Round one runs to its end. The rarest names, numbers and
 // words of its warmest rated parts become a second search's lines, and a
 // second pick reads that search's order with the same stop and round
-// one's decisions, so only parts round one never rated are rated. The
+// one's decisions, so only parts round one never rated are rated; a
+// reused decision does not count toward that stop, and round two's record
+// counts its new and reused parts apart. The
 // parts round two keeps join round one's. Measured with the plain read
 // of the ranked list: on long chats with an assistant (BEAM, 40
 // questions, read as Markdown) round two's new parts held 99 evidence
@@ -896,10 +898,16 @@ const RARE_SHARE = 0.005;
 const searchTokens = (text) => new Set((text.match(/[A-Za-z][A-Za-z'’-]{2,}|\d[\d,.:/-]*\d/g) ?? [])
   .map((token) => token.toLowerCase()));
 
+/** A word shaped like a credential, at any length: one that opens with
+ *  a key prefix the scrubber knows, or one the scrubber would mask. It
+ *  never becomes a search line, which the record keeps. */
+const credentialShaped = (token) => /^(?:sk|xai|pk|rk|xox[abeoprs])-/i.test(token) || scrubChat(token) !== token;
+
 /** Round two's lines: for each seed text, its rarest words in `parts`
  *  (the history's parts) that the task does not use, of five or more
- *  characters or a number, rarest first and then alphabetical. A seed
- *  with no such word gives no line. */
+ *  characters or a number, rarest first and then alphabetical, leaving
+ *  out any word shaped like a credential. A seed with no such word gives
+ *  no line. */
 export function rareLines(task, seeds, parts) {
   const counts = new Map();
   for (const part of parts) for (const token of searchTokens(part.text)) counts.set(token, (counts.get(token) ?? 0) + 1);
@@ -907,7 +915,7 @@ export function rareLines(task, seeds, parts) {
   const asked = searchTokens(task);
   return seeds.map((text) => [...searchTokens(text)]
     .filter((token) => counts.get(token) >= RARE_LEAST && counts.get(token) <= most && !asked.has(token)
-      && (token.length >= 5 || /^\d/.test(token)))
+      && (token.length >= 5 || /^\d/.test(token)) && !credentialShaped(token))
     .sort((left, right) => counts.get(left) - counts.get(right) || (left < right ? -1 : left > right ? 1 : 0))
     .slice(0, SECOND_SEARCH_WORDS).join(' ')).filter((line) => line !== '');
 }
@@ -1521,10 +1529,12 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
     // the agent sources ranks their units of work against them.
     const queriesOf = (searches) => Object.fromEntries(sources.map((source) => [source.id,
       [options.task, ...(searches[source.kind]?.keywords ?? []), ...(searches[source.kind]?.answers ?? [])]]));
+    // A call stops where the ratings go cold, at the library's own levels,
+    // unless the settings turn the stop off with false or set its levels.
     const pickOptions = { task: options.task, decide, queriesBySource: queriesOf(record.searches),
       limits: { maxBatchChars,
         ...(settings.maxInFlight === undefined ? {} : { maxInFlight: settings.maxInFlight }) },
-      ...(settings.stopWhenCold === undefined ? {} : { stopWhenCold: settings.stopWhenCold }),
+      stopWhenCold: settings.stopWhenCold ?? {},
       ...(settings.feed === undefined ? {} : { feed: settings.feed }),
       ...(settings.threshold === undefined ? {} : { everyScored: { bar: settings.threshold } }),
       ...(agentIds.size === 0 || needed?.facts === undefined ? {} : { needed: needed.facts }),
@@ -1544,6 +1554,11 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
       ...(read.noSearchMatch === true ? { noSearchMatch: true } : {}),
       ...(read.lanes === undefined ? {} : { lanes: read.lanes }) }));
     for (const read of record.sourcesRead) if (readWarning(read) !== undefined) console.error(readWarning(read));
+    // The parts the rating stop left unread are said here too, since records are off by default.
+    const stop = picked.record.pick?.stopWhenCold;
+    if (stop?.ended === 'cold' && stop.unread > 0) {
+      console.error(`The rating stop ended the read where the ratings went cold, with ${stop.unread} of ${stop.rated + stop.unread} ranked parts unread; set "stopWhenCold": false in ${configFile ?? options.sources} to read them all.`);
+    }
     record.timings.rankAndDecideMs = Date.now() - pickStart;
     // Reads and decisions never overlap in a pick: every read ends before
     // the first decision starts. Ranking is the rest.
@@ -1580,6 +1595,15 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
     if (error?.record?.decideError !== undefined) {
       error.message = decisionFailure(error, records ? join(folder, 'record.json') : undefined);
       error.exitCode = DECISION_EXIT;
+      // The record keeps error words on the failure, on each part and
+      // question a refused request left unanswered (each request's own
+      // words), and on each request: every such value is masked.
+      const hide = (value, key) => typeof value === 'string' ? (ERROR_KEYS.has(key) ? masked(value) : value)
+        : Array.isArray(value) ? value.map((item) => hide(item, key))
+          : value !== null && typeof value === 'object' ? Object.fromEntries(Object.entries(value).map(([name, item]) => [name, hide(item, name)]))
+            : value;
+      record.pick = hide(error.record);
+      record.jev = hide(record.jev);
     }
     record.status = 'failed'; record.error = error.message; throw error;
   }
@@ -1599,21 +1623,34 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
   return { memory, record, folder: records ? folder : null };
 }
 
+// The record's fields that hold an error's words.
+const ERROR_KEYS = new Set(['message', 'detail', 'error']);
+
+// Text from the decision service, or a network error, as the command shows
+// and records it: the configured key's exact value and anything shaped like
+// a credential are masked, since a reply can echo what the request sent.
+const masked = (text) => {
+  const key = process.env.TYPESAFE_API_KEY;
+  return scrubChat(key ? String(text).split(key).join('[redacted]') : String(text));
+};
+
 // What a call the decision service refused prints: why and what to do
 // first, then how many parts went undecided and where their ids are.
 function decisionFailure(error, recordFile) {
   const cause = error.cause;
   const stopped = 'so Curate stopped before deciding which parts answer the question.';
-  const said = cause?.said === undefined || cause.said === '' ? '' : ` The service said: ${cause.said}`;
+  const said = cause?.said === undefined || cause.said === '' ? '' : ` The service said: ${masked(cause.said)}`;
   const lead = cause?.reason === 'credit'
     ? `The decision service has no credit, ${stopped} Add credit to the TypeSafe account, then ask again.${said}`
     : cause?.reason === 'key'
       ? `The decision service refused the key in \`TYPESAFE_API_KEY\` (HTTP ${cause.status}), ${stopped} Set a current key from TypeSafe (https://typesafe.ai), then ask again.${said}`
       : cause?.reason === 'unreachable'
-        ? `Curate could not reach the decision service (${cause.said}), ${stopped.replace('Curate ', 'it ')} Check the network connection, then ask again.`
-        : cause?.reason === 'refused'
-          ? `The decision service refused a request (HTTP ${cause.status}), ${stopped}${said}`
-          : `The decision step failed (${error.record.decideError.message}), ${stopped}`;
+        ? `Curate could not reach the decision service (${masked(cause.said)}), ${stopped.replace('Curate ', 'it ')} Check the network connection, then ask again.`
+        : cause?.reason === 'busy'
+          ? `The decision service is still asking Curate to wait (HTTP 429), ${stopped} Ask again in a few minutes.${said}`
+          : cause?.reason === 'refused'
+            ? `The decision service refused a request (HTTP ${cause.status}), ${stopped}${said}`
+            : `The decision step failed (${masked(error.record.decideError.message)}), ${stopped}`;
   const count = error.record.decideError.candidates.length;
   return `${lead}\n${count === 1 ? 'One part was' : `${count} parts were`} left undecided; `
     + (recordFile === undefined ? 'set `records` to true to keep their ids.' : `${recordFile} lists them under pick.decideError.`);

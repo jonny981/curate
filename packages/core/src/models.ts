@@ -43,8 +43,9 @@ async function jevPost(url: string, apiKey: string | undefined, text: string, si
 
 /** Why the decision service gave no answers: it has no credit (HTTP
  *  402), it refused the key (401 or 403), it could not be reached (no
- *  reply), or it refused the request for another reason. */
-export type DecisionServiceFailure = 'credit' | 'key' | 'unreachable' | 'refused';
+ *  reply), it still rate-limited the request when the retry budget ran
+ *  out (429), or it refused the request for another reason. */
+export type DecisionServiceFailure = 'credit' | 'key' | 'unreachable' | 'busy' | 'refused';
 
 /** A Jev request that failed for a reason no smaller request can fix.
  *  `status` is the reply's HTTP status, or 0 when no reply came; `reply`
@@ -55,12 +56,15 @@ export class DecisionServiceError extends Error {
   readonly reason: DecisionServiceFailure;
   readonly reply: string;
   readonly said: string;
-  constructor(status: number, reply: string, said: string, options?: ErrorOptions) {
+  /** `waited`, for a 429, says how long the request waited and what the
+   *  last reply asked for. */
+  constructor(status: number, reply: string, said: string, options?: ErrorOptions & { readonly waited?: string }) {
     const reason: DecisionServiceFailure = status === 0 ? 'unreachable' : status === 402 ? 'credit'
-      : status === 401 || status === 403 ? 'key' : 'refused';
+      : status === 401 || status === 403 ? 'key' : status === 429 ? 'busy' : 'refused';
     super(reason === 'unreachable' ? `The decision service could not be reached: ${said}`
-      : `The decision service ${reason === 'credit' ? 'has no credit' : reason === 'key' ? 'refused the API key'
-        : 'refused the request'} (HTTP ${status}): ${said}`, options);
+      : reason === 'busy' ? `The decision service is still rate-limiting requests (HTTP 429) after ${options?.waited ?? 'its retries'}: ${said}`
+        : `The decision service ${reason === 'credit' ? 'has no credit' : reason === 'key' ? 'refused the API key'
+          : 'refused the request'} (HTTP ${status}): ${said}`, options);
     this.name = 'DecisionServiceError';
     this.status = status;
     this.reason = reason;
@@ -115,6 +119,20 @@ function wait(ms: number, signal: AbortSignal): Promise<void> {
  *  limit; these two rates bound every request the adapter sends. */
 const JEV_TOKENS_PER_SECOND = 100_000;
 const JEV_REQUESTS_PER_SECOND = 80;
+
+/** The retry budget for HTTP 429 replies: the longest a request waits
+ *  on them, from the first one. The allowance above is counted per
+ *  one-second window, each window refills it whole, and one window holds
+ *  the largest request this adapter sends (64,000 estimated tokens of
+ *  100,000). This adapter's own sends keep inside the allowance, so a
+ *  429 means other sends on the same key spent the window, and the
+ *  request gets through in the first window they leave room in. Sixty
+ *  windows is a chosen budget, not a proof of anything: sustained
+ *  traffic on a shared key can fill the windows for longer, as can a
+ *  spent quota or a fault at the service. Past the budget the call fails
+ *  and names the last reply, rather than waiting on with nothing on
+ *  screen. */
+const JEV_RATE_LIMITED_MS = 60 * 1000;
 
 /** A pick's failure state inside the allowance queue: `stop` marks it
  *  once with the failure's own reason. */
@@ -291,16 +309,18 @@ function jevBatches(batch: PickBatch, model: string, maxChars = JEV_REQUEST_CHAR
     const key = `${question.sourceId}\n${question.id}`;
     items.set(key, [...(items.get(key) ?? []), question]);
   }
+  // Every request keeps the batch's own fields (the facts the answer
+  // needs), and is measured with them.
   const batches: PickBatch[] = [];
   let questions: PickQuestion[] = [];
   for (const own of items.values()) {
-    const next = { task: batch.task, questions: [...questions, ...own] };
+    const next = { ...batch, questions: [...questions, ...own] };
     if (questions.length > 0 && !fitsJev(jevRequest(next, model), maxChars)) {
-      batches.push({ task: batch.task, questions });
+      batches.push({ ...batch, questions });
       questions = own;
     } else questions = next.questions;
   }
-  if (questions.length > 0) batches.push({ task: batch.task, questions });
+  if (questions.length > 0) batches.push({ ...batch, questions });
   return batches;
 }
 
@@ -377,6 +397,8 @@ export function jev({ apiKey, model = 'jev-latest', url = JEV_URL, onCall }: {
   const send = async (part: PickBatch, signal: AbortSignal): Promise<[string, PickAnswer][]> => {
     const text = JSON.stringify(jevRequest(part, model));
     const domain = domainFor(signal);
+    // When the service first answered this request 429.
+    let limitedSince: number | undefined;
     for (;;) {
       try {
         await allow.wait(text.length, domain, signal);
@@ -411,10 +433,24 @@ export function jev({ apiKey, model = 'jev-latest', url = JEV_URL, onCall }: {
         };
         // A rate-limited request waits as the reply directs, then sends the
         // same request unchanged: it is never split, dropped or counted as
-        // a size rejection, and every attempt stays in the record.
+        // a size rejection, and every attempt stays in the record. A wait
+        // that would end past JEV_RATE_LIMITED_MS from the first 429 fails
+        // the request with the last reply instead.
         if (reply.status === 429) {
+          const now = Date.now();
+          const pause = retryAfterMs(reply.retryAfter);
+          limitedSince ??= now;
+          if (now - limitedSince + pause > JEV_RATE_LIMITED_MS) {
+            const seconds = (ms: number) => Math.round(ms / 1000);
+            const error = new DecisionServiceError(429, reply.text, saidIn(reply.text), { waited: `${seconds(now - limitedSince)} s; `
+              + `a rate-limited request waits at most ${seconds(JEV_RATE_LIMITED_MS)} s, and the last reply asked for `
+              + `${seconds(pause)} s more (${reply.retryAfter === null ? 'no Retry-After' : `Retry-After: ${reply.retryAfter}`})` });
+            allow.stop(domain, error);
+            await onCall?.(call);
+            throw error;
+          }
           await onCall?.(call);
-          await wait(retryAfterMs(reply.retryAfter), signal);
+          await wait(pause, signal);
           continue;
         }
         if (!reply.ok) return await fail(part, signal, call, reply.text, domain);
@@ -470,7 +506,7 @@ export function jev({ apiKey, model = 'jev-latest', url = JEV_URL, onCall }: {
         // half has settled and reported, so its request is never
         // missing from the record.
         for (const half of await Promise.allSettled([groups.slice(0, middle), groups.slice(middle)]
-          .map((half) => send({ task: part.task, questions: half.flat() }, signal)))) {
+          .map((half) => send({ ...part, questions: half.flat() }, signal)))) {
           if (half.status === 'rejected') throw half.reason;
           halves.push(...half.value);
         }
@@ -484,7 +520,7 @@ export function jev({ apiKey, model = 'jev-latest', url = JEV_URL, onCall }: {
         await onCall?.(call);
         const points = [...current];
         const half = points.slice(0, Math.floor(points.length / 2)).join('');
-        const answers = await send({ task: part.task,
+        const answers = await send({ ...part,
           questions: part.questions.map((q) => ({ ...q, text: half })) }, signal);
         return answers.map(([key, answer]): [string, PickAnswer] => [key, { ...answer, truncated: true }]);
       }

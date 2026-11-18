@@ -72,8 +72,12 @@ const source = chat({ providers: ['claude-code', 'codex'], since: '14 days' });
   text will be recognized. A part's `id` (the folder read, the
   transcript's path in it, and the part's line, block and piece) has
   the folder and the path scrubbed each on its own before they are
-  joined, so a name that looks like a secret is masked and every id
-  stays distinct.
+  joined, so a name that looks like a secret is masked. A masked folder
+  or path is followed by `#` and the first 16 hex characters of a
+  SHA-256 of the real folder and path, so two transcripts whose names
+  mask alike, such as two files named by 32 hex characters, keep their
+  own ids and their own place as transcripts; the real name is never
+  shown.
 - **Ranking:** Chat uses the LongMemEval settings: BM25 with `k1: 0.6`
   and `b: 0`, Porter word stems, short identifiers, noun weights, and
   merged rankings for the full query, content words and names. Markdown

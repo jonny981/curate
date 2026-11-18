@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { jev, type JevCall } from '../src/models.js';
+import { DecisionServiceError, jev, type JevCall } from '../src/models.js';
 import { pick, type MemoryCandidate, type PickBatch } from '../src/pick.js';
 import { modesOf } from './fixtures/modes.js';
 
@@ -199,6 +199,70 @@ describe('Jev request dispatch', () => {
     expect(recorded.map((call) => call.status)).toEqual([429, 200]);
     expect(recorded.every((call) => call.splits === 0)).toBe(true);
     expect(answers.q).toMatchObject({ status: 'answered', probability: 0.7 });
+  });
+
+  const oneQuestion = { task: 'notes?', questions: [{
+    key: 'q', sourceId: 's', id: '1', role: 'reference' as const, question: 'Relevant?',
+    trueCriterion: 'yes', falseCriterion: 'no', title: 'part', text: 'text',
+  }] };
+
+  it('fails a request still refused with HTTP 429 a minute after the first refusal, naming the last reply', async () => {
+    vi.useFakeTimers();
+    try {
+      let calls = 0;
+      vi.stubGlobal('fetch', vi.fn<typeof globalThis.fetch>().mockImplementation(async () => {
+        calls += 1;
+        return new Response(`slow down ${calls}`, { status: 429, headers: { 'retry-after': '1' } });
+      }));
+      const recorded: JevCall[] = [];
+      const decide = jev({ apiKey: 'test-key', onCall: (call) => { recorded.push(call); } });
+      let outcome: unknown;
+      void decide(oneQuestion, new AbortController().signal).then(() => { outcome = 'answered'; }, (error: unknown) => { outcome = error; });
+      await vi.advanceTimersByTimeAsync(59_500);
+      expect(outcome).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(outcome).toBeInstanceOf(DecisionServiceError);
+      expect(outcome).toMatchObject({ status: 429, reason: 'busy', said: `slow down ${calls}`, reply: `slow down ${calls}` });
+      expect((outcome as Error).message).toBe('The decision service is still rate-limiting requests (HTTP 429) after 60 s; a rate-limited '
+        + `request waits at most 60 s, and the last reply asked for 1 s more (Retry-After: 1): slow down ${calls}`);
+      // One reply a second from 0 s to 60 s, each one in the record.
+      expect(calls).toBe(61);
+      expect(recorded.map((call) => call.status)).toEqual(Array(61).fill(429));
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('fails at once when a 429 reply asks for a wait past the minute', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.stubGlobal('fetch', vi.fn<typeof globalThis.fetch>().mockImplementation(async () =>
+        new Response('quota spent', { status: 429, headers: { 'retry-after': '120' } })));
+      const decide = jev({ apiKey: 'test-key' });
+      let outcome: unknown;
+      void decide(oneQuestion, new AbortController().signal).then(() => { outcome = 'answered'; }, (error: unknown) => { outcome = error; });
+      await vi.advanceTimersByTimeAsync(1);
+      expect(outcome).toMatchObject({ status: 429, reason: 'busy', said: 'quota spent' });
+      expect((outcome as Error).message).toBe('The decision service is still rate-limiting requests (HTTP 429) after 0 s; a rate-limited '
+        + 'request waits at most 60 s, and the last reply asked for 120 s more (Retry-After: 120): quota spent');
+      expect(fetch).toHaveBeenCalledTimes(1);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('bounds the 429 wait by time, not by tries: 200 quick refusals then an answer', async () => {
+    vi.useFakeTimers();
+    try {
+      let calls = 0;
+      vi.stubGlobal('fetch', vi.fn<typeof globalThis.fetch>().mockImplementation(async () => {
+        calls += 1;
+        if (calls <= 200) return new Response('rate limited', { status: 429, headers: { 'retry-after': '0' } });
+        return Response.json({ answers: { q0: { noul: 0.7 } } });
+      }));
+      const decide = jev({ apiKey: 'test-key' });
+      const answers = decide(oneQuestion, new AbortController().signal);
+      // Each resend still takes a request slot: 80 a second.
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect((await answers).q).toMatchObject({ status: 'answered', probability: 0.7 });
+      expect(calls).toBe(201);
+    } finally { vi.useRealTimers(); }
   });
 
   it('lets 80 sends go at once and spreads further sends across seconds', async () => {

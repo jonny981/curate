@@ -684,18 +684,23 @@ export interface PickRecord {
      *  together. Warm means rated at least 0.1 times the best rating the
      *  read has seen. `requests` counts the requests read before the
      *  stop, `segments` the segments opened, `units` the units of agent
-     *  work (a subagent's prompt or report) opened after them, `rated` the parts it
-     *  rated, `unread` the chat parts of the order it never reached,
+     *  work (a subagent's prompt or report) with a part answered, opened
+     *  after them, `rated` the parts a request of this pick answered for
+     *  it, `reused` those whose decision came from the decision store,
+     *  `unread` the chat parts of the order it never reached,
      *  and `ended` what ended it: 'fall', 'order' when the order ran out
-     *  first, or the stopping dial. */
-    readonly chatRead?: {
+     *  first, or the stopping dial. Each conversation read of the call
+     *  has its own entry, under the name of the mode it read, or the
+     *  names joined by ' + ' when modes of several names share it. */
+    readonly chatRead?: Readonly<Record<string, {
       readonly requests: number;
       readonly segments: number;
       readonly units: number;
       readonly rated: number;
+      readonly reused: number;
       readonly unread: number;
       readonly ended: 'fall' | 'order' | 'limits' | 'time' | 'cancelled' | 'error';
-    };
+    }>>;
   };
   /** The tag sets every kept reference answered, when supplied. */
   readonly tags?: readonly PickTagSet[];
@@ -2176,6 +2181,9 @@ export async function pick(
   let openRequests = 0;
   const slotWaits: (() => void)[] = [];
   let packedBatches = 0;
+  // Set by the first request that failed, timed out or was cancelled: no
+  // read of the call starts another, while requests already sent settle.
+  let halted = false;
   // Two asks share one answer when their texts and everything else
   // here are equal. A part with no text is judged by its title, as a
   // title-only commit's subject is, so the title stands in for the text.
@@ -2379,13 +2387,12 @@ export async function pick(
     // At most `maxInFlight` requests of the call are open at once, across
     // every read; unbounded, every slice goes out together. A queued slice starts
     // only when an earlier one settles, in dispatch order — and only
-    // while no settled outcome would have stopped a sequential round:
-    // a rejection, a deadline or a cancellation keeps later queued
-    // batches from starting, while batches already running still
-    // settle and apply.
+    // while no settled outcome, of this read or another, would have
+    // stopped a sequential run: a rejection, a deadline or a
+    // cancellation keeps every later queued batch from starting, while
+    // batches already running still settle and apply.
     const outcomes: (BatchOutcome | undefined)[] = new Array(slices.length);
     let next = 0;
-    let halted = false;
     await Promise.all(Array.from({ length: Math.min(slices.length, limits.maxInFlight) },
       async () => {
         while (!halted && next < slices.length) {
@@ -2399,10 +2406,12 @@ export async function pick(
           next += 1;
           openRequests += 1;
           const outcome = await dispatch(slices[at]!);
+          outcomes[at] = outcome;
+          // The halt is set before any queued sender wakes, so no read
+          // starts a request after another read's failed.
+          if (!outcome.sent || outcome.timedOut || outcome.decideError !== undefined) halted = true;
           openRequests -= 1;
           for (const wake of slotWaits.splice(0)) wake();
-          outcomes[at] = outcome;
-          if (!outcome.sent || outcome.timedOut || outcome.decideError !== undefined) halted = true;
         }
       }));
     for (const outcome of outcomes) {
@@ -3027,8 +3036,13 @@ export async function pick(
   const ownRead = (candidate: MemoryCandidate) => readOf(candidate) !== rankedRead;
   const chatOrder = feed.filter(ownRead);
   if (chatOrder.length > 0) feed = feed.filter((candidate) => !ownRead(candidate));
+  // A part whose every answer came from the decision store.
+  const reusedOf = (candidate: MemoryCandidate) => {
+    const answer = combined.get(candidate);
+    return answer?.status === 'answered' && 'reused' in answer && answer.reused === true;
+  };
   const shared = { rate: evaluate, waves: nextWave, copied: (candidate: MemoryCandidate) => copied.has(candidate),
-    score: scoreOf, stopped: () => stop !== undefined,
+    score: scoreOf, stopped: () => stop !== undefined, reused: reusedOf,
     ...(stopRule === undefined ? {} : { stop: stopRule }) };
   // The ranked read of the rest of the feed. It holds its stop until
   // selection keeps a part it rated, on the bar the selection pass will
@@ -3095,7 +3109,8 @@ export async function pick(
         if (rank !== null && keyword(candidate, index)) laneLength.set(index, (laneLength.get(index) ?? 0) + 1);
       });
     }
-    // Each search lane's parts in lane order across the sources.
+    // Each search lane's parts in lane order across the sources; each
+    // read is given only its own sources' parts of it.
     const laneParts = Array.from({ length: lanes }, (_, lane) => rankAndInterleave(references.filter((candidate) =>
       candidate.poolOnly !== true && (candidate.searchRanks === undefined || candidate.searchRanks[lane] != null)),
     new Map(), lane, options.ranking));
@@ -3111,7 +3126,9 @@ export async function pick(
         ...(queries.length === 0 ? {} : { queries }), ...(options.embed === undefined ? {} : { embed: options.embed }),
         byKeyword: [...share.keys()].filter((candidate) => share.get(candidate)! > 0)
           .sort((left, right) => share.get(right)! - share.get(left)!),
-        lanes: laneParts,
+        // Each lane's parts of this read's own sources: another source's
+        // parts, read their own way, never take its lane heads.
+        lanes: laneParts.map((lane) => lane.filter((candidate) => readOf(candidate) === read)),
         // Kept on the bar the selection pass keeps a part at, with the
         // feed's answered count so far, as the rating stop waits for one.
         kept: (some) => some.some(keepsAt(answeredReferences([...rankedFeed, ...some]))),
@@ -3127,15 +3144,23 @@ export async function pick(
     for (const candidate of rankedUnread) statuses.set(candidate, { status: 'unassessed', reason: 'stopWhenCold' });
   }
   const rankedRated = ranked?.read ?? [];
-  let chatRecord: NonNullable<PickRecord['pick']>['chatRead'];
-  for (const result of results) {
+  let chatRecord: Record<string, NonNullable<NonNullable<PickRecord['pick']>['chatRead']>[string]> | undefined;
+  for (const [index, result] of results.entries()) {
     feed = feed.concat(result.read);
     for (const candidate of result.unread) {
       statuses.set(candidate, { status: 'unassessed',
         reason: result.reason === 'chatRead' ? stop ?? 'chatRead' : result.reason });
     }
     if (result.requests !== undefined) {
-      chatRecord = { requests: result.requests, segments: result.segments ?? 0, units: result.units ?? 0, rated: result.read.length,
+      // A part counts as rated when a request of this pick answered it,
+      // and as reused when its decision came from the store.
+      // Each read under its mode's name, so a second read never
+      // overwrites the first's numbers.
+      const name = [...new Set(chatOrder.filter((candidate) => readOf(candidate) === ownReads[index])
+        .map((candidate) => modeFor(candidate.sourceId)?.name))].sort().join(' + ');
+      (chatRecord ??= {})[name] = { requests: result.requests, segments: result.segments ?? 0, units: result.units ?? 0,
+        rated: result.read.filter((part) => scoreOf(part) !== undefined && !reusedOf(part)).length,
+        reused: result.read.filter(reusedOf).length,
         unread: result.unread.length, ended: result.ended === 'stopped' ? stop! : result.ended as 'fall' | 'order' };
     }
   }
@@ -3287,7 +3312,7 @@ export async function pick(
         : []),
       ...(rankedUnread.size > 0 ? ['a stop when the ratings went cold (stopWhenCold)'] : []),
       ...(feedStop === undefined ? [] : [`a stop (${feedStop})`]),
-      ...(chatRecord?.ended === 'fall' && chatRecord.unread > 0
+      ...(Object.values(chatRecord ?? {}).some((read) => read.ended === 'fall' && read.unread > 0)
         ? ["a stop when the chat read's new warm parts fell (chatRead)"] : []),
     ],
     fused,
