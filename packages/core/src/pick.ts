@@ -2402,8 +2402,10 @@ export async function pick(
     question.trueCriterion ?? null, question.falseCriterion ?? null,
     question.levels ?? null, question.anonymous ?? null, question.author ?? null, JSON.stringify(headerOf(candidate)),
     question.facts ?? null, question.options ?? null]);
-  // Asks packed into request-sized batches, at most `most` of them.
-  const pack = (fresh: readonly Pending[], task: string, whole: boolean, most: number): Pending[][] => {
+  // Asks packed into request-sized batches, at most `most` of them, and
+  // at most `perRequest` items in one.
+  const pack = (fresh: readonly Pending[], task: string, whole: boolean, most: number,
+    perRequest = Number.POSITIVE_INFINITY): Pending[][] => {
     const slices: Pending[][] = [];
     for (let index = 0; index < fresh.length && slices.length < most;) {
       // A batch packs whole items until the character bound; the first
@@ -2428,7 +2430,8 @@ export async function pick(
           + (counted.has(item.candidate) ? 0 : itemChars(item.question));
         if (slice.length > 0 && !whole
           && (batchChars + size > limits.maxBatchChars
-            || slice.length + group.length > limits.maxPerBatch)) break;
+            || slice.length + group.length > limits.maxPerBatch
+            || (!counted.has(item.candidate) && counted.size >= perRequest))) break;
         batchChars += size;
         counted.add(item.candidate);
         slice.push(...group);
@@ -2535,9 +2538,13 @@ export async function pick(
     // facts the answer needs, the person, how many answers are wanted) go
     // in requests apart, so no other part's request carries them; the
     // requests carrying the facts the answer needs go first.
+    // A mode's items per request, for its parts' own questions; labels
+    // keep their batching.
+    const perRequestOf = (item: Pending) => sink === labelAnswers || item.candidate.role !== 'reference' ? undefined
+      : modeFor(item.candidate.sourceId)?.itemsPerRequest;
     const groups = new Map<string, Pending[]>();
     for (const item of fresh) {
-      const key = sink === answered ? JSON.stringify(headerOf(item.candidate)) : '{}';
+      const key = JSON.stringify([sink === answered ? headerOf(item.candidate) : {}, perRequestOf(item) ?? null]);
       const group = groups.get(key);
       if (group === undefined) groups.set(key, [item]);
       else group.push(item);
@@ -2546,10 +2553,11 @@ export async function pick(
     const slices: Pending[][] = [];
     const headers = new Map<Pending[], Pick<PickBatch, 'needed' | 'person' | 'wanted'>>();
     for (const [key, items] of [...groups].sort(([left], [right]) =>
-      Number(JSON.parse(right).needed !== undefined) - Number(JSON.parse(left).needed !== undefined))) {
-      for (const slice of pack(items, task, whole, room - slices.length)) {
+      Number(JSON.parse(right)[0].needed !== undefined) - Number(JSON.parse(left)[0].needed !== undefined))) {
+      const [header, perRequest] = JSON.parse(key) as [Pick<PickBatch, 'needed' | 'person' | 'wanted'>, number | null];
+      for (const slice of pack(items, task, whole, room - slices.length, perRequest ?? undefined)) {
         slices.push(slice);
-        headers.set(slice, JSON.parse(key) as Pick<PickBatch, 'needed' | 'person' | 'wanted'>);
+        headers.set(slice, header);
       }
     }
     packedBatches += slices.length;
@@ -3922,6 +3930,7 @@ export async function pick(
       ...(modeFor(id)?.wholeMessages === true ? { wholeMessages: true as const } : {}),
       ...(modeFor(id)?.hardFacts === true ? { hardFacts: true as const } : {}),
       ...(modeFor(id)?.roles === true ? { roles: true as const } : {}),
+      ...(modeFor(id)?.itemsPerRequest === undefined ? {} : { itemsPerRequest: modeFor(id)!.itemsPerRequest! }),
       ...(modeFor(id) === undefined || choiceOf({ sourceId: id } as MemoryCandidate) === undefined ? {} : { choicePerFact: {
         candidates: choiceOf({ sourceId: id } as MemoryCandidate)!.candidates,
         ...(choiceOf({ sourceId: id } as MemoryCandidate)!.enough === undefined ? {}

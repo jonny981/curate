@@ -920,6 +920,27 @@ coding-agent history (1,489 ranked pieces, 1,028 messages), the
 requests carried 2.47 times the text: the messages held 4.47 times the
 ranked pieces' text, and 32 reports carried their request.
 
+### Items per request
+
+Off by default: unset, a decision request holds as many items as the
+request limits allow, each item once with all its questions. A mode
+with `itemsPerRequest: 1` sends each item in a request of its own, with
+all of its questions, the task and the fields beside it (the needed
+facts, the person, how many answers are wanted) repeated in every
+request; `itemsPerRequest: n` holds at most n. The decision model's
+maker shows many questions about one document in a request, and its
+re-ranking recipe sends one candidate per request; it shows no request
+judging many separate items. The requests of a round go out at once,
+inside `limits.maxInFlight` and the decider's own rate (`jev()` keeps to
+TypeSafe's published 80 requests and 100,000 tokens a second, so 1,000
+items take at least 12.5 seconds to send). A rating stop still plans
+its waves in parts. On the 22 short lists of one person's coding-agent
+history, one item per request carried 1.38 times the request text of
+today's batching on pieces (1,489 requests in place of 27), 2.72 times
+on whole messages (against 2.47 batched) and 3.11 times on whole
+messages with hard facts (against 2.84). The record names the setting
+under `levers.sources`.
+
 ### Hard facts
 
 Off by default. A mode with `hardFacts: true` writes into each item's
@@ -1849,7 +1870,7 @@ Each source carries six settings, tuned for its kind of history:
 - **`labelBar`:** the label bar, from 0 to 1, for which kinds the task needs and which of this source's parts join the label lane; absent means 0.5.
 - **`names`:** open one exact-phrase lane per name the task names ([names in the task](#names-in-the-task)). The reason is recall.
 - **`ruleBar`:** keep a rule scored at or above this; absent means 0. Only sources whose parts are rules use it.
-- **`mode`:** how the source's parts are judged and read: `name`; `questions`, the decision questions asked of each reference part (absent: the built-in question for the part's kind); `bar`, keep a reference part scored at or above this (absent: the set's fitted bar, or 0.0146); and `read`, `rankedRead` down the fused order or a `conversationRead()` ([the chat read](#the-chat-read)), which takes `walksOn`, `opens` and `stops` rules in place of the measured ones. Absent: the built-in question, 0.0146 and the ranked read. Off by default: `wholeMessages`, judge each ranked piece's whole message ([whole messages](#whole-messages)); `hardFacts`, fields code knows in each item's record ([hard facts](#hard-facts)); `roles`, what each kept part is doing ([what each kept part is doing](#what-each-kept-part-is-doing)); `choicePerFact`, a Choice per needed fact over the kept parts, whose picks lead the text ([a Choice per needed fact](#a-choice-per-needed-fact)).
+- **`mode`:** how the source's parts are judged and read: `name`; `questions`, the decision questions asked of each reference part (absent: the built-in question for the part's kind); `bar`, keep a reference part scored at or above this (absent: the set's fitted bar, or 0.0146); and `read`, `rankedRead` down the fused order or a `conversationRead()` ([the chat read](#the-chat-read)), which takes `walksOn`, `opens` and `stops` rules in place of the measured ones. Absent: the built-in question, 0.0146 and the ranked read. Off by default: `wholeMessages`, judge each ranked piece's whole message ([whole messages](#whole-messages)); `hardFacts`, fields code knows in each item's record ([hard facts](#hard-facts)); `itemsPerRequest`, how many items one decision request holds ([items per request](#items-per-request)); `roles`, what each kept part is doing ([what each kept part is doing](#what-each-kept-part-is-doing)); `choicePerFact`, a Choice per needed fact over the kept parts, whose picks lead the text ([a Choice per needed fact](#a-choice-per-needed-fact)).
 - **`decay`:** rank older notes lower by their age at the task date, as `{ halfLife: '365 days' }`; absent or `false` is off, as in every preset. Markdown sources only; see the [Markdown reader](https://github.com/jonny981/curate/blob/main/packages/markdown/README.md#decay).
 
 A source can also carry the look-back and path settings its reader ran

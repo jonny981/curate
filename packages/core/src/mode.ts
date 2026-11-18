@@ -87,6 +87,15 @@ export interface Mode {
      *  clear yes) every fact's loop ends. On unless `false`. */
     readonly enough?: boolean | { readonly bar?: number };
   };
+  /** How many items one decision request about the mode's parts holds,
+   *  off by default: unset, requests hold as many items as the request
+   *  limits allow, as before. `1` sends each item in a request of its
+   *  own, with all of its questions; the requests of a round go out at
+   *  once, inside `limits.maxInFlight` and the decider's own rate, so the
+   *  wait does not grow with their count, but the task and the fields
+   *  beside it repeat in every request. A rating stop still plans its
+   *  waves in parts, as before. */
+  readonly itemsPerRequest?: number;
   /** How the decide step reads the mode's parts on the fused order:
    *  `rankedRead` or a `conversationRead()`. Parts of modes that share
    *  a read are read together. */
