@@ -944,13 +944,13 @@ describe('the sentence cutoff, and what the skill tells the caller', () => {
  *  search-line and label requests are answered. Resolves to the call's
  *  result or failure, and the home folder its records go under. */
 async function decisionCall(reply: (payload: { questions: Record<string, unknown> }) => Response | Promise<Response>, records = false,
-  key = 'test-key') {
+  key = 'test-key', count = 6) {
   const directory = await folder();
   const home = join(directory, 'home');
   const notes = join(directory, 'notes');
   await mkdir(home);
   await mkdir(notes);
-  for (let at = 0; at < 6; at += 1) {
+  for (let at = 0; at < count; at += 1) {
     await writeFile(join(notes, `orchard-${at}.md`), `# Orchard ${at}\n\nThe orchard has trees. Fruit trees grow here, row ${at}.\n`);
   }
   const sourcesFile = join(directory, 'sources.json');
@@ -1052,6 +1052,25 @@ describe('a call the decision service refuses', () => {
       expect(saved).not.toContain(secret);
       expect(saved).not.toContain(KEY);
     });
+
+  it('masks the key in every error the record keeps when requests in flight fail with different words', async () => {
+    // Enough notes for several requests at once, each refused with its own text.
+    let request = 0;
+    const { error, home } = await decisionCall(() => {
+      request += 1;
+      return Response.json({ detail: `Invalid key: ${KEY}; request ${request}` }, { status: 401 });
+    }, true, KEY, 80);
+    expect(request).toBeGreaterThan(1);
+    expect(error!.message).not.toContain(KEY);
+    const folders = await readdir(join(home, '.curate', 'runs'));
+    const saved = await readFile(join(home, '.curate', 'runs', folders[0]!, 'record.json'), 'utf8');
+    expect(saved).not.toContain(KEY);
+    // The record keeps what it held: every candidate, with its id, and the refused parts' ids.
+    const record = JSON.parse(saved);
+    expect(record.pick.candidates.length).toBeGreaterThanOrEqual(80);
+    expect(record.pick.candidates.every((entry: { id: string }) => entry.id.includes('orchard-'))).toBe(true);
+    expect(record.pick.decideError.candidates.length).toBeGreaterThan(0);
+  });
 
   it('waits out a 429 and answers as usual', async () => {
     let calls = 0;

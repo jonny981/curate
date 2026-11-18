@@ -1499,15 +1499,15 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
     if (error?.record?.decideError !== undefined) {
       error.message = decisionFailure(error, records ? join(folder, 'record.json') : undefined);
       error.exitCode = DECISION_EXIT;
-      // The service's words also sit in the record, on the failure and on
-      // each part and question it left unanswered: masked there too.
-      const raw = error.record.decideError.message;
-      const hide = (value) => typeof value === 'string' ? value.split(raw).join(masked(raw))
-        : Array.isArray(value) ? value.map(hide)
-          : value !== null && typeof value === 'object' ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, hide(item)]))
+      // The record keeps error words on the failure, on each part and
+      // question a refused request left unanswered (each request's own
+      // words), and on each request: every such value is masked.
+      const hide = (value, key) => typeof value === 'string' ? (ERROR_KEYS.has(key) ? masked(value) : value)
+        : Array.isArray(value) ? value.map((item) => hide(item, key))
+          : value !== null && typeof value === 'object' ? Object.fromEntries(Object.entries(value).map(([name, item]) => [name, hide(item, name)]))
             : value;
       record.pick = hide(error.record);
-      record.jev = record.jev?.map((call) => call.error === undefined ? call : { ...call, error: masked(call.error) });
+      record.jev = hide(record.jev);
     }
     record.status = 'failed'; record.error = error.message; throw error;
   }
@@ -1526,6 +1526,9 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
   }
   return { memory, record, folder: records ? folder : null };
 }
+
+// The record's fields that hold an error's words.
+const ERROR_KEYS = new Set(['message', 'detail', 'error']);
 
 // Text from the decision service, or a network error, as the command shows
 // and records it: the configured key's exact value and anything shaped like
