@@ -283,6 +283,27 @@ describe('reads of several modes in one call', () => {
     return { asked, overlaps, decide };
   };
 
+  it('opens the segments of each lane\'s top chat parts though notes outrank them in every lane', async () => {
+    const talk = [part('talk', 1, 'person', { ranks: [0, null] }), part('talk', 2, 'agent'),
+      part('talk', 3, 'person', { ranks: [1, null] }), part('talk', 4, 'agent')];
+    // Lane 1 holds ten chat parts: nine one-part sessions, then the
+    // agents' session's fifth part, the chat's tenth in that lane.
+    const others = Array.from({ length: 9 }, (_, index) => part(`other${index}`, 1, 'agent', { ranks: [null, index] }));
+    const agents = Array.from({ length: 10 }, (_, index) => part('agents', index + 1, 'agent', index === 4 ? { ranks: [null, 9] } : {}));
+    // Twelve notes in both lanes: with the chat they would fill half of each lane's top 10.
+    const ahead = Array.from({ length: 12 }, (_, index): MemoryCandidate => ({
+      sourceId: 'notes', role: 'reference', id: `notes/plan.md#${index}`, title: `Plan ${index}`,
+      text: `Plan note ${index}`, signals: {}, searchRanks: [index, index],
+    }));
+    const ratings = { [idOf('talk', 1)]: 0.9, [idOf('talk', 2)]: 0.5, [idOf('agents', 5)]: 0.3, [idOf('agents', 6)]: 0.8 };
+    const answer = idOf('agents', 6);
+    const alone = await pick([...talk, ...others, ...agents], { task, decide: rater(ratings).decide, ...agentRead });
+    const together = await pick([...talk, ...others, ...agents, ...ahead], { task, decide: rater(ratings).decide, ...mixed });
+    expect(alone.record.candidates.find((entry) => entry.id === answer)?.status).toBe('selected');
+    expect(together.record.candidates.find((entry) => entry.id === answer)?.status).toBe('selected');
+    expect(together.record.pick?.chatRead?.segments).toBe(alone.record.pick?.chatRead?.segments);
+  });
+
   it('runs the ranked read and the conversation read at once', async () => {
     const { overlaps, decide } = slow({ [idOf('s0', 1)]: 0.9, [notes[1]!.id]: 0.7 });
     const result = await pick([...personSessions(4), ...notes], { task, decide, ...mixed });
@@ -540,6 +561,21 @@ describe('the units of agent work as one more start', () => {
     const agentIds = new Set(agents.map((part) => part.id));
     expect(new Set(asked.flat().filter((id) => agentIds.has(id)).map((id) => id.replace(/:\d+:1:\d+$/, ''))))
       .toEqual(new Set(['claude-code:/home/me/.claude/projects:app/s/subagents/agent-a7.jsonl']));
+  });
+
+  it('opens the same units beside notes that outrank the chat in every lane and name the same topic', async () => {
+    const ahead = Array.from({ length: 12 }, (_, index): MemoryCandidate => ({
+      sourceId: 'notes', role: 'reference', id: `notes/db.md#${index}`, title: `Postgres database ${index}`,
+      text: `Postgres database decision note ${index}`, signals: {}, searchRanks: [index],
+    }));
+    const queries = [task, 'postgres database decision'];
+    const alone = await pick([...personSessions(4), ...agents], { task, decide: rater(ratings).decide, ...agentRead,
+      queriesBySource: { chat: queries }, embed });
+    const together = await pick([...personSessions(4), ...agents, ...ahead], { task, decide: rater(ratings).decide, ...agentRead,
+      sourceKinds: { chat: 'chat', notes: 'markdown' }, queriesBySource: { chat: queries, notes: queries }, embed });
+    expect(alone.record.pick?.chatRead?.units).toBe(2);
+    expect(together.record.pick?.chatRead?.units).toBe(2);
+    expect(together.selected.map((part) => part.id)).toContain(answer.id);
   });
 
   it('ranks by keyword alone with no embedder, and opens no unit with no queries', async () => {

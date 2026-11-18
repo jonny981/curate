@@ -42,7 +42,8 @@ export interface ModeReadInput {
   readonly between?: () => boolean;
   /** The parts the keyword lanes ranked, best first. */
   readonly byKeyword: readonly MemoryCandidate[];
-  /** Each search lane's parts in lane order, across every source. */
+  /** Each search lane's parts in lane order, across the sources this
+   *  read reads: no other source's parts take its lane heads. */
   readonly lanes: readonly (readonly MemoryCandidate[])[];
   /** Rate these parts; resolves once their ratings are in. One
    *  function serves every read of the call. */

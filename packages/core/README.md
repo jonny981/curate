@@ -1418,6 +1418,8 @@ is rated at least 0.1 times the best rating this read has seen.
    stays whole) and opens the segments that hold a warm person part or
    one of each search lane's top 10 parts. A lane's top parts lead the
    read to answers the agents wrote, which no person part sits near.
+   Each lane's top 10 are counted among the parts of the sources the read
+   reads, so notes or commits in the same call never take them.
 5. **Walks inside.** In each opened segment it rates the 3 parts the
    fused order ranks first, then reads one part further on each side of
    every warm part while that ring holds a warm part. The walks of every

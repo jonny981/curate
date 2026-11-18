@@ -72,7 +72,8 @@ export interface ChatReadInput {
    *  person's own parts are read in. Any other person part comes after
    *  them, newest first. */
   readonly byKeyword: readonly MemoryCandidate[];
-  /** Each search lane's parts in lane order, across every source. */
+  /** Each search lane's parts in lane order, across the sources this
+   *  read reads: no other source's parts take its lane heads. */
   readonly lanes: readonly (readonly MemoryCandidate[])[];
   /** Rate these parts; resolves once their ratings are in. */
   readonly rate: (parts: readonly MemoryCandidate[]) => Promise<void>;

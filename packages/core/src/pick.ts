@@ -3065,7 +3065,8 @@ export async function pick(
         if (rank !== null && keyword(candidate, index)) laneLength.set(index, (laneLength.get(index) ?? 0) + 1);
       });
     }
-    // Each search lane's parts in lane order across the sources.
+    // Each search lane's parts in lane order across the sources; each
+    // read is given only its own sources' parts of it.
     const laneParts = Array.from({ length: lanes }, (_, lane) => rankAndInterleave(references.filter((candidate) =>
       candidate.poolOnly !== true && (candidate.searchRanks === undefined || candidate.searchRanks[lane] != null)),
     new Map(), lane, options.ranking));
@@ -3081,7 +3082,9 @@ export async function pick(
         ...(queries.length === 0 ? {} : { queries }), ...(options.embed === undefined ? {} : { embed: options.embed }),
         byKeyword: [...share.keys()].filter((candidate) => share.get(candidate)! > 0)
           .sort((left, right) => share.get(right)! - share.get(left)!),
-        lanes: laneParts,
+        // Each lane's parts of this read's own sources: another source's
+        // parts, read their own way, never take its lane heads.
+        lanes: laneParts.map((lane) => lane.filter((candidate) => readOf(candidate) === read)),
         // Kept on the bar the selection pass keeps a part at, with the
         // feed's answered count so far, as the rating stop waits for one.
         kept: (some) => some.some(keepsAt(answeredReferences([...rankedFeed, ...some]))),
