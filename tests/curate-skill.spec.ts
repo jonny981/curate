@@ -116,6 +116,7 @@ describe('curate command input', () => {
       expect(() => parseSources({ sources: [{ type, path: 'here', always: 'yes' }] })).toThrow('always must be a boolean.');
     }
     expect(parseSources({ sources: [{ type: 'codex', path: 'here', allowedCwd: 'there', always: false }] }).sources[0].always).toBe(false);
+    expect(parseSources({ sources: [{ type: 'whatsapp', path: 'chat.txt', dates: 'month-first' }] }).sources[0].dates).toBe('month-first');
   });
 
   it.each([
@@ -130,6 +131,9 @@ describe('curate command input', () => {
     { sources: [{ type: 'codex', path: 'sessions', allowedCwd: [1] }] },
     { sources: [{ type: 'git' }] },
     { sources: [{ type: 'markdown' }] },
+    { sources: [{ type: 'whatsapp' }] },
+    { sources: [{ type: 'whatsapp', path: 'chat.txt', exclude: ['x'] }] },
+    { sources: [{ type: 'whatsapp', path: 'chat.txt', dates: 'year-first' }] },
     { sources: [{ type: 'claude-code', always: true }] },
     { sources: [{ type: 'codex', allowedCwd: 'projects' }] },
   ])('rejects invalid source settings %j', (value) => {
@@ -1200,6 +1204,41 @@ describe('a run through core decision calls', () => {
     expect(record.reads.some((read: { task: string }) => read.task === 'Ada')).toBe(true);
     expect(record.jev.length).toBeGreaterThan(0);
     expect(await readFile(join(runFolder, 'log.md'), 'utf8')).toContain('2026-01-01');
+  });
+
+  it('reads a WhatsApp export in the direct-messages mode and keeps the sender on a kept sentence', async () => {
+    const directory = await folder();
+    const home = join(directory, 'home');
+    await mkdir(home);
+    const file = join(directory, '_chat.txt');
+    await writeFile(file, [
+      '[08/05/2023, 13:56:00] Caroline: Hey Mel! I went to the LGBTQ support group yesterday.',
+      '[08/05/2023, 13:57:00] Melanie: That sounds great. How was the support group?',
+      '[25/05/2023, 10:00:00] Caroline: I painted a sunrise.',
+      '',
+    ].join('\n'));
+    const sourcesFile = join(directory, 'sources.json');
+    await writeFile(sourcesFile, JSON.stringify({ records: true, sources: [{ type: 'whatsapp', path: file, always: true }] }));
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
+    vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
+    // The decision model rates the two greeting sentences low.
+    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as { state: { items: Record<string, { text: string }> };
+        questions: Record<string, { instructions: { question: string; item: string } }> };
+      const low = ({ question, item }: { question: string; item: string }) => /this sentence/.test(question)
+        && /Hey Mel!|That sounds great/.test(body.state.items[item.slice('items.'.length)]?.text ?? '');
+      return new Response(JSON.stringify({ usage: null, answers: Object.fromEntries(Object.entries(body.questions)
+        .map(([key, question]) => [key, { noul: low(question.instructions) ? 0.01 : 0.8 }])) }));
+    }));
+    const { call } = subscriptionReply(searches());
+    const { folder: runFolder } = await run(['--sources', sourcesFile, 'When did Caroline go to the LGBTQ support group?'], call);
+    const record = JSON.parse(await readFile(join(runFolder, 'record.json'), 'utf8'));
+    expect(record.status).toBe('complete');
+    expect(record.pick.levers.sources[`whatsapp:${file}`].mode).toBe('direct-messages');
+    const log = await readFile(join(runFolder, 'log.md'), 'utf8');
+    expect(log).toContain('… Caroline: I went to the LGBTQ support group yesterday.');
+    expect(log).toContain('… Melanie: How was the support group?');
   });
 
   it('ranks the subagents\' reports and prompts against the source\'s own search lines', async () => {
@@ -2278,6 +2317,13 @@ describe('the question sets the search scope', () => {
     expect(accept('Which commit added the cache?', { kinds: ['git-history'], since: 'none' }).kinds).toEqual(['git-history']);
     expect(accept('What is in our notes about the cache?', { kinds: ['markdown'], since: 'none' }).kinds).toEqual(['markdown']);
     expect(accept('Should every commit carry a note?', { kinds: ['git-history'], since: 'none' }).kinds).toEqual(['all']);
+  });
+
+  it('reads a WhatsApp export for a question that says to look in a chat', () => {
+    const scope = accept('What did Mel say in our chats about the trip?', { kinds: ['chat'], since: 'none' });
+    expect(scope.kinds).toEqual(['chat']);
+    const entries = [{ type: 'claude-code', path: 'a' }, { type: 'whatsapp', path: 'b' }, { type: 'markdown', path: 'c' }];
+    expect(scopedEntries(entries, scope, NOW).map((entry: { type: string }) => entry.type)).toEqual(['claude-code', 'whatsapp']);
   });
 
   it("uses the later of the window and a source's own look-back", () => {

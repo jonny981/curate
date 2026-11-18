@@ -223,6 +223,11 @@ What each part does:
   in each part title, counts `/` links from the bundle root, skips `index.md`,
   dates each `log.md` entry by its heading, and ranks a page past its
   `stale_after` lower. A retire proposal's edit is `status: deprecated`.
+- **WhatsApp exports.** `whatsapp(path)` reads WhatsApp's "Export chat" text,
+  iOS and Android lines alike, as one session a day, each kept as a Markdown
+  note and read through `knowledgeBase()`, in the `directMessages` mode the
+  LoCoMo runs measured. The sentence pass keeps a sender's name on what they
+  said. The `/curate` skill takes it as `"type": "whatsapp"`.
 - **An optional decision cache** stores each answered decision per part, so
   a resumed run, a rerun or a repeated question asks only for what changed.
 - **Git reads have no time or size limit.** Each `git` call the git and

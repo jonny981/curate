@@ -9,7 +9,7 @@ import { curate, DEFAULT_MAX_QUESTION_TEXT, levelDistribution, pickFromSources, 
 import { jev } from '@curatejs/core/models';
 import { agentTranscripts, chat, scrubChat, AGENT_CHAT_CASCADE, CHAT_SEARCH_LINE_REGISTER, JUDGMENT_CHAT_CASCADE } from '@curatejs/chat';
 import { git, GIT_HISTORY_CASCADE, GIT_SEARCH_LINE_REGISTER } from '@curatejs/git';
-import { knowledgeBase, markdown, MARKDOWN_CASCADE, MARKDOWN_SEARCH_LINE_REGISTER } from '@curatejs/markdown';
+import { knowledgeBase, markdown, whatsapp, MARKDOWN_CASCADE, MARKDOWN_SEARCH_LINE_REGISTER } from '@curatejs/markdown';
 
 // A settings path: absolute, from the home folder (`~/`), or from `base`.
 const homePath = (path, base = process.cwd()) => resolve(base, path.startsWith('~/') ? join(homedir(), path.slice(2)) : path);
@@ -130,6 +130,7 @@ const SOURCE_ENTRY_KEYS = {
   codex: ['type', 'path', 'since', 'exclude', 'allowedCwd', 'questions', 'bar', 'always'],
   git: ['type', 'path', 'since', 'exclude', 'include', 'always'],
   markdown: ['type', 'path', 'since', 'exclude', 'always'],
+  whatsapp: ['type', 'path', 'since', 'dates', 'always'],
 };
 
 // The settings may list no source: a call inside a git repository reads the
@@ -141,7 +142,7 @@ export function parseSources(value, base = process.cwd()) {
   const sources = (value.sources ?? []).map((source) => {
     // A chat entry with no path reads the project's own transcripts for its tool.
     const pathless = source?.path === undefined && ['claude-code', 'codex'].includes(source?.type);
-    if (!source || !['claude-code', 'codex', 'git', 'markdown'].includes(source.type)
+    if (!source || !['claude-code', 'codex', 'git', 'markdown', 'whatsapp'].includes(source.type)
       || (!pathless && (typeof source.path !== 'string' || !source.path.trim()))) {
       throw new Error('Each source needs a type, and a path unless it is a claude-code or codex source.');
     }
@@ -171,6 +172,9 @@ export function parseSources(value, base = process.cwd()) {
       throw new Error('bar must be a number between 0 and 1.');
     }
     if (source.always !== undefined && typeof source.always !== 'boolean') throw new Error('always must be a boolean.');
+    if (source.dates !== undefined && !['day-first', 'month-first'].includes(source.dates)) {
+      throw new Error('dates must be "day-first" or "month-first".');
+    }
     const allowed = source.allowedCwd;
     if (source.type === 'codex' && !pathless) {
       const folders = Array.isArray(allowed) ? allowed : [allowed];
@@ -924,7 +928,10 @@ function keepAskedLines(searches, required, record) {
   return searches;
 }
 
-const sourceKind = (type) => type === 'git' ? 'git-history' : type === 'markdown' ? 'markdown' : 'chat';
+// A WhatsApp export is searched with the Markdown search lines, as its
+// sessions were measured, and a task that says to look in a chat reads it.
+const sourceKind = (type) => type === 'git' ? 'git-history' : type === 'markdown' || type === 'whatsapp' ? 'markdown' : 'chat';
+const readFor = (type, kinds_) => kinds_.includes('all') || kinds_.includes(sourceKind(type)) || (type === 'whatsapp' && kinds_.includes('chat'));
 
 // A kind counts as named only when the task says to look there, so a task
 // about chat transcripts or about Git history does not narrow to that source.
@@ -1010,7 +1017,7 @@ export function acceptScope(proposed, task, searchKinds, now = Date.now(), timeZ
 // its own look-back.
 export function scopedEntries(entries, scope, now = Date.now()) {
   const later = (own) => own === undefined || sinceCutoff(own, now) < sinceCutoff(scope.since, now) ? scope.since : own;
-  return entries.filter((entry) => scope.kinds.includes('all') || scope.kinds.includes(sourceKind(entry.type)))
+  return entries.filter((entry) => readFor(entry.type, scope.kinds))
     .map((entry) => scope.since === 'none' ? entry : { ...entry, since: later(entry.since) });
 }
 
@@ -1240,6 +1247,10 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
         return { source: entry.own === true
           ? markdown({ paths: [entry.path], kind: 'docs', maxQuestionText: DEFAULT_MAX_QUESTION_TEXT, ...options })
           : knowledgeBase(entry.path, options) };
+      }
+      if (entry.type === 'whatsapp') {
+        return { source: whatsapp(entry.path, { ...(entry.since === undefined ? {} : { since: entry.since }),
+          ...(entry.dates === undefined ? {} : { dates: entry.dates }) }) };
       }
       if (entry.type === 'codex') {
         const { source, filter } = await snapshotCodex(entry, snapshot);

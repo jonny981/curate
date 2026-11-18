@@ -195,6 +195,7 @@ Sources can still affect each other. A selected commit brings in a note it chang
 | `git()` | `commits` | Off | | On | 0.0146 | | `GIT_HISTORY_CASCADE` |
 | `markdown()`, `knowledgeBase()` | `notes` | Off | | On | 0.0146 | | `MARKDOWN_CASCADE` |
 | `rules()` | `notes` | Off | | Off | 0.0146 | 0.5, not yet tuned | `MARKDOWN_CASCADE` |
+| `whatsapp()` | `directMessages` | Off | | On | 0.0146 | | `MARKDOWN_CASCADE` |
 
 - **Mode:** the source's questions, decision-score bar and read in one object, exported by its reader package. `agentTranscripts` reads from the person's own messages outward ([the chat read](packages/core/README.md#the-chat-read)); the others read down the ranked list.
 
@@ -258,7 +259,7 @@ const mySet = {
 const history = historySource({ reader: git('.'), ...gitSettings, mode: { ...commits, questions: mySet } });
 ```
 
-A source's mode carries its question set, its bar and how the decide step reads its parts; each reader exports its own (`agentTranscripts`, `assistantChatHistory`, `commits`, `notes`).
+A source's mode carries its question set, its bar and how the decide step reads its parts; each reader exports its own (`agentTranscripts`, `assistantChatHistory`, `commits`, `notes`, `directMessages`).
 A source without a mode asks each part one built-in question.
 Other question options: `PERSONAL_CHAT_CASCADE` for histories of a person's own life, `COUNT_MARKER` for count tasks, and `pick.writeQuestions` for questions written for each task (see [core's options](packages/core/README.md#questions-written-for-each-task)).
 `reader` can also be your own source; see [core's options](packages/core/README.md#levers-and-source-settings).
@@ -378,6 +379,7 @@ const sources = [
 See the [Markdown reader](packages/markdown/README.md) for dates, rule scopes and revision pins.
 `knowledgeBase()` reads an [Open Knowledge Format](packages/markdown/README.md#open-knowledge-format) bundle: its page dates, titles, root links, index and log.
 Older notes can rank lower with [decay](packages/markdown/README.md#decay), off by default, and [`reviewNotes()`](packages/markdown/README.md#reviewing-notes) proposes notes to retire or parts to promote.
+`whatsapp()` reads a [WhatsApp chat export](packages/markdown/README.md#whatsapp-exports) as one dated session a day, each read as a note.
 
 ## Bring your own models
 
