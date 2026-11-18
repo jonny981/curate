@@ -481,6 +481,7 @@ export async function snapshotCodex(entry, folder) {
     units: () => parts.units().map(shown),
     place: (part) => parts.place(asked(part)),
     close: () => parts.close(),
+    eachText: (visit) => parts.eachText((id, text) => visit(id.replace(folder, entry.path), text)),
     dealt: (laneIds) => {
       const dealt = parts.dealt(new Set([...laneIds].map((id) => id.replace(entry.path, folder))));
       return (part) => dealt(asked(part));
@@ -994,8 +995,18 @@ const credentialShaped = (token) => /^(?:sk|xai|pk|rk|xox[abeoprs])-/i.test(toke
  *  no line. */
 export function rareLines(task, seeds, parts) {
   const counts = new Map();
-  for (const part of parts) for (const token of searchTokens(part.text)) counts.set(token, (counts.get(token) ?? 0) + 1);
-  const most = Math.max(RARE_LEAST, Math.floor(RARE_SHARE * parts.length));
+  for (const part of parts) countWords(counts, part.text);
+  return rareFrom(task, seeds, counts, parts.length);
+}
+
+/** Adds each word of `text` once to `counts`: how many parts hold it. */
+const countWords = (counts, text) => {
+  for (const token of searchTokens(text)) counts.set(token, (counts.get(token) ?? 0) + 1);
+};
+
+/** `rareLines` from the word counts of a history of `size` parts. */
+function rareFrom(task, seeds, counts, size) {
+  const most = Math.max(RARE_LEAST, Math.floor(RARE_SHARE * size));
   const asked = searchTokens(task);
   return seeds.map((text) => [...searchTokens(text)]
     .filter((token) => counts.get(token) >= RARE_LEAST && counts.get(token) <= most && !asked.has(token)
@@ -1014,15 +1025,54 @@ export function rareLines(task, seeds, parts) {
  *  does not carry over. */
 export async function searchAgain(task, first, agentIds, pickAgain) {
   const key = (part) => JSON.stringify([part.sourceId, part.id]);
-  // Every part of the agent sources: the pool round one read.
-  const parts = [...new Map(first.reads.flatMap((read) => read.status === 'read' ? read.candidates : [])
-    .filter((part) => agentIds.has(part.sourceId)).map((part) => [key(part), part])).values()];
-  const texts = new Map(parts.map((part) => [key(part), part.text]));
-  const seeds = first.record.candidates
+  // Round one's rated parts of the agent sources, warmest first: the
+  // seeds are the first of them the history holds a text for.
+  const ranked = first.record.candidates
     .filter((entry) => agentIds.has(entry.sourceId) && ['selected', 'rejected'].includes(entry.status)
-      && entry.probability > 0 && texts.has(key(entry)))
-    .sort((left, right) => right.probability - left.probability).slice(0, SECOND_SEARCH_SEEDS);
-  const found = rareLines(task, seeds.map((seed) => texts.get(key(seed))), parts);
+      && entry.probability > 0)
+    .sort((left, right) => right.probability - left.probability);
+  const rankOf = new Map(ranked.map((entry, at) => [key(entry), at]));
+  // Every part of the agent sources, the pool round one read, once: its
+  // words are counted and the texts of the best-ranked parts kept, so no
+  // text of the history is held. A source round one sized by key reads
+  // its whole history again (`eachText`) on a connection of its own; any
+  // other agent source's read listed every part.
+  const counts = new Map();
+  let size = 0;
+  const best = [];
+  const take = (part, text) => {
+    size += 1;
+    countWords(counts, text);
+    const at = rankOf.get(key(part));
+    if (at === undefined) return;
+    best.push({ at, text });
+    best.sort((left, right) => left.at - right.at);
+    if (best.length > SECOND_SEARCH_SEEDS) best.pop();
+  };
+  const listed = new Set();
+  // A listed part that reads its text on demand reopens its reader's
+  // connection after round one closed it; it is closed again here.
+  const touched = new Map();
+  try {
+    for (const read of first.reads) {
+      if (read.status !== 'read') continue;
+      if (read.eachText !== undefined) {
+        read.eachText((part) => { if (agentIds.has(part.sourceId)) take(part, part.text); });
+        continue;
+      }
+      for (const part of read.candidates) {
+        if (!agentIds.has(part.sourceId) || listed.has(key(part))) continue;
+        listed.add(key(part));
+        const close = part[CLOSE_PARTS];
+        if (close !== undefined && !touched.has(close)) touched.set(close, part);
+        take(part, part.text);
+      }
+    }
+  } finally {
+    for (const [close, part] of touched) close.call(part);
+  }
+  const seeds = best.map(({ at }) => ranked[at]);
+  const found = rareFrom(task, best.map(({ text }) => text), counts, size);
   if (!found.length) return { picked: first };
   // The lines fill the two keyword and four answer lines, the task
   // filling any line left over.
@@ -1032,8 +1082,14 @@ export async function searchAgain(task, first, agentIds, pickAgain) {
   const had = new Set(first.selected.map(key));
   const added = second.selected.filter((part) => !had.has(key(part)));
   const addedKeys = new Set(added.map(key));
+  // A part round one only counted in `unheld`, not listed, is listed now.
+  const recorded = new Set(first.record.candidates.map(key));
+  const counted = {};
+  for (const part of added) if (!recorded.has(key(part))) counted[part.sourceId] = (counted[part.sourceId] ?? 0) + 1;
+  const unheld = first.record.unheld === undefined ? {} : { unheld: Object.fromEntries(Object.entries(first.record.unheld)
+    .map(([sourceId, count]) => [sourceId, count - (counted[sourceId] ?? 0)])) };
   return {
-    picked: { ...first, selected: [...first.selected, ...added], record: { ...first.record, candidates: [
+    picked: { ...first, selected: [...first.selected, ...added], record: { ...first.record, ...unheld, candidates: [
       ...first.record.candidates.filter((entry) => !addedKeys.has(key(entry))),
       ...second.record.candidates.filter((entry) => addedKeys.has(key(entry))),
     ] } },

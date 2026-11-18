@@ -28,6 +28,7 @@ const source = (id: string, byKey: boolean): CandidateSource => {
     units: () => [],
     place: (candidate) => { const at = place(candidate); return at < 0 ? Number.POSITIVE_INFINITY : at; },
     close: () => {},
+    eachText: (visit) => { for (const one of all) visit(one.id, one.text); },
     dealt: (laneIds) => {
       const rest = all.filter((one) => !laneIds.has(one.id));
       return (candidate) => rest.findIndex((one) => one.id === candidate.id);

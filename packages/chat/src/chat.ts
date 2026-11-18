@@ -2173,6 +2173,29 @@ export function chat(options: ChatOptions = {}): CandidateSource {
                 lookupDatabase = undefined;
                 lazy.close();
               },
+              eachText(visit) {
+                // Each id once, at its first part in the pool order, a
+                // transcript at a time; a part whose row another call
+                // re-indexed away is left out.
+                const connection = openIndexFileNow(path);
+                try {
+                  const statement = connection.prepare('SELECT ordinal, line, block, piece, text FROM parts WHERE transcript = ?');
+                  for (const [transcript, [start, end]] of c.spans) {
+                    const rows = new Map<number, { line: number; block: number; piece: number; text: string }>();
+                    for (const row of statement.iterate(transcript) as Iterable<{ ordinal: number; line: number; block: number; piece: number; text: string }>) {
+                      rows.set(row.ordinal, row);
+                    }
+                    for (let index = start; index < end; index += 1) {
+                      const row = rows.get(c.ordinals[index]!);
+                      if (row === undefined || row.line !== c.lines[index] || row.block !== c.blocks[index]
+                        || row.piece !== c.pieces[index] || !first(index)) continue;
+                      visit(c.ids[index]!, row.text);
+                    }
+                  }
+                } finally {
+                  connection.close();
+                }
+              },
               ordered(compare) {
                 return withOrder(() => {
                   const latest = new Map<number, number>();

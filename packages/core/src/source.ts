@@ -252,6 +252,12 @@ export type CandidateReadResult =
        *  the parts no lane kept, found by key when that read reaches them
        *  (see `ModeParts`). */
       readonly parts?: ModeParts;
+      /** Set by pickFromSources on a source it sized by key (`parts`) in
+       *  place of `parts`: visits every part of the source's whole read
+       *  once, with the text its row holds now, on a connection of its own
+       *  closed before it returns. Round one's whole history, for a caller
+       *  such as a second search that counts its words after the pick. */
+      readonly eachText?: (visit: (part: { readonly sourceId: string; readonly id: string; readonly text: string }) => void) => void;
       /** Set by a reader that ranked with `decayHalfLife`: how many dated
        *  parts it ranked, and the ids of the parts its limit and lane cut
        *  kept (`added`) or left out (`dropped`) only because of decay. A
@@ -1402,10 +1408,14 @@ export async function pickFromSources(
   }
   // The names found above, also when every source with name lanes on was absent.
   // A history's size went to the pick and stays out of the reads.
-  return { ...result, reads: reads.map((read) => {
+  // A source sized by key hands, in place of its lookup, a pass over its
+  // whole history's texts for a caller that needs them after the pick.
+  return { ...result, reads: reads.map((read, at) => {
     if (read.status !== 'read' || (read.historySize === undefined && read.parts === undefined)) return read;
-    const { historySize: _size, parts: _parts, ...rest } = read;
-    return rest;
+    const { historySize: _size, parts, ...rest } = read;
+    if (parts === undefined) return rest;
+    const sourceId = sources[at]!.id;
+    return { ...rest, eachText: (visit) => parts.eachText((id, text) => visit({ sourceId, id, text })) };
   }), record: { ...result.record, ...(found === undefined ? {} : { names: found }),
     ...(Object.keys(index).length === 0 ? {} : { index }),
     ...(Object.keys(changed).length === 0 ? {} : { changed }), levers, effects } };

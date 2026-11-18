@@ -6,10 +6,12 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { pickFromSources, type CandidateReadRequest, type CandidateSource, type PickDecide } from '@curatejs/core';
 import { chat } from '@curatejs/chat';
+// @ts-expect-error The standalone JavaScript command has no type declarations.
+import { searchAgain } from '../skills/curate/run.mjs';
 
 // Every index connection a call opens is closed again: when the pick
-// ends, when a read is cancelled before the pick, and when the decision
-// service fails.
+// ends, when a read is cancelled before the pick, when the decision
+// service fails, and after a second search reads round one's history.
 // The connections are counted where core opens them, through node:sqlite.
 const sqlite = process.getBuiltinModule('node:sqlite') as unknown as { DatabaseSync: new (path: string, ...rest: unknown[]) => { close(): void } };
 const Original = sqlite.DatabaseSync;
@@ -58,6 +60,15 @@ describe('index connections', () => {
       } };
       await expect(pickFromSources([cancelled], { task: 'orchard', searchPhrases: ['orchard', 'answer'] },
         { task: 'orchard', cache: false, decide: answered })).rejects.toThrow('cancelled');
+      expect(openIn()).toEqual([]);
+    });
+  });
+
+  it('are all closed after a second search reads round one\'s history', { timeout: 60_000 }, async () => {
+    await history(async (source, openIn) => {
+      const first = await pickFromSources([source], { task: 'orchard' }, { task: 'orchard', cache: false, decide: answered });
+      expect(openIn()).toEqual([]);
+      await searchAgain('orchard', first, new Set([source.id]), async () => first);
       expect(openIn()).toEqual([]);
     });
   });

@@ -58,6 +58,12 @@ export interface ModeParts {
    *  open. A part it makes may read its text on demand; the pick settles
    *  such parts as it settles any (see `pickFromSources`). */
   close(): void;
+  /** Visits every part of the source's whole read once, the first part
+   *  of each id, with the text its row holds now: the history's words for
+   *  a caller that needs them after the pick, such as a second search.
+   *  Reads on a connection of its own, closed before it returns, so it
+   *  works after `close`. */
+  eachText(visit: (id: string, text: string) => void): void;
   /** The same parts with the pool order `compare` gives (a stable sort
    *  of the reader's own order): a caller that reorders the source's
    *  whole read reorders these the same way. The reader sorts one array

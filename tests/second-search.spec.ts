@@ -1,5 +1,10 @@
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 import { conversationRead, type CandidateReadRequest, type CandidateSource, type MemoryCandidate, type PickCascade, type PickDecide } from '@curatejs/core';
+import { chat } from '@curatejs/chat';
 // @ts-expect-error The standalone JavaScript command has no type declarations.
 import { pickFullSources, rareLines, searchAgain, searchSource } from '../skills/curate/run.mjs';
 
@@ -117,6 +122,40 @@ describe('the second search on coding-agent transcripts', () => {
     expect(again.picked.selected.map((candidate: MemoryCandidate) => candidate.id)).toContain(answer.id);
     expect(again.picked.record.candidates.filter((entry: { id: string }) => entry.id === answer.id))
       .toEqual([expect.objectContaining({ status: 'selected' })]);
+  });
+
+  it('counts its rare words over the whole history when round one only sized it', { timeout: 60_000 }, async () => {
+    // Round one's lanes keep one part of 207; the other 206 are counted,
+    // not held. A word is rare in the whole history (in 2 of 207 parts),
+    // not among the parts the lanes kept, and leads round two to the
+    // other transcript's part.
+    const dir = await mkdtemp(join(tmpdir(), 'curate-second-search-'));
+    try {
+      const history = join(dir, 'history');
+      await mkdir(history);
+      const texts = ['orchard hibiscus', 'ordinary blooms', 'ordinary weather', 'summer sunshine', 'winter snow', 'autumn falling',
+        ...Array.from({ length: 200 }, (_, index) => `mundane filler ${index}`)];
+      await writeFile(join(history, 'a.jsonl'), texts.map((text, at) => JSON.stringify({ type: 'user', sessionId: 's',
+        timestamp: new Date(Date.UTC(2026, 10, 1, 12, at)).toISOString(), message: { role: 'user', content: text } })).join('\n') + '\n');
+      await writeFile(join(history, 'b.jsonl'), JSON.stringify({ type: 'assistant', sessionId: 't', timestamp: '2026-11-01T12:00:00Z',
+        message: { role: 'assistant', content: 'hibiscus destination bristol' } }) + '\n');
+      const source = { ...chat({ providers: ['claude-code'], paths: [history], index: { directory: join(dir, 'index') } }), labelKinds: [], names: false };
+      const decide: PickDecide = async (batch) => Object.fromEntries(batch.questions.map((question) =>
+        [question.key, { status: 'answered', probability: 0.9 }]));
+      const first = await pickFullSources([source], { task: 'orchard' }, { task: 'orchard', cache: false, decide });
+      let asked: { keywords: string[] } | undefined;
+      const again = await searchAgain('orchard', first, new Set([source.id]), async (lines: { keywords: string[] }) => {
+        asked = lines;
+        return pickFullSources([source], { task: 'orchard', searchLines: lines.keywords }, { task: 'orchard', cache: false, decide });
+      });
+      expect(asked?.keywords[0]).toContain('hibiscus');
+      expect(again.picked.selected.map((part: MemoryCandidate) => part.text)).toContain('hibiscus destination bristol');
+      // Each of the 207 parts is listed in the record or counted in `unheld`, never both.
+      const record = again.picked.record as { candidates: { sourceId: string }[]; unheld?: Record<string, number> };
+      expect(record.candidates.filter((entry) => entry.sourceId === source.id).length + (record.unheld?.[source.id] ?? 0)).toBe(207);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it('runs no second pick when round one\'s warmest parts hold no rare word', async () => {
