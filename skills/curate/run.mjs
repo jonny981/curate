@@ -798,8 +798,8 @@ export async function pickFullSources(sources, call, options, context = { files:
 // words of its warmest rated parts become a second search's lines, and a
 // second pick reads that search's order with the same stop and round
 // one's decisions, so only parts round one never rated are rated; a
-// reused decision does not count toward that stop, and round two's record
-// counts its new and reused parts apart. The
+// reused decision counts toward that stop with its stored rating, and
+// round two's record counts its new and reused parts apart. The
 // parts round two keeps join round one's. Measured with the plain read
 // of the ranked list: on long chats with an assistant (BEAM, 40
 // questions, read as Markdown) round two's new parts held 99 evidence

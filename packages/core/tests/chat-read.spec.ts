@@ -102,22 +102,26 @@ describe('the chat read', () => {
     }
   });
 
-  it('does not count a reused decision toward its stop', async () => {
-    // As above, but request 1's ten warm parts were decided in an earlier
-    // pick of the call: only request 2's three are new, so the stop has
-    // nothing to measure them against and the read goes on to request 3.
-    const parts = personSessions(336);
-    const warm = (from: number, count: number) => Object.fromEntries(Array.from({ length: count },
-      (_, index) => [idOf(`s${from + index}`, 1), 0.9]));
-    const ratings = { ...warm(0, 10), ...warm(112, 3), ...warm(224, 50) };
-    const scores = new Map(parts.map((part) => [part, ratings[part.id] ?? 0.001]));
-    const reused = new Set(Object.keys(warm(0, 10)));
-    const asked: MemoryCandidate[] = [];
-    const result = await chatRead({ parts, order: parts.filter((part) => part.author === 'person'),
-      byKeyword: parts.filter((part) => part.author === 'person'), lanes: [], rate: async (some) => { asked.push(...some); },
-      score: (part) => scores.get(part), kept: () => true, stopped: () => false, reused: (part) => reused.has(part.id) });
-    expect(result.requests).toBe(3);
-    expect(asked.some((part) => part.id === idOf('s224', 1))).toBe(true);
+  it('reads with its decisions cached the parts it reads fresh: a reused rating counts toward its stop', async () => {
+    // 336 one-part person sessions, 112 a request: 10 warm parts in the
+    // first request, 112 in the second and 50 in the third.
+    const parts = personSessions(336).filter((part) => part.author === 'person');
+    const ratings = Object.fromEntries(parts.map((part, index) =>
+      [part.id, index < 10 || (index >= 112 && index < 274) ? 0.9 : 0.001]));
+    const fresh = rater(ratings);
+    const first = await pick(parts, { task, decide: fresh.decide, ...agentRead });
+    // A cache holding the second request's 112 decisions, from an earlier pick.
+    const store = new Map<string, unknown>();
+    const cache = { deciderId: 'test', store: { get: async (key: string) => store.get(key), set: async (key: string, value: unknown) => { store.set(key, value); } } };
+    await pick(parts.slice(112, 224), { task, decide: rater(ratings).decide, ...agentRead, cache });
+    const cached = rater(ratings);
+    const again = await pick(parts, { task, decide: cached.decide, ...agentRead, cache });
+    const read = (result: typeof first) => result.record.candidates.filter((entry) => entry.status === 'selected' || entry.status === 'rejected')
+      .map((entry) => entry.id).sort();
+    expect(read(again)).toEqual(read(first));
+    expect(again.selected.map((part) => part.id)).toContain(parts[224]!.id);
+    expect(again.record.pick?.chatRead?.chat).toMatchObject({ reused: 112, rated: first.record.pick?.chatRead?.chat?.rated! - 112 });
+    expect(new Set(cached.asked.flat()).size).toBe(new Set(fresh.asked.flat()).size - 112);
   });
 
   it('does not stop before the first warm part', async () => {

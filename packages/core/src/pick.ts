@@ -3004,7 +3004,7 @@ export async function pick(
     return answer?.status === 'answered' && 'reused' in answer && answer.reused === true;
   };
   const shared = { rate: evaluate, waves: nextWave, copied: (candidate: MemoryCandidate) => copied.has(candidate),
-    score: scoreOf, stopped: () => stop !== undefined, reused: reusedOf,
+    score: scoreOf, stopped: () => stop !== undefined,
     ...(stopRule === undefined ? {} : { stop: stopRule }) };
   // The ranked read of the rest of the feed. It holds its stop until
   // selection keeps a part it rated, on the bar the selection pass will

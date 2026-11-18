@@ -1456,7 +1456,7 @@ record's `pick.chatRead` holds one entry for each conversation read of
 the call, under the name of the mode it read (`agent-transcripts` for
 `chat()`'s), so a call with two such modes keeps both reads' numbers.
 Each entry holds the requests read before the stop, the
-segments opened, the units of agent work opened, the parts its own requests rated (`rated`) and those whose decision came from the decision store (`reused`, which never count toward its stop), the chat parts of the order left
+segments opened, the units of agent work opened, the parts its own requests rated (`rated`) and those whose decision came from the decision store (`reused`, which count toward its stop with their stored ratings, so a run whose decisions are stored reads as the run that stored them did), the chat parts of the order left
 unread, and what ended the read: `'fall'`, `'order'` when the order ran
 out first, or the stopping dial. The stop never fires before the read
 has kept a part on the bar selection keeps it at, so a call does not
