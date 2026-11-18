@@ -555,6 +555,38 @@ describe('the units of agent work as one more start', () => {
     expect(await unitStarts(units, ['What happened?'], same)).toEqual([]);
   });
 
+  it('opens no unit when the call stops while the units are ranked, and counts no unit without a rated part', async () => {
+    // Agent u0 worked on the database the query names, u1 on something else.
+    const topic = (n: number) => n === 0 ? 'Postgres' : 'Pear';
+    const parts = [...personSessions(4), ...Array.from({ length: 2 }, (_, n) => [agentPart(`u${n}`, 1, 1, 'prompt', `${topic(n)} question ${n}`),
+      ...Array.from({ length: 6 }, (_, k) => agentPart(`u${n}`, 9, k + 1, 'report', `${topic(n)} report ${n} part ${k}`))]).flat()];
+    const ratings = new Map<MemoryCandidate, number>([[parts[0]!, 0.9]]);
+    const input = { parts, order: parts.filter((part) => part.author === 'person'), byKeyword: parts.filter((part) => part.author === 'person'),
+      lanes: [], score: (part: MemoryCandidate) => ratings.get(part), kept: () => true, queries: ['postgres report'] };
+    // The embedder takes long enough for another read to stop the call.
+    let stop = false;
+    const asked: MemoryCandidate[] = [];
+    const stopped = await chatRead({ ...input, rate: async (some) => { asked.push(...some); }, stopped: () => stop,
+      embed: async (texts) => { stop = true; return texts.map(() => [1, 0]); } });
+    expect(stopped.units).toBe(0);
+    expect(asked.filter((part) => part.chat?.unit !== undefined)).toEqual([]);
+    // The decide step leaves every unit part unanswered: no unit counts.
+    const unanswered = await chatRead({ ...input, rate: async () => {}, stopped: () => false });
+    expect(unanswered.units).toBe(0);
+  });
+
+  it('counts as rated only the parts the decide step answered', async () => {
+    const parts = [...personSessions(4), ...['Postgres', 'Pear'].flatMap((topic, n) =>
+      Array.from({ length: 6 }, (_, k) => agentPart(`u${n}`, 9, k + 1, 'report', `${topic} report part ${k}`)))];
+    const answered = new Set(personSessions(4).map((part) => part.id));
+    const decide: PickDecide = async ({ questions }) => Object.fromEntries(questions.filter((question) => answered.has(question.id))
+      .map((question) => [question.key, { status: 'answered', probability: question.id === idOf('s0', 1) ? 0.9 : 0.001 }]));
+    const result = await pick(parts, { task, decide, ...agentRead, queriesBySource: { chat: [task, 'postgres report'] } });
+    const rated = result.record.candidates.filter((entry) => entry.status === 'selected' || entry.status === 'rejected').length;
+    expect(result.record.pick?.chatRead?.rated).toBe(rated);
+    expect(result.record.pick?.chatRead?.units).toBe(0);
+  });
+
   it('describes a unit by its first 600 characters, its headings, its rarest words and, for a report, its prompt', () => {
     // The text the measured script (climb13.py) makes from the same parts,
     // with the heading that starts the second part, which the script lost.

@@ -679,8 +679,9 @@ export interface PickRecord {
      *  together. Warm means rated at least 0.1 times the best rating the
      *  read has seen. `requests` counts the requests read before the
      *  stop, `segments` the segments opened, `units` the units of agent
-     *  work (a subagent's prompt or report) opened after them, `rated` the parts it
-     *  rated, `unread` the chat parts of the order it never reached,
+     *  work (a subagent's prompt or report) with a part answered, opened
+     *  after them, `rated` the parts the decide step answered for it,
+     *  `unread` the chat parts of the order it never reached,
      *  and `ended` what ended it: 'fall', 'order' when the order ran out
      *  first, or the stopping dial. */
     readonly chatRead?: {
@@ -3097,7 +3098,9 @@ export async function pick(
         reason: result.reason === 'chatRead' ? stop ?? 'chatRead' : result.reason });
     }
     if (result.requests !== undefined) {
-      chatRecord = { requests: result.requests, segments: result.segments ?? 0, units: result.units ?? 0, rated: result.read.length,
+      // A part counts as rated when the decide step answered it.
+      chatRecord = { requests: result.requests, segments: result.segments ?? 0, units: result.units ?? 0,
+        rated: result.read.filter((part) => scoreOf(part) !== undefined).length,
         unread: result.unread.length, ended: result.ended === 'stopped' ? stop! : result.ended as 'fall' | 'order' };
     }
   }

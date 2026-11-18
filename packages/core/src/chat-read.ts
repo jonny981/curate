@@ -107,13 +107,14 @@ export interface ConversationRules {
 }
 
 export interface ChatReadResult {
-  /** The parts rated, in the order the read reached them. */
+  /** The parts the read asked about, in the order it reached them; a
+   *  part the decide step left unanswered is among them. */
   readonly read: readonly MemoryCandidate[];
   /** Requests of the order read before the read moved to segments. */
   readonly requests: number;
   /** Topic segments opened. */
   readonly segments: number;
-  /** Units of agent work opened. */
+  /** Units of agent work opened: those with a part the decide step answered. */
   readonly units: number;
   /** 'fall' when the new warm parts fell, 'order' when the order ran
    *  out first, 'stopped' when a stopping dial ended the call. */
@@ -538,7 +539,9 @@ export async function chatRead(input: ChatReadInput): Promise<ChatReadResult> {
   // Then the units of agent work above the bend of either ranking,
   // read as the segments are: each unit's starts, its parts the order
   // ranks first and then in its own order, and walks inside the unit.
-  const units = stopped() ? [] : await unitStarts(agentUnits(input.parts), input.queries ?? [], input.embed);
+  const found = stopped() ? [] : await unitStarts(agentUnits(input.parts), input.queries ?? [], input.embed);
+  // The ranking can take long enough for another read to stop the call.
+  const units = stopped() ? [] : found;
   // A part the order does not rank comes after those it does.
   const ordered = new Map(ranked.map((part, index) => [part, index]));
   const rankOf = (part: MemoryCandidate) => ordered.get(part) ?? Number.MAX_SAFE_INTEGER;
@@ -546,5 +549,8 @@ export async function chatRead(input: ChatReadInput): Promise<ChatReadResult> {
   const reading = [...units].sort((left, right) => firstOf(left) - firstOf(right));
   await rate(reading.flatMap((unit) => [...unit.parts].sort((left, right) => rankOf(left) - rankOf(right)).slice(0, STARTS)));
   await walk(reading.map((unit) => unit.parts));
-  return { read, requests, segments: segments.length, units: reading.length, ended: stopped() ? 'stopped' : ended };
+  // A unit counts as opened when the decide step answered one of its parts.
+  return { read, requests, segments: segments.length,
+    units: reading.filter((unit) => unit.parts.some((part) => score(part) !== undefined)).length,
+    ended: stopped() ? 'stopped' : ended };
 }
