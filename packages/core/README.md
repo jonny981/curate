@@ -70,7 +70,8 @@ import { jev } from '@curatejs/core/models';
 const decide = jev({ apiKey: process.env.TYPESAFE_API_KEY });
 ```
 
-- **Jev:** `jev({ apiKey?, model?, url? })` returns a `PickDecide` function for TypeSafe's System One endpoint, with `deciderId: typesafe:${model}:item-records`. The model defaults to `'jev-latest'`. Missing or invalid probabilities become missing answers.
+- **Jev:** `jev({ apiKey?, model?, url?, requestsPerSecond?, tokensPerSecond? })` returns a `PickDecide` function for TypeSafe's System One endpoint, with `deciderId: typesafe:${model}:item-records`. The model defaults to `'jev-latest'`. Missing or invalid probabilities become missing answers.
+- **Jev's rate limits:** TypeSafe sets request and token rates per organization and shows them in its developer console. Set yours with `requestsPerSecond` and `tokensPerSecond`: `jev()` queues every request inside both and never sends faster. Unset, it keeps to 80 requests and 100,000 estimated tokens a second (three characters a token), stand-ins for an organization's own limits; TypeSafe's documentation publishes no figures.
 - **Jev at another address:** set `url` for any server that speaks Jev's format, such as a Clef server. The key is then optional, and no `authorization` header is sent without one. The `deciderId` is `jev:${host}${path}:${model}:item-records`, read from `url`.
 - **What a Jev request holds:** the request's state is a JSON object: the batch's task, the facts the answer needs when the batch carries them (`needed`), and each item once, as a record under its number in `items`, with its id, date, title and text, its `author` where its reader marked one, and any fields code wrote about it (`facts` on the question, such as a report's `asked`). Each question's instructions are an object holding its wording and the path of its item's record, such as `items.3`, so an item asked seven questions is sent once. `jevRequest(batch, model?)`, exported from `@curatejs/core`, builds that body.
 - **Jev request size:** Jev documents its limits in tokens: 32,000 for the state plus the longest question, and 64,000 for the whole request. At an estimate of three characters a token, `jev()` splits a batch into several requests so that in each one the state plus its longest question's instructions and criteria is at most 96,000 characters, and the whole request body at most 192,000. An item's questions always go in its item's request, and an item larger than those bounds goes alone. The answers come back as one map for the batch.
@@ -80,7 +81,7 @@ const decide = jev({ apiKey: process.env.TYPESAFE_API_KEY });
 - **OpenAI Decisions:** `openAIDecisions({ apiKey, model? })` returns a `PickDecide` function for the [Decisions API](https://developers.openai.com/api/docs/guides/decisions), with `deciderId: openai:${model}`. The model defaults to `'gpt-6-luna'`. Predicate answers become probabilities; refusals become `{ status: 'refused' }`. Missing or invalid probabilities become missing answers.
 - **Local decisions:** `localDecisions({ url, model, apiKey? })` returns a `PickDecide` function for an OpenAI-compatible chat completions address, with `deciderId: local:${host}${path}:${model}`. It sends one request a question, one after another. Each request holds the task, the question with its true and false criteria, and the item's id, date, title and text, and asks for one token with `temperature: 0`, `logprobs: true` and `top_logprobs: 20`. The answer is the probability of the "yes" tokens over the "yes" and "no" tokens among the first token's top log-probabilities, with case and leading whitespace ignored. When neither is there, the answer is missing. No `authorization` header is sent without a key.
 - **Separate IDs per server:** the IDs built from `url` leave out its scheme and query. Set `labels.deciderId` yourself for two servers that differ only there. A decision cache keeps its own `deciderId`, so give it a different one for each server.
-- **Errors:** `jev()` rejects a missing API key at its default address, and `openAIDecisions()` always does. A `localDecisions()` reply with no log-probabilities throws `The model server at <url> returned no log-probabilities; localDecisions needs a server that does.` An HTTP 429 reply to a `jev()` request waits as its Retry-After header directs, one second when it names none, then sends the same request again, for at most 60 seconds from the first 429: a wait that would end later throws a `DecisionServiceError` with reason `busy`, whose message gives the seconds waited, the wait the last reply asked for and the service's message. Other failures throw a `DecisionServiceError` too (exported from `@curatejs/core/models`) whose message leads with the reason: `The decision service has no credit (HTTP 402): ...` for a 402, `refused the API key` for a 401 or 403, `could not be reached` for a request that got no reply, and `refused the request` for any other status, each followed by the message the service gave. It carries `status` (0 with no reply), `reason` (`credit`, `key`, `unreachable`, `busy` or `refused`), `reply`, the reply's whole body, and `said`, the service's message. Cancellation reaches `fetch` and stays a cancellation.
+- **Errors:** `jev()` rejects a missing API key at its default address, and `openAIDecisions()` always does. A `localDecisions()` reply with no log-probabilities throws `The model server at <url> returned no log-probabilities; localDecisions needs a server that does.` An HTTP 429 reply to a `jev()` request (over a rate limit), or a 529 (the service overloaded), waits as its Retry-After header directs, one second when it names none, then sends the same request again, for at most 60 seconds from the first such reply: a wait that would end later throws a `DecisionServiceError` with reason `busy`, whose message gives the seconds waited, the wait the last reply asked for and the service's message. Other failures throw a `DecisionServiceError` too (exported from `@curatejs/core/models`) whose message leads with the reason: `The decision service has no credit (HTTP 402): ...` for a 402, `refused the API key` for a 401 or 403, `could not be reached` for a request that got no reply, and `refused the request` for any other status, each followed by the message the service gave. It carries `status` (0 with no reply), `reason` (`credit`, `key`, `unreachable`, `busy` or `refused`), `reply`, the reply's whole body, and `said`, the service's message. Cancellation reaches `fetch` and stays a cancellation.
 
 > [!NOTE]
 > At their default addresses, `jev()` and `openAIDecisions()` make paid model calls. A local model server needs no hosted service. You can also supply a plain `decide` function using any model route.
@@ -936,23 +937,23 @@ many questions about one document in a request, and its re-ranking
 recipe sends one candidate per request; it shows no request judging many
 separate items. The requests of a round go out at once, inside
 `limits.maxInFlight` and the decider's own rate. `jev()` queues every
-request inside 80 requests and 100,000 estimated tokens a second unless
-given the organization's own limits (`requestsPerSecond`,
-`tokensPerSecond`, as TypeSafe's console shows them; its documentation
-sets them per organization), and waits out a 429 or a 529 as the reply
-directs. At that pace a read of 1,000 items needs at least: pieces 3.8
-seconds batched, 12.5 seconds one a request (bound by the requests);
-whole messages 13.8 and 15.2 seconds; whole messages with hard facts
-15.8 and 17.3 seconds (bound by the tokens either way), worked from the
-average request sizes below. The service's own time comes on top: 182
-whole messages with hard facts, one a request and four at a time, came
-back in 7.3 seconds with none refused, about 0.15 seconds a request. A
-rating stop still plans its waves in parts. On the 22 short lists of one
-person's coding-agent history, one item per request carried 1.38 times
-the request text of today's batching on pieces (1,489 requests in place
-of 27), 2.72 times on whole messages (against 2.47 batched) and 3.11
-times on whole messages with hard facts (against 2.84). The record names
-the setting under `levers.sources`.
+request inside the organization's request and token rates, set with
+`requestsPerSecond` and `tokensPerSecond` from TypeSafe's console, and
+waits out a 429 or a 529 as the reply directs; 80 requests and 100,000
+estimated tokens a second stand in until they are set. At those stand-in
+rates a read of 1,000 items needs at least: pieces 3.8 seconds batched,
+12.5 seconds one a request (bound by the requests); whole messages 13.8
+and 15.2 seconds; whole messages with hard facts 15.8 and 17.3 seconds
+(bound by the tokens either way), worked from the average request sizes
+below. The service's own time comes on top: 182 whole messages with hard
+facts, one a request and four at a time, came back in 7.3 seconds with
+none refused, about 0.15 seconds a request. A rating stop still plans
+its waves in parts. On the 22 short lists of one person's coding-agent
+history, one item per request carried 1.38 times the request text of
+today's batching on pieces (1,489 requests in place of 27), 2.72 times
+on whole messages (against 2.47 batched) and 3.11 times on whole
+messages with hard facts (against 2.84). The record names the setting
+under `levers.sources`.
 
 Cost: on LongMemEval's histories read as Markdown notes, at 333 rated
 parts a question, where the notes mode's four questions batched cost 8

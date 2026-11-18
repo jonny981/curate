@@ -115,15 +115,14 @@ function wait(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
-/** The pace the client keeps unless the caller sets its organization's
- *  own limits (`jev({ requestsPerSecond, tokensPerSecond })`): 80
- *  requests and 100,000 tokens a second, a starting allowance TypeSafe
- *  once published, a token estimated at three characters like the
- *  request-size bounds. TypeSafe's current documentation sets limits per
+/** Stand-ins for the organization's own rate limits until the caller
+ *  sets them (`jev({ requestsPerSecond, tokensPerSecond })`): 80
+ *  requests and 100,000 tokens a second, a token estimated at three
+ *  characters like the request-size bounds. TypeSafe sets limits per
  *  organization, shown in its developer console, in requests and tokens
- *  a second, and answers a request over either 429. These two rates
- *  bound every request the adapter sends: it queues against them and
- *  never sends faster. */
+ *  a second, publishes no figures, and answers a request over either
+ *  429. These two rates bound every request the adapter sends: it
+ *  queues against them and never sends faster. */
 const JEV_TOKENS_PER_SECOND = 100_000;
 const JEV_REQUESTS_PER_SECOND = 80;
 

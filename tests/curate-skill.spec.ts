@@ -174,6 +174,13 @@ describe('curate command input', () => {
     expect(parseSources({ sources }).maxInFlight).toBeUndefined();
   });
 
+  it('takes the organization\'s request and token rates as positive numbers only', () => {
+    const sources = [{ type: 'markdown', path: 'documents' }];
+    expect(() => parseSources({ sources, requestsPerSecond: 0 })).toThrow('requestsPerSecond must be a positive number');
+    expect(() => parseSources({ sources, tokensPerSecond: '100000' })).toThrow('tokensPerSecond must be a positive number');
+    expect(parseSources({ sources, requestsPerSecond: 200, tokensPerSecond: 400_000 })).toMatchObject({ requestsPerSecond: 200, tokensPerSecond: 400_000 });
+  });
+
   it.each([[false], [{}], [{ floor: 0.2 }], [{ floor: 0, share: 0.5 }], [{ parts: 150 }]])('keeps stopWhenCold %j', (value) => {
     expect(parseSources({ sources: [{ type: 'markdown', path: 'documents' }], stopWhenCold: value }).stopWhenCold).toEqual(value);
   });
@@ -1330,6 +1337,33 @@ describe('a run through core decision calls', () => {
     }
     expect(Object.values(record.pick.levers.sources as Record<string, { questions: unknown; itemsPerRequest: number }>))
       .toContainEqual(expect.objectContaining({ itemsPerRequest: 1 }));
+  });
+
+  it('paces the decision requests at the organization\'s request rate when the settings give it', async () => {
+    const directory = await folder();
+    const home = join(directory, 'home');
+    const notesFolder = join(directory, 'notes');
+    await mkdir(home);
+    await mkdir(notesFolder);
+    await writeFile(join(notesFolder, 'orchard.md'), '# Orchard cache\n\nWe keep the orchard cache layered.\n');
+    await writeFile(join(notesFolder, 'garden.md'), '# Orchard plan\n\nThe orchard cache might be flattened one day.\n');
+    const sourcesFile = join(directory, 'sources.json');
+    await writeFile(sourcesFile, JSON.stringify({ requestsPerSecond: 1,
+      sources: [{ type: 'markdown', path: notesFolder, levers: { itemsPerRequest: 1 } }] }));
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
+    vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
+    const sent: number[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => {
+      sent.push(Date.now());
+      const body = JSON.parse(String(init.body));
+      return new Response(JSON.stringify({ usage: null,
+        answers: Object.fromEntries(Object.keys(body.questions).map((key) => [key, { noul: 0.8 }])) }));
+    }));
+    const { call } = subscriptionReply(searches());
+    await run(['--sources', sourcesFile, 'Is the orchard cache layered?'], call);
+    expect(sent.length).toBeGreaterThanOrEqual(2);
+    expect(sent[1]! - sent[0]!).toBeGreaterThanOrEqual(900);
   });
 
   it('asks a Choice per needed fact over a Markdown source\'s kept notes when its entry turns the lever on', async () => {

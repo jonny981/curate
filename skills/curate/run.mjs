@@ -265,6 +265,11 @@ export function parseSources(value, base = process.cwd()) {
   if (value.maxInFlight !== undefined && (!Number.isSafeInteger(value.maxInFlight) || value.maxInFlight < 1)) {
     throw new Error('maxInFlight must be a positive integer.');
   }
+  for (const key of ['requestsPerSecond', 'tokensPerSecond']) {
+    if (value[key] !== undefined && !(typeof value[key] === 'number' && Number.isFinite(value[key]) && value[key] > 0)) {
+      throw new Error(`${key} must be a positive number: your organization's limit, as the TypeSafe console shows it.`);
+    }
+  }
   if (value.searchModel !== undefined && !['haiku', 'luna'].includes(value.searchModel)) {
     throw new Error("searchModel must be 'haiku' or 'luna'.");
   }
@@ -1488,12 +1493,17 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
     await preparing;
     // Core's jev() sends the requests and reports each one, split
     // requests included; the run record keeps them all.
-    const service = jev({ apiKey, onCall: async (call) => { record.jev.push(call); await save(); } });
+    // The organization's own rate limits, from the TypeSafe console; unset, jev()'s stand-ins.
+    const rates = {
+      ...(settings.requestsPerSecond === undefined ? {} : { requestsPerSecond: settings.requestsPerSecond }),
+      ...(settings.tokensPerSecond === undefined ? {} : { tokensPerSecond: settings.tokensPerSecond }),
+    };
+    const service = jev({ apiKey, ...rates, onCall: async (call) => { record.jev.push(call); await save(); } });
     // The sentence ratings' request goes in the same list, marked with its step.
     const layout = {
       ...(settings.answerTokens === undefined ? {} : { answerTokens: settings.answerTokens }),
       ...(settings.sentenceCutoff === undefined ? {} : { sentenceCutoff: settings.sentenceCutoff }),
-      decide: jev({ apiKey, onCall: async (call) => { record.jev.push({ step: 'sentences', ...call, usage: call.usage ?? 'unavailable' }); await save(); } }),
+      decide: jev({ apiKey, ...rates, onCall: async (call) => { record.jev.push({ step: 'sentences', ...call, usage: call.usage ?? 'unavailable' }); await save(); } }),
     };
     const reading = busyTime();
     const deciding = busyTime();
