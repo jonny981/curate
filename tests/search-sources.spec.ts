@@ -233,7 +233,7 @@ describe('extra source searches', () => {
     const picked = await pickSource(reader, { task, stripSearchInstructions: true, searchLines: ['events, return JSON'] }, decide);
     expect(calls).toEqual([task, 'How many events occurred after 2025? Say which is newer.', 'events']);
     const sentenceTasks: string[] = [];
-    await curate(task, picked, { decide: async (batch, signal) => { sentenceTasks.push(batch.task); return yes(batch, signal); } });
+    await curate(task, picked, { sentenceCutoff: 0.1, decide: async (batch, signal) => { sentenceTasks.push(batch.task); return yes(batch, signal); } });
     expect(sentenceTasks).toEqual([task]);
   });
 });

@@ -41,9 +41,9 @@ globalThis.fetch = async (url, init) => {
     // The README shows the same text, with the temporary folder as /home/sam.
     const shown = /```text\n([\s\S]*?)\n```/.exec(readme)?.[1];
     expect(output.trim().replaceAll(await realpath(directory), '/home/sam')).toBe(shown);
-    // One request decides the note and one rates its sentences.
+    // One request decides the note; no sentence is rated unless the call sets a cutoff.
     expect(JSON.parse(await readFile(join(directory, 'calls.json'), 'utf8'))).toEqual([
-      'https://api.typesafe.ai/v1/systemone', 'https://api.typesafe.ai/v1/systemone',
+      'https://api.typesafe.ai/v1/systemone',
     ]);
     console.log('README example (stub models):\n' + output.trim());
   } finally {
