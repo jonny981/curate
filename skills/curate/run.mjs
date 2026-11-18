@@ -62,7 +62,7 @@ export const SETUP = [
     why: 'A call downloads none, and any embedding model in GGUF form works. Stored vectors are kept per model, so a different model embeds the history again.',
     fix: `Put EmbeddingGemma 300M in 8-bit GGUF (about 330 MB) at \`~/.cache/curate/models/embeddinggemma-300M-Q8_0.gguf\`, or under \`$XDG_CACHE_HOME/curate/models\` when \`XDG_CACHE_HOME\` is set: \`curate setup\` offers to download it, or run \`mkdir -p ~/.cache/curate/models && curl -L -o ~/.cache/curate/models/embeddinggemma-300M-Q8_0.gguf ${MODEL_URL}\`. Or name the model file you chose with \`embeddingModel\` in \`~/.curate/sources.json\`.` },
   { id: 'key', need: 'The decision key (`TYPESAFE_API_KEY`)',
-    why: 'It is a paid Jev key from TypeSafe. Jev decides which parts of the history answer the question, at a few pence a call.',
+    why: 'It is a paid Jev key from TypeSafe. Jev decides which parts of the history answer the question, at about $0.00002 for each part it rates.',
     fix: 'Get a key from TypeSafe (https://typesafe.ai), then set `TYPESAFE_API_KEY` in the environment, or put `TYPESAFE_API_KEY=<key>` in a private file and name that file with `envFile` in `~/.curate/sources.json`. Never put the key in `curate.json`.' },
   { id: 'login', need: 'A login for the search lines',
     why: 'One small call on a subscription writes the search lines: Claude Haiku on the Claude login, or GPT-6 Luna through Codex on the ChatGPT login. `searchModel` picks one.',
@@ -1448,10 +1448,12 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
     // the agent sources ranks their units of work against them.
     const queriesOf = (searches) => Object.fromEntries(sources.map((source) => [source.id,
       [options.task, ...(searches[source.kind]?.keywords ?? []), ...(searches[source.kind]?.answers ?? [])]]));
+    // A call stops where the ratings go cold, at the library's own levels,
+    // unless the settings turn the stop off with false or set its levels.
     const pickOptions = { task: options.task, decide, queriesBySource: queriesOf(record.searches),
       limits: { maxBatchChars,
         ...(settings.maxInFlight === undefined ? {} : { maxInFlight: settings.maxInFlight }) },
-      ...(settings.stopWhenCold === undefined ? {} : { stopWhenCold: settings.stopWhenCold }),
+      stopWhenCold: settings.stopWhenCold ?? {},
       ...(settings.feed === undefined ? {} : { feed: settings.feed }),
       ...(settings.threshold === undefined ? {} : { everyScored: { bar: settings.threshold } }),
       ...(agentIds.size === 0 || needed?.facts === undefined ? {} : { needed: needed.facts }),
@@ -1471,6 +1473,11 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
       ...(read.noSearchMatch === true ? { noSearchMatch: true } : {}),
       ...(read.lanes === undefined ? {} : { lanes: read.lanes }) }));
     for (const read of record.sourcesRead) if (readWarning(read) !== undefined) console.error(readWarning(read));
+    // The parts the rating stop left unread are said here too, since records are off by default.
+    const stop = picked.record.pick?.stopWhenCold;
+    if (stop?.ended === 'cold' && stop.unread > 0) {
+      console.error(`The rating stop ended the read where the ratings went cold, with ${stop.unread} of ${stop.rated + stop.unread} ranked parts unread; set "stopWhenCold": false in ${configFile ?? options.sources} to read them all.`);
+    }
     record.timings.rankAndDecideMs = Date.now() - pickStart;
     // Reads and decisions never overlap in a pick: every read ends before
     // the first decision starts. Ranking is the rest.

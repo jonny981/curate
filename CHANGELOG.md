@@ -233,9 +233,12 @@ What each part does:
   Codex sessions, plus the sources `curate.json` and `~/.curate/sources.json`
   list. One call on a Claude or ChatGPT login writes the search lines, Jev
   decides, and the laid-out parts are printed for the agent to summarise.
-  `--check` lists each need as ready or missing with its fix, `--prepare`
-  brings the stored index and embeddings up to date, and a call that misses
-  a need exits with code 3.
+  A call stops reading where the ratings go cold, at the library's own
+  levels, unless the settings set `stopWhenCold` to `false`, and says on
+  standard error how many ranked parts the stop left unread. `--check`
+  lists each need as ready or missing with its fix, `--prepare` brings the
+  stored index and embeddings up to date, and a call that misses a need
+  exits with code 3.
 
 Every library package runs on Node.js 22.20 or later and loads through
 `import` or `require`. The `curate` command needs Node.js 22.20 or later.
