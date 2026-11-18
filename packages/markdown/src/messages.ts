@@ -67,10 +67,18 @@ function timeOf(line: Line, order: DateOrder): number {
 }
 
 /** The order of day and month: a number over 12 settles it, and so do the
- *  dates themselves, since an export is in the order the messages were
- *  sent: the order under which they go back fewer times. When neither
- *  settles it, a 12-hour clock with a two-digit year, as a month-first
- *  phone writes its export, reads month first; anything else day first. */
+ *  dates themselves when they clearly favour one reading: an export is in
+ *  the order the messages were sent, so the reading under which they go
+ *  back at least `ORDER_MARGIN` fewer times is taken. When neither settles
+ *  it, a 12-hour clock with a two-digit year, as a month-first phone
+ *  writes its export, reads month first; anything else day first. */
+/** How many fewer times one reading's dates must go back for their order
+ *  to settle it: 3. A line touches only the step into it and the step out
+ *  of it, so one line, such as an old message pasted into a new one, moves
+ *  the difference between the readings by at most 2; 3 needs at least two
+ *  lines that agree. */
+const ORDER_MARGIN = 3;
+
 function dateOrder(lines: readonly Line[]): { readonly dates: DateOrder; readonly settled: boolean } {
   const orders = (['day-first', 'month-first'] as const).filter((order) =>
     lines.every((line) => line.yearFirst || !Number.isNaN(timeOf(line, order))));
@@ -78,7 +86,7 @@ function dateOrder(lines: readonly Line[]): { readonly dates: DateOrder; readonl
   const back = (order: DateOrder) => lines.reduce((count, line, index) =>
     index > 0 && timeOf(line, order) < timeOf(lines[index - 1]!, order) ? count + 1 : count, 0);
   const [day, month] = [back('day-first'), back('month-first')];
-  if (day !== month) return { dates: day < month ? 'day-first' : 'month-first', settled: true };
+  if (Math.abs(day - month) >= ORDER_MARGIN) return { dates: day < month ? 'day-first' : 'month-first', settled: true };
   const usPhone = lines.length > 0 && lines.every((line) => line.half !== undefined && line.shortYear);
   return { dates: usPhone ? 'month-first' : 'day-first', settled: false };
 }

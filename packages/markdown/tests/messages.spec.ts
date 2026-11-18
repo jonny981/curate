@@ -44,10 +44,20 @@ describe('a WhatsApp chat export', () => {
   });
 
   it('settles the order of day and month from the order of the dates, and says when nothing in the export settles it', () => {
-    // Read day first these dates would go back from May to January.
-    const us = parseWhatsapp(['3/4/23, 2:01 PM - Sam: one', '3/5/23, 9:12 AM - Ann: two', '4/1/23, 6:40 PM - Sam: three'].join('\n'));
+    // Read day first these dates go back three times, from September to January: more than one line can do.
+    const us = parseWhatsapp(['3/9/23', '4/1/23', '4/9/23', '5/1/23', '5/9/23', '6/1/23'].map((date, index) =>
+      `${date}, 2:01 PM - ${index % 2 ? 'Ann' : 'Sam'}: message ${index}`).join('\n'));
     expect(us).toMatchObject({ dates: 'month-first', settled: true });
-    expect(us.messages.map((message) => message.day)).toEqual(['2023-03-04', '2023-03-05', '2023-04-01']);
+    expect(us.messages.map((message) => message.day)).toEqual(['2023-03-09', '2023-04-01', '2023-04-09', '2023-05-01', '2023-05-09', '2023-06-01']);
+    // Going back once, as 3 April, 3 May, 4 January would, does not settle it.
+    const once = parseWhatsapp(['3/4/23, 2:01 PM - Sam: one', '3/5/23, 9:12 AM - Ann: two', '4/1/23, 6:40 PM - Sam: three'].join('\n'));
+    expect(once).toMatchObject({ dates: 'month-first', settled: false });
+    expect(once.messages.map((message) => message.day)).toEqual(['2023-03-04', '2023-03-05', '2023-04-01']);
+    // One pasted line never settles it: three May days and a pasted January line.
+    const pasted = parseWhatsapp(['01/05/2023, 10:00 - Sam: one', '02/05/2023, 10:00 - Ann: two', '03/05/2023, 10:00 - Sam: three',
+      '05/01/2023, 09:00 - Ann: an old line pasted in'].join('\n'));
+    expect(pasted).toMatchObject({ dates: 'day-first', settled: false });
+    expect(pasted.messages.map((message) => message.day)).toEqual(['2023-05-01', '2023-05-02', '2023-05-03']);
     // One date: a 12-hour clock with a two-digit year is how a month-first export writes it, but nothing settles it.
     expect(parseWhatsapp('3/4/23, 2:01 PM - Sam: one')).toMatchObject({ messages: [{ day: '2023-03-04' }], dates: 'month-first', settled: false });
     expect(parseWhatsapp('[03/04/2023, 14:01:00] Sam: one')).toMatchObject({ messages: [{ day: '2023-04-03' }], dates: 'day-first', settled: false });
