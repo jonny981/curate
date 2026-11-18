@@ -1578,12 +1578,14 @@ user: Should refunds use today's rate?
   only its selected items whose weight is at least that share of its
   best selected item's weight; the pick record names the share under
   `levers.sources`. The other items are left out before the budget, and
-  `record.underShare` counts them. `assistantChatHistory` and
-  `directMessages` set 0.1, a tenth of the best: on LoCoMo and
-  LongMemEval it cut the median text from 5,858 to 1,504 and
-  from 1,837 to 1,164 tokens, with 384 against 387 of 400 and 235
-  against 236 of 249 questions answered right. Every other mode sets
-  none. A share of 0 turns it off, so `{ ...assistantChatHistory,
+  `record.underShare` counts them. `directMessages` sets 0.1, a tenth
+  of the best: on LoCoMo it cut the median text from 5,858 to 1,504
+  tokens, with 384 against 387 of 400 questions answered right.
+  `assistantChatHistory` and `longAssistantChats` set 0.2: replayed on
+  saved ratings with their shared read, it found as much evidence or
+  more, in a 16% smaller text, than each mode's own measured rules on
+  BEAM and LongMemEval. Every other mode sets
+  none. A share of 0 turns it off, so `{ ...directMessages,
   textShare: 0 }` gives the text the token budget alone gives, the form
   the benchmark figures published before it were produced with.
 - **Sentence cutoff:** with `decide`, curate rates every sentence of the

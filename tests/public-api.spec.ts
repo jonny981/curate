@@ -5,7 +5,7 @@ import { conversationRead, curate, decisionFileStore, DEFAULT_MAX_QUESTION_TEXT,
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { agentTranscripts, assistantChatHistory, chat, AGENT_CHAT_CASCADE, CHAT_CASCADE, chatSettings, type ChatOptions, type ChatProvider } from '@curatejs/chat';
+import { agentTranscripts, assistantChatHistory, chat, longAssistantChats, AGENT_CHAT_CASCADE, CHAT_CASCADE, chatSettings, type ChatOptions, type ChatProvider } from '@curatejs/chat';
 import { commits, git, GIT_HISTORY_CASCADE, gitSettings, type GitOptions } from '@curatejs/git';
 import { directMessages, markdown, MARKDOWN_CASCADE, markdownSettings, notes, knowledgeBase, rules, rulesSettings, type MarkdownOptions, type KnowledgeBaseOptions } from '@curatejs/markdown';
 
@@ -111,9 +111,10 @@ describe('package exports', () => {
       { labels: false, names: true, mode: notes },
       { labels: false, names: false, mode: notes, ruleBar: 0.5 },
     ]);
-    expect([agentTranscripts, assistantChatHistory, commits, notes, directMessages]).toEqual([
+    expect([agentTranscripts, assistantChatHistory, longAssistantChats, commits, notes, directMessages]).toEqual([
       { name: 'agent-transcripts', questions: AGENT_CHAT_CASCADE, bar: 0.0146, read: expect.any(Function), needed: true },
-      { name: 'assistant-chat-history', questions: CHAT_CASCADE, bar: 0.0146, read: rankedRead, textShare: 0.1 },
+      { name: 'assistant-chat-history', questions: CHAT_CASCADE, bar: 0.0146, read: expect.any(Function), textShare: 0.2 },
+      { name: 'long-assistant-chats', questions: CHAT_CASCADE, bar: 0.0146, read: expect.any(Function), textShare: 0.2 },
       { name: 'commits', questions: GIT_HISTORY_CASCADE, bar: 0.0146, read: rankedRead },
       { name: 'notes', questions: MARKDOWN_CASCADE, bar: 0.0146, read: rankedRead },
       { name: 'direct-messages', questions: MARKDOWN_CASCADE, bar: 0.0146, read: rankedRead, textShare: 0.1 },

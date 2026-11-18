@@ -8,7 +8,7 @@ import { cutLane, laneBend, laneScoreOf, type SearchLaneReport } from './lanes.j
 import {
   checkCascade, checkMode, checkPickOptions, checkReadRequest, checkWriteQuestions, findTaskNames,
 } from './options.js';
-import { rankedRead, type Mode } from './mode.js';
+import { type Mode } from './mode.js';
 import { LABEL_KINDS, type LabelKind } from './labels.js';
 import { datedIn, durationMs, taskMoment, taskPeriod, timeZoneOf, zonedIso, type TaskPeriod } from './time.js';
 import type { StoredIndexReport } from './stored-index.js';
@@ -1137,9 +1137,9 @@ export async function pickFromSources(
       // pool's parts, so a period keeps the pool.
       labelPool: (source.labelKinds?.length ?? 0) > 0 ? 'gate'
         : poolSizing.on && options.everyRanked === undefined && period === undefined
-          // A mode read of its own walks each part's whole transcript, so
-          // its source keeps the whole pool.
-          && (source.mode?.read ?? rankedRead) === rankedRead ? 'size'
+          // A read that walks each part's whole transcript keeps its
+          // source's whole pool.
+          && source.mode?.read.walks !== true ? 'size'
           : options.everyRanked !== true ? 'count' : undefined,
       // The fused order reads every part's meaning position, so the
       // meaning lanes keep every part's similarity for it.

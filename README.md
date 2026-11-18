@@ -197,7 +197,7 @@ Sources can still affect each other. A selected commit brings in a note it chang
 | `rules()` | `notes` | Off | | Off | 0.0146 | 0.5, not yet tuned | `MARKDOWN_CASCADE` |
 | `whatsapp()` | `directMessages` | Off | | On | 0.0146 | | `MARKDOWN_CASCADE` |
 
-- **Mode:** the source's questions, decision-score bar and read in one object, exported by its reader package. `assistantChatHistory` and `directMessages` also size the text by the ratings: a part enters it only when its weight is at least a tenth of its source's best ([text share](packages/core/README.md#curating)). `agentTranscripts` reads from the person's own messages outward ([the chat read](packages/core/README.md#the-chat-read)); the others read down the ranked list.
+- **Mode:** the source's questions, decision-score bar and read in one object, exported by its reader package. `directMessages`, `assistantChatHistory` and `longAssistantChats` also size the text by the ratings: a part enters it only when its weight is at least a tenth (`directMessages`) or a fifth (the two assistant-chat modes) of its source's best ([text share](packages/core/README.md#curating)). The two assistant-chat modes read the person's own messages first, then the rest of the ranked list, and stop where the ratings go cold. `agentTranscripts` reads from the person's own messages outward ([the chat read](packages/core/README.md#the-chat-read)); the others read down the ranked list.
 
 - **Labels:** check each history part for seven kinds of personal fact, such as what someone owns, prefers or decided. This helps Curate find relevant parts that keyword search missed. Each part is labelled once and the label stored for later questions.
 - **Label bar (`labelBar`):** Curate checks which kinds of fact the task needs. If a kind scores at least `labelBar`, Curate brings in the source's parts whose label for that kind also scores at least `labelBar`. 0.5 for every source that carries labels.
@@ -259,7 +259,7 @@ const mySet = {
 const history = historySource({ reader: git('.'), ...gitSettings, mode: { ...commits, questions: mySet } });
 ```
 
-A source's mode carries its question set, its bar and how the decide step reads its parts; each reader exports its own (`agentTranscripts`, `assistantChatHistory`, `commits`, `notes`, `directMessages`).
+A source's mode carries its question set, its bar and how the decide step reads its parts; each reader exports its own (`agentTranscripts`, `assistantChatHistory`, `longAssistantChats`, `commits`, `notes`, `directMessages`).
 A source without a mode asks each part one built-in question.
 Other question options: `PERSONAL_CHAT_CASCADE` for histories of a person's own life, `COUNT_MARKER` for count tasks, and `pick.writeQuestions` for questions written for each task (see [core's options](packages/core/README.md#questions-written-for-each-task)).
 `reader` can also be your own source; see [core's options](packages/core/README.md#levers-and-source-settings).

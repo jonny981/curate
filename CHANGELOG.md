@@ -64,8 +64,13 @@ What each part does:
   When the request fails, the whole text comes back and the record says why.
 - **A text sized by the ratings, per mode.** A mode's `textShare` lets its
   source's parts into the text only at that share of the source's best
-  weight or more. `assistantChatHistory` and `directMessages` set a tenth;
-  `record.underShare` counts the parts it left out.
+  weight or more. `directMessages` sets a tenth, and the two assistant-chat
+  modes a fifth; `record.underShare` counts the parts it left out.
+- **Two modes for a person's chats with an assistant, one set of
+  defaults.** `assistantChatHistory`, for many short chats, and
+  `longAssistantChats`, for long ones, read the person's own messages
+  first, stop where the ratings go cold, and keep a text of the parts
+  weighing a fifth of the best or more.
 - **A stored index per source.** The chat, git and Markdown readers keep one
   SQLite file per source, through Node's built-in `node:sqlite`, under
   `$XDG_CACHE_HOME/curate/index` or `~/.cache/curate/index`. Each call brings

@@ -29,7 +29,13 @@ export interface Mode {
 }
 
 /** One read of the fused order's parts. */
-export type ModeRead = (input: ModeReadInput) => Promise<ModeReadResult>;
+export type ModeRead = ((input: ModeReadInput) => Promise<ModeReadResult>) & {
+  /** True for a read that walks each part's whole container, such as a
+   *  `conversationRead()`: its source keeps every part of its history,
+   *  not only the parts a search lane kept. Any other read, like the
+   *  ranked read, has the parts no lane kept counted, never given. */
+  readonly walks?: boolean;
+};
 
 /** What a read is given. The ranked read takes `order`, `then`,
  *  `between`, `waves`, `copied`, `score`, `kept`, `stopped` and `stop`;
@@ -169,7 +175,7 @@ export const rankedRead: ModeRead = async (input) => {
  *  measured on coding-agent transcripts. Make it once per mode: modes
  *  that share one read are read together. */
 export function conversationRead(rules: ConversationRules = {}): ModeRead {
-  return async (input) => {
+  return Object.assign(async (input: ModeReadInput): Promise<ModeReadResult> => {
     const result = await chatRead({ parts: input.parts, order: input.order, byKeyword: input.byKeyword,
       lanes: input.lanes, rate: input.rate, score: input.score, kept: input.kept, stopped: input.stopped, rules,
       ...(input.queries === undefined ? {} : { queries: input.queries }),
@@ -178,5 +184,5 @@ export function conversationRead(rules: ConversationRules = {}): ModeRead {
     const reached = new Set(result.read);
     return { read: result.read, unread: input.order.filter((part) => !reached.has(part)), reason: 'chatRead',
       ended: result.ended, requests: result.requests, segments: result.segments, units: result.units };
-  };
+  }, { walks: true });
 }
