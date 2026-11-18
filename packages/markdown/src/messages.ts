@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
@@ -222,10 +222,13 @@ export function whatsapp(path: string, options: WhatsappOptions = {}): Candidate
       names.add(basename(file));
       const note = sessionNote(name, day, messages);
       notes.set(basename(file), note);
-      // Written whole and then moved into place, so a call reading at the same time never sees half a note.
+      // Written whole under a name of this write's own and then moved into
+      // place, so a call reading at the same time never sees half a note,
+      // and calls writing at the same time never move each other's file.
       if (await readFile(file, 'utf8').catch(() => undefined) !== note) {
-        await writeFile(`${file}.${process.pid}.tmp`, note, { mode: 0o600 });
-        await rename(`${file}.${process.pid}.tmp`, file);
+        const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`;
+        await writeFile(temporary, note, { mode: 0o600 });
+        await rename(temporary, file);
       }
     }
     // A day the export no longer holds leaves no note behind.

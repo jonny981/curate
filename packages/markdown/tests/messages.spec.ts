@@ -4,6 +4,7 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { pickFromSources, type PickDecide } from '@curatejs/core';
 import { parseWhatsapp, whatsapp } from '../src/index.js';
 
 const folders: string[] = [];
@@ -123,6 +124,21 @@ describe('a WhatsApp chat export', () => {
     const said = await whatsapp(file, { directory: join(root, 'notes'), dates: 'day-first' }).read({ task: 'ferry', wholeLanes: true });
     expect(said).toMatchObject({ status: 'read', complete: true });
     expect(said).not.toHaveProperty('partial');
+  });
+
+  it('lets calls at once read one export, each writing its notes apart', async () => {
+    const root = await folder();
+    const file = join(root, '_chat.txt');
+    await writeFile(file, Array.from({ length: 30 }, (_, day) =>
+      `[${String(day + 1).padStart(2, '0')}/05/2023, 10:00:00] ${day % 2 ? 'Sam' : 'Ann'}: The ferry on day ${day} leaves at seven.`).join('\n'));
+    const directory = join(root, 'notes');
+    const decide: PickDecide = async ({ questions }) =>
+      Object.fromEntries(questions.map((question) => [question.key, { status: 'answered', probability: 0.5 }]));
+    const call = () => pickFromSources([whatsapp(file, { directory })], { task: 'ferry' }, { task: 'ferry', decide });
+    const results = await Promise.all(Array.from({ length: 5 }, call));
+    expect(results.every((result) => result.selected.length > 0)).toBe(true);
+    const [notes] = await readdir(directory);
+    expect((await readdir(join(directory, notes!))).filter((name) => name.endsWith('.tmp'))).toEqual([]);
   });
 
   it('is absent when the export is missing', async () => {
