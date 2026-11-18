@@ -89,6 +89,14 @@
    ".status"
   ],
   "codex-1/open.jsonl": "file",
+  "kept.json": [
+   "[].date",
+   "[].id",
+   "[].path",
+   "[].rank",
+   "[].rating",
+   "[].source"
+  ],
   "log.md": "file",
   "record.json": [
    ".curate.collapsed",

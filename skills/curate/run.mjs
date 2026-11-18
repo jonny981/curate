@@ -887,8 +887,10 @@ export async function searchAgain(task, first, agentIds, pickAgain) {
 }
 
 // No model writes the memory: curate lays out the kept parts in their own
-// words, and `decide`, when given, rates each sentence of them.
-export async function writeLog(task, picked, folder, record, options = {}) {
+// words, and `decide`, when given, rates each sentence of them. The whole
+// text goes to `log.md` and every kept part, strongest first with its
+// rating, to `kept.json`, in `textFolder`, on every call.
+export async function writeLog(task, picked, folder, record, options = {}, textFolder = folder) {
   const started = Date.now();
   const result = await curate(task, picked, options);
   record.curate = result.record;
@@ -900,7 +902,14 @@ export async function writeLog(task, picked, folder, record, options = {}) {
   }
   if (sentences?.failed !== undefined) console.error(`Sentence request failed (${sentences.failed}); the whole text is returned.`);
   else if (sentences !== undefined && sentences.kept === 0) console.error(`No sentence was rated at sentenceCutoff ${sentences.cutoff} or more; the text is empty.`);
-  await writeFile(join(folder, 'log.md'), result.log, { mode: 0o600 });
+  await mkdir(textFolder, { recursive: true, mode: 0o700 });
+  const textFile = join(textFolder, 'log.md'), listFile = join(textFolder, 'kept.json');
+  await writeFile(textFile, result.log, { mode: 0o600 });
+  // The items are taken strongest first, so their order is the ranking.
+  const ranked = result.record.items;
+  await writeFile(listFile, JSON.stringify(ranked.map((item, at) => ({ rank: at + 1, rating: item.weight, id: item.id,
+    source: item.candidate.sourceId, ...(item.candidate.path === undefined ? {} : { path: item.candidate.path }),
+    ...(item.candidate.date === undefined ? {} : { date: item.candidate.date.value }) })), null, 1), { mode: 0o600 });
   record.status = 'complete';
   console.log(result.log);
   return result;
@@ -1191,6 +1200,9 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
     : await realpath(await mkdtemp(join(tmpdir(), 'curate-work-')));
   if (records) await mkdir(folder, { recursive: true, mode: 0o700 });
   else workingFolders.add(folder);
+  // The whole text and the list of kept parts outlive the call, records on
+  // or off, so an agent can read past what was printed.
+  const textFolder = join(homedir(), '.curate/runs', startedAt.replace(/[:.]/g, '-'));
   const started = Date.now();
   const record = { task: options.task, sourcesFile: options.sources, ...(configFile === undefined ? {} : { configFile }), settings, status: 'started', subscription: [], sessions: [], reads: [], jev: [], timings: {} };
   let local;
@@ -1521,7 +1533,7 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
     }
     await writeFile(join(folder, 'selection.json'), JSON.stringify({ selected: final.selected, record: { ...final.record, candidates: final.record.candidates.filter((entry) => entry.status === 'selected') } }), { mode: 0o600 });
     const cited = { ...final, selected: final.selected.map((candidate) => citable(candidate, project)) };
-    memory = (await writeLog(options.task, cited, folder, record, layout)).log;
+    memory = (await writeLog(options.task, cited, folder, record, layout, textFolder)).log;
   } catch (error) {
     // A PickError carries the pick's record: the failed batch's ids, the
     // unanswered candidates, and the answers that came back. Keep it.

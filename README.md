@@ -524,7 +524,7 @@ Each source can also set `since` (an ISO date or a duration such as `"14 days"`,
 The skill combines keyword and meaning lanes, and disables label admission.
 On Claude Code and Codex transcripts it then searches a second time: the rarest names, numbers and words of the three best-rated parts of the first search become a second search's lines, a second pick reads that search's order with the first pick's decisions reused, so only parts the first never rated are rated, and the parts it keeps join the first pick's.
 Saved embeddings are reused when the model file and input text match. Identical text shares matching decision answers within each pick.
-It prints the laid-out parts. A call keeps no files of its own outside its caches under `~/.cache/curate`; outside those caches, `curate setup` writes only what it offers and you accept: the settings and key files under `~/.curate`, and the embedding model when `embeddingModel` names a path outside them. Set `records` to `true` in the sources file to also save the printed text, source reads, model usage and timings under `~/.curate/runs/`.
+It prints the laid-out parts, and keeps the whole text and the list of kept parts with their ratings under `~/.curate/runs/<timestamp>/`. Apart from those two files a call keeps no files of its own outside its caches under `~/.cache/curate`; outside those caches, `curate setup` writes only what it offers and you accept: the settings and key files under `~/.curate`, and the embedding model when `embeddingModel` names a path outside them. Set `records` to `true` in the sources file to also save source reads, model usage and timings there.
 Subscription route failures never fall back to an API.
 
 ## What leaves your machine

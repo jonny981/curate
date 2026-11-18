@@ -147,6 +147,17 @@ function changes(before: Map<string, { hash: string; size: number }>, after: Map
   return { created, changed, deleted, files: files.length, bytes: files.reduce((sum, name) => sum + after.get(name)!.size, 0) };
 }
 
+/** What a records-off call that lays out a text leaves: the whole text and
+ *  the list of kept parts, both mode 0600, in its folder under
+ *  `~/.curate/runs`, and nothing else. */
+async function expectTextFilesOnly(done: { delta: ReturnType<typeof changes> }, fixture: Fixture) {
+  const stamp = join('home', '.curate', 'runs', NOW.replace(/[:.]/g, '-'));
+  expect([...done.delta.created].sort()).toEqual([`${join('home', '.curate')}/`, `${join('home', '.curate', 'runs')}/`, `${stamp}/`,
+    join(stamp, 'kept.json'), join(stamp, 'log.md')]);
+  expect(done.delta).toMatchObject({ changed: [], deleted: [], files: 2 });
+  for (const name of ['kept.json', 'log.md']) expect((await lstat(join(fixture.root, stamp, name))).mode & 0o777).toBe(0o600);
+}
+
 // How each search-lines call ends, in order: a valid reply, a reply that is
 // no JSON, or a failure the command does not retry.
 type Reply = 'ok' | 'malformed' | 'down';
@@ -301,7 +312,7 @@ async function base() {
 }
 
 describe('a records-off call', () => {
-  it.each([undefined, true, false])('readAudit %s: lays out the same and leaves nothing', async (readAudit) => {
+  it.each([undefined, true, false])('readAudit %s: lays out the same and leaves only the text and the list of kept parts', async (readAudit) => {
     const fixture = await makeFixture();
     const done = await call(fixture, readAudit === undefined ? {} : { readAudit });
     expect(done.outcome.error).toBeUndefined();
@@ -313,12 +324,11 @@ describe('a records-off call', () => {
     expect(observed(done, result.record, fixture)).toEqual((await base()).observed);
 
     console.info(`indicator records off, readAudit ${readAudit}: files=${done.delta.files} bytes=${done.delta.bytes}`);
-    expect(done.delta).toEqual({ created: [], changed: [], deleted: [], files: 0, bytes: 0 });
+    await expectTextFilesOnly(done, fixture);
     expect(await readdir(fixture.at('tmp'))).toEqual([]);
-    expect(existsSync(fixture.at('home', '.curate'))).toBe(false);
   });
 
-  it('warns on standard error about a missing source and a partly read source, and still leaves nothing', async () => {
+  it('warns on standard error about a missing source and a partly read source, and still leaves only the text files', async () => {
     const fixture = await makeFixture();
     await mkdir(fixture.at('linked'));
     await writeFile(fixture.at('linked', 'orchard.md'), `# Linked orchard\n\nThe orchard has trees. ${SENTENCE}\n`);
@@ -330,7 +340,7 @@ describe('a records-off call', () => {
     expect(done.warnings).toHaveLength(2);
     expect(done.warnings.find((line) => line.includes(fixture.at('linked')))).toMatch(/^Source only partly read: .*linked: .*symbolic-link/);
     expect(done.warnings.find((line) => line.includes(fixture.at('gone')))).toMatch(/^Source missing: .*gone: \S/);
-    expect(done.delta).toEqual({ created: [], changed: [], deleted: [], files: 0, bytes: 0 });
+    await expectTextFilesOnly(done, fixture);
     expect(await readdir(fixture.at('tmp'))).toEqual([]);
   });
 
