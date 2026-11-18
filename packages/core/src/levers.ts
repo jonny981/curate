@@ -83,8 +83,8 @@ export interface SourceSettings {
   /** Present and true when its mode asked what each kept part is doing. */
   readonly roles?: true;
   /** Present when its mode compares its kept parts for each needed fact:
-   *  the companion's bar the loop stopped under. */
-  readonly choicePerFact?: { readonly bar: number };
+   *  the candidates a fact, and the sufficiency question's bar when on. */
+  readonly choicePerFact?: { readonly candidates: number; readonly enough?: number };
   /** The decay half-life this source's Markdown parts ranked with,
    *  present when the source has `decay` on. Only a record
    *  pickFromSources produced carries it. */

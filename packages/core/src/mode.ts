@@ -53,16 +53,6 @@ export interface Mode {
    *  and nothing else. The request's state also carries the call's
    *  `person` and `wanted`, when the call gives them. */
   readonly hardFacts?: boolean;
-  /** Compare the kept parts for each needed fact, off by default. After
-   *  selection, for each fact the call gives (`needed`), one Choice over
-   *  the mode's kept parts, each a record in the state under its key,
-   *  the keys its options with no descriptions, asks which states the
-   *  fact, with a companion yes/no in the same request asking whether
-   *  any does. The pick is removed and the Choice asked again until the
-   *  companion answers under `bar` (default 0.3, the decision model's
-   *  maker's starting point for a clear no). The picks lead the text;
-   *  every other kept part still follows, and nothing is dropped. It
-   *  needs a decider that answers list requests, such as `jev()`. */
   /** What each kept part is doing, off by default: after selection, a
    *  Choice per kept part, "What does this item do with the subject of
    *  the task?", among eight concrete situations (states a settled
@@ -75,12 +65,26 @@ export interface Mode {
    *  person's part, and `approved_by` in the later step's state. No
    *  weight is put on any role. */
   readonly roles?: boolean;
+  /** Compare the kept parts for each needed fact, off by default. After
+   *  selection, for each fact the call gives (`needed`), the decision
+   *  model's maker's large-choice recipe: the `candidates` kept parts
+   *  (one per message under `wholeMessages`) the rating already bought
+   *  ranks best for that fact (the set's own question for the fact when
+   *  it asks one, else the part's score), each written into its own
+   *  option of one Choice, "Which of these items states this needed
+   *  fact: {fact}", the task in the state. The pick is removed and the
+   *  Choice asked again until the sufficiency question, asked after each
+   *  round of the picks so far, says they suffice, or no candidate is
+   *  left. The picks lead the text; every other kept part still follows,
+   *  so nothing is dropped. It needs a decider that answers list
+   *  requests, such as `jev()`. */
   readonly choicePerFact?: boolean | {
-    readonly bar?: number;
-    /** After each round, ask whether the parts picked so far state
-     *  everything the task asks, of them alone in their own request; at
-     *  or over the bar (default 0.7, the maker's starting point for a
-     *  clear yes) every fact's loop ends. Off by default; measured only. */
+    /** The candidates a fact: 20 unless set, the recipe's value. */
+    readonly candidates?: number;
+    /** "Do these items together state everything the task asks?", asked
+     *  of the picks so far alone, in their own request, after each round;
+     *  at or over the bar (default 0.7, the maker's starting point for a
+     *  clear yes) every fact's loop ends. On unless `false`. */
     readonly enough?: boolean | { readonly bar?: number };
   };
   /** How the decide step reads the mode's parts on the fused order:

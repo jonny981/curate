@@ -992,44 +992,46 @@ no Choice form and leave such a question unanswered.
 
 ### A Choice per needed fact
 
-Off by default. A mode with `choicePerFact: true` (or `{ bar }`)
-compares its kept parts for each fact the call gives in `needed`, after
-selection, the way the decision model's maker builds a search over many
-candidates: one request holds the kept parts in its state, each a
-record under a key (`P1`, `P2`, …, in the order they were said), and
-asks a Choice whose options are those keys with no descriptions, "Which
-item states this needed fact: {fact}", beside a companion yes/no,
-"Does any item state this needed fact: {fact}", whose `false` names
-the confusing case (parts that share the subject, plan it, ask about it
-or report work toward it). The pick is removed and the Choice asked
-again until the companion answers under `bar` (0.3 unless set, the
-maker's starting point for a clear no) or no part is left; the facts'
-loops advance a round together. A list too long for one request (the
-smaller of `limits.maxBatchChars` and the decider's own limit, and at
-most 255 options, the service's limit) is cut into consecutive windows,
-each asked on its own, and a window the service refuses as too large
-is asked again in halves, since three characters a token is only an
-estimate; when more than one window's companion says yes,
-one more Choice among their picks decides, and a window that lost no
-part is not asked again. The picks lead the text, under `### Most
-likely answer`, in the order picked; every other kept part follows, so
-nothing is dropped. Each picked part's record entry carries `chosen`,
-and the record's `choicePerFact` holds each fact's picks, why its loop
-ended, the rounds and the requests. A call with no needed facts asks
-nothing and the record says so; a failed request leaves the text in its
-order with the error in the record. It needs a decider with a `list`
-function, as `jev()` has; `choosePerFact()` runs the same loop on any
-list, and its `reverseOptions` sends each Choice's options in reverse
-order, the state unchanged, to check the model's lean toward the first
-option.
+Off by default. A mode with `choicePerFact: true` (or `{ candidates,
+enough }`) compares its kept parts for each fact the call gives in
+`needed`, after selection, with the decision model's maker's
+large-choice recipe ("Put the top twenty in one `Choice` question, with
+their long plots as the options"). For each fact, the `candidates` kept
+parts (20 unless set: the recipe's value, which also says a Choice
+holds "only about forty when each option is a long plot summary"; not a
+measured best) that the rating already bought ranks best for that fact
+(the set's own question for the fact when it asks one, else the part's
+score; equal ratings keep the search's order) go into one Choice,
+"Which of these items states this needed fact: {fact}", each written
+into its own option as who said it, when, and its text (an object with
+the fields code wrote, when it has any), with the task and the call's
+fields in the state. Under `wholeMessages` a candidate is a whole
+message, and an identical text is one candidate. The pick is removed
+and the Choice asked again; after each round, "Do these items together
+state everything the task asks?" is asked of the picks so far alone, in
+their own request, and at or over its bar (`enough: { bar }`, 0.7
+unless set, the maker's starting point for a clear yes; `enough: false`
+turns it off) every fact's loop ends; otherwise a loop ends when no
+candidate is left. No round count caps it. Candidates too long for one
+request are cut into consecutive windows (inside the smaller of
+`limits.maxBatchChars` and the decider's own limit, at most 255 options,
+the service's limit), each asked on its own, with one more Choice among
+the windows' picks; a window that lost no candidate is not asked again,
+and a window the service refuses as too large is asked again in halves,
+since three characters a token is only an estimate.
 
-Off by default and measured only: `choicePerFact: { enough: true }`
-(or `{ enough: { bar } }`) asks after each round, of the parts picked so
-far alone in their own request, "Do these items together state
-everything the task asks?"; at or over its bar (0.7 unless set, the
-maker's starting point for a clear yes) every fact's loop ends. The
-record's `choicePerFact.enough` holds the bar and the answer after each
-round.
+The picks lead the text, under `### Most likely answer`, in the order
+picked; every other kept part follows, so nothing is dropped. Each
+picked part's record entry carries `chosen`; the record's
+`choicePerFact` holds, per fact, the picks, every candidate ranked (the
+picks, then the rest by the probability the last Choice they were in
+gave them) and why its loop ended, with the sufficiency answers, the
+rounds and the requests. A call with no needed facts asks nothing and
+the record says so; a failed request leaves the text in its order with
+the error in the record. It needs a decider with a `list` function, as
+`jev()` has. `choosePerFact()` runs the same loop on any candidates, and
+its `reverseOptions` sends each Choice's options in reverse order, the
+maker's check for a lean toward the first option.
 
 ### A keep bar set by measurement
 

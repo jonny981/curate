@@ -15,7 +15,7 @@ import {
 } from './task.js';
 import { conversationRead, rankedRead, type Mode, type ModeRead, type ModeReadResult } from './mode.js';
 import { messageKey, messageKind, messagePieces, messageText, transcriptMessages } from './chat-read.js';
-import { choosePerFact, ROLE_QUESTION } from './choice.js';
+import { CHOICE_CANDIDATES, choosePerFact, ROLE_QUESTION } from './choice.js';
 import type { EmbeddingFunction } from './meaning.js';
 import type { LeverStates } from './levers.js';
 import type { StoredIndexReport } from './stored-index.js';
@@ -195,9 +195,11 @@ export type PickDecide = ((
 export type PickItem = Pick<PickQuestion, 'sourceId' | 'id' | 'title' | 'text' | 'role' | 'date' | 'kind' | 'author' | 'anonymous' | 'facts'>;
 
 /** A question about a list request's items as a whole: a Choice among
- *  them, its options the item keys in the order given, or a yes/no. */
+ *  them, its options the item keys in the order given, or a yes/no. A
+ *  `described` Choice writes each item into its own option, and its
+ *  items are not put in the state for it. */
 export type PickListQuestion =
-  | { readonly type: 'choice'; readonly question: string; readonly options: readonly string[] }
+  | { readonly type: 'choice'; readonly question: string; readonly options: readonly string[]; readonly described?: boolean }
   | { readonly type: 'noul'; readonly question: string; readonly trueCriterion: string; readonly falseCriterion: string };
 
 /** One request about a list of items at once: the task, the fields its
@@ -783,17 +785,20 @@ export interface PickRecord {
    *  has no entry. */
   readonly effects: readonly PickSettingEffect[];
   /** Present when a mode compared its kept parts for each needed fact:
-   *  the companion's bar, each fact's picks in order (the item's id, the
-   *  round, the Choice's probability and the companion's answer) and
-   *  why its loop ended, the rounds and the list requests sent. `skipped`
-   *  says why no Choice was asked (no needed facts, or a stop); `error`
-   *  holds a failed request's message, and the text then keeps its order. */
+   *  the candidates a fact, each fact's picks in order (the item's id,
+   *  the round, the Choice's probability), every candidate ranked (the
+   *  picks, then the rest by the probability the last Choice they were in
+   *  gave them) and why its loop ended, the rounds and the list requests
+   *  sent. `skipped` says why no Choice was asked (no needed facts, or a
+   *  stop); `error` holds a failed request's message, and the text then
+   *  keeps its order. */
   readonly choicePerFact?: {
-    readonly bar: number;
+    readonly candidates: number;
     readonly facts: readonly {
       readonly fact: string;
-      readonly ended: 'no' | 'empty' | 'enough';
-      readonly picks: readonly { readonly id: string; readonly round: number; readonly probability: number; readonly any: number }[];
+      readonly ended: 'empty' | 'enough';
+      readonly picks: readonly { readonly id: string; readonly round: number; readonly probability: number }[];
+      readonly ranked: readonly { readonly id: string; readonly probability: number }[];
     }[];
     readonly rounds: number;
     readonly requests: number;
@@ -1144,9 +1149,6 @@ const DEFAULT_BAR = 0.0146;
  *  pick itself shows full candidate text unless a caller supplies a cut. */
 export const DEFAULT_MAX_QUESTION_TEXT = 700;
 const DEFAULT_LINKED_PATH_BAR = 0.4;
-/** The companion's bar a Choice per needed fact stops under by default:
- *  0.3, the decision model's maker's starting point for a clear no. */
-const CHOICE_BAR = 0.3;
 /** The sufficiency question's bar by default: 0.7, the decision model's
  *  maker's starting point for a clear yes. */
 const ENOUGH_BAR = 0.7;
@@ -3594,25 +3596,25 @@ export async function pick(
   }
 
   // A Choice per needed fact over the kept parts of the modes that ask
-  // for it: one item per kept message or part, in the order they were
-  // said; the picks lead the text and nothing is dropped.
+  // for it: per fact, the candidates the rating already bought ranks
+  // best (the fact's own question when the set asks one, else the part's
+  // score), one per kept message or part; the picks lead the text and
+  // nothing is dropped.
   const picked = new Map<MemoryCandidate, { fact: number; round: number; probability: number }[]>();
   let choiceRecord: PickRecord['choicePerFact'];
-  const choiceBar = (candidate: MemoryCandidate) => {
+  // A mode's Choice settings: candidates a fact, and the sufficiency
+  // question's bar unless the mode turns it off.
+  const choiceOf = (candidate: MemoryCandidate) => {
     const setting = modeFor(candidate.sourceId)?.choicePerFact;
-    return setting === undefined || setting === false ? undefined
-      : typeof setting === 'object' && setting.bar !== undefined ? setting.bar : CHOICE_BAR;
+    if (setting === undefined || setting === false) return undefined;
+    const own = typeof setting === 'object' ? setting : {};
+    const enough = own.enough === false ? undefined
+      : typeof own.enough === 'object' && own.enough.bar !== undefined ? own.enough.bar : ENOUGH_BAR;
+    return { candidates: own.candidates ?? CHOICE_CANDIDATES, enough };
   };
-  // The sufficiency question's bar, when the mode asks it.
-  const enoughBar = (candidate: MemoryCandidate) => {
-    const setting = modeFor(candidate.sourceId)?.choicePerFact;
-    const enough = typeof setting === 'object' ? setting.enough : undefined;
-    return enough === undefined || enough === false ? undefined
-      : typeof enough === 'object' && enough.bar !== undefined ? enough.bar : ENOUGH_BAR;
-  };
-  const choosing = selected.filter((candidate) => candidate.role === 'reference' && choiceBar(candidate) !== undefined);
+  const choosing = selected.filter((candidate) => candidate.role === 'reference' && choiceOf(candidate) !== undefined);
   if (choosing.length > 0) {
-    const bar = choiceBar(choosing[0]!)!;
+    const { candidates, enough } = choiceOf(choosing[0]!)!;
     const said = (candidate: MemoryCandidate) => {
       const ms = Date.parse(candidate.date?.value ?? '');
       return Number.isFinite(ms) ? ms : 0;
@@ -3629,18 +3631,32 @@ export async function pick(
         group.push(item);
         return false;
       });
-    const keyed = items.map((item, index): [string, MemoryCandidate] => [`P${index + 1}`, item]);
-    const itemOf = new Map(keyed);
+    // An item's rating for one fact: its answer to the set's question for
+    // that fact when it was asked one, else its score; equal ratings keep
+    // the search's order, never the list's.
+    const byId = new Map(references.map((candidate) => [candidate.id, candidate]));
+    const searchPlace = (item: MemoryCandidate) => priority.get(byId.get(item.id) ?? item) ?? Number.POSITIVE_INFINITY;
+    const ratingFor = (item: MemoryCandidate, fact: number) => {
+      const key = cascadeFor(item)?.facts?.question.key;
+      const answer = key === undefined ? undefined : answered.get(item)?.get(`${key}${fact + 1}`);
+      return answer?.status === 'answered' && 'probability' in answer ? answer.probability : scoreOf(item) ?? 0;
+    };
     if (needed === undefined || stop !== undefined) {
-      choiceRecord = { bar, facts: [], rounds: 0, requests: 0, skipped: stop ?? 'the call gave no needed facts' };
+      choiceRecord = { candidates, facts: [], rounds: 0, requests: 0, skipped: stop ?? 'the call gave no needed facts' };
     } else {
+      const screens = needed.map((_, fact) => [...items].sort((left, right) =>
+        ratingFor(right, fact) - ratingFor(left, fact) || searchPlace(left) - searchPlace(right) || left.id.localeCompare(right.id))
+        .slice(0, candidates));
+      const keyOf = new Map<MemoryCandidate, string>();
+      for (const item of screens.flat()) if (!keyOf.has(item)) keyOf.set(item, `P${keyOf.size + 1}`);
+      const itemOf = new Map([...keyOf].map(([item, key]) => [key, item]));
       try {
         const list = options.decide.list!;
-        const enough = enoughBar(choosing[0]!);
-        const result = await choosePerFact({ task: options.task, facts: needed, header: headerOf(items[0]!), list, signal: decideSignal, bar,
-          ...(enough === undefined ? {} : { enough }),
+        const result = await choosePerFact({ task: options.task, facts: needed, header: headerOf(screens.flat()[0]!), list,
+          signal: decideSignal, ...(enough === undefined ? {} : { enough }),
           maxChars: Math.min(limits.maxBatchChars, list.maxChars ?? Number.POSITIVE_INFINITY),
-          items: keyed.map(([key, item]) => {
+          candidates: screens.map((screen) => screen.map((item) => keyOf.get(item)!)),
+          items: [...keyOf].map(([item, key]) => {
             const { sourceId, id, title, text, role, date, kind, author, anonymous, facts } = pending(item, specsFor(item)[0]!).question;
             // What a part is doing, when its mode asked, rides in its record.
             const doing = roleOf.get(item);
@@ -3661,12 +3677,13 @@ export async function pick(
             }
           }
         });
-        choiceRecord = { bar, rounds: result.rounds, requests: result.requests,
+        choiceRecord = { candidates, rounds: result.rounds, requests: result.requests,
           ...(result.enough === undefined ? {} : { enough: { bar: enough!, answers: result.enough } }),
-          facts: result.facts.map(({ fact, picks, ended }) => ({ fact, ended,
-            picks: picks.map(({ key, round, probability, any }) => ({ id: itemOf.get(key)!.id, round, probability, any })) })) };
+          facts: result.facts.map(({ fact, picks, ended, ranked }) => ({ fact, ended,
+            picks: picks.map(({ key, round, probability }) => ({ id: itemOf.get(key)!.id, round, probability })),
+            ranked: ranked.map(({ key, probability }) => ({ id: itemOf.get(key)!.id, probability })) })) };
       } catch (error) {
-        choiceRecord = { bar, facts: [], rounds: 0, requests: 0, error: error instanceof Error ? error.message : String(error) };
+        choiceRecord = { candidates, facts: [], rounds: 0, requests: 0, error: error instanceof Error ? error.message : String(error) };
       }
     }
   }
@@ -3905,8 +3922,10 @@ export async function pick(
       ...(modeFor(id)?.wholeMessages === true ? { wholeMessages: true as const } : {}),
       ...(modeFor(id)?.hardFacts === true ? { hardFacts: true as const } : {}),
       ...(modeFor(id)?.roles === true ? { roles: true as const } : {}),
-      ...(modeFor(id) === undefined || choiceBar({ sourceId: id } as MemoryCandidate) === undefined ? {}
-        : { choicePerFact: { bar: choiceBar({ sourceId: id } as MemoryCandidate)! } }),
+      ...(modeFor(id) === undefined || choiceOf({ sourceId: id } as MemoryCandidate) === undefined ? {} : { choicePerFact: {
+        candidates: choiceOf({ sourceId: id } as MemoryCandidate)!.candidates,
+        ...(choiceOf({ sourceId: id } as MemoryCandidate)!.enough === undefined ? {}
+          : { enough: choiceOf({ sourceId: id } as MemoryCandidate)!.enough! }) } }),
     }])) },
     effects,
   };

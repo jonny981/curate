@@ -295,12 +295,28 @@ export function jevRequest(batch: PickBatch, model = 'jev-latest') {
   };
 }
 
+/** An item as one option of a Choice: who said it and when, then its
+ *  text, as the maker's large-choice recipe labels each candidate
+ *  ("label: text"); an item with fields code wrote is an object of the
+ *  same, with those fields. */
+function itemOption(item: PickItem, person: string | undefined) {
+  const who = item.anonymous === true ? undefined
+    : item.author === 'person' ? person ?? 'the person' : item.author === 'unmarked' ? undefined : item.author;
+  const said = [who, item.date?.value.slice(0, 10)].filter((part) => part !== undefined).join(', ');
+  const text = item.anonymous === true ? anonymousText(item.text) : item.text;
+  return item.facts === undefined || item.anonymous === true ? (said === '' ? text : `${said}: ${text}`)
+    : { said, text, ...item.facts };
+}
+
 /** Jev's request body for a list request: the state holds the task, the
- *  fields the request carries beside it, and each item as a record under
- *  its own key in `items`; every question is about `items` as a whole. A
- *  Choice's options are the item keys it names, in its order, with no
- *  descriptions: the records hold each option's text. */
+ *  fields the request carries beside it, and, when a question refers to
+ *  them there, each item as a record under its own key in `items`. A
+ *  Choice's options are the item keys it names, in its order: with no
+ *  descriptions, the records in the state hold each option's text; a
+ *  `described` Choice writes each item into its own option instead. */
 export function jevListRequest(request: PickListRequest, model = 'jev-latest') {
+  const byKey = new Map(request.items);
+  const inState = Object.values(request.questions).some((question) => question.type !== 'choice' || question.described !== true);
   return {
     model,
     state: {
@@ -308,15 +324,21 @@ export function jevListRequest(request: PickListRequest, model = 'jev-latest') {
       ...(request.needed === undefined ? {} : { needed: request.needed }),
       ...(request.person === undefined ? {} : { person: request.person }),
       ...(request.wanted === undefined ? {} : { wanted: request.wanted }),
-      items: Object.fromEntries(request.items.map(([key, item]) => [key, itemRecord(item)])),
+      ...(inState ? { items: Object.fromEntries(request.items.map(([key, item]) => [key, itemRecord(item)])) } : {}),
     },
     questions: Object.fromEntries(Object.entries(request.questions).map(([name, question]) => [name,
       question.type === 'choice'
-        ? {
-          type: 'choice',
-          instructions: { question: question.question, items: 'items' },
-          criteria: Object.fromEntries(question.options.map((key) => [key, null])),
-        }
+        ? question.described === true
+          ? {
+            type: 'choice',
+            instructions: question.question,
+            criteria: Object.fromEntries(question.options.map((key) => [key, itemOption(byKey.get(key)!, request.person)])),
+          }
+          : {
+            type: 'choice',
+            instructions: { question: question.question, items: 'items' },
+            criteria: Object.fromEntries(question.options.map((key) => [key, null])),
+          }
         : {
           type: 'noul',
           instructions: { question: question.question, items: 'items' },

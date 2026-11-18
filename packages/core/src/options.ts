@@ -356,10 +356,12 @@ export function checkMode(mode: Mode, at: string): void {
     if (typeof choice !== 'object' || choice === null || Array.isArray(choice)) {
       throw new TypeError(`${at}.choicePerFact must be a boolean or { bar }.`);
     }
-    checkKeys(choice as object, ['bar', 'enough'], `${at}.choicePerFact`);
-    const { bar, enough } = choice as { bar?: unknown; enough?: unknown };
+    checkKeys(choice as object, ['candidates', 'enough'], `${at}.choicePerFact`);
+    const { candidates, enough } = choice as { candidates?: unknown; enough?: unknown };
     const between = (value: unknown) => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1;
-    if (bar !== undefined && !between(bar)) throw new TypeError(`${at}.choicePerFact.bar must be a number between 0 and 1.`);
+    if (candidates !== undefined && (!Number.isSafeInteger(candidates) || (candidates as number) < 1)) {
+      throw new TypeError(`${at}.choicePerFact.candidates must be a positive whole number.`);
+    }
     if (enough !== undefined && typeof enough !== 'boolean') {
       if (typeof enough !== 'object' || enough === null || Array.isArray(enough)) {
         throw new TypeError(`${at}.choicePerFact.enough must be a boolean or { bar }.`);
