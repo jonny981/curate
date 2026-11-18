@@ -145,10 +145,13 @@ export const rankedRead: ModeRead = async (input) => {
         batches += 1;
         if (input.stopped() || cold !== undefined) continue;
         const top = Math.max(0, ...own.map((part) => input.score(part) ?? 0));
-        // Until the read has kept a part, a cold request does not stop
-        // it, so a history whose evidence sits below a cold stretch
-        // never comes back empty.
-        if ((top < rule.floor || top < rule.share * best) && keptAny()) {
+        // Until the read has kept a part and rated one at or above the
+        // floor, a cold request does not stop it, so a history whose
+        // evidence sits below a cold stretch never comes back empty, and a
+        // read whose first ratings all sit under the floor goes on until
+        // one reaches it.
+        if ((top < rule.floor || top < rule.share * best)
+          && [...rated].some((part) => (input.score(part) ?? 0) >= rule.floor) && keptAny()) {
           cold = { batch: batches, best: top, bestBefore: best, under: top < rule.floor ? 'floor' : 'share' };
         } else best = Math.max(best, top);
       }
