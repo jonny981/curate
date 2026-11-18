@@ -1293,6 +1293,60 @@ describe('a run through core decision calls', () => {
       expect(warned.mock.calls.map(([line]) => String(line)).filter((line) => line.includes('stopWhenCold'))).toEqual([]);
     });
 
+  it('stops the ranked read of notes by default, while transcripts keep the chat read\'s own stop', async () => {
+    const directory = await folder();
+    const home = join(directory, 'home');
+    const notes = join(directory, 'notes');
+    const transcripts = join(directory, 'transcripts');
+    await mkdir(home);
+    await mkdir(notes);
+    await mkdir(transcripts);
+    await writeFile(join(notes, 'orchard.md'), Array.from({ length: 400 }, (_, index) =>
+      `## Orchard row ${index}\n\nRow ${index} of the orchard has fruit trees. ${'The trees grow here. '.repeat(30)}\n`).join('\n'));
+    await writeFile(join(transcripts, 'session.jsonl'), Array.from({ length: 30 }, (_, index) => JSON.stringify({
+      type: index % 2 === 0 ? 'user' : 'assistant', sessionId: 's1', timestamp: `2026-01-01T12:${String(index).padStart(2, '0')}:00Z`,
+      ...(index % 2 === 0 ? { origin: { kind: 'human' }, message: { content: `Orchard row ${index}: should we prune the fruit trees?` } }
+        : { message: { content: [{ type: 'text', text: `Prune orchard row ${index} in winter.` }] } }),
+    })).join('\n') + '\n');
+    const sourcesFile = join(directory, 'sources.json');
+    await writeFile(sourcesFile, JSON.stringify({ records: true, sentenceCutoff: false,
+      sources: [{ type: 'markdown', path: notes }, { type: 'claude-code', path: transcripts }] }));
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
+    vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
+    // Row 0 of the notes and every transcript part rate warm; every answer about the rest of the notes is
+    // near 0, so their decision scores go cold under any question set's weights.
+    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as { state: { items: Record<string, { text: string }> };
+        questions: Record<string, { type: string; criteria: unknown; instructions: { question: string; item: string } }> };
+      const warm = (item: string) => /Row 0 of|prune/i.test(body.state.items[item.slice('items.'.length)]?.text ?? '');
+      return new Response(JSON.stringify({ usage: null, answers: Object.fromEntries(Object.entries(body.questions)
+        .map(([key, question]) => {
+          const hot = warm(question.instructions.item);
+          // A scored question gets all its weight on its top level or its bottom one.
+          // The question whether a part is off the subject counts against it, so it is answered the other way.
+          const against = /different subject/.test(question.instructions.question);
+          if (question.type !== 'score') return [key, { noul: hot !== against ? 0.8 : 0.000001 }];
+          const levels = (question.criteria as unknown[]).length;
+          return [key, { probabilities: Object.fromEntries(Array.from({ length: levels }, (_, level) =>
+            [String(level), level === (hot ? levels - 1 : 0) ? 1 : 0])) }];
+        })) }));
+    }));
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { call } = subscriptionReply(searches());
+    const { record } = await run(['--sources', sourcesFile, 'orchard'], call);
+
+    expect(record.status).toBe('complete');
+    expect(record.pick.levers.stopWhenCold).toEqual({ floor: 0.1, share: 0.2 });
+    const unread = (sourceId: (id: string) => boolean) => record.pick.candidates.filter((entry: { sourceId: string; status: string; reason?: string }) =>
+      sourceId(entry.sourceId) && entry.status === 'unassessed' && entry.reason === 'stopWhenCold').length;
+    // The notes' ranked read went cold and left parts unread; no transcript part is left unread by that stop.
+    expect(record.pick.pick.stopWhenCold).toMatchObject({ ended: 'cold' });
+    expect(unread((id) => id.startsWith('knowledge-base:'))).toBeGreaterThan(0);
+    expect(unread((id) => id.startsWith('chat:'))).toBe(0);
+    expect(['fall', 'order']).toContain(record.pick.pick.chatRead['agent-transcripts'].ended);
+  });
+
   it('says on standard error how many ranked parts the stop left unread, and which file turns it off', async () => {
     const directory = await folder();
     const home = join(directory, 'home');
