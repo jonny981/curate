@@ -1406,8 +1406,11 @@ is rated at least 0.1 times the best rating this read has seen.
    stops after a request that adds at most 0.3 times the most any
    earlier request added, and never before the first warm part. When
    the person's parts run out first, it reads the order's other chat
-   parts the same way, so every chat part of the order stays in reach
-   until the stop fires.
+   parts the same way. With no stop firing, every chat part the ranked
+   read would reach is read. When the stop fires, the chat parts of the
+   order after it are left unread, even ones the ranked read would have
+   kept: each is recorded `unassessed` with reason `'chatRead'`, and
+   `pick.chatRead.unread` counts them.
 4. **Topic segments.** A part's `place` names its transcript and its
    position there, which order the transcript's parts; a part with no
    `place` stands alone. It splits each transcript where its words change
