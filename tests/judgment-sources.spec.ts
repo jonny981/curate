@@ -49,8 +49,9 @@ describe('sources.json judgment selection', () => {
       .toThrowError(/questions/);
     expect(() => parseSources({ sources: [{ type: 'git', path: '.', questions: 'judgments' }] }))
       .toThrowError(/Unknown key/);
+    // A Markdown source takes questions, but only the sets that judge notes.
     expect(() => parseSources({ sources: [{ type: 'markdown', path: '/x', questions: 'judgments' }] }))
-      .toThrowError(/Unknown key/);
+      .toThrowError('Unknown questions "judgments"; allowed names are default, answers.');
     expect(() => parseSources({ sources: [{ type: 'claude-code', path: '/x', bar: 2 }] }))
       .toThrowError(/bar/);
   });
