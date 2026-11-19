@@ -778,7 +778,8 @@ export interface PickRecord {
     readonly stopWhenCold?: {
       readonly floor: number;
       readonly share: number;
-      readonly parts: number;
+      /** Rated parts judged at a time, or 'request': each request's alone. */
+      readonly parts: number | 'request';
       readonly waves: number;
       readonly windows: number;
       readonly rated: number;
@@ -2027,10 +2028,16 @@ export async function pick(
   // The decide step reads the fused order whenever `everyRanked` is
   // not given: all of it, or under the rating stop when the call sets one.
   const fused = options.everyRanked === undefined;
+  // The ranked read is shared: it judges each request alone when every
+  // source it reads is in a mode that asks so (`stopWindow`) and the
+  // call names no window of parts.
+  const rankedSources = new Set(candidates.flatMap((candidate) => candidate.role === 'reference'
+    && (modeFor(candidate.sourceId)?.read ?? rankedRead) === rankedRead ? [candidate.sourceId] : []));
+  const perRequest = rankedSources.size > 0 && [...rankedSources].every((id) => modeFor(id)?.stopWindow === 'request');
   const stopRule = !fused || options.stopWhenCold === undefined || options.stopWhenCold === false ? undefined : {
     floor: options.stopWhenCold?.floor ?? STOP_FLOOR,
     share: options.stopWhenCold?.share ?? STOP_SHARE,
-    parts: options.stopWhenCold?.parts ?? STOP_PARTS,
+    parts: options.stopWhenCold?.parts ?? (perRequest ? 'request' as const : STOP_PARTS),
   };
   // The levers as resolved, for the record. `pick`
   // never sees `wholeLanes`: the read request carries it, and only a

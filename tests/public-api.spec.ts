@@ -116,7 +116,7 @@ describe('package exports', () => {
       { name: 'assistant-chat-history', questions: CHAT_CASCADE, bar: 0.0146, read: expect.any(Function) },
       { name: 'long-assistant-chats', questions: CHAT_CASCADE, bar: 0.0146, read: expect.any(Function) },
       { name: 'commits', questions: GIT_HISTORY_CASCADE, bar: 0.0146, read: rankedRead },
-      { name: 'notes', questions: MARKDOWN_CASCADE, bar: 0.0146, read: rankedRead, request: 'text' },
+      { name: 'notes', questions: MARKDOWN_CASCADE, bar: 0.0146, read: rankedRead, request: 'text', stopWindow: 'request' },
       { name: 'direct-messages', questions: MARKDOWN_CASCADE, bar: 0.0146, read: rankedRead },
     ]);
     // Each call makes a conversation read of its own, with any of its rules replaced.

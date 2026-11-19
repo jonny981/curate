@@ -1620,11 +1620,12 @@ describe('a run through core decision calls', () => {
     // the stop may not fire, and the read reaches the end of the order.
     expect(record.pick?.pick?.stopWhenCold).toMatchObject({ floor: 0.9, share: 0.2, waves: 1,
       atFloor: 0, ended: 'order', unread: 0 });
-    expect(record.pick?.levers?.stopWhenCold).toEqual({ floor: 0.9, share: 0.2, parts: 150 });
+    // The notes mode judges each request alone.
+    expect(record.pick?.levers?.stopWhenCold).toEqual({ floor: 0.9, share: 0.2, parts: 'request' });
     expect(record.pick?.levers).not.toHaveProperty('everyRanked');
   });
 
-  it.each([[{}, { floor: 0.1, share: 0.2, parts: 150 }], [{ stopWhenCold: false }, false]] as const)(
+  it.each([[{}, { floor: 0.1, share: 0.2, parts: 'request' }], [{ stopWhenCold: false }, false]] as const)(
     'stops where the ratings go cold at the library\'s own levels unless the settings say false: %j', async (setting, levers) => {
       const directory = await folder();
       const home = join(directory, 'home');
@@ -1697,7 +1698,8 @@ describe('a run through core decision calls', () => {
     const { record } = await run(['--sources', sourcesFile, 'orchard'], call);
 
     expect(record.status).toBe('complete');
-    expect(record.pick.levers.stopWhenCold).toEqual({ floor: 0.1, share: 0.2, parts: 150 });
+    // The notes mode judges each request alone; the transcripts' chat read has its own stop.
+    expect(record.pick.levers.stopWhenCold).toEqual({ floor: 0.1, share: 0.2, parts: 'request' });
     const unread = (sourceId: (id: string) => boolean) => record.pick.candidates.filter((entry: { sourceId: string; status: string; reason?: string }) =>
       sourceId(entry.sourceId) && entry.status === 'unassessed' && entry.reason === 'stopWhenCold').length;
     // The notes' ranked read went cold and left parts unread; no transcript part is left unread by that stop.
@@ -1784,7 +1786,8 @@ describe('a run through core decision calls', () => {
     const { record } = await run(['--sources', sourcesFile, 'orchard'], call);
 
     expect(record.status).toBe('complete');
-    expect(record.pick.levers.stopWhenCold).toEqual({ floor: 0.1, share: 0.2, parts: 150 });
+    // The notes mode judges each request alone.
+    expect(record.pick.levers.stopWhenCold).toEqual({ floor: 0.1, share: 0.2, parts: 'request' });
     const stop = record.pick.pick.stopWhenCold;
     expect(stop).toMatchObject({ ended: 'order', unread: 0, atFloor: 0 });
     expect(stop.waves).toBeGreaterThan(1);

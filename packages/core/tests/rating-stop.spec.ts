@@ -466,6 +466,32 @@ describe('the rating stop', () => {
     expect(windowed.record.pick!.stopWhenCold).toMatchObject({ parts: 4, windows: 3, rated: 12, unread: 8, cold: { window: 3, under: 'floor' } });
   });
 
+  it('judges each request alone when every source of the ranked read is in a mode that asks so and the call names no window', async () => {
+    // The same ratings as above: p0 0.9, p4 0.5, every other part 0.05.
+    const rating = (id: string) => (id === 'p0' ? 0.9 : id === 'p4' ? 0.5 : 0.05);
+    const perRequestMode = { notes: { name: 'notes', read: rankedRead, stopWindow: 'request' as const } };
+    const { decide, calls } = rated(rating);
+    const picked = await pick(ranked(20), { task: 'recall the plan', decide, stopWhenCold: {}, limits: twoABatch,
+      modesBySource: perRequestMode });
+    // The second request (p2, p3) is cold: the read stops after the first wave, before p4.
+    expect(asked(calls)).toEqual(['p0', 'p1', 'p2', 'p3']);
+    expect(picked.selected.map((part) => part.id)).not.toContain('p4');
+    expect(picked.record.pick!.stopWhenCold).toMatchObject({ parts: 'request', waves: 1, windows: 2, rated: 4, unread: 16,
+      cold: { window: 2, best: 0.05, bestBefore: 0.9, under: 'floor' } });
+
+    // A window the call names wins over the mode's.
+    const named = await pick(ranked(20), { task: 'recall the plan', decide: rated(rating).decide, stopWhenCold: { parts: 4 },
+      limits: twoABatch, modesBySource: perRequestMode });
+    expect(named.selected.map((part) => part.id)).toContain('p4');
+    expect(named.record.pick!.stopWhenCold).toMatchObject({ parts: 4 });
+
+    // One source of the ranked read in a mode without it: windows of 150 for the whole read.
+    const other = ranked(20).map((part, i) => (i % 2 === 1 ? { ...part, sourceId: 'other' } : part));
+    const mixed = await pick(other, { task: 'recall the plan', decide: rated(rating).decide, stopWhenCold: {}, limits: twoABatch,
+      modesBySource: { ...perRequestMode, other: { name: 'other', read: rankedRead } } });
+    expect(mixed.record.pick!.stopWhenCold).toMatchObject({ parts: 150, rated: 20, ended: 'order' });
+  });
+
   it('judges 150 rated parts at a time when the call sets no window', async () => {
     const { decide } = rated((id) => (id === 'p2' ? 0.5 : 0.05));
     const picked = await pick(ranked(20), { task: 'recall the plan', decide, stopWhenCold: {}, limits: twoABatch });

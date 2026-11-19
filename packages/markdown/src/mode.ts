@@ -6,8 +6,12 @@ import { MARKDOWN_CASCADE } from './questions.js';
  *  read, asked in the plain-text form its bar was measured with (on 149
  *  LongMemEval questions the JSON form rated the same parts lower and,
  *  at this bar, answered 142.33 right against 145.33). A lever that
- *  needs the JSON state's fields sends JSON. */
-export const notes: Mode = { name: 'notes', questions: MARKDOWN_CASCADE, bar: 0.0146, read: rankedRead, request: 'text' };
+ *  needs the JSON state's fields sends JSON. Its rating stop judges each
+ *  request alone (`stopWindow`): on the same questions, judged per
+ *  request it rated 110 parts a question and answered 145.33 right;
+ *  windows of 150 parts rated 290, at three times the decision cost,
+ *  for no more right. */
+export const notes: Mode = { name: 'notes', questions: MARKDOWN_CASCADE, bar: 0.0146, read: rankedRead, request: 'text', stopWindow: 'request' };
 
 /** Messages between people, the mode of `whatsapp()`: the
  *  `MARKDOWN_CASCADE` decision questions, as the LoCoMo runs measured

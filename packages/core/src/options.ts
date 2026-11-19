@@ -360,8 +360,9 @@ function checkBar(bar: Mode['bar'], at: string): void {
 export function checkMode(mode: Mode, at: string): void {
   if (typeof mode !== 'object' || mode === null) throw new TypeError(`${at} must be a mode.`);
   checkKeys(mode, ['name', 'questions', 'bar', 'read', 'needed', 'textShare', 'wholeMessages', 'hardFacts', 'roles', 'choicePerFact',
-    'itemsPerRequest', 'keep', 'request', 'searchAgain'], at);
+    'itemsPerRequest', 'keep', 'request', 'searchAgain', 'stopWindow'], at);
   if (mode.searchAgain !== undefined && typeof mode.searchAgain !== 'boolean') throw new TypeError(`${at}.searchAgain must be a boolean.`);
+  if (mode.stopWindow !== undefined && mode.stopWindow !== 'request') throw new TypeError(`${at}.stopWindow must be 'request'.`);
   if (mode.request !== undefined && mode.request !== 'text' && mode.request !== 'json') {
     throw new TypeError(`${at}.request must be 'text' or 'json'.`);
   }

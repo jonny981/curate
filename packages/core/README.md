@@ -1643,7 +1643,15 @@ request found 36 of the 103 known answer parts the ratings kept, where
 windows of 150 found 100. 150 is the most parts one request carried
 when the floor and share were measured, so a window passes wherever
 every request inside it would have passed. Parts left over at the end of
-the order, too few to fill a window, are not judged. The rest of the
+the order, too few to fill a window, are not judged. A mode whose
+requests hold many short parts can judge each request alone instead
+(`stopWindow: 'request'`): the read then checks each request's rated
+parts in the order the wave sent them, and does so only when every
+source of the ranked read is in such a mode and the call names no
+`parts`; the record's `parts` says `'request'`. The notes mode does:
+on 149 LongMemEval questions, judged per request it rated 110 parts a
+question and answered 145.33 right, where windows of 150 rated 290, at
+three times the decision cost, for no more right. The rest of the
 wave that held a cold window is rated and kept as usual. A stop never
 drops a part it rated: every rated part at or above its source's keep
 bar is kept.

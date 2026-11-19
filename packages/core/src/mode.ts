@@ -155,6 +155,15 @@ export interface Mode {
    *  beside it repeat in every request. A rating stop still plans its
    *  waves in parts, as before. */
   readonly itemsPerRequest?: number;
+  /** How much of the ranked read the rating stop (`stopWhenCold`)
+   *  judges at a time. `'request'`: each request's rated parts alone,
+   *  the rule the notes mode was banked with (two requests sent a wave,
+   *  each checked in order). Unset: windows of `stopWhenCold.parts`
+   *  rated parts (150 by default), for modes whose requests hold a
+   *  handful of long parts. The ranked read is shared, so it judges per
+   *  request only when every source it reads is in such a mode and the
+   *  call names no `parts`. */
+  readonly stopWindow?: 'request';
   /** How the decide step reads the mode's parts on the fused order:
    *  `rankedRead` or a `conversationRead()`. Parts of modes that share
    *  a read are read together. */
@@ -204,8 +213,9 @@ export interface ModeReadInput {
   /** True once a stopping dial has ended the call. */
   readonly stopped: () => boolean;
   /** The call's rating stop (`stopWhenCold`), when set: its floor and
-   *  share, and how many rated parts it judges at a time. */
-  readonly stop?: { readonly floor: number; readonly share: number; readonly parts: number };
+   *  share, and how many rated parts it judges at a time, or
+   *  `'request'` for each request's alone. */
+  readonly stop?: { readonly floor: number; readonly share: number; readonly parts: number | 'request' };
   /** The search texts the read's sources read, the task first. */
   readonly queries?: readonly string[];
   /** The call's local embedder, when it has one. */
@@ -255,15 +265,19 @@ export interface ModeReadResult {
  *  (fewer when parts are long) never changes how much the stop judges.
  *  A part an identical earlier text answered does not count toward a
  *  window. Parts that do not fill a window at the end of the order are
- *  not judged. */
+ *  not judged. With `stop.parts: 'request'` each request's rated parts
+ *  are a window of their own, checked in the order the wave sent them,
+ *  and a request with none is not judged. */
 export const rankedRead: ModeRead = async (input) => {
   const rated = new Set<MemoryCandidate>();
   const unread: MemoryCandidate[] = [];
   let waves = 0;
   let windows = 0;
   let best = 0;
-  // Rated parts waiting to fill the next window, in order.
+  // Rated parts waiting to fill the next window, in order; judged per
+  // request, each request's rated parts, a window apiece.
   const pending: MemoryCandidate[] = [];
+  const requests: MemoryCandidate[][] = [];
   let cold: ModeReadResult['cold'];
   const read = async (order: readonly MemoryCandidate[]) => {
     const rule = input.stop;
@@ -281,10 +295,15 @@ export const rankedRead: ModeRead = async (input) => {
       let kept: boolean | undefined;
       const keptAny = () => kept ??= input.kept([...rated]);
       for (const batch of wave) {
-        pending.push(...batch.filter((part) => part.role === 'reference' && !input.copied(part) && input.score(part) !== undefined));
+        const own = batch.filter((part) => part.role === 'reference' && !input.copied(part) && input.score(part) !== undefined);
+        if (rule.parts !== 'request') pending.push(...own);
+        else if (own.length > 0) requests.push(own);
       }
-      while (pending.length >= rule.parts && !input.stopped() && cold === undefined) {
-        const judged = pending.splice(0, rule.parts);
+      const next = () => rule.parts === 'request' ? requests.shift()
+        : pending.length >= rule.parts ? pending.splice(0, rule.parts) : undefined;
+      while (!input.stopped() && cold === undefined) {
+        const judged = next();
+        if (judged === undefined) break;
         windows += 1;
         const top = Math.max(0, ...judged.map((part) => input.score(part) ?? 0));
         // Until the read has kept a part and rated one at or above the
