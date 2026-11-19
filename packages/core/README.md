@@ -974,27 +974,36 @@ prose in its text. A transcript part gets its `kind` ("<person>
 message", "agent step", "tool output", "compaction summary", "subagent
 prompt", "subagent final report" or "system message"), its `session`,
 and how many `pieces` its message was cut into, with its own `piece`
-number when it is one of several; the person's messages carry the
-pick's `person` as their `author`. When the mode's read walks whole
-transcripts (`conversationRead()`), so the pick holds every part, the
-record also gets the message's `position` in its session, `replies_to`
-(the nearest earlier message by the other side: for the person's
-message, anyone else's; for anyone else's, the person's) and, for a
-message not the person's, `answered_by` (the person's next message),
-each as `{ id, text }`: that message's first piece's id and its first
-1,000 characters. A turn of a note written as a conversation gets its
-speaker as `author`, its note as `session`, its `position` and `pieces`,
-and the turns before and after it as `replies_to` and `answered_by`,
-from its reader, whatever the read. A commit gets only `kind: 'commit'`
-and any other note only `kind: 'note'`. The request's state also carries the pick's `person`,
-the person's name as tasks word it, and `wanted`, `'one decision'` or
-`'everything said'` as the caller's writer judged the task, when the
-pick gives them: `{ task, needed, person, wanted, items }`. Requests of
-other modes never carry them, and an answer asked with them is stored
-apart from one asked without. The record names the setting under
-`levers.sources`. Cost: 1.48 times the request text, so the dollars, on
-the 22 short lists, batched; a note's `kind` alone adds about 20
-characters a part, so a Markdown source does not take it.
+number when it is one of several; the person's messages carry the pick's
+`person` as their `author`. When the mode's read walks whole transcripts
+(`conversationRead()`), so the pick holds every part, the record also
+gets the message's `position` in its session, `replies_to` (the nearest
+earlier message by the other side: for the person's message, anyone
+else's; for anyone else's, the person's) and, for a message not the
+person's, `answered_by` (the person's next message), each as `{ id, text
+}`: that message's first piece's id and its first 1,000 characters. A
+turn of a note written as a conversation gets its speaker as `author`,
+its note as `session`, its `position` and `pieces`, and the turns before
+and after it as `replies_to` and `answered_by`, from its reader,
+whatever the read. A commit gets only `kind: 'commit'` and any other
+note only `kind: 'note'`. The request's state also carries the pick's
+`person`, the person's name as tasks word it, and `wanted`, `'one
+decision'` or `'everything said'` as the caller's writer judged the
+task, when the pick gives them, and `counts`, which messages count as an
+answer ('statements by the person', 'statements, questions and requests
+by the person' or 'anything anyone said', the person's name in place of
+"the person"): `{ task, needed, person, wanted, counts, items }`. With
+the agent's message beside them, a person's own questions and requests
+rated lower while the needed facts read "<name>'s statements about ...";
+worded "What <name> said, asked or requested about ...", with `counts`
+beside, 11 such messages that had fallen rose from a median of 0.21 to
+0.39 of the read's best rating, while 15 of the person's messages that
+hold no answer stayed at 0.02. Requests of other modes never carry them,
+and an answer asked with them is stored apart from one asked without.
+The record names the setting under `levers.sources`. Cost: 1.48 times
+the request text, so the dollars, on the 22 short lists, batched; a
+note's `kind` alone adds about 20 characters a part, so a Markdown
+source does not take it.
 
 The three settings work as one: with `wholeMessages`, `hardFacts` and
 `itemsPerRequest: 1`, each message is judged whole and alone, its

@@ -8,6 +8,13 @@ export type TaskKind = 'count' | 'date' | 'advice' | 'named' | 'other';
 export const PICK_WANTED = ['one decision', 'everything said'] as const;
 export type PickWanted = (typeof PICK_WANTED)[number];
 
+/** Which messages count as an answer, as a model call judged from the
+ *  task's wording: what the person stated, what the person said, asked
+ *  or requested, or anything anyone said. A request names the person
+ *  (`PickOptions.person`) in place of "the person" when it has one. */
+export const PICK_COUNTS = ['statements by the person', 'statements, questions and requests by the person', 'anything anyone said'] as const;
+export type PickCounts = (typeof PICK_COUNTS)[number];
+
 /** Classify only the task's words. A task can need more than one kind of answer. */
 export function classifyTask(task: string): readonly TaskKind[] {
   const text = task.replace(/\s*\(asked .*\)\s*$/, '');

@@ -278,10 +278,11 @@ export function jevRequest(batch: PickBatch, model = 'jev-latest') {
       ...(batch.needed === undefined ? {} : { needed: batch.needed }),
       ...(batch.person === undefined ? {} : { person: batch.person }),
       ...(batch.wanted === undefined ? {} : { wanted: batch.wanted }),
+      ...(batch.counts === undefined ? {} : { counts: batch.counts }),
       ...(alone ? { item: itemRecord([...items.values()][0]!) }
         : { items: Object.fromEntries([...items.values()].map((question, index) => [String(index + 1), itemRecord(question)])) }),
     } as {
-      task: string; needed?: readonly string[]; person?: string; wanted?: PickBatch['wanted'];
+      task: string; needed?: readonly string[]; person?: string; wanted?: PickBatch['wanted']; counts?: string;
       /** Every item's record under its number; absent when the one item is judged alone. */
       items?: Record<string, ReturnType<typeof itemRecord>>;
       /** The one item's record, when it is judged alone. */
@@ -337,6 +338,7 @@ export function jevListRequest(request: PickListRequest, model = 'jev-latest') {
       ...(request.needed === undefined ? {} : { needed: request.needed }),
       ...(request.person === undefined ? {} : { person: request.person }),
       ...(request.wanted === undefined ? {} : { wanted: request.wanted }),
+      ...(request.counts === undefined ? {} : { counts: request.counts }),
       ...(inState ? { items: Object.fromEntries(request.items.map(([key, item]) => [key, itemRecord(item)])) } : {}),
     },
     questions: Object.fromEntries(Object.entries(request.questions).map(([name, question]) => [name,

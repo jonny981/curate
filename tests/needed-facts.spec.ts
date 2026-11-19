@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 // @ts-expect-error The standalone JavaScript command has no type declarations.
-import { CHAT_LEVERS, CHAT_MODES, NOTE_MODES, neededFrom, parseSources, searchLinesPrompt, wantedFrom } from '../skills/curate/run.mjs';
+import { CHAT_LEVERS, CHAT_MODES, NOTE_MODES, countsFrom, neededFrom, parseSources, searchLinesPrompt, wantedFrom } from '../skills/curate/run.mjs';
 import { ANSWER_CASCADE } from '@curatejs/core';
 
 describe('the facts the answer needs, from the search-line call', () => {
@@ -9,6 +9,16 @@ describe('the facts the answer needs, from the search-line call', () => {
     expect(asked).toContain('split the task into the separate facts that a complete answer needs');
     expect(asked).toContain('"needed"');
     expect(searchLinesPrompt('Which database did we choose?', ['chat'])).not.toContain('"needed"');
+  });
+
+  it('words a fact about what someone said to cover their questions and requests, and asks which messages count', () => {
+    const asked = searchLinesPrompt('Everything Ana said about the release modes', ['chat'], undefined, true, true);
+    expect(asked).toContain('word each fact as what they said, asked or requested about it');
+    expect(asked).toContain('"counts": exactly "statements by the person", "statements, questions and requests by the person" or "anything anyone said"');
+    expect(searchLinesPrompt('Everything Ana said about the release modes', ['chat'], undefined, true)).not.toContain('"counts"');
+    expect(countsFrom('statements, questions and requests by the person')).toEqual({ value: 'statements, questions and requests by the person' });
+    expect(countsFrom('questions')).toEqual({ missing: 'the reply was not one of "statements by the person", "statements, questions and requests by the person", "anything anyone said"' });
+    expect(countsFrom(undefined)).toEqual({ missing: 'the reply gave no answer' });
   });
 
   it('asks for each fact as one thing a single message could say, never a computed, listed or compared value', () => {

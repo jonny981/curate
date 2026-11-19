@@ -6,7 +6,7 @@ import type {
 import type { CandidateReadRequest } from './source.js';
 import type { Mode } from './mode.js';
 import type { MeaningSearchOptions } from './meaning.js';
-import { ANSWER_TYPES, PICK_WANTED, taskNames } from './task.js';
+import { ANSWER_TYPES, PICK_COUNTS, PICK_WANTED, taskNames } from './task.js';
 
 /** Option names the levers change renamed, in one place: each old
  *  dotted path a caller could still pass names the option that took
@@ -21,7 +21,7 @@ const RENAMED_OPTIONS: Readonly<Record<string, string>> = {
 };
 
 const PICK_OPTION_KEYS: readonly (keyof PickOptions)[] = [
-  'ranking', 'task', 'decide', 'modesBySource', 'needed', 'person', 'wanted', 'sourceKinds', 'labelKindsBySource', 'labelBarBySource',
+  'ranking', 'task', 'decide', 'modesBySource', 'needed', 'person', 'wanted', 'counts', 'sourceKinds', 'labelKindsBySource', 'labelBarBySource',
   'keepTop', 'rankProtection', 'bestPartFirst', 'tags', 'tagsByKind',
   'labels', 'cache', 'route', 'answerTypes', 'writeQuestions', 'findNames', 'everyRanked', 'everyScored',
   'stopWhenCold', 'feed',
@@ -291,6 +291,9 @@ export function checkPickOptions(options: PickOptions): void {
   }
   if (options.wanted !== undefined && !(PICK_WANTED as readonly unknown[]).includes(options.wanted)) {
     throw new TypeError(`wanted must be ${PICK_WANTED.map((value) => `'${value}'`).join(' or ')}.`);
+  }
+  if (options.counts !== undefined && !(PICK_COUNTS as readonly unknown[]).includes(options.counts)) {
+    throw new TypeError(`counts must be ${PICK_COUNTS.map((value) => `'${value}'`).join(', ')}.`);
   }
   checkKeys(options.answerTypes, ['bar'], 'answerTypes');
   if (options.taskPeriod !== undefined && typeof options.taskPeriod !== 'boolean') {

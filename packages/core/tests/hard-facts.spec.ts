@@ -217,4 +217,32 @@ describe('whole messages, hard facts and one item a request, in the conversation
       expect(entry.status).toBe('selected');
     }
   });
+
+  it('say which messages count as an answer, the person named, in the state of each request as sent', async () => {
+    const exchange = [
+      piece(1, 1, 'agent', 'The modes cost the same today.', 0),
+      piece(2, 1, 'person', 'Is there room for a max mode, cost no object?', 1),
+    ];
+    const requests: PickBatch[] = [];
+    const decide: PickDecide = async (batch) => {
+      requests.push(batch);
+      return Object.fromEntries(batch.questions.map((question) => [question.key, { status: 'answered', probability: 0.9 }]));
+    };
+    const needed = ['What Ana said, asked or requested about a max mode with no cost limit'];
+    await pick(exchange, { task, decide, needed, person: 'Ana', wanted: 'everything said', counts: 'statements, questions and requests by the person',
+      modesBySource: { chat: mode({ wholeMessages: true, hardFacts: true, itemsPerRequest: 1, needed: true }) } });
+    const asked = requests.find((request) => request.questions[0]!.id === exchange[1]!.id)!;
+    // The shape the request that lifted the person's questions had: the fields, then the one item with its exchange.
+    expect(Object.keys(jevRequest(asked).state)).toEqual(['task', 'needed', 'person', 'wanted', 'counts', 'item']);
+    expect(jevRequest(asked).state).toMatchObject({ task, needed, person: 'Ana', wanted: 'everything said',
+      counts: 'statements, questions and requests by Ana',
+      item: { text: 'Is there room for a max mode, cost no object?', author: 'Ana', kind: 'Ana message', pieces: 1,
+        replies_to: { id: exchange[0]!.id, text: 'The modes cost the same today.' } } });
+  });
+
+  it('refuse a counts the pick does not know', async () => {
+    const decide: PickDecide = async () => ({});
+    await expect(pick([piece(1, 1, 'person', 'Hello.', 0)], { task, decide, counts: 'questions only' as never }))
+      .rejects.toThrow("counts must be 'statements by the person', 'statements, questions and requests by the person', 'anything anyone said'.");
+  });
 });

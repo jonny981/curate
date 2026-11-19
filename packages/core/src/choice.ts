@@ -78,7 +78,7 @@ export interface ChoiceInput {
   /** The facts the answer needs: one loop each. */
   readonly facts: readonly string[];
   /** Fields every request carries beside the task. */
-  readonly header?: Pick<PickListRequest, 'needed' | 'person' | 'wanted'>;
+  readonly header?: Pick<PickListRequest, 'needed' | 'person' | 'wanted' | 'counts'>;
   /** Every candidate, each under its key. */
   readonly items: readonly (readonly [string, PickItem])[];
   /** Each fact's candidates, as keys of `items`, in the order a Choice's

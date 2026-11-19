@@ -1255,13 +1255,17 @@ describe('a run through core decision calls', () => {
       return new Response(JSON.stringify({ usage: null,
         answers: Object.fromEntries(Object.keys(body.questions).map((key) => [key, { noul: 0.8 }])) }));
     }));
-    const { call, calls } = subscriptionReply({ ...searches(), needed: ['Whether the cache stays layered'], wanted: 'one decision' });
+    const { call, calls } = subscriptionReply({ ...searches(), needed: ['Whether the cache stays layered'], wanted: 'one decision',
+      counts: 'statements, questions and requests by the person' });
     const { record } = await run(['--sources', sourcesFile, 'What did Ada decide about the orchard cache?'], call);
     expect(calls[0]!.prompt).toContain('"wanted"');
+    expect(calls[0]!.prompt).toContain('"counts"');
     expect(record.wanted).toEqual({ value: 'one decision' });
+    expect(record.counts).toEqual({ value: 'statements, questions and requests by the person' });
     expect(bodies.length).toBeGreaterThan(0);
     for (const body of bodies) {
-      expect(body.state).toMatchObject({ person: 'Ada', wanted: 'one decision', needed: ['Whether the cache stays layered'] });
+      expect(body.state).toMatchObject({ person: 'Ada', wanted: 'one decision', needed: ['Whether the cache stays layered'],
+        counts: 'statements, questions and requests by Ada' });
       for (const item of Object.values(body.state.items)) expect(item).toMatchObject({ session: 's1', pieces: 1 });
     }
     const items = bodies.flatMap((body) => Object.values(body.state.items));

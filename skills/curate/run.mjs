@@ -5,7 +5,7 @@ import { createRequire } from 'node:module';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ANSWER_CASCADE, curate, DEFAULT_MAX_QUESTION_TEXT, levelDistribution, pickFromSources, rankedRead, sinceCutoff, taskPeriod } from '@curatejs/core';
+import { ANSWER_CASCADE, PICK_COUNTS, curate, DEFAULT_MAX_QUESTION_TEXT, levelDistribution, pickFromSources, rankedRead, sinceCutoff, taskPeriod } from '@curatejs/core';
 import { jev } from '@curatejs/core/models';
 import { agentTranscripts, chat, scrubChat, AGENT_CHAT_CASCADE, CHAT_SEARCH_LINE_REGISTER, JUDGMENT_CHAT_CASCADE } from '@curatejs/chat';
 import { git, GIT_HISTORY_CASCADE, GIT_SEARCH_LINE_REGISTER } from '@curatejs/git';
@@ -1095,17 +1095,20 @@ const scopeAsk = (today) => `\nThe JSON also holds a key "scope": {"kinds": [...
 // The facts the answer needs, asked in the same call as the search lines
 // when the call reads a mode that lists them in its decision state. The
 // wording is the separate facts prompt the measurement used.
-const NEEDED_ASK = '\nAlso split the task into the separate facts that a complete answer needs, where each fact may be stated in a different message. Write each as one thing a single message could say in plain words, as a person would say it: an age rather than a birth date; what was paid rather than a saving worked out from it; when something happened as a message might say it (a date, or a time such as "three weeks ago") rather than a date worked out; one event or item of a list, worded to fit each of them ("a charity event the user took part in, and when"), rather than the list, a count or a comparison. When the task asks for suggestions, the facts are what the user has said about their own situation, likes, plans or past attempts that the suggestions should fit. Give one to five facts; give one fact when a single message can answer the task. Answer from the task text only. Return them as one more JSON key, "needed": a list of short strings.';
+const NEEDED_ASK = '\nAlso split the task into the separate facts that a complete answer needs, where each fact may be stated in a different message. When the task asks what someone said, word each fact as what they said, asked or requested about it ("What Ana said, asked or requested about ..."), so their questions and requests count as well as their statements. Write each as one thing a single message could say in plain words, as a person would say it: an age rather than a birth date; what was paid rather than a saving worked out from it; when something happened as a message might say it (a date, or a time such as "three weeks ago") rather than a date worked out; one event or item of a list, worded to fit each of them ("a charity event the user took part in, and when"), rather than the list, a count or a comparison. When the task asks for suggestions, the facts are what the user has said about their own situation, likes, plans or past attempts that the suggestions should fit. Give one to five facts; give one fact when a single message can answer the task. Answer from the task text only. Return them as one more JSON key, "needed": a list of short strings.';
 // How many answers the task wants, asked in the same call when the call
 // reads a mode that writes hard facts into its decision state.
 const WANTED_ASK = '\nAlso say whether the task wants one decision or fact, or everything said on a subject. Answer from the task text only. Return it as one more JSON key, "wanted": exactly "one decision" or "everything said".';
+// Which messages count as an answer, asked beside `wanted`: a task about
+// what the person said counts their questions and requests too.
+const COUNTS_ASK = '\nAlso say which messages count as an answer to the task. Answer from the task text only. Return it as one more JSON key, "counts": exactly "statements by the person", "statements, questions and requests by the person" or "anything anyone said".';
 
 export function searchLinesPrompt(task, searchKinds, scopeDate = undefined, askNeeded = false, askWanted = false) {
   const registers = { chat: CHAT_SEARCH_LINE_REGISTER, 'git-history': GIT_SEARCH_LINE_REGISTER, markdown: MARKDOWN_SEARCH_LINE_REGISTER };
   return `TASK: ${task}\nWrite search expansions, not a factual answer. For each source kind, give two keyword lines (one naming the subject, one without it) and four plausible hypothetical-answer lines (two naming the subject, two without it). Use varied wording for directions, constraints, tried ideas, rejected ideas and unfinished experiments where the task asks for them. Do not invent evidence.\nRegisters:\n${searchKinds.map((kind) => `${kind}: ${registers[kind]}`).join('\n')}\n${searchKinds.length === kinds.length
     ? 'Return only JSON with these three keys, each containing {"keywords":[...],"answers":[...]}.'
     : `Return only JSON for ${searchKinds.map((kind) => `"${kind}"`).join(', ')}, each containing {"keywords":[...],"answers":[...]}.`}
-Write exactly two keyword lines and exactly four answer lines for each source kind. No other text.${scopeDate === undefined ? '' : scopeAsk(scopeDate)}${askNeeded ? NEEDED_ASK : ''}${askWanted ? WANTED_ASK : ''}`;
+Write exactly two keyword lines and exactly four answer lines for each source kind. No other text.${scopeDate === undefined ? '' : scopeAsk(scopeDate)}${askNeeded ? NEEDED_ASK : ''}${askWanted ? WANTED_ASK + COUNTS_ASK : ''}`;
 }
 
 // Haiku sometimes names a group after the task's words ("chat" for "our
@@ -1153,6 +1156,13 @@ export function neededFrom(value) {
 export function wantedFrom(value) {
   return value === 'one decision' || value === 'everything said' ? { value }
     : { missing: value === undefined ? 'the reply gave no answer' : 'the reply was not "one decision" or "everything said"' };
+}
+
+/** Which messages count as an answer, from the search-line reply: one of
+ *  core's three values, or why there is none. */
+export function countsFrom(value) {
+  return PICK_COUNTS.includes(value) ? { value }
+    : { missing: value === undefined ? 'the reply gave no answer' : `the reply was not one of ${PICK_COUNTS.map((one) => `"${one}"`).join(', ')}` };
 }
 
 // The search reply gets one repair round: a reply that fails JSON parsing
@@ -1467,7 +1477,7 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
       preparing = Promise.all([...held.values()].map((entry) => entry.warmed));
     }
     const writeLines = callSubscription ?? facts.writer;
-    const { scope: proposedScope, needed: neededReply, wanted: wantedReply, ...searchedLines } = await searchLines(searchPrompt, folder, record, save, writeLines, searchKinds);
+    const { scope: proposedScope, needed: neededReply, wanted: wantedReply, counts: countsReply, ...searchedLines } = await searchLines(searchPrompt, folder, record, save, writeLines, searchKinds);
     record.searches = searchedLines;
     // With no usable list the decision state goes without it, and the
     // record says why.
@@ -1475,6 +1485,8 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
     if (needed !== undefined) record.needed = needed;
     const wanted = askWanted ? wantedFrom(wantedReply) : undefined;
     if (wanted !== undefined) record.wanted = wanted;
+    const counts = askWanted ? countsFrom(countsReply) : undefined;
+    if (counts !== undefined) record.counts = counts;
     record.timings.searchesMs = Date.now() - searchStart;
     let entries = callSources;
     if (scoped) {
@@ -1568,6 +1580,7 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
       ...(needed?.facts === undefined ? {} : { needed: needed.facts }),
       ...(settings.person === undefined ? {} : { person: settings.person }),
       ...(wanted?.value === undefined ? {} : { wanted: wanted.value }),
+      ...(counts?.value === undefined ? {} : { counts: counts.value }),
       ...(agentIds.size === 0 ? {} : { cache: { deciderId: decide.deciderId, store: {
         get: async (key) => decisions.get(key), set: async (key, value) => { decisions.set(key, value); } } } }) };
     const searched = (source, searches) => {
