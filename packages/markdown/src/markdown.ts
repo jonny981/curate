@@ -480,6 +480,14 @@ export function conversationTurns(text: string): readonly { readonly at: number;
   return openings.filter(({ speaker }) => speakers.has(speaker));
 }
 
+/** Where each turn of a conversation section begins as a unit: at its
+ *  speaker's paragraph, except the first, which begins at the section's
+ *  start. What comes before the first speaker (the heading, a `Date:`
+ *  line, any context) opens the first turn: every part carries the
+ *  note's date and title already, and a preamble judged alone would be a
+ *  request spent on a date line. */
+const turnStarts = (turns: readonly { readonly at: number }[]) => turns.map(({ at }, index) => (index === 0 ? 0 : at));
+
 /** A section's parts with `turns`: a conversation cut first at each turn,
  *  then each turn at line ends to the budget, so no part holds two turns;
  *  any other section as `splitParts` cuts it. The parts still join to the
@@ -487,7 +495,7 @@ export function conversationTurns(text: string): readonly { readonly at: number;
 export function turnParts(text: string, limit: number): readonly string[] {
   const turns = conversationTurns(text);
   if (turns === undefined) return splitParts(text, limit);
-  const starts = [...new Set([0, ...turns.map(({ at }) => at)])];
+  const starts = turnStarts(turns);
   return starts.flatMap((start, index) => splitParts(text.slice(start, starts[index + 1] ?? text.length), limit));
 }
 
@@ -497,9 +505,9 @@ export type PartTurn = NonNullable<MemoryCandidate['turn']>;
 
 /** Each part's turn, by part id, for one note's parts in order: the parts
  *  of each conversation section grouped by the turn they fall in, the
- *  session named by the note's own id. A part
- *  before a section's first turn, or in a section that is not a
- *  conversation, has none. */
+ *  session named by the note's own id; what comes before the first
+ *  speaker belongs to the first turn. A part in a section that is not a
+ *  conversation has none. */
 export function noteTurns(parts: readonly { readonly id: string; readonly text: string; readonly contentRef: string }[]):
   Map<string, { readonly place: NonNullable<MemoryCandidate['place']>; readonly turn: PartTurn }> {
   const out = new Map<string, { readonly place: NonNullable<MemoryCandidate['place']>; readonly turn: PartTurn }>();
@@ -512,16 +520,17 @@ export function noteTurns(parts: readonly { readonly id: string; readonly text: 
     const text = list.map((part) => part.text).join('');
     const turns = conversationTurns(text);
     if (turns === undefined) continue;
-    // Each part's turn: the last turn starting at or before the part's start.
+    // Each part's turn: the last turn beginning at or before the part's start.
+    const starts = turnStarts(turns);
     let offset = 0;
     const members = turns.map(() => [] as (typeof parts)[number][]);
     for (const part of list) {
-      let index = -1;
-      while (index + 1 < turns.length && turns[index + 1]!.at <= offset) index += 1;
-      if (index >= 0) members[index]!.push(part);
+      let index = 0;
+      while (index + 1 < starts.length && starts[index + 1]! <= offset) index += 1;
+      members[index]!.push(part);
       offset += part.text.length;
     }
-    const whole = turns.map((turn, index) => text.slice(turn.at, turns[index + 1]?.at ?? text.length).trimEnd());
+    const whole = starts.map((start, index) => text.slice(start, starts[index + 1] ?? text.length).trimEnd());
     const said = (index: number) => members[index]?.[0] === undefined ? undefined : { id: members[index]![0]!.id, text: whole[index]! };
     members.forEach((pieces, index) => pieces.forEach((part, piece) => {
       const before = said(index - 1);

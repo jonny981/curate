@@ -1370,7 +1370,8 @@ describe('a run through core decision calls', () => {
       author: 'user', session: 'session-001.md', position: 3, pieces: 1,
       replies_to: { text: 'assistant: Keeping it layered keeps reads fast.' } });
     expect(items.find((item) => item.text === 'assistant: Keeping it layered keeps reads fast.')).toMatchObject({
-      author: 'assistant', position: 2, replies_to: { text: 'user: Should the orchard cache stay layered?' },
+      // The first turn opens with the note's heading and date line, never sent alone.
+      author: 'assistant', position: 2, replies_to: { text: '# session one\n\nDate: 2026-03-02\n\nuser: Should the orchard cache stay layered?' },
       answered_by: { text: 'user: Yes, keep the orchard cache layered.' } });
   });
 

@@ -50,7 +50,8 @@ describe('notes written as a conversation', () => {
     const text = session(talk);
     const parts = turnParts(text, 120);
     expect(parts.join('')).toBe(text);
-    const turns = conversationTurns(text)!;
+    // The first turn opens with what comes before its speaker, so only later turns are boundaries.
+    const turns = conversationTurns(text)!.slice(1);
     let at = 0;
     for (const part of parts) {
       expect(turns.filter((turn) => turn.at > at && turn.at < at + part.length)).toEqual([]);
@@ -72,8 +73,10 @@ describe('notes written as a conversation', () => {
     const pieces = parts.filter((part) => part.turn?.position === 2);
     expect(pieces.length).toBeGreaterThan(1);
     expect(pieces.every((part) => part.turn!.pieces === pieces.length && part.turn!.text === pieces.map((piece) => piece.text).join('').trimEnd())).toBe(true);
-    // The preamble before the first turn has no turn.
-    expect(parts.filter((part) => part.turn === undefined).map((part) => part.text)).toEqual([expect.stringContaining('Date: 2026-03-02')]);
+    // What comes before the first speaker opens the first turn: no part stands alone on a date line.
+    expect(parts.every((part) => part.turn !== undefined)).toBe(true);
+    const first = parts.filter((part) => part.turn!.position === 1);
+    expect(first[0]!.turn!.text).toMatch(/^# session one\n\nDate: 2026-03-02\n\nuser: Which bread did I bake for the office party\?$/);
   });
 
   it('reads every note exactly as before when the setting is off, and ordinary notes alike with it on', async () => {

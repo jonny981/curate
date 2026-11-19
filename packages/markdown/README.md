@@ -41,9 +41,11 @@ with their first pieces' ids. Its `place` is the section and
 with a speaker's name and a colon (`user: ...`, `Ana: ...`): the
 speakers are the names that open at least two of its paragraphs, or, in
 a short exchange where no two names do, the names of its last two such
-paragraphs when they differ (`conversationTurns()`). A preamble before
-the first turn, such as a `Date:` line, is a part with no turn; any
-other note is cut and read exactly as without the setting. The stored
+paragraphs when they differ (`conversationTurns()`). What comes before
+the first speaker, such as the heading and a `Date:` line, opens the
+first turn, so it is never judged alone: every part already carries
+the note's date and title. Any other note is cut and read exactly as
+without the setting. The stored
 index keeps the cut apart from the plain one. A mode with
 `wholeMessages` then judges each turn whole, and one with `hardFacts`
 writes its speaker as `author`, the note as `session`, its `position`,
