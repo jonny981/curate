@@ -70,6 +70,12 @@ export interface Mode {
      *  reply), marking what is left out with the message's id; a message
      *  kept on its own rating is never cut. */
     readonly exchange?: boolean | { readonly nearest?: 'paragraph' };
+    /** The bar a kept message of the person must reach for its exchange
+     *  to be kept with it, a number or one per kind of task; a message
+     *  of the person kept at its kind's bar but under this one is kept
+     *  alone. Unset: every kept message of the person brings its
+     *  exchange. A kept report always brings its request. */
+    readonly exchangeBar?: number | { readonly 'one decision': number; readonly 'everything said': number };
     readonly wholeMessages?: boolean;
     readonly hardFacts?: boolean;
     readonly itemsPerRequest?: number;

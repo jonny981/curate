@@ -91,8 +91,8 @@ describe('values on a chat source\'s levers, and the narrow question in two as i
     // The exchange form: the same two stages, each kind at its own bar, and the exchange around what the person said.
     expect(CHAT_MODES.exchange).toMatchObject({ name: 'exchange', questions: CHAT_MODES.default.questions,
       keep: { questions: MESSAGE_ANSWER_CASCADE, bar: 1, exchange: { nearest: 'paragraph' }, wholeMessages: true, hardFacts: true,
-        barByKind: { 'person message': { 'one decision': 0.76, 'everything said': 0.04 }, 'agent step': 1,
-          'tool output': { 'one decision': 0.81, 'everything said': 0.13 } } } });
+        barByKind: { 'person message': { 'one decision': 0.28, 'everything said': 0.04 }, 'agent step': 1,
+          'tool output': { 'one decision': 0.81, 'everything said': 0.13 } }, exchangeBar: { 'one decision': 0.76, 'everything said': 0.04 } } });
     expect(parseSources({ sources: [{ type: 'claude-code', questions: 'exchange' }] }).sources[0].questions).toBe('exchange');
     expect(MESSAGE_ANSWER_CASCADE.facts!.question.instructions).toBe('Does this message state this: {fact}?');
     expect(CHAT_MODES.answers.read).toBe(CHAT_MODES.default.read);

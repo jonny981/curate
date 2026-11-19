@@ -196,6 +196,31 @@ describe('the exchange around what the person said, each kind at its own bar', (
     expect((await curate(task, whole, { person: 'Sam' })).log).toContain('SQLite is simpler.');
   });
 
+  it('keeps a message of the person alone under the exchange bar, and with its exchange at or over it', async () => {
+    const at = (rating: number, wanted?: 'one decision' | 'everything said') => pick(talk, { task, ...(wanted === undefined ? {} : { wanted }),
+      decide: async (batch) => Object.fromEntries(batch.questions.map((question) => [question.key, { status: 'answered',
+        probability: batch.stage !== 'keep' ? 0.5 : question.questionKey === 'answers' ? question.text === 'Postgres, for transactions.' ? rating
+          : ratings[question.text] ?? 0.1 : 0.02 }])),
+      everyRanked: true, modesBySource: { chat: mode({ bar: 0.5, exchange: true,
+        barByKind: { 'person message': { 'one decision': 0.28, 'everything said': 0.04 }, 'subagent final report': 0.59, 'agent step': 1,
+          'tool output': 0.81, 'subagent prompt': 1 }, exchangeBar: { 'one decision': 0.76, 'everything said': 0.04 } }) } });
+    // One decision: under the person's bar of 0.28 the message is dropped; from 0.28 to under 0.76 it is kept alone; at 0.76, with its exchange.
+    expect(entry(await at(0.27, 'one decision'), talk[1]!)).toMatchObject({ status: 'rejected' });
+    const alone = await at(0.28, 'one decision');
+    expect(entry(alone, talk[1]!)).toMatchObject({ status: 'selected', keptAs: 'rating', probability: 0.28 });
+    expect(entry(alone, talk[0]!)).toMatchObject({ status: 'rejected' });
+    expect(entry(alone, talk[3]!)).toMatchObject({ status: 'rejected' });
+    expect(entry(await at(0.75, 'one decision'), talk[0]!)).toMatchObject({ status: 'rejected' });
+    const joined = await at(0.76, 'one decision');
+    expect(entry(joined, talk[0]!)).toMatchObject({ status: 'selected', keptAs: 'exchange' });
+    expect(entry(joined, talk[3]!)).toMatchObject({ status: 'selected', keptAs: 'exchange' });
+    // A report keeps its request whatever the person's exchange bar says.
+    expect(entry(alone, talk[6]!)).toMatchObject({ status: 'selected', keptAs: 'exchange' });
+    // Everything said: the exchange comes with every kept message of the person.
+    expect(entry(await at(0.3, 'everything said'), talk[0]!)).toMatchObject({ status: 'selected', keptAs: 'exchange' });
+    await expect(pick(talk, { task, decide, modesBySource: { chat: mode({ exchangeBar: 2 }) } })).rejects.toThrow('keep.exchangeBar');
+  });
+
   it('refuses a bar for a kind it does not know', async () => {
     await expect(pick(talk, { task, decide, modesBySource: { chat: mode({ barByKind: { 'agent reply': 0.5 } }) } }))
       .rejects.toThrow('keep.barByKind names "agent reply"');

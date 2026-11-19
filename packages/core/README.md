@@ -1069,10 +1069,15 @@ and 5,738 tokens a task) and 0.04 on the 9 everything-said tasks (186
 messages, 43,399 tokens), against 0.24 and 0.01 for the
 "answers" probability alone. Each task given the bar the others of its
 kind set loses one task in each kind: B1, whose labelled report rated
-0.59, and T0, whose lowest labelled answer rated 0.04. The skill's chat
-"answers" set keeps at these, a bar for each kind of task, asking in
-this package's wording above, not the measured one; the bars await
-answers marked right.
+0.59, and T0, whose lowest labelled answer rated 0.04. A message's
+rating also moves from one call of a task to the next, mostly with the
+needed facts the search-line call writes: of 537 messages rated 0.5 or
+more in one run, rated again in another with other search lines or
+other facts, a quarter fell by more than 1.09 in logit (0.23 in
+rating) and a tenth by more than 2.07 (0.44), against 0.04 and 0.17
+with the same lines. The skill's chat "answers" set keeps at 0.59 and
+0.04, asking in this package's wording above,
+not the measured one; the bars await answers marked right.
 
 No weight is fitted; a set that weighs the fact answers in names its
 own:
@@ -1225,7 +1230,19 @@ right against 13.8 with no cut (five answer sets), and 10.6 of 11
 one-decision tasks at 4,565 tokens against 59,125. Those bars were
 measured with the task in hand; with each task's bars learned on the
 other tasks instead, the exchange form answered 17.0 of 20 against 13.8
-(+3.2, range −0.2 to +7.0), the figure a new history can expect.
+(+3.2, range −0.2 to +7.0), the figure a new history can expect. The
+skill's exchange set keeps the person's message on one-decision tasks
+at its learned 0.76 moved down by the tenth's fall, 0.28, after the
+person's answer message of one task, rated 0.76 where the bars were
+learned, rated 0.57 and 0.62 in two later calls with other needed
+facts; `keep.exchangeBar` then attaches the exchange only to a message
+of the person rated 0.76 or more, and keeps one under it alone. On the
+20 tasks, five answer sets, with the report bar at 0.95, it answered
+18.2 right against 18.4 at the learned bars (the 0.2 one task's answer
+noise, its answer in every text), with one-decision text a median of
+5,213 tokens against 2,087, 99% of the added text the person's own
+words; moving every one-decision bar down by that fall, the exchange's
+included, also answered 18.4, at 14,125 tokens.
 
 `keep.exchange: { nearest: 'paragraph' }` lays each agent message kept
 only for an exchange out as the paragraph nearest the person's message:

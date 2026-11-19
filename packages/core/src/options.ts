@@ -369,7 +369,8 @@ export function checkMode(mode: Mode, at: string): void {
   if (mode.keep !== undefined) {
     const keep = mode.keep;
     if (typeof keep !== 'object' || keep === null || Array.isArray(keep)) throw new TypeError(`${at}.keep must be { questions, bar? }.`);
-    checkKeys(keep, ['questions', 'bar', 'barByKind', 'exchange', 'wholeMessages', 'hardFacts', 'itemsPerRequest'], `${at}.keep`);
+    checkKeys(keep, ['questions', 'bar', 'barByKind', 'exchange', 'exchangeBar', 'wholeMessages', 'hardFacts', 'itemsPerRequest'], `${at}.keep`);
+    if (keep.exchangeBar !== undefined) checkBar(keep.exchangeBar, `${at}.keep.exchangeBar`);
     if (keep.exchange !== undefined && typeof keep.exchange !== 'boolean') {
       if (typeof keep.exchange !== 'object' || keep.exchange === null || Array.isArray(keep.exchange)
         || (keep.exchange.nearest !== undefined && keep.exchange.nearest !== 'paragraph')) {

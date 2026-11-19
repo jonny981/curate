@@ -125,6 +125,7 @@ export const CHAT_MODES = { default: agentTranscripts,
   // for the kind of task. The bars are measured on labelled answers (22
   // tasks of one person's coding-agent history): the highest that loses
   // none, 0.59 on one-decision tasks and 0.04 on everything-said tasks.
+  // A message's rating moves between calls of the same task (other search
   // Each still awaits answers marked right.
   answers: { ...agentTranscripts, name: 'answers', keep: { questions: MESSAGE_ANSWER_CASCADE,
     bar: { 'one decision': 0.59, 'everything said': 0.04 }, wholeMessages: true, hardFacts: true } },
@@ -134,18 +135,29 @@ export const CHAT_MODES = { default: agentTranscripts,
   // earned none), and the exchange around each kept message of the
   // person, and each kept report's request, each agent message kept only
   // for an exchange laid out as its paragraph nearest the person's.
-  // Measured on 20 tasks of one person's coding-agent history; the bars
-  // await the check that learns them without the task.
+  // Measured on 20 tasks of one person's coding-agent history. A
+  // message's rating moves between calls of the same task (other search
+  // lines, other needed facts): of 537 messages rated 0.5 or more in one
+  // run, a tenth fell more than 2.07 in logit in another. So on
+  // one-decision tasks the person's message is kept at its learned 0.76
+  // moved down by that fall, 0.28, and its exchange is attached only
+  // from 0.76 (`exchangeBar`): under it the message is kept alone. On
+  // the 20 tasks, five answer sets, with the report bar at 0.95: 18.2
+  // right against 18.4 at the learned bars (the 0.2 one task's answer
+  // noise, its answer in every text), one-decision text a median of
+  // 5,213 tokens against 2,087, 99% of the added text the person's own
+  // words; moving the exchange's bar down too gave 14,125.
   // Climb 27's best text had no second search, and on the owner's history
   // it added 11 to 21 seconds and most of the size, so this set has none.
   exchange: { ...agentTranscripts, name: 'exchange', searchAgain: false, keep: { questions: MESSAGE_ANSWER_CASCADE, bar: 1, exchange: { nearest: 'paragraph' },
     wholeMessages: true, hardFacts: true, barByKind: {
-      'person message': { 'one decision': 0.76, 'everything said': 0.04 },
+      'person message': { 'one decision': 0.28, 'everything said': 0.04 },
       'subagent final report': { 'one decision': 0.59, 'everything said': 0.95 },
       'subagent prompt': { 'one decision': 1, 'everything said': 0.05 },
       'compaction summary': { 'one decision': 1, 'everything said': 0.37 },
       'tool output': { 'one decision': 0.81, 'everything said': 0.13 },
-      'agent step': 1, 'system message': 1 } } },
+      'agent step': 1, 'system message': 1 },
+    exchangeBar: { 'one decision': 0.76, 'everything said': 0.04 } } },
   judgments: { name: 'judgments', questions: JUDGMENT_CHAT_CASCADE, read: rankedRead } };
 // The decision levers a chat entry can switch on for its mode, each off by
 // default (core's Mode documents them).

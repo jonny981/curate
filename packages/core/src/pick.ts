@@ -3763,8 +3763,9 @@ export async function pick(
     const sources: Record<string, { kept: number; dropped: number; bar: number; byExchange?: number }> = {};
     const done = new Set<MemoryCandidate>();
     let unanswered = 0;
-    // The messages kept on their own rating, by message, for the exchange.
-    const keptOwn = new Set<string>();
+    // The messages kept on their own rating, by message, with their
+    // score, for the exchange.
+    const keptOwn = new Map<string, number>();
     for (const candidate of keepStage) {
       if (done.has(candidate)) continue;
       const key = messageKey(candidate);
@@ -3780,7 +3781,7 @@ export async function pick(
       const kindBar = stage.barByKind?.[keepKind(candidate) ?? ''];
       const bar = kindBar === undefined ? stageBar : barValue(kindBar);
       const tally = sources[candidate.sourceId] ??= { kept: 0, dropped: 0, bar: stageBar };
-      if (score >= bar) keptOwn.add(key);
+      if (score >= bar) keptOwn.set(key, score);
       for (const piece of pieces) {
         const read = statuses.get(piece);
         const readProbability = read !== undefined && 'probability' in read && read.probability !== undefined ? { readProbability: read.probability } : {};
@@ -3813,7 +3814,9 @@ export async function pick(
         const anchor = { sourceId: first(index).sourceId, id: first(index).id };
         const joined: number[] = [];
         const kind = keepKind(first(index));
-        if (kind === 'person message') {
+        // A message of the person under the stage's exchange bar is kept alone.
+        const exchangeBar = keepOf(first(index).sourceId)?.exchangeBar;
+        if (kind === 'person message' && (exchangeBar === undefined || keptOwn.get(key)! >= barValue(exchangeBar))) {
           for (let before = index - 1; before >= 0 && first(before).author !== 'person'; before -= 1) {
             if (isAgent(before)) { joined.push(before); break; }
           }
