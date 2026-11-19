@@ -1457,6 +1457,59 @@ describe('a run through core decision calls', () => {
     expect(memory).toContain('### Most likely answer');
   });
 
+  it.each([
+    ['gives them on the second ask', { wanted: 'one decision', counts: 'statements by the person' }],
+    ['gives them on neither ask', {}],
+  ] as const)('asks once more for the kind of task and which messages count when the reply leaves them out, and %s', async (_name, second) => {
+    const directory = await folder();
+    const home = join(directory, 'home');
+    const transcripts = join(directory, 'transcripts');
+    await mkdir(home);
+    await mkdir(transcripts);
+    await writeFile(join(transcripts, 'session.jsonl'), [
+      JSON.stringify({ type: 'user', sessionId: 's1', timestamp: '2026-01-01T12:00:00Z', origin: { kind: 'human' },
+        message: { content: 'Should we keep the orchard cache layered?' } }),
+      JSON.stringify({ type: 'assistant', sessionId: 's1', timestamp: '2026-01-01T12:01:00Z',
+        message: { content: [{ type: 'text', text: 'We keep the orchard cache layered.' }] } }),
+    ].join('\n'));
+    const sourcesFile = join(directory, 'sources.json');
+    await writeFile(sourcesFile, JSON.stringify({ records: true, person: 'Ada', sources: [{ type: 'claude-code', path: transcripts, questions: 'exchange' }] }));
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
+    vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
+    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => {
+      const body = JSON.parse(String(init.body));
+      return new Response(JSON.stringify({ usage: null, answers: Object.fromEntries(Object.keys(body.questions).map((key) => [key, { noul: 0.8 }])) }));
+    }));
+    const labels: string[] = [];
+    const prompts: string[] = [];
+    const call = async (prompt: string, callFolder: string, label: string, record: { subscription: { label: string; attempt: number; code: number }[] },
+      save: () => Promise<void>) => {
+      labels.push(label);
+      prompts.push(prompt);
+      record.subscription.push({ label, attempt: 1, code: 0 });
+      const reply = JSON.stringify(label === 'searches' ? { ...searches(), needed: ['Whether the cache stays layered'] } : second);
+      writeFileSync(join(callFolder, `${label}-1.txt`), reply);
+      await save();
+      return reply;
+    };
+    const errors: string[] = [];
+    const spy = vi.spyOn(console, 'error').mockImplementation((...line: unknown[]) => { errors.push(line.join(' ')); });
+    const { record } = await run(['--sources', sourcesFile, 'Is the orchard cache layered?'], call).finally(() => spy.mockRestore());
+    expect(labels).toEqual(['searches', 'fields']);
+    expect(prompts[1]).toContain('"wanted": exactly "one decision" or "everything said"');
+    expect(prompts[1]).toContain('Return only JSON with the keys "wanted", "counts".');
+    if ('wanted' in second) {
+      expect(record.wanted).toEqual({ value: 'one decision', askedAgain: true });
+      expect(record.counts).toEqual({ value: 'statements by the person', askedAgain: true });
+      expect(errors.filter((line) => line.includes('search-line call'))).toEqual([]);
+    } else {
+      expect(record.wanted).toMatchObject({ missing: 'the reply gave no answer', askedAgain: true, bars: "the lower of each kind of task's bars" });
+      expect(errors).toContain("The search-line call gave no kind of task (the reply gave no answer), asked twice; the call keeps at the lower of each kind of task's bars.");
+      expect(errors.some((line) => line.startsWith('The search-line call did not say which messages count'))).toBe(true);
+    }
+  });
+
   it('leaves the search-line call and every request without them when no source turns the lever on', async () => {
     const asked = searchLinesPrompt('the task', ['chat'], undefined, true);
     expect(asked).not.toContain('"wanted"');

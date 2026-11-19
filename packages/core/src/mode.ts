@@ -29,6 +29,11 @@ export interface Mode {
    *  JSON whatever this says. The form moves the decision model's scale,
    *  so a bar is measured for the form a mode uses. */
   readonly request?: 'text' | 'json';
+  /** Whether a caller's second search reads this mode's sources: the
+   *  skill searches the sources the agent mode reads again, with lines
+   *  drawn from the first pick's surest parts. `false` turns it off;
+   *  core itself does not search again. */
+  readonly searchAgain?: boolean;
   /** A second stage, off by default: after the read ends, the parts it
    *  kept at the mode's own bar are judged again with these questions,
    *  and kept only at or above this stage's bar; the read itself stays

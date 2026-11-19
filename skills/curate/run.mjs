@@ -136,7 +136,9 @@ export const CHAT_MODES = { default: agentTranscripts,
   // for an exchange laid out as its paragraph nearest the person's.
   // Measured on 20 tasks of one person's coding-agent history; the bars
   // await the check that learns them without the task.
-  exchange: { ...agentTranscripts, name: 'exchange', keep: { questions: MESSAGE_ANSWER_CASCADE, bar: 1, exchange: { nearest: 'paragraph' },
+  // Climb 27's best text had no second search, and on the owner's history
+  // it added 11 to 21 seconds and most of the size, so this set has none.
+  exchange: { ...agentTranscripts, name: 'exchange', searchAgain: false, keep: { questions: MESSAGE_ANSWER_CASCADE, bar: 1, exchange: { nearest: 'paragraph' },
     wholeMessages: true, hardFacts: true, barByKind: {
       'person message': { 'one decision': 0.76, 'everything said': 0.04 },
       'subagent final report': { 'one decision': 0.59, 'everything said': 0.95 },
@@ -919,6 +921,12 @@ export function rareLines(task, seeds, parts) {
     .slice(0, SECOND_SEARCH_WORDS).join(' ')).filter((line) => line !== '');
 }
 
+/** The sources the second search reads: those read as the agent mode
+ *  reads, unless their mode turns the second search off
+ *  (`searchAgain: false`). */
+export const secondSearchIds = (sources) => new Set(sources
+  .filter((source) => source.mode?.read === agentTranscripts.read && source.mode?.searchAgain !== false).map((source) => source.id));
+
 /** Search the coding-agent sources `agentIds` again from round one's
  *  pick `first`. `pickAgain(lines)` runs the second pick over those
  *  sources with `lines` (two keyword and four answer lines) and round
@@ -1500,11 +1508,33 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
     // With no usable list the decision state goes without it, and the
     // record says why.
     const needed = askNeeded ? neededFrom(neededReply) : undefined;
+    let wanted = askWanted ? wantedFrom(wantedReply) : undefined;
+    let counts = askWanted ? countsFrom(countsReply) : undefined;
+    // The kind of task, or which messages count, left out of the reply or
+    // given in a form it does not take is asked for once more, alone, so
+    // one incomplete reply never changes what the call keeps unseen.
+    const missing = [...(wanted?.missing === undefined ? [] : ['wanted']), ...(counts?.missing === undefined ? [] : ['counts'])];
+    if (missing.length > 0) {
+      const asks = { wanted: WANTED_ASK, counts: COUNTS_ASK };
+      const prompt = `TASK: ${options.task}\n${missing.map((field) => asks[field].trim().replace(/^Also /, '')).join('\n')}\n`
+        + `Return only JSON with the key${missing.length === 1 ? '' : 's'} ${missing.map((field) => `"${field}"`).join(', ')}. No other text.`;
+      const reply = await writeLines(prompt, folder, 'fields', record, save).then((text) => {
+        try { return JSON.parse(String(text).trim().replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, '')); } catch { return {}; }
+      }, () => ({}));
+      if (wanted?.missing !== undefined) wanted = { ...wantedFrom(reply?.wanted), askedAgain: true };
+      if (counts?.missing !== undefined) counts = { ...countsFrom(reply?.counts), askedAgain: true };
+    }
     if (needed !== undefined) record.needed = needed;
-    const wanted = askWanted ? wantedFrom(wantedReply) : undefined;
     if (wanted !== undefined) record.wanted = wanted;
-    const counts = askWanted ? countsFrom(countsReply) : undefined;
     if (counts !== undefined) record.counts = counts;
+    // What a field still missing changes, said where the person sees it.
+    if (wanted?.missing !== undefined && callSources.some((entry) => sourceKind(entry.type) === 'chat'
+      && (typeof chatMode(entry).bar === 'object' || chatMode(entry).keep !== undefined))) {
+      wanted = { ...wanted, bars: 'the lower of each kind of task\'s bars' };
+      record.wanted = wanted;
+      console.error(`The search-line call gave no kind of task (${wanted.missing}), asked twice; the call keeps at the lower of each kind of task's bars.`);
+    }
+    if (counts?.missing !== undefined) console.error(`The search-line call did not say which messages count (${counts.missing}), asked twice; the requests go without it.`);
     record.timings.searchesMs = Date.now() - searchStart;
     let entries = callSources;
     if (scoped) {
@@ -1580,7 +1610,7 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
     const lineNames = (length) => Array.from({ length }, (_, i) => `curate-search:${i}`);
     const request = { task: options.task, searchLines: lineNames(count), meaning: { embed: local.embed } };
     // The coding-agent transcripts: the sources read as the agent mode reads.
-    const agentIds = new Set(sources.filter((source) => source.mode?.read === agentTranscripts.read).map((source) => source.id));
+    const agentIds = secondSearchIds(sources);
     // Their second search reuses round one's decisions, from a store
     // that lasts this call only.
     const decisions = new Map();

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { conversationRead, type CandidateReadRequest, type CandidateSource, type MemoryCandidate, type PickCascade, type PickDecide } from '@curatejs/core';
 import { scrubChat } from '@curatejs/chat';
 // @ts-expect-error The standalone JavaScript command has no type declarations.
-import { pickFullSources, rareLines, searchAgain, searchSource } from '../skills/curate/run.mjs';
+import { CHAT_MODES, pickFullSources, rareLines, searchAgain, searchSource, secondSearchIds } from '../skills/curate/run.mjs';
 
 describe('the second search\'s lines', () => {
   const part = (text: string) => ({ text });
@@ -177,5 +177,14 @@ describe('the second search reuses every rating of the first', () => {
     const again = await searchAgain(options.task, first, new Set(['agents']), pickWith);
     expect(again.record).toBeDefined();
     expect(asks.slice(roundOne).flat().filter((id) => rated.has(id))).toEqual([]);
+  });
+});
+
+describe('which sources the second search reads', () => {
+  it('reads the sources the agent mode reads, unless their mode turns it off', () => {
+    const sources = [{ id: 'answers', mode: CHAT_MODES.answers }, { id: 'exchange', mode: CHAT_MODES.exchange },
+      { id: 'default', mode: CHAT_MODES.default }, { id: 'judgments', mode: CHAT_MODES.judgments }, { id: 'notes' }];
+    expect(secondSearchIds(sources)).toEqual(new Set(['answers', 'default']));
+    expect(CHAT_MODES.exchange.searchAgain).toBe(false);
   });
 });
