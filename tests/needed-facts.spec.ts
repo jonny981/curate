@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 // @ts-expect-error The standalone JavaScript command has no type declarations.
-import { CHAT_LEVERS, CHAT_MODES, NOTE_MODES, countsFrom, neededFrom, parseSources, searchLinesPrompt, wantedFrom } from '../skills/curate/run.mjs';
+import { CHAT_LEVERS, CHAT_MODES, NOTE_MODES, neededFrom, parseSources, searchLinesPrompt, wantedFrom } from '../skills/curate/run.mjs';
 import { ANSWER_CASCADE } from '@curatejs/core';
 import { MESSAGE_ANSWER_CASCADE } from '@curatejs/chat';
 
@@ -12,7 +12,7 @@ describe('the facts the answer needs, from the search-line call', () => {
     expect(searchLinesPrompt('Which database did we choose?', ['chat'])).not.toContain('"needed"');
   });
 
-  it('words a fact about what someone said to cover their questions and requests when a transcript mode asks, and asks which messages count', () => {
+  it('words a fact about what someone said to cover their questions and requests when a transcript mode asks, and never asks which messages count', () => {
     const asked = searchLinesPrompt('Everything Ana said about the release modes', ['chat'], undefined, true, true, true);
     expect(asked).toContain('word each fact as what they said, asked or requested about it');
     // Notes: the facts are asked without it. On 64 LongMemEval questions it turned 12 facts into what the user asked,
@@ -20,11 +20,9 @@ describe('the facts the answer needs, from the search-line call', () => {
     const notes = searchLinesPrompt('How often do I see my therapist, Dr. Smith?', ['markdown'], undefined, true);
     expect(notes).toContain('split the task into the separate facts that a complete answer needs, where each fact may be stated in a different message. Write each');
     expect(notes).not.toContain('asked or requested');
-    expect(asked).toContain('"counts": exactly "statements by the person", "statements, questions and requests by the person" or "anything anyone said"');
-    expect(searchLinesPrompt('Everything Ana said about the release modes', ['chat'], undefined, true)).not.toContain('"counts"');
-    expect(countsFrom('statements, questions and requests by the person')).toEqual({ value: 'statements, questions and requests by the person' });
-    expect(countsFrom('questions')).toEqual({ missing: 'the reply was not one of "statements by the person", "statements, questions and requests by the person", "anything anyone said"' });
-    expect(countsFrom(undefined)).toEqual({ missing: 'the reply gave no answer' });
+    // Which messages count is not asked: beside facts worded this way it moved no rating (39 labelled answers).
+    expect(asked).toContain('"wanted"');
+    expect(asked).not.toContain('"counts"');
   });
 
   it('asks for each fact as one thing a single message could say, never a computed, listed or compared value', () => {

@@ -1271,17 +1271,17 @@ describe('a run through core decision calls', () => {
       return new Response(JSON.stringify({ usage: null,
         answers: Object.fromEntries(Object.keys(body.questions).map((key) => [key, { noul: 0.8 }])) }));
     }));
-    const { call, calls } = subscriptionReply({ ...searches(), needed: ['Whether the cache stays layered'], wanted: 'one decision',
-      counts: 'statements, questions and requests by the person' });
+    const { call, calls } = subscriptionReply({ ...searches(), needed: ['Whether the cache stays layered'], wanted: 'one decision' });
     const { record } = await run(['--sources', sourcesFile, 'What did Ada decide about the orchard cache?'], call);
     expect(calls[0]!.prompt).toContain('"wanted"');
-    expect(calls[0]!.prompt).toContain('"counts"');
+    // Which messages count is not asked: beside facts worded as what the person said, asked or requested, it moved no rating.
+    expect(calls[0]!.prompt).not.toContain('"counts"');
     expect(record.wanted).toEqual({ value: 'one decision' });
-    expect(record.counts).toEqual({ value: 'statements, questions and requests by the person' });
+    expect(record).not.toHaveProperty('counts');
     expect(bodies.length).toBeGreaterThan(0);
     for (const body of bodies) {
-      expect(body.state).toMatchObject({ person: 'Ada', wanted: 'one decision', needed: ['Whether the cache stays layered'],
-        counts: 'statements, questions and requests by Ada' });
+      expect(body.state).toMatchObject({ person: 'Ada', wanted: 'one decision', needed: ['Whether the cache stays layered'] });
+      expect(body.state).not.toHaveProperty('counts');
       for (const item of Object.values(body.state.items)) expect(item).toMatchObject({ session: 's1', pieces: 1 });
     }
     const items = bodies.flatMap((body) => Object.values(body.state.items));
@@ -1462,9 +1462,9 @@ describe('a run through core decision calls', () => {
   });
 
   it.each([
-    ['gives them on the second ask', { wanted: 'one decision', counts: 'statements by the person' }],
-    ['gives them on neither ask', {}],
-  ] as const)('asks once more for the kind of task and which messages count when the reply leaves them out, and %s', async (_name, second) => {
+    ['gives it on the second ask', { wanted: 'one decision' }],
+    ['gives it on neither ask', {}],
+  ] as const)('asks once more for the kind of task when the reply leaves it out, and %s', async (_name, second) => {
     const directory = await folder();
     const home = join(directory, 'home');
     const transcripts = join(directory, 'transcripts');
@@ -1502,15 +1502,13 @@ describe('a run through core decision calls', () => {
     const { record } = await run(['--sources', sourcesFile, 'Is the orchard cache layered?'], call).finally(() => spy.mockRestore());
     expect(labels).toEqual(['searches', 'fields']);
     expect(prompts[1]).toContain('"wanted": exactly "one decision" or "everything said"');
-    expect(prompts[1]).toContain('Return only JSON with the keys "wanted", "counts".');
+    expect(prompts[1]).toContain('Return only JSON with the key "wanted".');
     if ('wanted' in second) {
       expect(record.wanted).toEqual({ value: 'one decision', askedAgain: true });
-      expect(record.counts).toEqual({ value: 'statements by the person', askedAgain: true });
       expect(errors.filter((line) => line.includes('search-line call'))).toEqual([]);
     } else {
       expect(record.wanted).toMatchObject({ missing: 'the reply gave no answer', askedAgain: true, bars: "the lower of each kind of task's bars" });
       expect(errors).toContain("The search-line call gave no kind of task (the reply gave no answer), asked twice; the call keeps at the lower of each kind of task's bars.");
-      expect(errors.some((line) => line.startsWith('The search-line call did not say which messages count'))).toBe(true);
     }
   });
 

@@ -5,7 +5,7 @@ import { createRequire } from 'node:module';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ANSWER_CASCADE, PICK_COUNTS, curate, DEFAULT_MAX_QUESTION_TEXT, levelDistribution, pickFromSources, rankedRead, sinceCutoff, taskPeriod } from '@curatejs/core';
+import { ANSWER_CASCADE, curate, DEFAULT_MAX_QUESTION_TEXT, levelDistribution, pickFromSources, rankedRead, sinceCutoff, taskPeriod } from '@curatejs/core';
 import { jev } from '@curatejs/core/models';
 import { agentTranscripts, chat, scrubChat, AGENT_CHAT_CASCADE, CHAT_SEARCH_LINE_REGISTER, JUDGMENT_CHAT_CASCADE, MESSAGE_ANSWER_CASCADE } from '@curatejs/chat';
 import { git, GIT_HISTORY_CASCADE, GIT_SEARCH_LINE_REGISTER } from '@curatejs/git';
@@ -1143,16 +1143,13 @@ const SAID_ASK = ' When the task asks what someone said, word each fact as what 
 // How many answers the task wants, asked in the same call when the call
 // reads a mode that writes hard facts into its decision state.
 const WANTED_ASK = '\nAlso say whether the task wants one decision or fact, or everything said on a subject. Answer from the task text only. Return it as one more JSON key, "wanted": exactly "one decision" or "everything said".';
-// Which messages count as an answer, asked beside `wanted`: a task about
-// what the person said counts their questions and requests too.
-const COUNTS_ASK = '\nAlso say which messages count as an answer to the task. Answer from the task text only. Return it as one more JSON key, "counts": exactly "statements by the person", "statements, questions and requests by the person" or "anything anyone said".';
 
 export function searchLinesPrompt(task, searchKinds, scopeDate = undefined, askNeeded = false, askWanted = false, askSaid = false) {
   const registers = { chat: CHAT_SEARCH_LINE_REGISTER, 'git-history': GIT_SEARCH_LINE_REGISTER, markdown: MARKDOWN_SEARCH_LINE_REGISTER };
   return `TASK: ${task}\nWrite search expansions, not a factual answer. For each source kind, give two keyword lines (one naming the subject, one without it) and four plausible hypothetical-answer lines (two naming the subject, two without it). Use varied wording for directions, constraints, tried ideas, rejected ideas and unfinished experiments where the task asks for them. Do not invent evidence.\nRegisters:\n${searchKinds.map((kind) => `${kind}: ${registers[kind]}`).join('\n')}\n${searchKinds.length === kinds.length
     ? 'Return only JSON with these three keys, each containing {"keywords":[...],"answers":[...]}.'
     : `Return only JSON for ${searchKinds.map((kind) => `"${kind}"`).join(', ')}, each containing {"keywords":[...],"answers":[...]}.`}
-Write exactly two keyword lines and exactly four answer lines for each source kind. No other text.${scopeDate === undefined ? '' : scopeAsk(scopeDate)}${askNeeded ? neededAsk(askSaid) : ''}${askWanted ? WANTED_ASK + COUNTS_ASK : ''}`;
+Write exactly two keyword lines and exactly four answer lines for each source kind. No other text.${scopeDate === undefined ? '' : scopeAsk(scopeDate)}${askNeeded ? neededAsk(askSaid) : ''}${askWanted ? WANTED_ASK : ''}`;
 }
 
 // Haiku sometimes names a group after the task's words ("chat" for "our
@@ -1200,13 +1197,6 @@ export function neededFrom(value) {
 export function wantedFrom(value) {
   return value === 'one decision' || value === 'everything said' ? { value }
     : { missing: value === undefined ? 'the reply gave no answer' : 'the reply was not "one decision" or "everything said"' };
-}
-
-/** Which messages count as an answer, from the search-line reply: one of
- *  core's three values, or why there is none. */
-export function countsFrom(value) {
-  return PICK_COUNTS.includes(value) ? { value }
-    : { missing: value === undefined ? 'the reply gave no answer' : `the reply was not one of ${PICK_COUNTS.map((one) => `"${one}"`).join(', ')}` };
 }
 
 // The search reply gets one repair round: a reply that fails JSON parsing
@@ -1524,30 +1514,24 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
       preparing = Promise.all([...held.values()].map((entry) => entry.warmed));
     }
     const writeLines = callSubscription ?? facts.writer;
-    const { scope: proposedScope, needed: neededReply, wanted: wantedReply, counts: countsReply, ...searchedLines } = await searchLines(searchPrompt, folder, record, save, writeLines, searchKinds);
+    const { scope: proposedScope, needed: neededReply, wanted: wantedReply, ...searchedLines } = await searchLines(searchPrompt, folder, record, save, writeLines, searchKinds);
     record.searches = searchedLines;
     // With no usable list the decision state goes without it, and the
     // record says why.
     const needed = askNeeded ? neededFrom(neededReply) : undefined;
     let wanted = askWanted ? wantedFrom(wantedReply) : undefined;
-    let counts = askWanted ? countsFrom(countsReply) : undefined;
-    // The kind of task, or which messages count, left out of the reply or
-    // given in a form it does not take is asked for once more, alone, so
-    // one incomplete reply never changes what the call keeps unseen.
-    const missing = [...(wanted?.missing === undefined ? [] : ['wanted']), ...(counts?.missing === undefined ? [] : ['counts'])];
-    if (missing.length > 0) {
-      const asks = { wanted: WANTED_ASK, counts: COUNTS_ASK };
-      const prompt = `TASK: ${options.task}\n${missing.map((field) => asks[field].trim().replace(/^Also /, '')).join('\n')}\n`
-        + `Return only JSON with the key${missing.length === 1 ? '' : 's'} ${missing.map((field) => `"${field}"`).join(', ')}. No other text.`;
+    // The kind of task left out of the reply or given in a form it does
+    // not take is asked for once more, alone, so one incomplete reply
+    // never changes what the call keeps unseen.
+    if (wanted?.missing !== undefined) {
+      const prompt = `TASK: ${options.task}\n${WANTED_ASK.trim().replace(/^Also /, '')}\nReturn only JSON with the key "wanted". No other text.`;
       const reply = await writeLines(prompt, folder, 'fields', record, save).then((text) => {
         try { return JSON.parse(String(text).trim().replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, '')); } catch { return {}; }
       }, () => ({}));
-      if (wanted?.missing !== undefined) wanted = { ...wantedFrom(reply?.wanted), askedAgain: true };
-      if (counts?.missing !== undefined) counts = { ...countsFrom(reply?.counts), askedAgain: true };
+      wanted = { ...wantedFrom(reply?.wanted), askedAgain: true };
     }
     if (needed !== undefined) record.needed = needed;
     if (wanted !== undefined) record.wanted = wanted;
-    if (counts !== undefined) record.counts = counts;
     // What a field still missing changes, said where the person sees it.
     if (wanted?.missing !== undefined && callSources.some((entry) => sourceKind(entry.type) === 'chat'
       && (typeof chatMode(entry).bar === 'object' || chatMode(entry).keep !== undefined))) {
@@ -1555,7 +1539,6 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
       record.wanted = wanted;
       console.error(`The search-line call gave no kind of task (${wanted.missing}), asked twice; the call keeps at the lower of each kind of task's bars.`);
     }
-    if (counts?.missing !== undefined) console.error(`The search-line call did not say which messages count (${counts.missing}), asked twice; the requests go without it.`);
     record.timings.searchesMs = Date.now() - searchStart;
     let entries = callSources;
     if (scoped) {
@@ -1650,7 +1633,6 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
       ...(needed?.facts === undefined ? {} : { needed: needed.facts }),
       ...(settings.person === undefined ? {} : { person: settings.person }),
       ...(wanted?.value === undefined ? {} : { wanted: wanted.value }),
-      ...(counts?.value === undefined ? {} : { counts: counts.value }),
       ...(agentIds.size === 0 ? {} : { cache: { deciderId: decide.deciderId, store: {
         get: async (key) => decisions.get(key), set: async (key, value) => { decisions.set(key, value); } } } }) };
     const searched = (source, searches) => {

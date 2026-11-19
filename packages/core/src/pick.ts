@@ -11,7 +11,7 @@ import {
 } from './decisions.js';
 import { judgmentFacts, judgmentPopulation, modelScore, type JudgmentPopulation } from './judgments.js';
 import {
-  ANSWER_TYPES, classifyTask, ROUTE_QUESTIONS, routeOptions, type AnswerType, type PickCounts, type PickWanted, type RouteKey, type RouteOption,
+  ANSWER_TYPES, classifyTask, ROUTE_QUESTIONS, routeOptions, type AnswerType, type PickWanted, type RouteKey, type RouteOption,
 } from './task.js';
 import { conversationRead, rankedRead, type Mode, type ModeRead, type ModeReadResult } from './mode.js';
 import { keepKind, messageKey, messageKind, messagePieces, messageText, transcriptMessages } from './chat-read.js';
@@ -178,10 +178,6 @@ export interface PickBatch {
   /** How many answers the task wants (`PickOptions.wanted`), present on
    *  a request whose parts' mode writes hard facts. */
   readonly wanted?: PickWanted;
-  /** Which messages count as an answer (`PickOptions.counts`), the
-   *  person named in it, present on a request whose parts' mode writes
-   *  hard facts. */
-  readonly counts?: string;
   /** `'keep'` on a request of a mode's second stage (`Mode.keep`),
    *  asked after the read over the parts it kept. */
   readonly stage?: 'keep';
@@ -234,7 +230,7 @@ export type PickListQuestion =
 
 /** One request about a list of items at once: the task, the fields its
  *  state carries beside it, and each item under its own key, in order. */
-export interface PickListRequest extends Pick<PickBatch, 'task' | 'needed' | 'person' | 'wanted' | 'counts'> {
+export interface PickListRequest extends Pick<PickBatch, 'task' | 'needed' | 'person' | 'wanted'> {
   readonly items: readonly (readonly [string, PickItem])[];
   readonly questions: Readonly<Record<string, PickListQuestion>>;
 }
@@ -932,13 +928,6 @@ export interface PickOptions {
    *  parts whose mode writes hard facts carries it in its state as
    *  `wanted`. Absent: no request carries it. */
   readonly wanted?: PickWanted;
-  /** Which messages count as an answer, as the caller's writer judged
-   *  from the task's wording: what the person stated, what the person
-   *  said, asked or requested, or anything anyone said. A request of
-   *  parts whose mode writes hard facts carries it in its state as
-   *  `counts`, the person's name in place of "the person" when the pick
-   *  gives `person`. Absent: no request carries it. */
-  readonly counts?: PickCounts;
   /** Source identities mapped to kinds; pickFromSources fills these from source.kind. */
   readonly sourceKinds?: Readonly<Record<string, CandidateSourceKind>>;
   /** Put these top ranked hits first if they pass the threshold. */
@@ -1937,13 +1926,10 @@ export async function pick(
     && (modeFor(candidate.sourceId)?.hardFacts === true || keepOf(candidate.sourceId)?.hardFacts === true);
   // The fields a request of this part's carries in its state beside the
   // task and its items.
-  const counts = options.counts === undefined ? undefined
-    : options.person === undefined ? options.counts : options.counts.replace('the person', options.person);
-  const headerOf = (candidate: MemoryCandidate): Pick<PickBatch, 'needed' | 'person' | 'wanted' | 'counts'> => ({
+  const headerOf = (candidate: MemoryCandidate): Pick<PickBatch, 'needed' | 'person' | 'wanted'> => ({
     ...(carriesNeeded(candidate) ? { needed: needed! } : {}),
     ...(factsFor(candidate) && options.person !== undefined ? { person: options.person } : {}),
     ...(factsFor(candidate) && options.wanted !== undefined ? { wanted: options.wanted } : {}),
-    ...(factsFor(candidate) && counts !== undefined ? { counts } : {}),
   });
   checkWriteQuestions(options);
   if (options.route !== undefined && options.route !== 'jev') {
@@ -2599,7 +2585,7 @@ export async function pick(
       const header = sink === answered || sink === keepAnswers ? headerOf(item.candidate) : {};
       // An answer asked in the plain-text form is stored apart: the form moves the model's scale.
       return decisionKey(textFor(item, header) ? JSON.stringify(['text', task])
-        : header.person === undefined && header.wanted === undefined && header.counts === undefined
+        : header.person === undefined && header.wanted === undefined
           ? (header.needed === undefined ? task : JSON.stringify([task, needed]))
           : JSON.stringify([task, header]),
       cacheVersion, cache!.deciderId, limits.maxQuestionText, item.question, item.candidate.text);
@@ -2685,10 +2671,10 @@ export async function pick(
     }
     const room = limits.maxBatches - batches - packedBatches;
     const slices: Pending[][] = [];
-    const headers = new Map<Pending[], Pick<PickBatch, 'needed' | 'person' | 'wanted' | 'counts' | 'alone' | 'form'>>();
+    const headers = new Map<Pending[], Pick<PickBatch, 'needed' | 'person' | 'wanted' | 'alone' | 'form'>>();
     for (const [key, items] of [...groups].sort(([left], [right]) =>
       Number(JSON.parse(right)[0].needed !== undefined) - Number(JSON.parse(left)[0].needed !== undefined))) {
-      const [header, perRequest, form] = JSON.parse(key) as [Pick<PickBatch, 'needed' | 'person' | 'wanted' | 'counts'>, number | null, 'text' | null];
+      const [header, perRequest, form] = JSON.parse(key) as [Pick<PickBatch, 'needed' | 'person' | 'wanted'>, number | null, 'text' | null];
       for (const slice of pack(items, task, whole, room - slices.length, perRequest ?? undefined)) {
         slices.push(slice);
         headers.set(slice, { ...header, ...(perRequest === 1 ? { alone: true } : {}), ...(form === null ? {} : { form }) });

@@ -997,16 +997,19 @@ whatever the read. A commit gets only `kind: 'commit'` and any other
 note only `kind: 'note'`. The request's state also carries the pick's
 `person`, the person's name as tasks word it, and `wanted`, `'one
 decision'` or `'everything said'` as the caller's writer judged the
-task, when the pick gives them, and `counts`, which messages count as an
-answer ('statements by the person', 'statements, questions and requests
-by the person' or 'anything anyone said', the person's name in place of
-"the person"): `{ task, needed, person, wanted, counts, items }`. With
-the agent's message beside them, a person's own questions and requests
-rated lower while the needed facts read "<name>'s statements about ...";
-worded "What <name> said, asked or requested about ...", with `counts`
-beside, 11 such messages that had fallen rose from a median of 0.21 to
-0.39 of the read's best rating, while 15 of the person's messages that
-hold no answer stayed at 0.02. Requests of other modes never carry them,
+task, when the pick gives them: `{ task, needed, person, wanted, items }`.
+With the agent's message beside them, a person's own questions and
+requests rated lower while the needed facts read "<name>'s statements
+about ..."; worded "What <name> said, asked or requested about ...", 11
+such messages that had fallen rose from a median of 0.21 to 0.39 of the
+read's best rating, while 15 of the person's messages that hold no
+answer stayed at 0.02. A field saying which messages count as an answer
+(the person's statements; their statements, questions and requests; or
+anything anyone said), sent beside facts worded that way, moved no
+rating: on 39 labelled answer messages, each asked with and without it
+the same minute, the difference was a median of 0.000, with 4 apart by
+more than 0.05 against 7 for the same request sent twice, so no request
+carries one. Requests of other modes never carry these fields,
 and an answer asked with them is stored apart from one asked without.
 The record names the setting under `levers.sources`. Cost: 1.48 times
 the request text, so the dollars, on the 22 short lists, batched; a
@@ -1192,8 +1195,8 @@ again with the stage's questions, and kept only at or above the stage's
 bar (a number, or one per kind of task read for the pick's `wanted`).
 `wholeMessages` and `hardFacts` act on this stage's requests alone, so
 the read's walk and stop keep the score they were tuned on; each
-request carries the needed facts, and the person, `wanted` and `counts`
-when the stage writes hard facts; the stage batches unless it sets
+request carries the needed facts, and the person and `wanted` when the
+stage writes hard facts; the stage batches unless it sets
 `itemsPerRequest`. A kept message keeps every piece the pick holds at
 its message's score, which becomes the entry's `probability` (the
 read's is `readProbability`), so the text orders by it; a message under
