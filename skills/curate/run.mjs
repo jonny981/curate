@@ -1121,7 +1121,13 @@ const scopeAsk = (today) => `\nThe JSON also holds a key "scope": {"kinds": [...
 // The facts the answer needs, asked in the same call as the search lines
 // when the call reads a mode that lists them in its decision state. The
 // wording is the separate facts prompt the measurement used.
-const NEEDED_ASK = '\nAlso split the task into the separate facts that a complete answer needs, where each fact may be stated in a different message. When the task asks what someone said, word each fact as what they said, asked or requested about it ("What Ana said, asked or requested about ..."), so their questions and requests count as well as their statements. Write each as one thing a single message could say in plain words, as a person would say it: an age rather than a birth date; what was paid rather than a saving worked out from it; when something happened as a message might say it (a date, or a time such as "three weeks ago") rather than a date worked out; one event or item of a list, worded to fit each of them ("a charity event the user took part in, and when"), rather than the list, a count or a comparison. When the task asks for suggestions, the facts are what the user has said about their own situation, likes, plans or past attempts that the suggestions should fit. Give one to five facts; give one fact when a single message can answer the task. Answer from the task text only. Return them as one more JSON key, "needed": a list of short strings.';
+const neededAsk = (said) => '\nAlso split the task into the separate facts that a complete answer needs, where each fact may be stated in a different message.'
+  + (said ? SAID_ASK : '') + ' Write each as one thing a single message could say in plain words, as a person would say it: an age rather than a birth date; what was paid rather than a saving worked out from it; when something happened as a message might say it (a date, or a time such as "three weeks ago") rather than a date worked out; one event or item of a list, worded to fit each of them ("a charity event the user took part in, and when"), rather than the list, a count or a comparison. When the task asks for suggestions, the facts are what the user has said about their own situation, likes, plans or past attempts that the suggestions should fit. Give one to five facts; give one fact when a single message can answer the task. Answer from the task text only. Return them as one more JSON key, "needed": a list of short strings.';
+// Asked only when a transcript mode lists the facts, where it was measured
+// (the person's questions and requests then rate as answers); on notes it
+// turned 12 of 64 LongMemEval facts into what the user asked, which no
+// message of the history states.
+const SAID_ASK = ' When the task asks what someone said, word each fact as what they said, asked or requested about it ("What Ana said, asked or requested about ..."), so their questions and requests count as well as their statements.';
 // How many answers the task wants, asked in the same call when the call
 // reads a mode that writes hard facts into its decision state.
 const WANTED_ASK = '\nAlso say whether the task wants one decision or fact, or everything said on a subject. Answer from the task text only. Return it as one more JSON key, "wanted": exactly "one decision" or "everything said".';
@@ -1129,12 +1135,12 @@ const WANTED_ASK = '\nAlso say whether the task wants one decision or fact, or e
 // what the person said counts their questions and requests too.
 const COUNTS_ASK = '\nAlso say which messages count as an answer to the task. Answer from the task text only. Return it as one more JSON key, "counts": exactly "statements by the person", "statements, questions and requests by the person" or "anything anyone said".';
 
-export function searchLinesPrompt(task, searchKinds, scopeDate = undefined, askNeeded = false, askWanted = false) {
+export function searchLinesPrompt(task, searchKinds, scopeDate = undefined, askNeeded = false, askWanted = false, askSaid = false) {
   const registers = { chat: CHAT_SEARCH_LINE_REGISTER, 'git-history': GIT_SEARCH_LINE_REGISTER, markdown: MARKDOWN_SEARCH_LINE_REGISTER };
   return `TASK: ${task}\nWrite search expansions, not a factual answer. For each source kind, give two keyword lines (one naming the subject, one without it) and four plausible hypothetical-answer lines (two naming the subject, two without it). Use varied wording for directions, constraints, tried ideas, rejected ideas and unfinished experiments where the task asks for them. Do not invent evidence.\nRegisters:\n${searchKinds.map((kind) => `${kind}: ${registers[kind]}`).join('\n')}\n${searchKinds.length === kinds.length
     ? 'Return only JSON with these three keys, each containing {"keywords":[...],"answers":[...]}.'
     : `Return only JSON for ${searchKinds.map((kind) => `"${kind}"`).join(', ')}, each containing {"keywords":[...],"answers":[...]}.`}
-Write exactly two keyword lines and exactly four answer lines for each source kind. No other text.${scopeDate === undefined ? '' : scopeAsk(scopeDate)}${askNeeded ? NEEDED_ASK : ''}${askWanted ? WANTED_ASK + COUNTS_ASK : ''}`;
+Write exactly two keyword lines and exactly four answer lines for each source kind. No other text.${scopeDate === undefined ? '' : scopeAsk(scopeDate)}${askNeeded ? neededAsk(askSaid) : ''}${askWanted ? WANTED_ASK + COUNTS_ASK : ''}`;
 }
 
 // Haiku sometimes names a group after the task's words ("chat" for "our
@@ -1347,7 +1353,10 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
     // has a second stage gets how many answers are wanted from it too.
     const askWanted = callSources.some((entry) => sourceKind(entry.type) === 'chat'
       && (chatMode(entry).hardFacts === true || typeof chatMode(entry).bar === 'object' || chatMode(entry).keep !== undefined));
-    const searchPrompt = searchLinesPrompt(options.task, searchKinds, scoped ? today : undefined, askNeeded, askWanted);
+    // A fact about what someone said covers their questions and requests
+    // only when a transcript mode lists the facts.
+    const askSaid = callSources.some((entry) => sourceKind(entry.type) === 'chat' && modeNeeds(chatMode(entry)));
+    const searchPrompt = searchLinesPrompt(options.task, searchKinds, scoped ? today : undefined, askNeeded, askWanted, askSaid);
     const searchStart = Date.now();
     // One entry's source. A Codex entry's sessions are copied to `snapshot`.
     const build = async (entry, snapshot) => {

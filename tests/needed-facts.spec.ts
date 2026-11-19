@@ -12,9 +12,14 @@ describe('the facts the answer needs, from the search-line call', () => {
     expect(searchLinesPrompt('Which database did we choose?', ['chat'])).not.toContain('"needed"');
   });
 
-  it('words a fact about what someone said to cover their questions and requests, and asks which messages count', () => {
-    const asked = searchLinesPrompt('Everything Ana said about the release modes', ['chat'], undefined, true, true);
+  it('words a fact about what someone said to cover their questions and requests when a transcript mode asks, and asks which messages count', () => {
+    const asked = searchLinesPrompt('Everything Ana said about the release modes', ['chat'], undefined, true, true, true);
     expect(asked).toContain('word each fact as what they said, asked or requested about it');
+    // Notes: the facts are asked without it. On 64 LongMemEval questions it turned 12 facts into what the user asked,
+    // such as "What the user asked on November 10, 2023 about how often they see their therapist".
+    const notes = searchLinesPrompt('How often do I see my therapist, Dr. Smith?', ['markdown'], undefined, true);
+    expect(notes).toContain('split the task into the separate facts that a complete answer needs, where each fact may be stated in a different message. Write each');
+    expect(notes).not.toContain('asked or requested');
     expect(asked).toContain('"counts": exactly "statements by the person", "statements, questions and requests by the person" or "anything anyone said"');
     expect(searchLinesPrompt('Everything Ana said about the release modes', ['chat'], undefined, true)).not.toContain('"counts"');
     expect(countsFrom('statements, questions and requests by the person')).toEqual({ value: 'statements, questions and requests by the person' });

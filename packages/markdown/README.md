@@ -63,7 +63,14 @@ its `pieces` and the turns either side as `replies_to` and
 `answered_by` (each its first 1,000 characters). Of LongMemEval's 7,164
 session notes, 7,157 read as conversations; in 272 (about 1 in 26) a
 label repeated inside a turn, such as `Note:` or `Day 2:`, also starts a
-turn of its own.
+turn of its own. Judged whole, one turn a request, with hard facts and
+the "answers" set, LongMemEval's 149 questions scored under the notes
+mode's own pieces: 139.33 right at its bar against 145.33. In the
+labels the unit showed no gain (of the 255 labelled answer turns that
+are one paragraph, 75 ranked better whole and 75 as a piece, with the
+same questions), and assistant turns
+over 1,000 characters were 78% of its text while holding 16 of the 274
+labelled answers.
 Notes inside a work tree also carry `path` (their repository-relative
 file) and `repository`, which is what lets a selected commit link them
 in. A `revision` pin on `knowledgeBase` reads the tree that revision

@@ -1317,6 +1317,8 @@ describe('a run through core decision calls', () => {
     const { record } = await run(['--sources', sourcesFile, 'Is the orchard cache layered?'], call);
     // The second stage keeps at the bar for the kind of task the search-line call names.
     expect(calls[0]!.prompt).toContain('"wanted"');
+    // A transcript mode lists the facts: a fact about what someone said covers their questions and requests.
+    expect(calls[0]!.prompt).toContain('word each fact as what they said, asked or requested about it');
     expect(Object.values(record.pick.levers.sources as Record<string, { keep?: { bar: number } }>).map((source) => source.keep?.bar)).toContain(0.59);
     const kept = bodies.filter((body) => Object.values(body.questions).some((question) => question.instructions.question === 'Does this message state the answer to the task?'));
     expect(kept.length).toBeGreaterThan(0);
@@ -1351,6 +1353,8 @@ describe('a run through core decision calls', () => {
     const { call, calls } = subscriptionReply({ ...searches(), needed: ['Whether the cache stays layered'] });
     const { record } = await run(['--sources', sourcesFile, 'Is the orchard cache layered?'], call);
     expect(calls[0]!.prompt).toContain('"needed"');
+    // Notes alone: no fact is worded as what someone asked or requested (on LongMemEval it named the question itself).
+    expect(calls[0]!.prompt).not.toContain('asked or requested');
     const rated = bodies.filter((body) => Object.values(body.questions).some((question) => question.instructions.question === 'Does this item answer the task?'));
     expect(rated.length).toBeGreaterThan(0);
     for (const body of rated) {
