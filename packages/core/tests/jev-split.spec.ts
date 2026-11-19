@@ -273,7 +273,7 @@ describe('Jev request dispatch', () => {
         sent.push(Date.now());
         return Response.json({ answers: { q0: { noul: 0.5 } } });
       }));
-      const decide = jev({ apiKey: 'test-key' });
+      const decide = jev({ apiKey: 'test-key', requestsPerSecond: 80, tokensPerSecond: 100_000 });
       const signal = AbortSignal.timeout(60_000);
       const runs = Array.from({ length: 100 }, (_, index) => decide({ task: 'notes?', questions: [{
         key: `q${index}`, sourceId: 's', id: `${index}`, role: 'reference', question: 'Relevant?',
@@ -288,7 +288,7 @@ describe('Jev request dispatch', () => {
     } finally { vi.useRealTimers(); }
   });
 
-  it('spends estimated tokens from the same refilling allowance', async () => {
+  it('keeps to 320 requests a second when the caller names no rate', async () => {
     vi.useFakeTimers();
     try {
       const sent: number[] = [];
@@ -297,6 +297,28 @@ describe('Jev request dispatch', () => {
         return Response.json({ answers: { q0: { noul: 0.5 } } });
       }));
       const decide = jev({ apiKey: 'test-key' });
+      const signal = AbortSignal.timeout(60_000);
+      const runs = Array.from({ length: 400 }, (_, index) => decide({ task: 'notes?', questions: [{
+        key: `q${index}`, sourceId: 's', id: `${index}`, role: 'reference', question: 'Relevant?',
+        trueCriterion: 'yes', falseCriterion: 'no', title: 'part', text: `text ${index}`,
+      }] }, signal));
+      await vi.advanceTimersByTimeAsync(1);
+      expect(sent).toHaveLength(320);
+      await vi.advanceTimersByTimeAsync(300);
+      expect(sent).toHaveLength(400);
+      await Promise.all(runs);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('spends estimated tokens from the same refilling allowance', async () => {
+    vi.useFakeTimers();
+    try {
+      const sent: number[] = [];
+      vi.stubGlobal('fetch', vi.fn<typeof globalThis.fetch>().mockImplementation(async () => {
+        sent.push(Date.now());
+        return Response.json({ answers: { q0: { noul: 0.5 } } });
+      }));
+      const decide = jev({ apiKey: 'test-key', tokensPerSecond: 100_000 });
       const signal = AbortSignal.timeout(60_000);
       // ~67,000 estimated tokens a send at three characters a token.
       const big = 'x'.repeat(200_000);
@@ -333,7 +355,7 @@ describe('Jev request dispatch', () => {
           answers: Object.fromEntries(Object.keys(body.questions).map((name) => [name, { noul: 0.5 }])),
         });
       }));
-      const decide = jev({ apiKey: 'test-key' });
+      const decide = jev({ apiKey: 'test-key', requestsPerSecond: 80, tokensPerSecond: 100_000 });
       const signal = AbortSignal.timeout(60_000);
       const small = Array.from({ length: 80 }, (_, index) => decide({ task: 'notes?', questions: [{
         key: `q${index}`, sourceId: 's', id: `${index}`, role: 'reference', question: 'Relevant?',
@@ -369,7 +391,7 @@ describe('Jev request dispatch', () => {
         if (first) { first = false; return new Response('server error', { status: 500 }); }
         return Response.json({ answers: { q0: { noul: 0.5 } } });
       }));
-      const decide = jev({ apiKey: 'test-key' });
+      const decide = jev({ apiKey: 'test-key', requestsPerSecond: 80, tokensPerSecond: 100_000 });
       const signal = AbortSignal.timeout(60_000);
       const runs = Array.from({ length: 90 }, (_, index) =>
         decide({ task: 'notes?', questions: [{
@@ -404,7 +426,7 @@ describe('Jev request dispatch', () => {
         sent.push(Date.now());
         return Response.json({ answers: { q0: { noul: 0.5 } } });
       }));
-      const decide = jev({ apiKey: 'test-key' });
+      const decide = jev({ apiKey: 'test-key', requestsPerSecond: 80, tokensPerSecond: 100_000 });
       const signal = AbortSignal.timeout(60_000);
       const control = new AbortController();
       const runs = Array.from({ length: 80 }, (_, index) => decide({ task: 'notes?', questions: [{
@@ -457,7 +479,7 @@ describe('Jev request dispatch', () => {
       }));
       // The shipped record save is asynchronous: the failure's write is
       // held open while request 81 waits for allowance behind it.
-      const decide = jev({ apiKey: 'test-key', onCall: async (call) => {
+      const decide = jev({ apiKey: 'test-key', requestsPerSecond: 80, tokensPerSecond: 100_000, onCall: async (call) => {
         if (call.status === 500) await gate;
       } });
       const signal = AbortSignal.timeout(60_000);
@@ -592,7 +614,7 @@ describe('Jev request dispatch', () => {
         if (first) { first = false; return new Response('server error', { status: 500 }); }
         return Response.json({ answers: { q0: { noul: 0.5 } } });
       }));
-      const decide = jev({ apiKey: 'test-key' });
+      const decide = jev({ apiKey: 'test-key', requestsPerSecond: 80, tokensPerSecond: 100_000 });
       // Two picks through the one adapter, each under its own signal as
       // a pick hands every one of its batches the same signal object.
       const failed = decide({ task: 'notes?', questions: [{

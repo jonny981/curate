@@ -30,8 +30,8 @@ async function post(url: string, apiKey: string | undefined, body: unknown, sign
 }
 
 /** Jev's reply to one request: its HTTP status and whole body, read so a
- *  rejected request's reason is never lost, and the Retry-After header a
- *  rate-limit reply waits by. */
+ *  rejected request's reason is never lost, and the wait a rate-limit
+ *  reply asks for: `retry-after-ms` when it sends one, else Retry-After. */
 async function jevPost(url: string, apiKey: string | undefined, text: string, signal: AbortSignal) {
   const response = await fetch(url, {
     method: 'POST',
@@ -40,7 +40,7 @@ async function jevPost(url: string, apiKey: string | undefined, text: string, si
     signal,
   });
   return { ok: response.ok, status: response.status,
-    retryAfter: response.headers.get('retry-after'), text: await response.text() };
+    retryAfter: response.headers.get('retry-after'), retryAfterMs: response.headers.get('retry-after-ms'), text: await response.text() };
 }
 
 /** Why the decision service gave no answers: it has no credit (HTTP
@@ -97,9 +97,13 @@ function networkSaid(error: unknown): string {
   return cause === undefined ? message : `${message} (${cause})`;
 }
 
-/** The wait a reply's Retry-After header names, in milliseconds; an
- *  unreadable or absent header waits one second. */
-function retryAfterMs(header: string | null): number {
+/** The wait a reply names, in milliseconds: its `retry-after-ms` header
+ *  (the service's own client reads it first), else its Retry-After header
+ *  in seconds or as a date; an unreadable or absent header waits one
+ *  second. */
+function retryAfterMs(header: string | null, milliseconds: string | null = null): number {
+  const ms = milliseconds === null ? Number.NaN : Number(milliseconds.trim());
+  if (Number.isFinite(ms)) return Math.max(ms, 0);
   if (header === null) return 1000;
   const seconds = Number(header.trim());
   if (Number.isFinite(seconds)) return Math.max(seconds * 1000, 0);
@@ -116,21 +120,28 @@ function wait(ms: number, signal: AbortSignal): Promise<void> {
 }
 
 /** Stand-ins for the organization's own rate limits until the caller
- *  sets them (`jev({ requestsPerSecond, tokensPerSecond })`): 80
- *  requests and 100,000 tokens a second, a token estimated at three
+ *  sets them (`jev({ requestsPerSecond, tokensPerSecond })`): 320
+ *  requests and 400,000 tokens a second, a token estimated at three
  *  characters like the request-size bounds. TypeSafe sets limits per
  *  organization, shown in its developer console, in requests and tokens
- *  a second, publishes no figures, and answers a request over either
- *  429. These two rates bound every request the adapter sends: it
- *  queues against them and never sends faster. */
-const JEV_TOKENS_PER_SECOND = 100_000;
-const JEV_REQUESTS_PER_SECOND = 80;
+ *  a second, publishes no figures and sends no rate headers, and answers
+ *  a request over either 429. These two rates bound every request the
+ *  adapter sends: it queues against them and never sends faster. On one
+ *  call of 141 requests, raised in steps, no 429 or 529 came at any pace,
+ *  unpaced included; the decision step took 22.1 seconds at 100,000
+ *  tokens a second, 15.1 at 200,000, 11.9 at 400,000, 14.6 at 800,000
+ *  and 19.2 unpaced, the service answering each request more slowly past
+ *  400,000 (the slowest tenth over 0.37 seconds there, 1.0 at 800,000,
+ *  4.1 unpaced). A pace that slows itself when replies slow down, the
+ *  sign the service gave in place of a 429, is untried. */
+const JEV_TOKENS_PER_SECOND = 400_000;
+const JEV_REQUESTS_PER_SECOND = 320;
 
 /** The retry budget for HTTP 429 replies: the longest a request waits
  *  on them, from the first one. The allowance above is counted per
  *  one-second window, each window refills it whole, and one window holds
  *  the largest request this adapter sends (64,000 estimated tokens of
- *  100,000). This adapter's own sends keep inside the allowance, so a
+ *  400,000). This adapter's own sends keep inside the allowance, so a
  *  429 means other sends on the same key spent the window, and the
  *  request gets through in the first window they leave room in. Sixty
  *  windows is a chosen budget, not a proof of anything: sustained
@@ -490,8 +501,8 @@ export function jev({ apiKey, model = 'jev-latest', url = JEV_URL, onCall,
   readonly model?: string;
   readonly url?: string;
   /** The organization's rate limits, as its TypeSafe console shows
-   *  them: the client queues every request inside both. Default 80
-   *  requests and 100,000 tokens a second. */
+   *  them: the client queues every request inside both. Default 320
+   *  requests and 400,000 tokens a second. */
   readonly requestsPerSecond?: number;
   readonly tokensPerSecond?: number;
   /** Called once per request, split and resent requests included. */
@@ -573,13 +584,14 @@ export function jev({ apiKey, model = 'jev-latest', url = JEV_URL, onCall,
         // reply fails the request with the last reply instead.
         if (reply.status === 429 || reply.status === 529) {
           const now = Date.now();
-          const pause = retryAfterMs(reply.retryAfter);
+          const pause = retryAfterMs(reply.retryAfter, reply.retryAfterMs);
           limitedSince ??= now;
           if (now - limitedSince + pause > JEV_RATE_LIMITED_MS) {
             const seconds = (ms: number) => Math.round(ms / 1000);
             const error = new DecisionServiceError(reply.status, reply.text, saidIn(reply.text), { waited: `${seconds(now - limitedSince)} s; `
               + `${reply.status === 529 ? 'an overloaded' : 'a rate-limited'} request waits at most ${seconds(JEV_RATE_LIMITED_MS)} s, and the last reply asked for `
-              + `${seconds(pause)} s more (${reply.retryAfter === null ? 'no Retry-After' : `Retry-After: ${reply.retryAfter}`})` });
+              + `${seconds(pause)} s more (${reply.retryAfterMs !== null ? `retry-after-ms: ${reply.retryAfterMs}`
+                : reply.retryAfter === null ? 'no Retry-After' : `Retry-After: ${reply.retryAfter}`})` });
             allow.stop(domain, error);
             await onCall?.(call);
             throw error;

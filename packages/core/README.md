@@ -71,7 +71,7 @@ const decide = jev({ apiKey: process.env.TYPESAFE_API_KEY });
 ```
 
 - **Jev:** `jev({ apiKey?, model?, url?, requestsPerSecond?, tokensPerSecond? })` returns a `PickDecide` function for TypeSafe's System One endpoint, with `deciderId: typesafe:${model}:item-records`. The model defaults to `'jev-latest'`. Missing or invalid probabilities become missing answers.
-- **Jev's rate limits:** TypeSafe sets request and token rates per organization and shows them in its developer console. Set yours with `requestsPerSecond` and `tokensPerSecond`: `jev()` queues every request inside both and never sends faster. Unset, it keeps to 80 requests and 100,000 estimated tokens a second (three characters a token), stand-ins for an organization's own limits; TypeSafe's documentation publishes no figures.
+- **Jev's rate limits:** TypeSafe sets request and token rates per organization and shows them in its developer console. Set yours with `requestsPerSecond` and `tokensPerSecond`: `jev()` queues every request inside both and never sends faster. Unset, it keeps to 320 requests and 400,000 estimated tokens a second (three characters a token), stand-ins for an organization's own limits; TypeSafe's documentation publishes no figures and its replies carry no rate headers. On one call of 141 requests, raised in steps with no 429 or 529 at any pace, unpaced included, the decision step took 22.1 seconds at 100,000 tokens a second, 15.1 at 200,000, 11.9 at 400,000, 14.6 at 800,000 and 19.2 unpaced: past 400,000 the service answered each request more slowly (the slowest tenth over 0.37 seconds at 400,000, 1.0 at 800,000 and 4.1 unpaced). A 429 or 529 waits as the reply asks: `retry-after-ms` first, as TypeSafe's own client reads it, else `Retry-After`. Untried: a pace that slows itself when the service's replies slow down, the sign it gave past 400,000 in place of a 429.
 - **Jev at another address:** set `url` for any server that speaks Jev's format, such as a Clef server. The key is then optional, and no `authorization` header is sent without one. The `deciderId` is `jev:${host}${path}:${model}:item-records`, read from `url`.
 - **What a Jev request holds:** the request's state is a JSON object: the batch's task, the facts the answer needs when the batch carries them (`needed`), and each item once, as a record under its number in `items`, with its id, date, title and text, its `author` where its reader marked one, and any fields code wrote about it (`facts` on the question, such as a report's `asked`). Each question's instructions are an object holding its wording and the path of its item's record, such as `items.3`, so an item asked seven questions is sent once. `jevRequest(batch, model?)`, exported from `@curatejs/core`, builds that body.
 - **Jev request size:** Jev documents its limits in tokens: 32,000 for the state plus the longest question, and 64,000 for the whole request. At an estimate of three characters a token, `jev()` splits a batch into several requests so that in each one the state plus its longest question's instructions and criteria is at most 96,000 characters, and the whole request body at most 192,000. An item's questions always go in its item's request, and an item larger than those bounds goes alone. The answers come back as one map for the batch.
@@ -950,9 +950,9 @@ separate items. The requests of a round go out at once, inside
 `limits.maxInFlight` and the decider's own rate. `jev()` queues every
 request inside the organization's request and token rates, set with
 `requestsPerSecond` and `tokensPerSecond` from TypeSafe's console, and
-waits out a 429 or a 529 as the reply directs; 80 requests and 100,000
-estimated tokens a second stand in until they are set. At those stand-in
-rates a read of 1,000 items needs at least: pieces 3.8 seconds batched,
+waits out a 429 or a 529 as the reply directs; 320 requests and 400,000
+estimated tokens a second stand in until they are set. At 80 requests and
+100,000 tokens a second a read of 1,000 items needs at least: pieces 3.8 seconds batched,
 12.5 seconds one a request (bound by the requests); whole messages 13.8
 and 15.2 seconds; whole messages with hard facts 15.8 and 17.3 seconds
 (bound by the tokens either way), worked from the average request sizes

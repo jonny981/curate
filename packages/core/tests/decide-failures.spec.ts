@@ -56,6 +56,25 @@ describe('a decide call the decision service refuses', () => {
     expect(error.cause).toMatchObject({ status: 429, reason: 'busy' });
   });
 
+  it('reads the wait in milliseconds first, as the service\'s own client does', async () => {
+    const error = await failure(() => new Response('quota spent', { status: 429, headers: { 'retry-after': '1', 'retry-after-ms': '90000' } }));
+    expect(error.message.split('\n')[0]).toBe('The decide call failed. The decision service is still rate-limiting requests (HTTP 429) '
+      + 'after 0 s; a rate-limited request waits at most 60 s, and the last reply asked for 90 s more (retry-after-ms: 90000): quota spent');
+    let calls = 0;
+    vi.stubGlobal('fetch', vi.fn<typeof globalThis.fetch>().mockImplementation(async (_url, init) => {
+      calls += 1;
+      if (calls === 1) return new Response('rate limited', { status: 429, headers: { 'retry-after': '30', 'retry-after-ms': '5' } });
+      const body = JSON.parse(String(init!.body)) as { questions: Record<string, unknown> };
+      return Response.json({ answers: Object.fromEntries(Object.keys(body.questions).map((name) => [name, { noul: 0.7 }])) });
+    }));
+    const started = Date.now();
+    const result = await pick(parts.slice(0, 2), { task: 'Which database?', decide: jev({ apiKey: 'test-key' }), everyRanked: true, everyScored: true });
+    expect(result.selected).toHaveLength(2);
+    expect(calls).toBe(2);
+    // It waited the 5 ms the header in milliseconds named, not Retry-After's 30 s.
+    expect(Date.now() - started).toBeLessThan(5000);
+  });
+
   it('says the service is still overloaded when a 529 asks for a wait past the minute', async () => {
     const error = await failure(() => new Response('overloaded', { status: 529, headers: { 'retry-after': '120' } }));
     expect(error.message.split('\n')[0]).toBe('The decide call failed. The decision service is still overloaded (HTTP 529) '
