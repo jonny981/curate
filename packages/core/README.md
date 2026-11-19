@@ -1026,8 +1026,12 @@ score. On the short lists of two tasks of one person's coding-agent
 history, the "answers" probabilities summed to 16.4 and 20.1 against 15
 and 12 parts that state or restate the answer, where the single narrow
 question summed to 23.3 and 47.5: a calibrated probability, which a
-keep bar can rest on. No weight is fitted; a set that weighs the fact
-answers in names its own:
+keep bar can rest on, and the bar is measured per mode: for LongMemEval
+histories read as Markdown notes, rated one part a request, 0.07 is the
+highest "answers" probability that keeps every labelled answer turn of
+24 questions, keeping a median of 2 parts and about 300 tokens a
+question (the skill's Markdown "answers" set keeps at it). No weight is
+fitted; a set that weighs the fact answers in names its own:
 
 ```ts
 const weighed: PickCascade = { bias: 0, questions: [{ ...ANSWER_QUESTION, weight: 1 }],

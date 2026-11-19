@@ -71,7 +71,7 @@ describe('a Markdown entry\'s question set and levers', () => {
     const parsed = parseSources({ sources: [{ type: 'markdown', path: '/notes', questions: 'answers',
       levers: { itemsPerRequest: 1, roles: true, choicePerFact: { candidates: 20 } } }] });
     expect(parsed.sources[0]).toMatchObject({ questions: 'answers', levers: { itemsPerRequest: 1, roles: true, choicePerFact: { candidates: 20 } } });
-    expect(NOTE_MODES.answers).toMatchObject({ name: 'answers', questions: ANSWER_CASCADE, needed: true });
+    expect(NOTE_MODES.answers).toMatchObject({ name: 'answers', questions: ANSWER_CASCADE, needed: true, bar: 0.07 });
     expect(NOTE_MODES.answers.read).toBe(NOTE_MODES.default.read);
   });
 

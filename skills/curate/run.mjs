@@ -139,8 +139,11 @@ const chatMode = (entry) => {
 };
 // The question sets a Markdown entry's notes can be kept by: the notes
 // mode's own, or the narrow question in two with the facts the answer
-// needs in each request's state.
-export const NOTE_MODES = { default: notes, answers: { ...notes, name: 'answers', questions: ANSWER_CASCADE, needed: true } };
+// needs in each request's state. The latter's bar is measured, not the
+// notes mode's 0.0146, which was set for another score: on 24 LongMemEval
+// questions with labelled answer turns, rated one part a request, 0.07 is
+// the highest "answers" probability that keeps every labelled turn.
+export const NOTE_MODES = { default: notes, answers: { ...notes, name: 'answers', questions: ANSWER_CASCADE, needed: true, bar: 0.07 } };
 // The levers that act on notes: whole messages and hard facts read a
 // conversation's placed messages, which notes do not have.
 export const NOTE_LEVERS = ['roles', 'choicePerFact', 'itemsPerRequest'];
