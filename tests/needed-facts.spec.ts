@@ -11,6 +11,13 @@ describe('the facts the answer needs, from the search-line call', () => {
     expect(searchLinesPrompt('Which database did we choose?', ['chat'])).not.toContain('"needed"');
   });
 
+  it('asks for each fact as one thing a single message could say, never a computed, listed or compared value', () => {
+    const asked = searchLinesPrompt('How old was I when Alex was born?', ['markdown'], undefined, true);
+    for (const words of ['an age rather than a birth date', 'rather than a date worked out',
+      'rather than the list, a count or a comparison', 'what the user has said about their own situation, likes, plans or past attempts',
+      'Return them as one more JSON key, "needed": a list of short strings.']) expect(asked).toContain(words);
+  });
+
   it('keep one to five strings, and say why there are none otherwise', () => {
     expect(neededFrom([' Which database was chosen ', 'Why'])).toEqual({ facts: ['Which database was chosen', 'Why'] });
     expect(neededFrom(undefined)).toEqual({ missing: 'the reply gave no facts' });
@@ -72,7 +79,7 @@ describe('a Markdown entry\'s question set and levers', () => {
     const parsed = parseSources({ sources: [{ type: 'markdown', path: '/notes', questions: 'answers',
       levers: { itemsPerRequest: 1, roles: true, choicePerFact: { candidates: 20 } } }] });
     expect(parsed.sources[0]).toMatchObject({ questions: 'answers', levers: { itemsPerRequest: 1, roles: true, choicePerFact: { candidates: 20 } } });
-    expect(NOTE_MODES.answers).toMatchObject({ name: 'answers', questions: ANSWER_CASCADE, needed: true, bar: 0.07 });
+    expect(NOTE_MODES.answers).toMatchObject({ name: 'answers', questions: { ...ANSWER_CASCADE, combine: 'highest' }, needed: true, bar: 0.07 });
     expect(NOTE_MODES.answers.read).toBe(NOTE_MODES.default.read);
   });
 

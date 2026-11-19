@@ -152,7 +152,7 @@ const chatMode = (entry) => {
 // turns, rated one part a request, 0.07 is the highest "answers"
 // probability that keeps every labelled turn. It awaits answers marked
 // right.
-export const NOTE_MODES = { default: notes, answers: { ...notes, name: 'answers', questions: ANSWER_CASCADE, needed: true, bar: 0.07 } };
+export const NOTE_MODES = { default: notes, answers: { ...notes, name: 'answers', questions: { ...ANSWER_CASCADE, combine: 'highest' }, needed: true, bar: 0.07 } };
 // The levers that act on notes. Whole messages and hard facts act on a
 // note written as a conversation: the reader then cuts it at each turn,
 // and each turn is judged whole, with its speaker and the turns either
@@ -1095,7 +1095,7 @@ const scopeAsk = (today) => `\nThe JSON also holds a key "scope": {"kinds": [...
 // The facts the answer needs, asked in the same call as the search lines
 // when the call reads a mode that lists them in its decision state. The
 // wording is the separate facts prompt the measurement used.
-const NEEDED_ASK = '\nAlso split the task into the separate facts that a complete answer needs, where each fact may be stated in a different message. Give one to five facts; give one fact when a single message can answer the task. Answer from the task text only. Return them as one more JSON key, "needed": a list of short strings.';
+const NEEDED_ASK = '\nAlso split the task into the separate facts that a complete answer needs, where each fact may be stated in a different message. Write each as one thing a single message could say in plain words, as a person would say it: an age rather than a birth date; what was paid rather than a saving worked out from it; when something happened as a message might say it (a date, or a time such as "three weeks ago") rather than a date worked out; one event or item of a list, worded to fit each of them ("a charity event the user took part in, and when"), rather than the list, a count or a comparison. When the task asks for suggestions, the facts are what the user has said about their own situation, likes, plans or past attempts that the suggestions should fit. Give one to five facts; give one fact when a single message can answer the task. Answer from the task text only. Return them as one more JSON key, "needed": a list of short strings.';
 // How many answers the task wants, asked in the same call when the call
 // reads a mode that writes hard facts into its decision state.
 const WANTED_ASK = '\nAlso say whether the task wants one decision or fact, or everything said on a subject. Answer from the task text only. Return it as one more JSON key, "wanted": exactly "one decision" or "everything said".';
