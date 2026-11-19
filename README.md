@@ -2,7 +2,8 @@
 
 A TypeScript library that finds what your agent needs from past chats, notes and commits.
 
-94.2% on LongMemEval with gpt-6.1-sol answering and marking, and 92.8% under LongMemEval's own grader, with about 65 times less context than the raw history.
+95.2% on LongMemEval (476 of 500 questions) with gpt-6.1-sol answering and marking, the agent reading a median of about 3,650 tokens a question.
+In the compact setting, 94.2% with gpt-6.1-sol answering and marking, and 92.8% under LongMemEval's own grader, with about 65 times less context than the raw history.
 
 Curate gives an agent the context it needs for a task, drawn from chat transcripts, Markdown and git history.
 It chooses the evidence a task needs and lays it out in its own words, headed by where and when it was said, for the agent to read before starting work.
@@ -12,16 +13,18 @@ The library, though not the `curate` command, can also decide with a model on yo
 
 ## Results at a glance
 
-On LongMemEval, Curate's answering model reads 1,577 tokens a question on average, and every other token figure in the table is higher.
+On LongMemEval, Curate scores 95.2% with its answering model reading a median of 3,652 tokens a question.
+In the compact setting it reads 1,577 tokens a question on average, and every other token figure in the table is higher.
 Curate keeps local index files and needs no database server, no other server to run and no model that writes or rewrites memory in advance.
 
 LongMemEval S, all 500 questions:
 
 | System | Answering model | Marker | Score | Tokens read (mean) |
 | --- | --- | --- | --- | --- |
-| **[Curate](benchmarks/longmemeval/2026-11-11/README.md)** | **gpt-6.1-sol** | **gpt-6.1-sol** | **94.2** | **1,577** |
+| **Curate** | **gpt-6.1-sol** | **gpt-6.1-sol** | **95.2** | **3,652 median** |
+| **[Curate (compact)](benchmarks/longmemeval/2026-11-11/README.md)** | **gpt-6.1-sol** | **gpt-6.1-sol** | **94.2** | **1,577** |
 | [Mastra observational memory](https://mastra.ai/research/observational-memory)\* | gpt-5-mini | GPT-4o | 93.6† | about 30,000 (estimated) |
-| **[Curate](benchmarks/longmemeval/2026-11-11/README.md)** | **gpt-6.1-sol** | **LongMemEval's grader (GPT-4o)** | **92.8** | **1,577** |
+| **[Curate (compact)](benchmarks/longmemeval/2026-11-11/README.md)** | **gpt-6.1-sol** | **LongMemEval's grader (GPT-4o)** | **92.8** | **1,577** |
 | [Mem0 platform](https://github.com/mem0ai/memory-benchmarks/blob/4b61c5d31b9c668a12b4f5e78064248a02c82d2b/results/platform/longmemeval_results.json) | GPT-5 | gpt-6.1-sol | 92.6 | 6,787 |
 | [Zep](https://www.getzep.com/research/memory-benchmarks/)\* | gpt-5.4 | gpt-5.4 | 90.2 | 4,408 median |
 
@@ -37,6 +40,12 @@ LoCoMo, all 1,540 scored questions:
 | **[Curate (compact)](benchmarks/locomo/2026-11-12/README.md)** | **gpt-4.1-mini** | **gpt-4o-mini** | **91.4** | **1,248** |
 | [MemOS, in OmniMemEval](https://github.com/MemTensor/OmniMemEval/blob/7c79d46e31dd85f3da2509b430bba9406656dd28/docs/user_memory/results.md#locomo)\* | gpt-4.1-mini | gpt-4o-mini | 88.83 | 5,400 with prompt |
 
+LoCoMo, a sample of 150 scored questions:
+
+| System | Answering model | Marker | Score | Tokens read (mean) |
+| --- | --- | --- | --- | --- |
+| **Curate** | **gpt-6.1-sol** | **gpt-6.1-sol** | **95.3** | **5,320 median** |
+
 \* Score as published; these answers were not marked again here.
 
 Curate (full) has an answer budget of 6,000 tokens and keeps every sentence (`answerTokens: 6000`, `sentenceCutoff: false`). Curate (compact) has an answer budget of 2,000 tokens and a sentence cutoff of 0.1 (`answerTokens: 2000`, `sentenceCutoff: 0.1`). By default Curate sets neither: it lays out every part the decision model keeps.
@@ -48,7 +57,7 @@ How each run was set up, and its proof files, are in [benchmarks](benchmarks/REA
 - **Go straight to the source.** [Mem0](https://docs.mem0.ai/core-concepts/memory-operations/add) extracts facts with a model, [Mastra](https://mastra.ai/docs/memory/observational-memory) keeps observations written by a model, and [Zep](https://help.getzep.com/v4/how-graph-creation-works) builds a knowledge graph. Curate selects from the original history for each task.
 - **Keep the task model focused.** It reads only the parts chosen for its task, even when the history spans thousands of parts.
 
-[LongMemEval](benchmarks/longmemeval/2026-11-11/README.md#context-sizes): **1,577 task-model tokens** a question on average, from histories of about **48 sessions** and **102,580 tokens** on average (o200k, every turn's role and text): about **65 times less**. [LoCoMo](benchmarks/locomo/2026-11-12/README.md#context-sizes): **3,839** task-model tokens a question in the full setting and **1,248** in the compact one, from conversations of about **21,155 tokens**.
+[LongMemEval](benchmarks/longmemeval/2026-11-11/README.md#context-sizes): **1,577 task-model tokens** a question on average in the compact setting, from histories of about **48 sessions** and **102,580 tokens** on average (o200k, every turn's role and text): about **65 times less**. [LoCoMo](benchmarks/locomo/2026-11-12/README.md#context-sizes): **3,839** task-model tokens a question in the full setting and **1,248** in the compact one, from conversations of about **21,155 tokens**.
 
 ## Install only what you need
 
