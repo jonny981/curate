@@ -344,12 +344,41 @@ export function checkPickOptions(options: PickOptions): void {
   }
 }
 
+/** A bar from 0 to 1, or one for each kind of task. */
+function checkBar(bar: Mode['bar'], at: string): void {
+  const between = (value: unknown) => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1;
+  if (bar === undefined || between(bar)) return;
+  if (typeof bar !== 'object' || bar === null || Array.isArray(bar)
+    || !between(bar['one decision']) || !between(bar['everything said'])) {
+    throw new TypeError(`${at} must be a number between 0 and 1, or one for each kind of task: { 'one decision', 'everything said' }.`);
+  }
+  checkKeys(bar, ['one decision', 'everything said'], at);
+}
+
 /** A mode's own fields: a name, an optional question set, an optional
  *  bar from 0 to 1 and a read. */
 export function checkMode(mode: Mode, at: string): void {
   if (typeof mode !== 'object' || mode === null) throw new TypeError(`${at} must be a mode.`);
   checkKeys(mode, ['name', 'questions', 'bar', 'read', 'needed', 'textShare', 'wholeMessages', 'hardFacts', 'roles', 'choicePerFact',
-    'itemsPerRequest'], at);
+    'itemsPerRequest', 'keep'], at);
+  if (mode.keep !== undefined) {
+    const keep = mode.keep;
+    if (typeof keep !== 'object' || keep === null || Array.isArray(keep)) throw new TypeError(`${at}.keep must be { questions, bar? }.`);
+    checkKeys(keep, ['questions', 'bar', 'wholeMessages', 'hardFacts', 'itemsPerRequest'], `${at}.keep`);
+    if (typeof keep.questions !== 'object' || keep.questions === null) throw new TypeError(`${at}.keep.questions must be a question set.`);
+    checkCascadeKeys(keep.questions, `${at}.keep.questions`);
+    checkCascade(keep.questions);
+    for (const key of ['typed', 'written', 'named', 'first', 'band', 'firstOnly', 'model'] as const) {
+      if (keep.questions[key] !== undefined) throw new TypeError(`${at}.keep.questions takes no ${key}: the second stage asks its questions and needed facts only.`);
+    }
+    for (const key of ['wholeMessages', 'hardFacts'] as const) {
+      if (keep[key] !== undefined && typeof keep[key] !== 'boolean') throw new TypeError(`${at}.keep.${key} must be a boolean.`);
+    }
+    if (keep.itemsPerRequest !== undefined && (!Number.isSafeInteger(keep.itemsPerRequest) || keep.itemsPerRequest < 1)) {
+      throw new TypeError(`${at}.keep.itemsPerRequest must be a positive whole number.`);
+    }
+    checkBar(keep.bar, `${at}.keep.bar`);
+  }
   if (mode.itemsPerRequest !== undefined && (!Number.isSafeInteger(mode.itemsPerRequest) || mode.itemsPerRequest < 1)) {
     throw new TypeError(`${at}.itemsPerRequest must be a positive whole number.`);
   }
@@ -385,14 +414,7 @@ export function checkMode(mode: Mode, at: string): void {
   }
   if (typeof mode.name !== 'string' || !mode.name.trim()) throw new TypeError(`${at}.name must be a nonempty string.`);
   checkCascadeKeys(mode.questions, `${at}.questions`);
-  const between = (value: unknown) => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1;
-  if (mode.bar !== undefined && !between(mode.bar)) {
-    if (typeof mode.bar !== 'object' || mode.bar === null || Array.isArray(mode.bar)
-      || !between(mode.bar['one decision']) || !between(mode.bar['everything said'])) {
-      throw new TypeError(`${at}.bar must be a number between 0 and 1, or one for each kind of task: { 'one decision', 'everything said' }.`);
-    }
-    checkKeys(mode.bar, ['one decision', 'everything said'], `${at}.bar`);
-  }
+  checkBar(mode.bar, `${at}.bar`);
   if (typeof mode.read !== 'function') throw new TypeError(`${at}.read must be a read, such as rankedRead or conversationRead().`);
 }
 

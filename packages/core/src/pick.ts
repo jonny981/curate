@@ -182,6 +182,9 @@ export interface PickBatch {
    *  person named in it, present on a request whose parts' mode writes
    *  hard facts. */
   readonly counts?: string;
+  /** `'keep'` on a request of a mode's second stage (`Mode.keep`),
+   *  asked after the read over the parts it kept. */
+  readonly stage?: 'keep';
   /** True on a request of a mode that sends each item alone
    *  (`itemsPerRequest: 1`): its one item is judged on its own. */
   readonly alone?: true;
@@ -350,10 +353,16 @@ export type PickEntryStatus =
       /** Present when a typed question's `keepAt`, not the bar, kept
        *  the part: that typed question's key. */
       readonly keptBy?: string;
+      /** The read's own score, when a second stage (`Mode.keep`) judged
+       *  the part again and `probability` is that stage's. */
+      readonly readProbability?: number;
     }
   | {
       readonly status: 'rejected';
       readonly probability: number;
+      /** The read's own score, when a second stage judged the part and
+       *  left it out under its bar. */
+      readonly readProbability?: number;
       /** True when every answer behind the verdict came from the
        *  decision cache. */
       readonly reused?: boolean;
@@ -813,6 +822,16 @@ export interface PickRecord {
    *  applied to, counted from this pick alone. A setting that was off
    *  has no entry. */
   readonly effects: readonly PickSettingEffect[];
+  /** A mode's second stage (`Mode.keep`), when one ran: the items it
+   *  asked (whole messages or parts), the requests it sent, and per
+   *  source the parts it kept and left out and the bar it kept at;
+   *  `requests` counts this stage's requests alone. */
+  readonly keep?: {
+    readonly asked: number;
+    readonly requests: number;
+    readonly unanswered: number;
+    readonly sources: Readonly<Record<string, { readonly kept: number; readonly dropped: number; readonly bar: number }>>;
+  };
   /** Present when a mode compared its kept parts for each needed fact:
    *  the candidates a fact, each fact's picks in order (the item's id,
    *  the round, the Choice's probability), every candidate ranked (the
@@ -1880,16 +1899,29 @@ export async function pick(
       : options.wanted !== undefined ? mode.bar[options.wanted] : Math.min(mode.bar['one decision'], mode.bar['everything said'])]]));
   for (const set of Object.values(questionsBySource)) checkCascade(set);
   const modeFor = (sourceId: string) => Object.hasOwn(modes, sourceId) ? modes[sourceId] : undefined;
+  // A mode's second stage, and whether its requests are being built: the
+  // predicates below read the stage's own settings while it asks.
+  const keepOf = (sourceId: string) => modeFor(sourceId)?.keep;
+  let keeping = false;
+  const keepingFor = (candidate: MemoryCandidate) => keeping && candidate.role === 'reference' && keepOf(candidate.sourceId) !== undefined;
+  // A bar, or one per kind of task read for the pick's `wanted` and the lower of the two when it gives none.
+  const barValue = (bar: NonNullable<Mode['bar']>) => typeof bar === 'number' ? bar
+    : options.wanted !== undefined ? bar[options.wanted] : Math.min(bar['one decision'], bar['everything said']);
   // The facts the answer needs, for the requests of parts whose mode lists them.
   const needed = options.needed !== undefined && options.needed.length > 0 ? options.needed : undefined;
-  const carriesNeeded = (candidate: MemoryCandidate) => needed !== undefined && modeFor(candidate.sourceId)?.needed === true;
+  const carriesNeeded = (candidate: MemoryCandidate) => needed !== undefined
+    && (keepingFor(candidate) || modeFor(candidate.sourceId)?.needed === true);
   if (Object.values(modes).some((mode) => mode.choicePerFact !== undefined && mode.choicePerFact !== false)
     && typeof options.decide.list !== 'function') {
     throw new TypeError('choicePerFact needs a decider that answers list requests, such as jev().');
   }
   // Hard facts: a part of a mode that writes them gets fields code knows,
   // and its requests carry the call's person and wanted.
-  const factsFor = (candidate: MemoryCandidate) => candidate.role === 'reference' && modeFor(candidate.sourceId)?.hardFacts === true;
+  const factsFor = (candidate: MemoryCandidate) => candidate.role === 'reference'
+    && (keepingFor(candidate) ? keepOf(candidate.sourceId)!.hardFacts : modeFor(candidate.sourceId)?.hardFacts) === true;
+  // Whether either stage writes hard facts for this part.
+  const factsEither = (candidate: MemoryCandidate) => candidate.role === 'reference'
+    && (modeFor(candidate.sourceId)?.hardFacts === true || keepOf(candidate.sourceId)?.hardFacts === true);
   // The fields a request of this part's carries in its state beside the
   // task and its items.
   const counts = options.counts === undefined ? undefined
@@ -1917,7 +1949,8 @@ export async function pick(
     ? options.sourceKinds[candidate.sourceId] : undefined;
   const questionsFor = (sourceId: string) => questionsBySource && Object.hasOwn(questionsBySource, sourceId)
     ? questionsBySource[sourceId] : undefined;
-  const cascadeFor = (candidate: MemoryCandidate) => questionsFor(candidate.sourceId);
+  const cascadeFor = (candidate: MemoryCandidate) => keepingFor(candidate) ? keepOf(candidate.sourceId)!.questions
+    : questionsFor(candidate.sourceId);
   const tagSetsFor = (candidate: MemoryCandidate) => {
     const kind = kindFor(candidate);
     const sets = [...options.tags ?? [], ...(kind === undefined ? [] : options.tagsByKind?.[kind] ?? [])];
@@ -2080,10 +2113,13 @@ export async function pick(
   const historySize = references.length + Object.values(unheld).reduce((total, count) => total + count, 0);
   // Whole messages: the reference parts of a mode that judges whole
   // messages, each with every other piece of its message the pick holds.
-  const wholeFor = (candidate: MemoryCandidate) => candidate.role === 'reference'
-    && modeFor(candidate.sourceId)?.wholeMessages === true && (candidate.turn !== undefined
-      || (candidate.chat !== undefined && (candidate.place?.at.length ?? 0) >= 3));
-  const messages = messagePieces(references.filter(wholeFor));
+  const asMessage = (candidate: MemoryCandidate) => candidate.turn !== undefined
+    || (candidate.chat !== undefined && (candidate.place?.at.length ?? 0) >= 3);
+  const wholeFor = (candidate: MemoryCandidate) => candidate.role === 'reference' && asMessage(candidate)
+    && (keepingFor(candidate) ? keepOf(candidate.sourceId)!.wholeMessages : modeFor(candidate.sourceId)?.wholeMessages) === true;
+  // Every message either stage judges whole.
+  const messages = messagePieces(references.filter((candidate) => candidate.role === 'reference' && asMessage(candidate)
+    && (modeFor(candidate.sourceId)?.wholeMessages === true || keepOf(candidate.sourceId)?.wholeMessages === true)));
   // Each transcript's subagent request, the message its report answers.
   // A message's start, as an item's record carries another message.
   const opening = (pieces: readonly MemoryCandidate[]) => Array.from(pieces[0]?.turn?.text ?? messageText(pieces)).slice(0, OPENING_CHARS).join('');
@@ -2098,7 +2134,7 @@ export async function pick(
   const messageFacts = new Map<string, Record<string, unknown>>();
   const placed = (candidate: MemoryCandidate) => candidate.chat !== undefined && (candidate.place?.at.length ?? 0) >= 3;
   const rolesFor = (candidate: MemoryCandidate) => candidate.role === 'reference' && modeFor(candidate.sourceId)?.roles === true;
-  for (const list of transcriptMessages(references.filter((candidate) => (factsFor(candidate) || rolesFor(candidate))
+  for (const list of transcriptMessages(references.filter((candidate) => (factsEither(candidate) || rolesFor(candidate))
     && placed(candidate))).values()) {
     const walks = modeFor(list[0]!.pieces[0]!.sourceId)?.read.walks === true;
     const own = list.map(({ pieces }) => pieces[0]!.author === 'person');
@@ -2343,6 +2379,8 @@ export async function pick(
   // ranking the record's pick field then names as 'fusion'.
   let feedFused = false;
   const answered = new Map<MemoryCandidate, Map<string, CheckedAnswer>>();
+  // The second stage's answers, kept apart from the read's.
+  const keepAnswers = new Map<MemoryCandidate, Map<string, CheckedAnswer>>();
   // Label asks keep their own store: the decision cache never sees
   // them. Declared beside `answered` so `ask` can tell the two sinks
   // apart.
@@ -2527,7 +2565,7 @@ export async function pick(
     // A part's question's store key. A request that carries the needed
     // facts asks with them, so its answers are stored under them.
     const cacheKeyOf = (item: Pending) => {
-      const header = sink === answered ? headerOf(item.candidate) : {};
+      const header = sink === answered || sink === keepAnswers ? headerOf(item.candidate) : {};
       return decisionKey(header.person === undefined && header.wanted === undefined && header.counts === undefined
         ? (header.needed === undefined ? task : JSON.stringify([task, needed]))
         : JSON.stringify([task, header]),
@@ -2603,10 +2641,10 @@ export async function pick(
     // A mode's items per request, for its parts' own questions; labels
     // keep their batching.
     const perRequestOf = (item: Pending) => sink === labelAnswers || item.candidate.role !== 'reference' ? undefined
-      : modeFor(item.candidate.sourceId)?.itemsPerRequest;
+      : keepingFor(item.candidate) ? keepOf(item.candidate.sourceId)!.itemsPerRequest : modeFor(item.candidate.sourceId)?.itemsPerRequest;
     const groups = new Map<string, Pending[]>();
     for (const item of fresh) {
-      const key = JSON.stringify([sink === answered ? headerOf(item.candidate) : {}, perRequestOf(item) ?? null]);
+      const key = JSON.stringify([sink === answered || sink === keepAnswers ? headerOf(item.candidate) : {}, perRequestOf(item) ?? null]);
       const group = groups.get(key);
       if (group === undefined) groups.set(key, [item]);
       else group.push(item);
@@ -2645,7 +2683,8 @@ export async function pick(
         for (const item of slice) sentParts.add(item.candidate);
       }
       try {
-        const sent: Promise<Record<string, PickAnswer>> = options.decide({ task, questions, ...headers.get(slice) }, decideSignal);
+        const sent: Promise<Record<string, PickAnswer>> = options.decide({ task, questions, ...headers.get(slice),
+          ...(sink === keepAnswers ? { stage: 'keep' as const } : {}) }, decideSignal);
         const returned: unknown = await Promise.race([
           sent,
           new Promise<typeof TIMED_OUT>((resolve) => {
@@ -3650,6 +3689,75 @@ export async function pick(
     });
   }
 
+  // A mode's second stage: the parts the read kept at the mode's own bar,
+  // judged again with the stage's questions (whole messages and hard
+  // facts when the stage asks for them, batched unless it sets items per
+  // request) and kept at or above the stage's bar. A message is kept or
+  // left out whole, every piece the pick holds at its message's score;
+  // a part the stage got no answer for keeps the read's verdict.
+  let keepRecord: PickRecord['keep'];
+  const keepStage = selected.filter((candidate) => candidate.role === 'reference' && keepOf(candidate.sourceId) !== undefined);
+  if (keepStage.length > 0 && !stop) {
+    const before = batches;
+    const scoreOf = new Map<MemoryCandidate, number>();
+    keeping = true;
+    let items: MemoryCandidate[];
+    try {
+      items = [...new Set(keepStage.flatMap(itemsFor))];
+      await ask(items.flatMap((item) => specsFor(item).map((spec) => pending(item, spec))), keepAnswers);
+      const probabilityOf = (answer: CheckedAnswer | undefined) =>
+        answer?.status === 'answered' && 'probability' in answer ? answer.probability : undefined;
+      for (const item of items) {
+        const set = cascadeFor(item)!;
+        const got = keepAnswers.get(item);
+        const own = set.questions.map((question) => probabilityOf(got?.get(question.key)));
+        const facts = factQuestionsFor(item).flatMap((question) => {
+          const p = probabilityOf(got?.get(question.key));
+          return p === undefined ? [] : [p];
+        });
+        if (own.every((p) => p === undefined) && facts.length === 0) continue;
+        scoreOf.set(item, set.combine === 'highest'
+          ? Math.max(0, ...own.flatMap((p) => p === undefined ? [] : [p]), ...facts)
+          : 1 / (1 + Math.exp(-((set.bias ?? 0)
+            + set.questions.reduce((sum, question, index) => sum + (own[index] === undefined ? 0 : (question.weight ?? 0) * logit(own[index]!)), 0)
+            + (set.facts === undefined || facts.length === 0 ? 0 : set.facts.highest * writtenLogit(Math.max(...facts)))))));
+      }
+    } finally {
+      keeping = false;
+    }
+    // Each kept part's message (or the part), and its best item's score.
+    const sources: Record<string, { kept: number; dropped: number; bar: number }> = {};
+    const done = new Set<MemoryCandidate>();
+    let unanswered = 0;
+    for (const candidate of keepStage) {
+      if (done.has(candidate)) continue;
+      const key = messageKey(candidate);
+      const whole = keepOf(candidate.sourceId)!.wholeMessages === true && messageItems.has(key);
+      const pieces = whole ? messages.get(key) ?? [candidate] : [candidate];
+      const scores = (whole ? messageItems.get(key)! : [candidate]).flatMap((item) => scoreOf.has(item) ? [scoreOf.get(item)!] : []);
+      for (const piece of pieces) done.add(piece);
+      if (scores.length === 0) { unanswered += 1; continue; }
+      const score = Math.max(...scores);
+      const bar = barValue(keepOf(candidate.sourceId)!.bar ?? DEFAULT_BAR);
+      const tally = sources[candidate.sourceId] ??= { kept: 0, dropped: 0, bar };
+      for (const piece of pieces) {
+        const read = statuses.get(piece);
+        const readProbability = read !== undefined && 'probability' in read && read.probability !== undefined ? { readProbability: read.probability } : {};
+        if (score >= bar) {
+          if (!selected.includes(piece)) selected.push(piece);
+          statuses.set(piece, { status: 'selected', asked: true, probability: score, ...readProbability });
+          tally.kept += 1;
+        } else {
+          const at = selected.indexOf(piece);
+          if (at >= 0) selected.splice(at, 1);
+          statuses.set(piece, { status: 'rejected', probability: score, ...readProbability });
+          tally.dropped += 1;
+        }
+      }
+    }
+    keepRecord = { asked: items!.length, requests: batches - before, unanswered, sources };
+  }
+
   // What each kept part of a mode that asks it is doing: one Choice per
   // kept message or part, its answer carried by every piece. Then code
   // marks an agent's proposal the person's next message approves.
@@ -3998,6 +4106,7 @@ export async function pick(
     ...(options.writeQuestions === undefined ? {} : { writtenQuestions: { questions: writtenQuestions } }),
     ...(names === undefined ? {} : { names }),
     ...(pickRecord === undefined ? {} : { pick: pickRecord }),
+    ...(keepRecord === undefined ? {} : { keep: keepRecord }),
     ...(choiceRecord === undefined ? {} : { choicePerFact: choiceRecord }),
     levers: { ...levers, sources: Object.fromEntries([...new Set([
       ...Object.keys(labelKindsBySource), ...candidates.map((candidate) => candidate.sourceId),
@@ -4015,6 +4124,10 @@ export async function pick(
       ...(modeFor(id)?.hardFacts === true ? { hardFacts: true as const } : {}),
       ...(modeFor(id)?.roles === true ? { roles: true as const } : {}),
       ...(modeFor(id)?.itemsPerRequest === undefined ? {} : { itemsPerRequest: modeFor(id)!.itemsPerRequest! }),
+      ...(keepOf(id) === undefined ? {} : { keep: { questions: keepOf(id)!.questions, bar: barValue(keepOf(id)!.bar ?? DEFAULT_BAR),
+        ...(keepOf(id)!.wholeMessages === undefined ? {} : { wholeMessages: keepOf(id)!.wholeMessages! }),
+        ...(keepOf(id)!.hardFacts === undefined ? {} : { hardFacts: keepOf(id)!.hardFacts! }),
+        ...(keepOf(id)!.itemsPerRequest === undefined ? {} : { itemsPerRequest: keepOf(id)!.itemsPerRequest! }) } }),
       ...(modeFor(id) === undefined || choiceOf({ sourceId: id } as MemoryCandidate) === undefined ? {} : { choicePerFact: {
         candidates: choiceOf({ sourceId: id } as MemoryCandidate)!.candidates,
         ...(choiceOf({ sourceId: id } as MemoryCandidate)!.enough === undefined ? {}

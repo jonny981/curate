@@ -7,7 +7,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ANSWER_CASCADE, PICK_COUNTS, curate, DEFAULT_MAX_QUESTION_TEXT, levelDistribution, pickFromSources, rankedRead, sinceCutoff, taskPeriod } from '@curatejs/core';
 import { jev } from '@curatejs/core/models';
-import { agentTranscripts, chat, scrubChat, AGENT_CHAT_CASCADE, CHAT_SEARCH_LINE_REGISTER, JUDGMENT_CHAT_CASCADE } from '@curatejs/chat';
+import { agentTranscripts, chat, scrubChat, AGENT_CHAT_CASCADE, CHAT_SEARCH_LINE_REGISTER, JUDGMENT_CHAT_CASCADE, MESSAGE_ANSWER_CASCADE } from '@curatejs/chat';
 import { git, GIT_HISTORY_CASCADE, GIT_SEARCH_LINE_REGISTER } from '@curatejs/git';
 import { knowledgeBase, markdown, notes, whatsapp, MARKDOWN_CASCADE, MARKDOWN_SEARCH_LINE_REGISTER } from '@curatejs/markdown';
 
@@ -118,16 +118,16 @@ const engineFound = () => (createRequire(import.meta.url).resolve.paths('node-ll
 // asks the only measured model-scored set, read down the ranked list,
 // and it fails closed inside chat() while its weights file is unfitted.
 export const CHAT_MODES = { default: agentTranscripts,
-  // The narrow question in two, read as the default mode reads, each
-  // message kept by the highest of its answers (it states the answer, or
-  // one fact the answer needs) at a bar for the kind of task. The bars
-  // are candidates measured on labelled answers (Climb 25: 22 tasks of
-  // one person's coding-agent history, each whole message judged alone
-  // with its hard facts): the highest that loses none, 0.59 on
-  // one-decision tasks and 0.04 on everything-said tasks. Each still
-  // awaits answers marked right.
-  answers: { ...agentTranscripts, name: 'answers', questions: { ...ANSWER_CASCADE, combine: 'highest' },
-    bar: { 'one decision': 0.59, 'everything said': 0.04 } },
+  // Read as the default mode reads, on its own questions and bar; then
+  // a second stage judges each kept message whole, with its hard facts,
+  // batched, in the measured wording, and keeps it by the highest of its
+  // answers (it states the answer, or one fact the answer needs) at a bar
+  // for the kind of task. The bars are measured on labelled answers (22
+  // tasks of one person's coding-agent history): the highest that loses
+  // none, 0.59 on one-decision tasks and 0.04 on everything-said tasks.
+  // Each still awaits answers marked right.
+  answers: { ...agentTranscripts, name: 'answers', keep: { questions: MESSAGE_ANSWER_CASCADE,
+    bar: { 'one decision': 0.59, 'everything said': 0.04 }, wholeMessages: true, hardFacts: true } },
   judgments: { name: 'judgments', questions: JUDGMENT_CHAT_CASCADE, read: rankedRead } };
 // The decision levers a chat entry can switch on for its mode, each off by
 // default (core's Mode documents them).
@@ -1317,10 +1317,10 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
     // same call as the search lines.
     const askNeeded = callSources.some((entry) => modeNeeds(sourceKind(entry.type) === 'chat' ? chatMode(entry)
       : entry.type === 'markdown' ? noteMode(entry) : undefined));
-    // A mode that writes hard facts, or keeps at a bar per kind of task,
-    // gets how many answers are wanted from it too.
+    // A mode that writes hard facts, keeps at a bar per kind of task or
+    // has a second stage gets how many answers are wanted from it too.
     const askWanted = callSources.some((entry) => sourceKind(entry.type) === 'chat'
-      && (chatMode(entry).hardFacts === true || typeof chatMode(entry).bar === 'object'));
+      && (chatMode(entry).hardFacts === true || typeof chatMode(entry).bar === 'object' || chatMode(entry).keep !== undefined));
     const searchPrompt = searchLinesPrompt(options.task, searchKinds, scoped ? today : undefined, askNeeded, askWanted);
     const searchStart = Date.now();
     // One entry's source. A Codex entry's sessions are copied to `snapshot`.

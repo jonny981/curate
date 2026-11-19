@@ -173,8 +173,8 @@ const speakerOf = (candidate: MemoryCandidate, person: string | undefined) => ca
 /** The memory text for the items taken, strongest first. A taken item's
  *  heading also names each other place and date its copies were said.
  *  `byMessage`, for a text whose every item is a whole message: each
- *  item under its own heading, strongest first, naming its session and
- *  who said it, with no grouping by date. */
+ *  item under its own heading, strongest first, naming its session, its
+ *  time to the minute and who said it, with no grouping by date. */
 function layOutItems(taken: readonly Item[], copies: ReadonlyMap<Item, readonly Item[]>, lead = 2,
   byMessage?: { readonly person?: string }): string {
   const source = (item: Item) => {
@@ -192,10 +192,13 @@ function layOutItems(taken: readonly Item[], copies: ReadonlyMap<Item, readonly 
     return `${own}, also ${elsewhere.length === 1 ? elsewhere[0] : `${elsewhere.slice(0, -1).join(', ')} and ${elsewhere[elsewhere.length - 1]}`}`;
   };
   if (byMessage !== undefined) {
-    // A message's session, or a turn's note, in place of the source.
+    // A message's session, or a turn's note, in place of the source, and
+    // its time to the minute, as its record wrote it.
     const placeOf = (item: Item) => {
-      const { said, label } = source(item);
+      const { label } = source(item);
       const candidate = item.candidate;
+      const minute = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})/.exec(candidate.date?.value ?? '');
+      const said = minute === null ? source(item).said : `${minute[1]} ${minute[2]}`;
       const where = candidate.chat !== undefined ? `session ${candidate.chat.sessionId.slice(0, 8)}` : candidate.turn?.session ?? source(item).where;
       return `${where} (${label} ${said || 'unknown'})`;
     };
@@ -306,7 +309,8 @@ export async function curate(task: string, picked: PickResult, options: CurateOp
   // A source whose mode judged whole messages lays each message out once,
   // whole: its kept pieces joined in order, at its first piece's place,
   // with the message's weight.
-  const whole = (candidate: MemoryCandidate) => picked.record.levers.sources?.[candidate.sourceId]?.wholeMessages === true
+  const whole = (candidate: MemoryCandidate) => (picked.record.levers.sources?.[candidate.sourceId]?.wholeMessages === true
+    || picked.record.levers.sources?.[candidate.sourceId]?.keep?.wholeMessages === true)
     && (candidate.turn !== undefined || (candidate.chat !== undefined && (candidate.place?.at.length ?? 0) >= 3));
   const pieces = messagePieces(references.filter(whole));
   const itemOf = new Map(pieceItems.map((item) => [item.candidate, item]));

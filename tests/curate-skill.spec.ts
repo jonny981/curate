@@ -1299,14 +1299,15 @@ describe('a run through core decision calls', () => {
     }));
     const { call, calls } = subscriptionReply({ ...searches(), needed: ['Whether the cache stays layered'], wanted: 'one decision' });
     const { record } = await run(['--sources', sourcesFile, 'Is the orchard cache layered?'], call);
-    // Its bar is the one for the kind of task the search-line call names.
+    // The second stage keeps at the bar for the kind of task the search-line call names.
     expect(calls[0]!.prompt).toContain('"wanted"');
-    expect(Object.values(record.pick.levers.sources as Record<string, { bar: number }>).map((source) => source.bar)).toContain(0.59);
-    expect(bodies.length).toBeGreaterThan(0);
-    for (const body of bodies) {
+    expect(Object.values(record.pick.levers.sources as Record<string, { keep?: { bar: number } }>).map((source) => source.keep?.bar)).toContain(0.59);
+    const kept = bodies.filter((body) => Object.values(body.questions).some((question) => question.instructions.question === 'Does this message state the answer to the task?'));
+    expect(kept.length).toBeGreaterThan(0);
+    for (const body of kept) {
       expect(body.state).toMatchObject({ needed: ['Whether the cache stays layered'] });
       expect(Object.values(body.questions).map((question) => question.instructions.question))
-        .toContain('Does this item state this needed fact: Whether the cache stays layered');
+        .toContain('Does this message state this: Whether the cache stays layered?');
     }
   });
 

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 // @ts-expect-error The standalone JavaScript command has no type declarations.
 import { CHAT_LEVERS, CHAT_MODES, NOTE_MODES, countsFrom, neededFrom, parseSources, searchLinesPrompt, wantedFrom } from '../skills/curate/run.mjs';
 import { ANSWER_CASCADE } from '@curatejs/core';
+import { MESSAGE_ANSWER_CASCADE } from '@curatejs/chat';
 
 describe('the facts the answer needs, from the search-line call', () => {
   it('are asked in the same call only when a mode in the call lists them', () => {
@@ -78,8 +79,11 @@ describe('values on a chat source\'s levers, and the narrow question in two as i
 
   it('name the two-question set "answers", read as the default mode reads', () => {
     expect(parseSources({ sources: [{ type: 'claude-code', questions: 'answers' }] }).sources[0].questions).toBe('answers');
-    expect(CHAT_MODES.answers).toMatchObject({ name: 'answers', questions: { ...ANSWER_CASCADE, combine: 'highest' }, needed: true,
-      bar: { 'one decision': 0.59, 'everything said': 0.04 } });
+    // The read stays the default mode's; a second stage judges each kept message in the measured wording.
+    expect(CHAT_MODES.answers).toMatchObject({ name: 'answers', questions: CHAT_MODES.default.questions, bar: CHAT_MODES.default.bar, needed: true,
+      keep: { questions: MESSAGE_ANSWER_CASCADE, bar: { 'one decision': 0.59, 'everything said': 0.04 }, wholeMessages: true, hardFacts: true } });
+    expect(MESSAGE_ANSWER_CASCADE.questions[0]!.instructions).toBe('Does this message state the answer to the task?');
+    expect(MESSAGE_ANSWER_CASCADE.facts!.question.instructions).toBe('Does this message state this: {fact}?');
     expect(CHAT_MODES.answers.read).toBe(CHAT_MODES.default.read);
   });
 });

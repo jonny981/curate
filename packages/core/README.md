@@ -1178,6 +1178,41 @@ seconds; a loop that picks every candidate (at most 20 rounds, about 15
 where a question keeps fewer parts) 44 requests, USD 0.0035 and 4.8
 seconds.
 
+### A second stage
+
+Off by default. A mode with `keep: { questions, bar, wholeMessages,
+hardFacts, itemsPerRequest }` reads as it always does, on its own
+questions and bar; after the read ends, the parts it kept are judged
+again with the stage's questions, and kept only at or above the stage's
+bar (a number, or one per kind of task read for the pick's `wanted`).
+`wholeMessages` and `hardFacts` act on this stage's requests alone, so
+the read's walk and stop keep the score they were tuned on; each
+request carries the needed facts, and the person, `wanted` and `counts`
+when the stage writes hard facts; the stage batches unless it sets
+`itemsPerRequest`. A kept message keeps every piece the pick holds at
+its message's score, which becomes the entry's `probability` (the
+read's is `readProbability`), so the text orders by it; a message under
+the bar is left out whole, and a part the stage got no answer for keeps
+the read's verdict. `record.keep` holds the items asked, the stage's
+requests, and per source the parts kept and left out and the bar;
+`record.levers.sources` names the stage's settings; and each of its
+requests carries `stage: 'keep'`, which `jev()` copies into the call it
+reports, so a caller can price each stage apart.
+
+Cost, as measured on 22 tasks of one person's coding-agent history:
+judging the read's kept list (13,982 whole messages, 636 a task) one
+message a request cost USD 0.808, 3.7 cents a task on average (median
+3.1 cents), in a median of 4.0 seconds a task at 16 requests at a time.
+On the 11 held tasks, batching about 17 messages a request cost USD
+0.280 against 0.379 alone (26% less), in a median of 0.7 seconds a
+task, and ranked the answers as well; hence the default. The read
+itself rated a median of 961 parts a task (mean 1,160); at the rate a
+live run of that read measured (USD 0.000031 a part, 112 parts a
+request) that is about 3.0 cents (mean 3.6). So the whole call's
+decisions come to about 5.3 cents a task at the median (6.3 at the
+mean), over a 5-cent target, and the second stage adds about a second
+to the call.
+
 ### A keep bar set by measurement
 
 No default changes. `scripts/keep-bar.mjs` in the repository sets a

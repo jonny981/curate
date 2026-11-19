@@ -21,6 +21,25 @@ export interface Mode {
   /** The decision state of a request of this mode's parts lists the
    *  facts the answer needs, when the call gives them (`needed`). */
   readonly needed?: boolean;
+  /** A second stage, off by default: after the read ends, the parts it
+   *  kept at the mode's own bar are judged again with these questions,
+   *  and kept only at or above this stage's bar; the read itself stays
+   *  on the mode's questions and bar. `wholeMessages`, `hardFacts` and
+   *  `itemsPerRequest` act on this stage's requests alone (unset: parts
+   *  as they are, no hard facts, batched). The needed facts go in its
+   *  requests' state when the call gives them. A kept message keeps
+   *  every piece the pick holds, at its message's score, which is the
+   *  entry's `probability`; the read's own score is `readProbability`.
+   *  Its set takes questions, weights, a needed-fact question and
+   *  `combine`, none of the read-only machinery (typed, written, named,
+   *  first, band, a fitted model). */
+  readonly keep?: {
+    readonly questions: PickCascade;
+    readonly bar?: number | { readonly 'one decision': number; readonly 'everything said': number };
+    readonly wholeMessages?: boolean;
+    readonly hardFacts?: boolean;
+    readonly itemsPerRequest?: number;
+  };
   /** The text takes a kept part of this mode only when its decision
    *  weight is at least this share of the best kept part's of its
    *  source. Absent: every kept part, within the token budget. */

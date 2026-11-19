@@ -84,6 +84,15 @@ export interface SourceSettings {
   readonly roles?: true;
   /** Present when its mode sets how many items one decision request holds. */
   readonly itemsPerRequest?: number;
+  /** The mode's second stage, when it has one: its questions, the bar it
+   *  kept at for this pick, and its own settings. */
+  readonly keep?: {
+    readonly questions: PickCascade;
+    readonly bar: number;
+    readonly wholeMessages?: boolean;
+    readonly hardFacts?: boolean;
+    readonly itemsPerRequest?: number;
+  };
   /** Present when its mode compares its kept parts for each needed fact:
    *  the candidates a fact, and the sufficiency question's bar when on. */
   readonly choicePerFact?: { readonly candidates: number; readonly enough?: number };

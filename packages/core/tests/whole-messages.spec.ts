@@ -84,11 +84,11 @@ describe('whole messages', () => {
     const { log } = await curate(task, result, { person: 'Sam' });
     expect(log).toBe([
       '### Most likely answer', '',
-      '#### session s2 (said 2026-10-04), agent', '', 'Postgres decided, for its transactions.', '',
-      '#### session s2 (said 2026-10-03), Sam', '', 'Yes, Postgres it is.', '', '',
+      '#### session s2 (said 2026-10-04 09:00), agent', '', 'Postgres decided, for its transactions.', '',
+      '#### session s2 (said 2026-10-03 09:00), Sam', '', 'Yes, Postgres it is.', '', '',
       '### More messages, strongest first', '',
-      '#### session s1 (said 2026-10-02), agent', '', 'We chose Postgres.', '',
-      '#### session s1 (said 2026-10-01), agent', '', 'Old plan: SQLite.',
+      '#### session s1 (said 2026-10-02 09:00), agent', '', 'We chose Postgres.', '',
+      '#### session s1 (said 2026-10-01 09:00), agent', '', 'Old plan: SQLite.',
     ].join('\n'));
     // Without whole messages the same parts keep the layout by date.
     const parts = await pick(messages, { task, decide: recording((text) => weight[text]!).decide, modesBySource: { chat: mode() } });

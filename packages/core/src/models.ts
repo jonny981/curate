@@ -438,6 +438,9 @@ export interface JevCall {
   readonly answers?: unknown;
   /** The extra requests this rejection spawned. */
   readonly splits: number;
+  /** `'keep'` when the request belongs to a mode's second stage
+   *  (`PickBatch.stage`), so a caller can price each stage apart. */
+  readonly stage?: 'keep';
 }
 
 /** Create a decision function using TypeSafe's yes/no probabilities, or
@@ -487,7 +490,8 @@ export function jev({ apiKey, model = 'jev-latest', url = JEV_URL, onCall,
   // One request sent until a reply other than a rate limit lands: its
   // allowance, a reply that never came, and the rate-limit waits, each
   // attempt reported. The caller reports the reply it returns.
-  const exchange = async (text: string, questions: number, signal: AbortSignal) => {
+  const exchange = async (text: string, questions: number, signal: AbortSignal, stage?: 'keep') => {
+    const staged = stage === undefined ? {} : { stage };
     const domain = domainFor(signal);
     // When the service first answered this request 429.
     let limitedSince: number | undefined;
@@ -509,7 +513,7 @@ export function jev({ apiKey, model = 'jev-latest', url = JEV_URL, onCall,
             started: new Date(then).toISOString(), questions,
             size: text.length, status: 0, ms: Date.now() - then,
             error: error instanceof Error ? error.message : String(error),
-            splits: 0,
+            splits: 0, ...staged,
           });
           // A cancellation stays as it is; a request that got no reply
           // for any other reason could not reach the service.
@@ -521,7 +525,7 @@ export function jev({ apiKey, model = 'jev-latest', url = JEV_URL, onCall,
           size: text.length, status: reply.status, ms: Date.now() - then,
           ...(raw.usage === undefined ? {} : { usage: raw.usage }),
           ...(raw.answers === undefined ? {} : { answers: raw.answers }),
-          splits: 0,
+          splits: 0, ...staged,
         };
         // A rate-limited request (429), or one the service was too
         // overloaded to take (529), waits as the reply directs, then sends
@@ -558,7 +562,7 @@ export function jev({ apiKey, model = 'jev-latest', url = JEV_URL, onCall,
     }
   };
   const send = async (part: PickBatch, signal: AbortSignal): Promise<[string, PickAnswer][]> => {
-    const { reply, raw, call, domain } = await exchange(JSON.stringify(jevRequest(part, model)), part.questions.length, signal);
+    const { reply, raw, call, domain } = await exchange(JSON.stringify(jevRequest(part, model)), part.questions.length, signal, part.stage);
     try {
       if (!reply.ok) return await fail(part, signal, call, reply.text, domain);
       accepted = Math.max(accepted, call.size);
