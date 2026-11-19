@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { curate, DEFAULT_SENTENCE_CUTOFF, type MemoryCandidate, type PickBatch, type PickDecide, type PickResult } from '../src/index.js';
+import { curate, type MemoryCandidate, type PickBatch, type PickDecide, type PickResult } from '../src/index.js';
 
 function part(sourceId: string, id: string, date: string | undefined, text: string, role: 'reference' | 'rule' = 'reference'): MemoryCandidate {
   return {
@@ -72,14 +72,31 @@ describe('curate', () => {
     expect(record.levers).toEqual(GARDEN.record.levers);
   });
 
-  it('budgets 2,000 estimated tokens by default', async () => {
+  it('sets no budget by default: every selected item is laid out, and the record states the size', async () => {
     const big = part('orchard', 'big', '2024-03-01', 'pear '.repeat(1_900));
     const after = part('orchard', 'after', '2024-03-01', 'plum '.repeat(200));
-    const { record } = await curate(TASK, picked([[big, 0.9, 0], [after, 0.8, 1]]), {});
-    expect(record.answerTokens).toBe(2_000);
-    expect(record.items.map((item) => item.candidate.id)).toEqual(['big']);
-    expect(record.estimatedTokens).toBeLessThanOrEqual(2_000);
-    expect(record.estimatedTokens).toBeGreaterThan(1_900);
+    const { log, record } = await curate(TASK, picked([[big, 0.9, 0], [after, 0.8, 1]]), {});
+    expect(record).not.toHaveProperty('answerTokens');
+    expect(record.items.map((item) => item.candidate.id)).toEqual(['big', 'after']);
+    expect(log).toContain('plum');
+    expect(record.estimatedTokens).toBeGreaterThan(2_000);
+    expect(record.leftOut).toEqual({ count: 0, atHalfOrMore: 0 });
+  });
+
+  it('gives with no budget exactly the text and record a budget too large to stop anything gives, copies included', async () => {
+    // Few distinct texts across sources and dates, so many items are copies.
+    let seed = 7;
+    const random = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
+    const items = picked(Array.from({ length: 400 }, (_, index) => [part(`source-${Math.floor(random() * 3)}`, `id-${index}`,
+      `2024-03-${String(1 + Math.floor(random() * 20)).padStart(2, '0')}`, `Item said ${Math.floor(random() * 60)}.`),
+      Math.floor(random() * 10) / 10 + 0.05, index] as const));
+    const unbudgeted = await curate(TASK, items, {});
+    const budgeted = await curate(TASK, items, { answerTokens: 10_000_000 });
+    expect(unbudgeted.log).toBe(budgeted.log);
+    const { answerTokens, ...rest } = budgeted.record;
+    expect(answerTokens).toBe(10_000_000);
+    expect(unbudgeted.record).toEqual(rest);
+    expect(unbudgeted.record.collapsed).toBeGreaterThan(300);
   });
 
   it('estimates tokens from words, numbers, punctuation and lines, set a little high', async () => {
@@ -331,8 +348,25 @@ describe('curate', () => {
     expect(record.items.find((item) => item.candidate === twice)?.id).toBe('selected-twice');
   });
 
-  it('fails when no reference was selected', async () => {
-    await expect(curate(TASK, picked([[RULE, 1, 0]]))).rejects.toThrow('no selected reference items');
+  it('gives an empty text, and says nothing was kept, when no reference was selected', async () => {
+    const asked: PickBatch[] = [];
+    const { log, record } = await curate(TASK, picked([[RULE, 1, 0]]),
+      { sentenceCutoff: 0.1, decide: async (batch) => { asked.push(batch); return {}; } });
+    expect(log).toBe('');
+    expect(record).toEqual({ levers: GARDEN.record.levers, items: [], estimatedTokens: 0, collapsed: 0,
+      leftOut: { count: 0, atHalfOrMore: 0 }, nothingKept: true });
+    expect(asked).toHaveLength(0);
+  });
+
+  it('records the budget beside an empty text when one was set', async () => {
+    const { log, record } = await curate(TASK, picked([]), { answerTokens: 500 });
+    expect(log).toBe('');
+    expect(record).toMatchObject({ answerTokens: 500, nothingKept: true, items: [] });
+  });
+
+  it('marks no text as nothing kept when a reference was selected', async () => {
+    const { record } = await curate(TASK, GARDEN, {});
+    expect(record).not.toHaveProperty('nothingKept');
   });
 
   it('fails when a reference has no selected weight', async () => {
@@ -524,9 +558,19 @@ describe('the sentence cutoff by default', () => {
   const decide: PickDecide = async (batch) => Object.fromEntries(batch.questions.map((question) =>
     [question.key, { status: 'answered' as const, probability: question.text.includes('door') ? 0.1 : 0.09 }]));
 
-  it('rates sentences at 0.1 when a decision function is given', async () => {
-    const { log, record } = await curate(TASK, picked([[SHED, 0.9, 0]]), { decide });
-    expect(DEFAULT_SENTENCE_CUTOFF).toBe(0.1);
+  it('rates no sentence and calls no model when sentenceCutoff is unset, even with a decision function', async () => {
+    const asked: PickBatch[] = [];
+    const whole = await curate(TASK, picked([[SHED, 0.9, 0]]));
+    const { log, record } = await curate(TASK, picked([[SHED, 0.9, 0]]),
+      { decide: async (batch) => { asked.push(batch); return decide(batch, new AbortController().signal); } });
+    expect(asked).toHaveLength(0);
+    expect(log).toBe(whole.log);
+    expect(log).toContain('Painted the shed door. Oiled the hinges.');
+    expect(record).not.toHaveProperty('sentences');
+  });
+
+  it('rates sentences at the cutoff the caller sets', async () => {
+    const { log, record } = await curate(TASK, picked([[SHED, 0.9, 0]]), { sentenceCutoff: 0.1, decide });
     expect(log).toBe('### Most likely answer\n\n#### shed (said 2024-03-14)\n\nPainted the shed door. …\n');
     expect(record.sentences).toMatchObject({ cutoff: 0.1, kept: 1, of: 2 });
   });

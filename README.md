@@ -39,14 +39,14 @@ LoCoMo, all 1,540 scored questions:
 
 \* Score as published; these answers were not marked again here.
 
-Curate (full) has an answer budget of 6,000 tokens and keeps every sentence (`answerTokens: 6000`, `sentenceCutoff: false`). Curate (compact) is the default: an answer budget of 2,000 tokens and a sentence cutoff of 0.1 (`answerTokens: 2000`, `sentenceCutoff: 0.1`).
+Curate (full) has an answer budget of 6,000 tokens and keeps every sentence (`answerTokens: 6000`, `sentenceCutoff: false`). Curate (compact) has an answer budget of 2,000 tokens and a sentence cutoff of 0.1 (`answerTokens: 2000`, `sentenceCutoff: 0.1`). By default Curate sets neither: it lays out every part the decision model keeps.
 How each run was set up, and its proof files, are in [benchmarks](benchmarks/README.md).
 
 ## Built for memory that keeps growing
 
 - **No work when history is written.** Curate reads transcripts, git history and Markdown where they already live, when a task asks. No extraction step or graph to keep in sync, and no database server or hosted vector store: local index files, made on first use.
 - **Go straight to the source.** [Mem0](https://docs.mem0.ai/core-concepts/memory-operations/add) extracts facts with a model, [Mastra](https://mastra.ai/docs/memory/observational-memory) keeps observations written by a model, and [Zep](https://help.getzep.com/v4/how-graph-creation-works) builds a knowledge graph. Curate selects from the original history for each task.
-- **Keep the task model focused.** It reads only the parts chosen for its task, within a token budget, even when the history spans thousands of parts.
+- **Keep the task model focused.** It reads only the parts chosen for its task, even when the history spans thousands of parts.
 
 [LongMemEval](benchmarks/longmemeval/2026-11-11/README.md#context-sizes): **1,577 task-model tokens** a question on average, from histories of about **48 sessions** and **102,580 tokens** on average (o200k, every turn's role and text): about **65 times less**. [LoCoMo](benchmarks/locomo/2026-11-12/README.md#context-sizes): **3,839** task-model tokens a question in the full setting and **1,248** in the compact one, from conversations of about **21,155 tokens**.
 
@@ -162,7 +162,7 @@ const { log, rules, picked, result } = await mem.recall('What billing constraint
 - **Source questions are automatic.** Each reader brings its own set of narrow questions.
 - **Incomplete collection throws.** An absent or incomplete read, an unanswered candidate, or interrupted decisions stop recall. Parts intentionally excluded by the label questions are allowed. Read and model errors reach the caller.
 - **Rules stay exact.** `rules` joins the selected rule text with blank lines. The laid-out text holds reference evidence, not rules.
-- **Weak sentences go.** After the layout, `decide` rates each sentence in one more request, and the text keeps those rated 0.1 or more. `curate: { sentenceCutoff: false }` keeps every sentence and makes no request. See [Curate](#curate).
+- **Every kept part is laid out whole.** No budget cuts the text and no sentence is rated unless `curate.answerTokens` or `curate.sentenceCutoff` is set. A pick that kept nothing gives an empty text. See [Curate](#curate).
 - **Cancellation is optional.** Pass an `AbortSignal` as `mem.recall(task, { signal })`.
 
 ### Read each source with its own settings
@@ -219,8 +219,8 @@ These levers act on the whole call:
 | `pick.everyScored` | Unset: each source's bar. When set, one bar for every source |
 | `pick.rare` | Unset: each source's setting. When set, one setting for every source |
 | `pick.taskPeriod` | On: a task that names a period lets in the parts dated inside it |
-| `curate.answerTokens` | 2,000: the estimated tokens the laid-out text keeps within |
-| `curate.sentenceCutoff` | 0.1: the sentence rating the text keeps; `false` rates no sentence |
+| `curate.answerTokens` | Unset: no budget, every kept part is laid out. A number keeps the text within that many estimated tokens |
+| `curate.sentenceCutoff` | Unset: no sentence is rated. A number keeps the sentences `decide` rates at it or more |
 
 The fused order and `pick.everyRanked: { c }` rank every source's parts in one fused list before they read or cut, and a stopping limit in `pick.limits` (questions, batches, time) is shared by every source.
 With any of them, one source's settings can change what Curate picks from another.
@@ -540,7 +540,7 @@ Curate has no telemetry. Its only network request is the decision request; the `
 flowchart LR
   sources["Chat, Markdown and git"] --> rank["Rank<br/>Keyword search"]
   rank --> decide["Decide<br/>Narrow questions"]
-  decide --> curate["Curate<br/>Own words, token budget"]
+  decide --> curate["Curate<br/>Own words"]
   curate --> agent["Agent<br/>Does the task"]
   agent -. "Own tools" .-> sources
 ```
@@ -578,8 +578,9 @@ No model writes the text.
 
 - **Strongest first:** the two parts with the highest decision score sit under `### Most likely answer`. Every other part is grouped by the date it was said and its source, oldest first and strongest first inside a group. A part with no date sits under `(said unknown)`, last. A date that is only a file's last change reads `(file changed <date>)`.
 - **Copies taken once:** a part whose text is the same as a stronger kept part's is left out, and the kept part's heading names where else it was said.
-- **Budget:** `curate.answerTokens` keeps the text within 2,000 estimated tokens by default. The strongest part is always kept whole. The record's `leftOut` counts the parts the budget stopped before.
-- **Sentence cutoff:** given `decide`, curate rates each sentence of the taken parts in one request and keeps those rated `curate.sentenceCutoff` or more, 0.1 by default. `…` marks where text was left out. `false` keeps every sentence and makes no request. When the request fails, the whole text comes back and the record says why.
+- **Budget:** off by default: every kept part is laid out, and the record's `estimatedTokens` states the text's size. `curate.answerTokens` keeps the text within that many estimated tokens. The strongest part is always kept whole. The record's `leftOut` counts the parts the budget stopped before.
+- **Sentence cutoff:** off by default. Set `curate.sentenceCutoff` to a number and curate rates each sentence of the taken parts with `decide` in one request and keeps those rated that number or more. `…` marks where text was left out. When the request fails, the whole text comes back and the record says why.
+- **Nothing kept:** a pick that kept no part gives an empty text, and the record's `nothingKept` says so.
 
 ## Plain files and git
 

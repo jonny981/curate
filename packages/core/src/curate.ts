@@ -2,15 +2,8 @@ import type { MemoryCandidate, PickBatch, PickDecide, PickResult } from './pick.
 import type { LeverStates } from './levers.js';
 import { checkCurateOptions } from './options.js';
 
-/** The estimated tokens curate keeps its text within when
- *  `answerTokens` is omitted. */
-export const DEFAULT_ANSWER_TOKENS = 2_000;
-
-/** The sentence rating curate keeps a sentence at when `decide` is given
- *  and `sentenceCutoff` is omitted. */
-export const DEFAULT_SENTENCE_CUTOFF = 0.1;
-
-/** The estimate curate holds its budget with. Characters
+/** The estimate curate states its text's size with, and holds an
+ *  `answerTokens` budget with when one is set. Characters
  *  alone run far too low on dense text (figures, tables, code), so this
  *  counts what a tokenizer splits on: words, with a little more for long
  *  ones and for capitals inside a word; digits in threes; runs of one
@@ -57,7 +50,7 @@ export interface CurateOptions {
    *  rare names. Items are taken in weight order,
    *  and the first item that would take the text over this stops the
    *  taking. The strongest item is always kept whole, even over the
-   *  budget. Omitted means DEFAULT_ANSWER_TOKENS (2,000). */
+   *  budget. Omitted, there is no budget: every kept item is laid out. */
   readonly answerTokens?: number;
   /** Keep only the sentences that bear on the task. After the items are
    *  taken, `decide` rates every sentence of them in one request, and a
@@ -71,11 +64,11 @@ export interface CurateOptions {
    *  that speaker's turn carries the name. A sentence `decide` gives no
    *  rating stays. When the request fails, the whole text is returned as
    *  if no sentence were rated, and `record.sentences.failed` says why.
-   *  `answerTokens` bounds the text that is rated, so the returned text
-   *  is usually far smaller. A kept sentence can lose the sentence that
-   *  says what it refers to. Omitted means DEFAULT_SENTENCE_CUTOFF (0.1)
-   *  when `decide` is given, and no rating without it. `false` rates no
-   *  sentence and calls no model. A number needs `decide`. */
+   *  An `answerTokens` budget, when set, bounds the text that is rated,
+   *  not the text returned, which is usually far smaller. A kept sentence
+   *  can lose the sentence that says what it refers to. Omitted or
+   *  `false`, no sentence is rated and no model is called, whether or
+   *  not `decide` is given. A number needs `decide`. */
   readonly sentenceCutoff?: number | false;
   /** Rates each sentence for `sentenceCutoff`. */
   readonly decide?: PickDecide;
@@ -96,14 +89,18 @@ export interface CurateRecord {
   }[];
   /** The returned text's estimated tokens. */
   readonly estimatedTokens: number;
-  /** The budget the items were taken within. */
-  readonly answerTokens: number;
+  /** Present when an `answerTokens` budget was set: the budget the items
+   *  were taken within. */
+  readonly answerTokens?: number;
+  /** Present when the pick kept no reference item: the text is empty. */
+  readonly nothingKept?: true;
   /** How many items were left out as copies of an item taken before
    *  them: the same text. */
   readonly collapsed: number;
-  /** The selected items the budget stopped before: how many, the
-   *  highest weight among them, and how many have a weight of 0.5 or
-   *  more. A copy counted in `collapsed` is not counted here. */
+  /** The selected items an `answerTokens` budget stopped before: how
+   *  many, the highest weight among them, and how many have a weight of
+   *  0.5 or more. None when no budget is set. A copy counted in
+   *  `collapsed` is not counted here. */
   readonly leftOut: {
     readonly count: number;
     readonly strongestWeight?: number;
@@ -225,9 +222,9 @@ function keptText(sentences: readonly Sentence[], keep: readonly boolean[]): str
 }
 
 /** Lay out the selected reference items as they stand, in the person's
- *  own words, within the token budget, and, when sentences are rated,
- *  keep only the sentences that bear on the task. Selected rules remain
- *  the caller's instructions. */
+ *  own words, within an `answerTokens` budget when one is set, and, when
+ *  sentences are rated, keep only the sentences that bear on the task.
+ *  Selected rules remain the caller's instructions. */
 export async function curate(task: string, picked: PickResult, options: CurateOptions = {}): Promise<CurateResult> {
   checkCurateOptions(options);
   const signal = options.signal ?? new AbortController().signal;
@@ -257,35 +254,53 @@ export async function curate(task: string, picked: PickResult, options: CurateOp
     const id = shared.has(candidate.id) ? JSON.stringify([candidate.sourceId, candidate.id]) : candidate.id;
     return { id, candidate, weight: entry.probability };
   });
-  if (!items.length) throw new Error('curate: no selected reference items to curate.');
-  const answerTokens = options.answerTokens ?? DEFAULT_ANSWER_TOKENS;
+  const answerTokens = options.answerTokens;
+  // A pick that kept nothing gives an empty text: a question the history
+  // holds nothing for still gets an answer.
+  if (!items.length) {
+    return { log: '', record: { levers: picked.record.levers, items: [], estimatedTokens: 0,
+      ...(answerTokens === undefined ? {} : { answerTokens }), collapsed: 0, leftOut: { count: 0, atHalfOrMore: 0 }, nothingKept: true } };
+  }
   // `items` follows `picked.selected`, so a stable sort leaves equal weights in the fused order.
   const ordered = [...items].sort((left, right) => right.weight - left.weight);
   let taken: Item[] = [];
   let copies = new Map<Item, readonly Item[]>();
   let log = '';
   let stopped = ordered.length;
-  for (const [index, item] of ordered.entries()) {
-    // A copy of an item already taken adds only a place and date to that item's heading.
-    const shown = body(item).trim();
-    const original = taken.find((kept) => body(kept).trim() === shown);
-    const nextTaken = original === undefined ? [...taken, item] : taken;
-    const nextCopies = original === undefined ? copies : new Map(copies).set(original, [...(copies.get(original) ?? []), item]);
-    const text = layOutItems(nextTaken, nextCopies);
-    if (taken.length > 0 && estimateAnswerTokens(text) > answerTokens) { stopped = index; break; }
-    [taken, copies, log] = [nextTaken, nextCopies, text];
+  if (answerTokens === undefined) {
+    // No budget: every item is taken, and the text is laid out once.
+    const firstWith = new Map<string, Item>();
+    for (const item of ordered) {
+      // A copy of an item already taken adds only a place and date to that item's heading.
+      const shown = body(item).trim();
+      const original = firstWith.get(shown);
+      if (original === undefined) { firstWith.set(shown, item); taken.push(item); }
+      else copies.set(original, [...(copies.get(original) ?? []), item]);
+    }
+    log = layOutItems(taken, copies);
+  } else {
+    for (const [index, item] of ordered.entries()) {
+      // A copy of an item already taken adds only a place and date to that item's heading.
+      const shown = body(item).trim();
+      const original = taken.find((kept) => body(kept).trim() === shown);
+      const nextTaken = original === undefined ? [...taken, item] : taken;
+      const nextCopies = original === undefined ? copies : new Map(copies).set(original, [...(copies.get(original) ?? []), item]);
+      const text = layOutItems(nextTaken, nextCopies);
+      if (taken.length > 0 && estimateAnswerTokens(text) > answerTokens) { stopped = index; break; }
+      [taken, copies, log] = [nextTaken, nextCopies, text];
+    }
   }
   const leftOut = ordered.slice(stopped);
   const record: CurateRecord = {
     levers: picked.record.levers,
-    items: taken, estimatedTokens: estimateAnswerTokens(log), answerTokens,
+    items: taken, estimatedTokens: estimateAnswerTokens(log), ...(answerTokens === undefined ? {} : { answerTokens }),
     collapsed: [...copies.values()].reduce((sum, list) => sum + list.length, 0),
     leftOut: {
       count: leftOut.length, ...(leftOut.length ? { strongestWeight: leftOut[0]!.weight } : {}),
       atHalfOrMore: leftOut.filter((item) => item.weight >= 0.5).length,
     },
   };
-  const cutoff = options.sentenceCutoff ?? (options.decide === undefined ? false : DEFAULT_SENTENCE_CUTOFF);
+  const cutoff = options.sentenceCutoff ?? false;
   if (cutoff === false) return { log, record };
 
   const split = taken.map((item) => sentencesOf(body(item)));

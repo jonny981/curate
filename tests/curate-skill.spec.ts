@@ -14,7 +14,7 @@ import { indexFilePath, STORED_INDEX_FORMAT } from '@curatejs/core/internal';
 import { chat, CHAT_CASCADE, chatSettings } from '@curatejs/chat';
 import { git as gitSource } from '@curatejs/git';
 // @ts-expect-error The standalone JavaScript command has no type declarations.
-import { acceptScope, allowedSession, citable, decisionAnswers, haikuCall, instructionsProfile, lunaCall, NODE_FLOOR, pickFullSources, rankMatches, parseArgs, parseSearches, parseSources, run, PROCESSOR_WARNING, sandboxAvailable, scopedEntries, sourcesFor, searchLinesPrompt, searchRoute, searchSource, sessionHeader, SETUP, SetupError, setupGuide, snapshotCodex, writeLog } from '../skills/curate/run.mjs';
+import { acceptScope, allowedSession, citable, decisionAnswers, haikuCall, instructionsProfile, lunaCall, main, NODE_FLOOR, pickFullSources, rankMatches, parseArgs, parseSearches, parseSources, run, PROCESSOR_WARNING, sandboxAvailable, scopedEntries, sourcesFor, searchLinesPrompt, searchRoute, searchSource, sessionHeader, SETUP, SetupError, setupGuide, snapshotCodex, writeLog } from '../skills/curate/run.mjs';
 
 const uncutPick = { everyRanked: true, everyScored: true, rare: false } as const;
 
@@ -1013,6 +1013,72 @@ describe('the sentence cutoff, and what the skill tells the caller', () => {
     const wide = reference('wide', `${'the pear tree by the pond '.repeat(40)}wide`);
     expect((await told([[ORCHARD, 0.9], [wide, 0.4]], { answerTokens: 60 })).lines).toEqual([]);
     expect((await told([[ORCHARD, 0.9], [wide, 0.8]], { answerTokens: 2_000 })).lines).toEqual([]);
+  });
+
+  it('lays out every kept part and asks no sentence request when the settings name no budget or cutoff', async () => {
+    const wide = reference('wide', `${'the pear tree by the pond '.repeat(400)}wide`);
+    const decide = vi.fn(async () => ({}));
+    const { log, record, lines } = await told([[ORCHARD, 0.9], [wide, 0.8]], { decide });
+    expect(decide).not.toHaveBeenCalled();
+    expect(log).toContain('An orchard was planted. The day was cold.');
+    expect(log).toContain('pond wide');
+    expect(record.curate).not.toHaveProperty('answerTokens');
+    expect(record.curate).not.toHaveProperty('sentences');
+    expect(lines).toEqual([]);
+  });
+
+  it('returns and writes an empty text, and says so on standard error, when no part was kept', async () => {
+    const directory = join(await folder(), 'run');
+    await mkdir(directory);
+    const record: { curate?: Record<string, unknown>; status?: string; timings: Record<string, number> } = { timings: {} };
+    const printed = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const result = await writeLog('orchard evidence', pickOf([]), directory, record, {});
+    expect(result.log).toBe('');
+    expect(printed.mock.calls).toEqual([['']]);
+    expect(errors.mock.calls.map((call) => String(call[0]))).toEqual(["No part was kept: none reached its source's keep bar, so the text is empty."]);
+    expect(record).toMatchObject({ status: 'complete', curate: { items: [], nothingKept: true } });
+    expect(await readFile(join(directory, 'log.md'), 'utf8')).toBe('');
+  });
+});
+
+describe('a call whose question the history holds nothing for', () => {
+  it('prints an empty text, says why on standard error, and ends the command with exit code 0', async () => {
+    const directory = await folder();
+    const [home, notes, bin] = [join(directory, 'home'), join(directory, 'notes'), join(directory, 'bin')];
+    for (const made of [home, notes, bin]) await mkdir(made);
+    await writeFile(join(notes, 'orchard.md'), '# Orchard\n\nThe orchard has trees. Fruit trees grow here.\n');
+    // A program named claude, first on PATH, that reports a login and answers the search-lines call.
+    const reply = JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: JSON.stringify(searches()) });
+    await writeFile(join(bin, 'claude'), `#!/usr/bin/env node
+if (process.argv[2] === 'auth') { process.stdout.write(JSON.stringify({ loggedIn: true })); process.exit(0); }
+process.stdin.resume().on('end', () => process.stdout.write(${JSON.stringify(reply)}));
+`, { mode: 0o755 });
+    const sourcesFile = join(directory, 'sources.json');
+    await writeFile(sourcesFile, JSON.stringify({ sources: [{ type: 'markdown', path: notes }], searchModel: 'haiku' }));
+    vi.stubEnv('PATH', `${bin}${delimiter}${process.env.PATH}`);
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
+    vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
+    // Every part rates far under the keep bar, so the pick keeps none.
+    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => {
+      const questions = JSON.parse(String(init.body)).questions as Record<string, { instructions: string }>;
+      return new Response(JSON.stringify({ usage: null, answers: Object.fromEntries(Object.entries(questions).map(([key, question]) =>
+        [key, { noul: question.instructions.startsWith('Is this item about a different subject') ? 0.999 : 0.001 }])) }));
+    }));
+    const printed = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const exitCode = process.exitCode;
+    try {
+      const result = await main(['--sources', sourcesFile, 'orchard']);
+      expect(process.exitCode ?? 0).toBe(0);
+      expect(result.memory).toBe('');
+      expect(result.record).toMatchObject({ status: 'complete', curate: { items: [], nothingKept: true } });
+    } finally {
+      process.exitCode = exitCode;
+    }
+    expect(printed.mock.calls).toEqual([['']]);
+    expect(errors.mock.calls.map(([line]) => String(line))).toContain("No part was kept: none reached its source's keep bar, so the text is empty.");
   });
 });
 

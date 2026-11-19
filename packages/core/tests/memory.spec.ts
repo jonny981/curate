@@ -56,7 +56,17 @@ describe('memory', () => {
     expect(Object.values(recalled.result.record.levers.sources).map((settings) => settings.bar)).toEqual([0.0146]);
   });
 
-  it('rates the sentences of the parts laid out with the same decide, at 0.1 by default', async () => {
+  it('rates no sentence and lays out every kept part whole by default', async () => {
+    const batches: PickBatch[] = [];
+    const recalled = await memory({ sources: [source()],
+      decide: async (batch, signal) => { batches.push(batch); return decide(batch, signal); } }).recall(TASK);
+    expect(sentenceBatches(batches)).toHaveLength(0);
+    expect(recalled.log).toBe(LAID_OUT);
+    expect(recalled.result.record).not.toHaveProperty('sentences');
+    expect(recalled.result.record).not.toHaveProperty('answerTokens');
+  });
+
+  it('rates the sentences of the parts laid out with the same decide when curate.sentenceCutoff is set', async () => {
     const batches: PickBatch[] = [];
     const rate: PickDecide = async (batch, signal) => {
       batches.push(batch);
@@ -64,10 +74,19 @@ describe('memory', () => {
         ? Object.fromEntries(batch.questions.map((q) => [q.key, { status: 'answered', probability: q.text === 'billing' ? 0.09 : 0.1 }]))
         : decide(batch, signal);
     };
-    const recalled = await memory({ sources: [source()], decide: rate }).recall(TASK);
+    const recalled = await memory({ sources: [source()], decide: rate, curate: { sentenceCutoff: 0.1 } }).recall(TASK);
     expect(sentenceBatches(batches)).toHaveLength(1);
     expect(recalled.result.record.sentences).toMatchObject({ cutoff: 0.1, kept: 1, of: 2 });
     expect(recalled.log).toBe('### Most likely answer\n\n#### notes (said 2026-01-12)\n\nKeep the order currency. …\n');
+  });
+
+  it('gives an empty text, and says nothing was kept, when every part rates under the bar', async () => {
+    const recalled = await memory({ sources: [source([note(), note('second')])],
+      decide: async ({ questions }) => Object.fromEntries(questions.map((q) => [q.key, { status: 'answered', probability: 0.001 }])),
+    }).recall(TASK);
+    expect(recalled.picked.selected).toEqual([]);
+    expect(recalled.log).toBe('');
+    expect(recalled.result.record).toMatchObject({ items: [], estimatedTokens: 0, nothingKept: true });
   });
 
   it('rates no sentence when curate.sentenceCutoff is false', async () => {

@@ -204,7 +204,7 @@ async function call(fixture: Fixture, settings: Settings, replies: readonly Repl
   process.chdir(fixture.at('cwd'));
   vi.useFakeTimers({ toFake: ['Date'], now: new Date(NOW) });
   const requests: string[] = [];
-  // What the working folder held at each decision request, the last one being the sentence request.
+  // What the working folder held at each decision request.
   const folderAtRequest: string[][] = [];
   vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => {
     requests.push(String(init.body));
@@ -380,7 +380,7 @@ describe('a records-off call', () => {
     const fixture = await makeFixture();
     const done = await call(fixture, {});
     const memory = done.printed.join('\n');
-    expect(memory).toContain(`### ${fixture.at('notes', 'orchard.md')} (said unknown)\n\n# Orchard\nThe orchard has trees.`);
+    expect(memory).toContain(`### ${fixture.at('notes', 'orchard.md')} (said unknown)\n\n# Orchard\n\nThe orchard has trees.`);
     expect(memory).not.toMatch(/UNDATED|collect/);
   });
 

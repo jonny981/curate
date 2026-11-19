@@ -848,6 +848,7 @@ export async function writeLog(task, picked, folder, record, options = {}) {
   if (leftOut?.atHalfOrMore > 0) {
     console.error(`The answerTokens budget of ${answerTokens} left out ${leftOut.atHalfOrMore} ${leftOut.atHalfOrMore === 1 ? 'part' : 'parts'} at weight 0.5 or more; raise answerTokens to read them.`);
   }
+  if (result.record.nothingKept) console.error('No part was kept: none reached its source\'s keep bar, so the text is empty.');
   if (sentences?.failed !== undefined) console.error(`Sentence request failed (${sentences.failed}); the whole text is returned.`);
   else if (sentences !== undefined && sentences.kept === 0) console.error(`No sentence was rated at sentenceCutoff ${sentences.cutoff} or more; the text is empty.`);
   await writeFile(join(folder, 'log.md'), result.log, { mode: 0o600 });

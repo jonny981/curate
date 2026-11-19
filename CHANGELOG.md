@@ -56,13 +56,15 @@ What each part does:
   `(said unknown)`, last, and a date that is only a file's last change reads
   `(file changed <date>)`. A part whose text is the same as a stronger kept
   part's is left out, and the kept part's heading names where else it was
-  said. `answerTokens` keeps the text within 2,000 estimated tokens by
-  default, and the strongest part is always kept whole.
-- **Weak sentences go.** Given `decide`, `curate()` rates each sentence of
-  the taken parts in one more request and keeps those rated
-  `sentenceCutoff` or more, 0.1 by default. `…` marks where text was left
-  out. `sentenceCutoff: false` keeps every sentence and makes no request.
-  When the request fails, the whole text comes back and the record says why.
+  said. By default every kept part is laid out, and the record states the
+  text's size; a pick that kept nothing gives an empty text and says so.
+  `answerTokens` sets a budget the text keeps within, and the strongest part
+  is always kept whole.
+- **Weak sentences can go.** With `sentenceCutoff` set and `decide` given,
+  `curate()` rates each sentence of the taken parts in one more request and
+  keeps those rated `sentenceCutoff` or more. `…` marks where text was left
+  out. Unset or `false`, no sentence is rated and no request is made. When
+  the request fails, the whole text comes back and the record says why.
 - **A stored index per source.** The chat, git and Markdown readers keep one
   SQLite file per source, through Node's built-in `node:sqlite`, under
   `$XDG_CACHE_HOME/curate/index` or `~/.cache/curate/index`. Each call brings

@@ -1,12 +1,12 @@
 # @curatejs/core
 
-Curate selects the memory an agent needs for a task from typed sources. Its RDC process ranks candidates, asks your decision function how strongly each item bears on the task, and lays out the strongest items in their own words within a token budget. No model writes the memory text. Selection and curation each return a record.
+Curate selects the memory an agent needs for a task from typed sources. Its RDC process ranks candidates, asks your decision function how strongly each item bears on the task, and lays out the kept items, strongest first, in their own words. No model writes the memory text. Selection and curation each return a record.
 
 ## RDC process
 
 - **Rank:** Order memory candidates by their signals.
 - **Decide:** Judge ranked evidence with narrow questions. Keep references scored 0.0146 or more, ordered and weighted by decision probability. Check rules against their separate applicability bar.
-- **Curate:** Call `curate(task, picked, { decide })` to lay out the kept references for the working model to read, keeping the sentences `decide` rates 0.1 or more.
+- **Curate:** Call `curate(task, picked)` to lay out every kept reference for the working model to read. An `answerTokens` budget and a `sentenceCutoff` with `decide` are dials, off unless set.
 
 ## Install
 
@@ -32,7 +32,7 @@ const mem = memory({ sources, decide });
 const { log, rules, picked, result } = await mem.recall('What billing constraint must this change preserve?');
 ```
 
-- **Log:** `log` is the text `curate()` lays out from the kept references, with each sentence `decide` rates under 0.1 left out. `result` is the full `CurateResult`, including its record. See [Curating](#curating).
+- **Log:** `log` is the text `curate()` lays out from every kept reference, in its own words. It is empty when the pick kept no reference. `result` is the full `CurateResult`, including its record. See [Curating](#curating).
 - **Rules:** `rules` joins selected rules with blank lines and preserves each rule's text. Rules are not in `log`.
 - **Selection:** `picked` is the full `PickSourcesResult`, including source reads and decision records.
 - **Questions:** Each source carries its decision question set as `questions`, set through `historySource()`, and each built-in reader carries its fitted set. `memory()`, `pickFromSources()` and the `/curate` skill all ask each source its own set. A source without one asks core's ordinary question. A direct `pick()` takes the sets by source id as `questionsBySource`.
@@ -1475,8 +1475,9 @@ user: Should refunds use today's rate?
   A text that only sits inside a longer item stays: it may be a quote, a
   rejected plan or a later restatement, and the longer item's place and
   date are not its own. `record.collapsed` counts the copies.
-- **Budget:** `answerTokens` keeps the whole text within that many
-  estimated tokens, `DEFAULT_ANSWER_TOKENS` (2,000) when omitted. Items
+- **Budget:** off unless `answerTokens` is set. Omitted, every selected
+  item is laid out, and `record.estimatedTokens` states the text's size.
+  Set, it keeps the whole text within that many estimated tokens: items
   are taken in weight order, and the first item that would take the text
   over the budget stops the taking. The strongest item is always kept
   whole, even over the budget. The estimate needs no tokenizer: it counts
@@ -1487,11 +1488,11 @@ user: Should refunds use today's rate?
   tokens than it counts. `record.leftOut` holds how many selected items
   the budget stopped before, the strongest weight among them and how
   many have a weight of 0.5 or more.
-- **Sentence cutoff:** with `decide`, curate rates every sentence of the
-  taken items in one more request and keeps a sentence when its rating
-  is `sentenceCutoff` or more, `DEFAULT_SENTENCE_CUTOFF` (0.1) when
-  omitted. `sentenceCutoff: false` rates no sentence and calls no model;
-  without `decide` no sentence is rated either, and a number then throws
+- **Sentence cutoff:** off unless `sentenceCutoff` is a number. Omitted
+  or `false`, no sentence is rated and no model is called, even with
+  `decide`. Set to a number, curate rates every sentence of the taken
+  items with `decide` in one more request and keeps a sentence when its
+  rating is `sentenceCutoff` or more; a number without `decide` throws
   a `TypeError`. Each sentence is asked "Does this sentence supply
   evidence, a constraint or a decision for this task?" with no id or
   title, the item's date on its first sentence. A sentence is the text up
@@ -1504,15 +1505,17 @@ user: Should refunds use today's rate?
   included, so the text can be empty. A sentence `decide` gives no rating
   stays. When the request fails, the whole text is returned as if no
   sentence were rated, and `record.sentences.failed` holds the message;
-  a cancelled request throws. `answerTokens` bounds the text that is
-  rated, so the returned text is usually far smaller. A kept sentence
-  can lose the sentence that says what it refers to.
+  a cancelled request throws. An `answerTokens` budget, when set,
+  bounds the text that is rated, not the text returned, which is usually
+  far smaller. A kept sentence can lose the sentence that says what it
+  refers to.
 
 `record` holds the pick's `levers`; the `items` taken, in the order they
 were taken, each with its full `id` (with the source beside it when two
 items share an id), its `candidate` as shown and its exact `weight`;
-`estimatedTokens`, the returned text's estimate; `answerTokens`;
-`collapsed`; `leftOut`; and, when sentences were rated, `sentences`:
+`estimatedTokens`, the returned text's estimate; `answerTokens`, when a
+budget was set; `collapsed`; `leftOut`; `nothingKept: true`, when the
+pick kept no reference; and, when sentences were rated, `sentences`:
 the `cutoff`, the sentences `kept` of how many (`of`), how many were
 `unanswered`, the items that lost a sentence (`itemsTrimmed`) or every
 sentence (`itemsLeftOut`), `estimatedTokensBefore`, and `failed` when
@@ -1521,8 +1524,9 @@ the request failed.
 An unknown option, an `answerTokens` that is not a positive integer, a
 `sentenceCutoff` that is neither `false` nor a number from 0 to 1, and
 a `decide` that is not a function each throw a `TypeError` before any
-call. A reference with no selected record entry and weight, or a pick
-with no selected reference, throws too.
+call. A reference with no selected record entry and weight throws too.
+A pick with no selected reference gives an empty text, and the record's
+`nothingKept` says so; no sentence is rated.
 
 ## Levers and source settings
 
