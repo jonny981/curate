@@ -1,4 +1,4 @@
-export { markdown, knowledgeBase, rules } from './markdown.js';
+export { conversationTurns, markdown, knowledgeBase, rules } from './markdown.js';
 export { parseWhatsapp, whatsapp } from './messages.js';
 export type { ChatMessage, DateOrder, WhatsappOptions } from './messages.js';
 export type { MarkdownOptions, KnowledgeBaseOptions, RulesOptions } from './markdown.js';

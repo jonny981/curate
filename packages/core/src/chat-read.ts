@@ -181,6 +181,7 @@ const compareAt = (left: readonly number[], right: readonly number[]) => {
  *  of its own. */
 export function messageKey(part: MemoryCandidate): string {
   const at = part.place?.at;
+  if (part.turn !== undefined) return JSON.stringify([part.sourceId, part.place?.container ?? part.turn.session, part.turn.position, 'turn']);
   return part.chat === undefined || at === undefined || at.length < 3
     ? JSON.stringify([part.sourceId, part.id])
     : JSON.stringify([part.sourceId, part.place!.container, at[0], part.chat.role]);

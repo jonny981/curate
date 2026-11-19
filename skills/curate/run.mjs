@@ -144,9 +144,11 @@ const chatMode = (entry) => {
 // questions with labelled answer turns, rated one part a request, 0.07 is
 // the highest "answers" probability that keeps every labelled turn.
 export const NOTE_MODES = { default: notes, answers: { ...notes, name: 'answers', questions: ANSWER_CASCADE, needed: true, bar: 0.07 } };
-// The levers that act on notes: whole messages and hard facts read a
-// conversation's placed messages, which notes do not have.
-export const NOTE_LEVERS = ['roles', 'choicePerFact', 'itemsPerRequest'];
+// The levers that act on notes. Whole messages and hard facts act on a
+// note written as a conversation: the reader then cuts it at each turn,
+// and each turn is judged whole, with its speaker and the turns either
+// side; any other note is read as without them.
+export const NOTE_LEVERS = ['wholeMessages', 'hardFacts', 'roles', 'choicePerFact', 'itemsPerRequest'];
 // A Markdown entry's mode, or undefined to keep the reader's own.
 const noteMode = (entry) => entry.questions === undefined && entry.levers === undefined ? undefined
   : { ...NOTE_MODES[entry.questions ?? 'default'], ...entry.levers };
@@ -1319,9 +1321,10 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
         // The project's own Markdown goes through the reader that leaves out
         // what git ignores and any node_modules folder.
         const mode = noteMode(entry);
+        const turns = entry.levers?.wholeMessages === true || entry.levers?.hardFacts === true ? { turns: true } : {};
         return { source: entry.own === true
           ? markdown({ paths: [entry.path], kind: 'docs', maxQuestionText: DEFAULT_MAX_QUESTION_TEXT, ...options })
-          : mode === undefined ? knowledgeBase(entry.path, options) : { ...knowledgeBase(entry.path, options), mode } };
+          : mode === undefined ? knowledgeBase(entry.path, options) : { ...knowledgeBase(entry.path, { ...options, ...turns }), mode } };
       }
       if (entry.type === 'whatsapp') {
         return { source: whatsapp(entry.path, { ...(entry.since === undefined ? {} : { since: entry.since }),

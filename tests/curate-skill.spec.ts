@@ -1339,6 +1339,38 @@ describe('a run through core decision calls', () => {
       .toContainEqual(expect.objectContaining({ itemsPerRequest: 1 }));
   });
 
+  it('judges each turn of a note written as a conversation whole, with its speaker and the turns either side', async () => {
+    const directory = await folder();
+    const home = join(directory, 'home');
+    const notesFolder = join(directory, 'notes');
+    await mkdir(home);
+    await mkdir(notesFolder);
+    await writeFile(join(notesFolder, 'session-001.md'), ['---', 'date: 2026-03-02', '---', '# session one', '', 'Date: 2026-03-02', '',
+      'user: Should the orchard cache stay layered?', '', 'assistant: Keeping it layered keeps reads fast.', '',
+      'user: Yes, keep the orchard cache layered.', ''].join('\n'));
+    const sourcesFile = join(directory, 'sources.json');
+    await writeFile(sourcesFile, JSON.stringify({ records: true,
+      sources: [{ type: 'markdown', path: notesFolder, levers: { wholeMessages: true, hardFacts: true, itemsPerRequest: 1 } }] }));
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
+    vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
+    const items: Record<string, unknown>[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => {
+      const body = JSON.parse(String(init.body));
+      if (body.state.item !== undefined) items.push(body.state.item);
+      return new Response(JSON.stringify({ usage: null,
+        answers: Object.fromEntries(Object.keys(body.questions).map((key) => [key, { noul: 0.8 }])) }));
+    }));
+    const { call } = subscriptionReply(searches());
+    await run(['--sources', sourcesFile, 'Is the orchard cache layered?'], call);
+    expect(items.find((item) => item.text === 'user: Yes, keep the orchard cache layered.')).toMatchObject({
+      author: 'user', session: 'session-001.md', position: 3, pieces: 1,
+      replies_to: { text: 'assistant: Keeping it layered keeps reads fast.' } });
+    expect(items.find((item) => item.text === 'assistant: Keeping it layered keeps reads fast.')).toMatchObject({
+      author: 'assistant', position: 2, replies_to: { text: 'user: Should the orchard cache stay layered?' },
+      answered_by: { text: 'user: Yes, keep the orchard cache layered.' } });
+  });
+
   it('paces the decision requests at the organization\'s request rate when the settings give it', async () => {
     const directory = await folder();
     const home = join(directory, 'home');

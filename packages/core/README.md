@@ -915,7 +915,10 @@ request (`limits.maxBatchChars`) goes as consecutive parts, each marked
 piece as `opening`; the message takes its best part's rating. Every
 piece carries its message's rating, so a message is kept or left out
 whole, and `curate` lays it out once, whole. Only parts a transcript
-reader placed (`chat` and `place`) are joined. The record names the
+reader placed (`chat` and `place`) are joined, and the turns of a note
+written as a conversation, which the Markdown reader marks with `turn`
+when asked (`turns: true`): such a turn goes whole from its reader's
+text, the pieces the pick does not hold included. The record names the
 setting under `levers.sources`. On the 22 short lists of one person's
 coding-agent history (1,489 ranked pieces, 1,028 messages), the
 requests carried 2.47 times the text: the messages held 4.47 times the
@@ -979,8 +982,11 @@ record also gets the message's `position` in its session, `replies_to`
 message, anyone else's; for anyone else's, the person's) and, for a
 message not the person's, `answered_by` (the person's next message),
 each as `{ id, text }`: that message's first piece's id and its first
-1,000 characters. A commit gets only `kind: 'commit'` and a note only
-`kind: 'note'`. The request's state also carries the pick's `person`,
+1,000 characters. A turn of a note written as a conversation gets its
+speaker as `author`, its note as `session`, its `position` and `pieces`,
+and the turns before and after it as `replies_to` and `answered_by`,
+from its reader, whatever the read. A commit gets only `kind: 'commit'`
+and any other note only `kind: 'note'`. The request's state also carries the pick's `person`,
 the person's name as tasks word it, and `wanted`, `'one decision'` or
 `'everything said'` as the caller's writer judged the task, when the
 pick gives them: `{ task, needed, person, wanted, items }`. Requests of

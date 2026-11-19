@@ -28,6 +28,30 @@ committed change date is carried with meaning `changed` instead. A note
 with no commit yet or with uncommitted changes, and an undeclared note
 outside a repository, carries its file's modified time with meaning
 `modified`.
+
+### Notes written as a conversation
+
+Off by default. With `turns: true`, a section written as a conversation
+is cut first at each turn, then each turn at line ends to the part size,
+so no part holds two turns, and each part carries its `turn`: the
+speaker, the note, the turn's number in it, how many pieces it was cut
+into, the whole turn's text, and the whole turns before and after it
+with their first pieces' ids. Its `place` is the section and
+`[turn, 1, piece]`. A section is a conversation when its paragraphs open
+with a speaker's name and a colon (`user: ...`, `Ana: ...`): the
+speakers are the names that open at least two of its paragraphs, or, in
+a short exchange where no two names do, the names of its last two such
+paragraphs when they differ (`conversationTurns()`). A preamble before
+the first turn, such as a `Date:` line, is a part with no turn; any
+other note is cut and read exactly as without the setting. The stored
+index keeps the cut apart from the plain one. A mode with
+`wholeMessages` then judges each turn whole, and one with `hardFacts`
+writes its speaker as `author`, the note as `session`, its `position`,
+its `pieces` and the turns either side as `replies_to` and
+`answered_by` (each its first 1,000 characters). Of LongMemEval's 7,164
+session notes, 7,157 read as conversations; in 272 (about 1 in 26) a
+label repeated inside a turn, such as `Note:` or `Day 2:`, also starts a
+turn of its own.
 Notes inside a work tree also carry `path` (their repository-relative
 file) and `repository`, which is what lets a selected commit link them
 in. A `revision` pin on `knowledgeBase` reads the tree that revision

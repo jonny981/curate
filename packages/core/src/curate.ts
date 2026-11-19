@@ -275,7 +275,7 @@ export async function curate(task: string, picked: PickResult, options: CurateOp
   // whole: its kept pieces joined in order, at its first piece's place,
   // with the message's weight.
   const whole = (candidate: MemoryCandidate) => picked.record.levers.sources?.[candidate.sourceId]?.wholeMessages === true
-    && candidate.chat !== undefined && (candidate.place?.at.length ?? 0) >= 3;
+    && (candidate.turn !== undefined || (candidate.chat !== undefined && (candidate.place?.at.length ?? 0) >= 3));
   const pieces = messagePieces(references.filter(whole));
   const itemOf = new Map(pieceItems.map((item) => [item.candidate, item]));
   const laid = new Set<string>();
@@ -285,9 +285,12 @@ export async function curate(task: string, picked: PickResult, options: CurateOp
     if (laid.has(key)) return [];
     laid.add(key);
     const message = pieces.get(key)!;
-    if (message.length === 1) return [item];
+    // A turn of a note written as a conversation is laid out whole, as its
+    // reader read it.
+    const turn = message[0]!.turn?.text;
+    if (message.length === 1 && turn === undefined) return [item];
     const first = itemOf.get(message[0]!)!;
-    return [{ ...first, candidate: { ...first.candidate, text: messageText(message) },
+    return [{ ...first, candidate: { ...first.candidate, text: turn ?? messageText(message) },
       weight: Math.max(...message.map((piece) => itemOf.get(piece)!.weight)) }];
   });
   const answerTokens = options.answerTokens;

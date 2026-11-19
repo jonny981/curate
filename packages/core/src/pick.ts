@@ -67,6 +67,22 @@ export interface MemoryCandidate {
    *  who said it, as a messaging reader writes its turns; the layout
    *  keeps the name on a speaker's first kept sentence. */
   readonly speakers?: readonly string[];
+  /** The turn this part is a piece of, where its reader read a note
+   *  written as a conversation (its `place` is then the section and
+   *  `[position, 1, piece]`): who speaks the turn, the note it is in, its
+   *  number there, how many pieces it was cut into, its whole text, and
+   *  the whole turns before and after it with their first pieces' ids.
+   *  A mode that judges whole messages judges the whole turn; one that
+   *  writes hard facts writes these. */
+  readonly turn?: {
+    readonly speaker: string;
+    readonly session: string;
+    readonly position: number;
+    readonly pieces: number;
+    readonly text: string;
+    readonly before?: { readonly id: string; readonly text: string };
+    readonly after?: { readonly id: string; readonly text: string };
+  };
   /** Transcript metadata; separate from the candidate's reference role. */
   readonly chat?: {
     readonly provider: 'claude-code' | 'codex';
@@ -2042,11 +2058,13 @@ export async function pick(
   // Whole messages: the reference parts of a mode that judges whole
   // messages, each with every other piece of its message the pick holds.
   const wholeFor = (candidate: MemoryCandidate) => candidate.role === 'reference'
-    && modeFor(candidate.sourceId)?.wholeMessages === true && candidate.chat !== undefined && (candidate.place?.at.length ?? 0) >= 3;
+    && modeFor(candidate.sourceId)?.wholeMessages === true && (candidate.turn !== undefined
+      || (candidate.chat !== undefined && (candidate.place?.at.length ?? 0) >= 3));
   const messages = messagePieces(references.filter(wholeFor));
   // Each transcript's subagent request, the message its report answers.
   // A message's start, as an item's record carries another message.
-  const opening = (pieces: readonly MemoryCandidate[]) => Array.from(messageText(pieces)).slice(0, OPENING_CHARS).join('');
+  const opening = (pieces: readonly MemoryCandidate[]) => Array.from(pieces[0]?.turn?.text ?? messageText(pieces)).slice(0, OPENING_CHARS).join('');
+  const openingOf = (text: string) => Array.from(text).slice(0, OPENING_CHARS).join('');
   const requests = new Map<string, string>();
   for (const pieces of messages.values()) {
     if (pieces[0]!.chat?.unit === 'prompt') requests.set(JSON.stringify([pieces[0]!.sourceId, pieces[0]!.place!.container]), opening(pieces));
@@ -2087,6 +2105,15 @@ export async function pick(
   // is one piece of several; a commit's or a note's kind.
   const hardFactsOf = (candidate: MemoryCandidate, whole: boolean): Record<string, unknown> | undefined => {
     if (!factsFor(candidate)) return undefined;
+    // A turn of a note written as a conversation: what its reader read
+    // from the whole note, the turns either side as the exchange.
+    const turn = candidate.turn;
+    if (turn !== undefined) {
+      return { author: turn.speaker, session: turn.session, position: turn.position, pieces: turn.pieces,
+        ...(whole || turn.pieces === 1 ? {} : { piece: candidate.place?.at[2] }),
+        ...(turn.before === undefined ? {} : { replies_to: { id: turn.before.id, text: openingOf(turn.before.text) } }),
+        ...(turn.after === undefined ? {} : { answered_by: { id: turn.after.id, text: openingOf(turn.after.text) } }) };
+    }
     if (!placed(candidate)) {
       const kind = kindFor(candidate);
       return kind === 'git-history' ? { kind: 'commit' } : kind === 'markdown' ? { kind: 'note' } : undefined;
@@ -3107,6 +3134,14 @@ export async function pick(
       + JSON.stringify({ ...own, part: `${pieces.length} of ${pieces.length}`, opening: opening(pieces) }).length
       + specs.reduce((sum, spec) => sum + spec.question.length
         + (spec.levels ?? [spec.trueCriterion ?? '', spec.falseCriterion ?? '']).join('').length, 0);
+    // A turn whose whole text fits goes whole, its pieces the pick does not
+    // hold included.
+    if (first.turn !== undefined && JSON.stringify(first.turn.text).length <= limits.maxBatchChars - beside) {
+      const item = { ...first, text: first.turn.text };
+      messageOfItem.set(item, key);
+      messageItems.set(key, [item]);
+      return [item];
+    }
     // Consecutive pieces, as many as fit, measured as the request sends them.
     const ranges: MemoryCandidate[][] = [];
     for (const piece of pieces) {

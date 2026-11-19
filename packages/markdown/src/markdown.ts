@@ -92,6 +92,13 @@ export interface KnowledgeBaseOptions extends RulesOptions {
   /** The repository key notes declare for the commit-to-note link when
    *  the corpus sits inside a work tree; defaults to the toplevel. */
   readonly repository?: string;
+  /** Cut a section written as a conversation at each turn, and mark
+   *  each piece with its turn: who speaks it, its whole text, its number
+   *  in the note and the turns either side (`turn` on the part). A
+   *  section is a conversation when its paragraphs open with speakers'
+   *  names and a colon (`conversationTurns`); any other note is cut and
+   *  read as without it. Off by default. */
+  readonly turns?: boolean;
 }
 export interface MarkdownOptions extends RulesOptions {
   /** Folders, files, or glob patterns; ~/ resolves against the user's home. */
@@ -101,6 +108,13 @@ export interface MarkdownOptions extends RulesOptions {
   readonly maxQuestionText?: number;
   /** Repository key shared with git() for changed-path links. */
   readonly repository?: string;
+  /** Cut a section written as a conversation at each turn, and mark
+   *  each piece with its turn: who speaks it, its whole text, its number
+   *  in the note and the turns either side (`turn` on the part). A
+   *  section is a conversation when its paragraphs open with speakers'
+   *  names and a colon (`conversationTurns`); any other note is cut and
+   *  read as without it. Off by default. */
+  readonly turns?: boolean;
 }
 const FRONTMATTER = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*\r?\n?/;
 const SECTION_BREAK = /\n(?=## )/g;
@@ -442,6 +456,86 @@ function instructionLocation(directory: string, paths: readonly string[], root: 
 /** Cut text into parts of at most `limit` characters at line ends, so the
  *  parts joined exactly reproduce the text. A single line longer than the
  *  limit is hard-cut; every part must still be judged. */
+/** A paragraph opening with a name and a colon, as a conversation written
+ *  as a note opens each turn ("user: ...", "Ana: ..."). */
+const SPEAKER_OPENING = /(?:^|\n\n)([A-Za-z][A-Za-z0-9 ._'-]{0,31}): /g;
+
+/** Where each turn of a section written as a conversation starts, and who
+ *  speaks it. The speakers are the names that open at least two of the
+ *  section's paragraphs with a colon; in a short exchange, where no two
+ *  names do, they are the names of its last two such paragraphs when
+ *  those differ. Each paragraph a speaker opens starts a turn, which runs
+ *  to the next one. Undefined when fewer than two speakers are found: the
+ *  section is not a conversation. */
+export function conversationTurns(text: string): readonly { readonly at: number; readonly speaker: string }[] | undefined {
+  const openings = [...text.matchAll(SPEAKER_OPENING)].map((match) => ({
+    at: match.index + match[0].length - match[1]!.length - 2, speaker: match[1]! }));
+  const counts = new Map<string, number>();
+  for (const { speaker } of openings) counts.set(speaker, (counts.get(speaker) ?? 0) + 1);
+  let speakers = new Set([...counts].filter(([, count]) => count >= 2).map(([name]) => name));
+  const last = openings.at(-1)?.speaker;
+  const before = openings.at(-2)?.speaker;
+  if (speakers.size < 2 && last !== undefined && before !== undefined && last !== before) speakers = new Set([before, last]);
+  if (speakers.size < 2) return undefined;
+  return openings.filter(({ speaker }) => speakers.has(speaker));
+}
+
+/** A section's parts with `turns`: a conversation cut first at each turn,
+ *  then each turn at line ends to the budget, so no part holds two turns;
+ *  any other section as `splitParts` cuts it. The parts still join to the
+ *  whole section. */
+export function turnParts(text: string, limit: number): readonly string[] {
+  const turns = conversationTurns(text);
+  if (turns === undefined) return splitParts(text, limit);
+  const starts = [...new Set([0, ...turns.map(({ at }) => at)])];
+  return starts.flatMap((start, index) => splitParts(text.slice(start, starts[index + 1] ?? text.length), limit));
+}
+
+/** What a part knows of the turn it is a piece of, in a section written as
+ *  a conversation: the reader's `turn` on the part. */
+export type PartTurn = NonNullable<MemoryCandidate['turn']>;
+
+/** Each part's turn, by part id, for one note's parts in order: the parts
+ *  of each conversation section grouped by the turn they fall in, the
+ *  session named by the note's own id. A part
+ *  before a section's first turn, or in a section that is not a
+ *  conversation, has none. */
+export function noteTurns(parts: readonly { readonly id: string; readonly text: string; readonly contentRef: string }[]):
+  Map<string, { readonly place: NonNullable<MemoryCandidate['place']>; readonly turn: PartTurn }> {
+  const out = new Map<string, { readonly place: NonNullable<MemoryCandidate['place']>; readonly turn: PartTurn }>();
+  const sections = new Map<string, (typeof parts)[number][]>();
+  for (const part of parts) {
+    const list = sections.get(part.contentRef);
+    if (list === undefined) sections.set(part.contentRef, [part]); else list.push(part);
+  }
+  for (const [container, list] of sections) {
+    const text = list.map((part) => part.text).join('');
+    const turns = conversationTurns(text);
+    if (turns === undefined) continue;
+    // Each part's turn: the last turn starting at or before the part's start.
+    let offset = 0;
+    const members = turns.map(() => [] as (typeof parts)[number][]);
+    for (const part of list) {
+      let index = -1;
+      while (index + 1 < turns.length && turns[index + 1]!.at <= offset) index += 1;
+      if (index >= 0) members[index]!.push(part);
+      offset += part.text.length;
+    }
+    const whole = turns.map((turn, index) => text.slice(turn.at, turns[index + 1]?.at ?? text.length).trimEnd());
+    const said = (index: number) => members[index]?.[0] === undefined ? undefined : { id: members[index]![0]!.id, text: whole[index]! };
+    members.forEach((pieces, index) => pieces.forEach((part, piece) => {
+      const before = said(index - 1);
+      const after = said(index + 1);
+      out.set(part.id, {
+        place: { container, at: [index + 1, 1, piece + 1] },
+        turn: { speaker: turns[index]!.speaker, session: part.id.replace(/#.*$/, ''), position: index + 1, pieces: pieces.length, text: whole[index]!,
+          ...(before === undefined ? {} : { before }), ...(after === undefined ? {} : { after }) },
+      });
+    }));
+  }
+  return out;
+}
+
 export function splitParts(text: string, limit: number): readonly string[] {
   const parts: string[] = [];
   let start = 0;
@@ -908,6 +1002,7 @@ function* noteParts(
   legacy: 'knowledge' | 'rules' | undefined,
   rule: boolean,
   partBudget: number,
+  turns = false,
 ): Generator<EnumeratedPart> {
   const items: readonly (Section | RuleSection)[] = rule ? ruleSections(note.body, note.bodyOffset) : sections(note.body, note.bodyOffset);
   const fileId = legacy === undefined ? file : name;
@@ -918,7 +1013,7 @@ function* noteParts(
   const label = page.length === 0 ? name : `${name} (${page.join('; ')})`;
   const log = legacy === 'knowledge' && basename(file) === 'log.md';
   for (const [sectionIndex, section] of items.entries()) {
-    const parts = legacy === 'rules' ? [section.text] : splitParts(section.text, partBudget);
+    const parts = legacy === 'rules' ? [section.text] : turns ? turnParts(section.text, partBudget) : splitParts(section.text, partBudget);
     const key = 'key' in section ? (section as RuleSection).key : String(sectionIndex + 1);
     const sectionId = key === '' ? fileId : `${fileId}#${key}`;
     const day = log ? LOG_HEADING.exec(section.heading ?? '')?.[1] : undefined;
@@ -983,6 +1078,7 @@ interface PartRow {
 /** A note read from its text: its parts are cut only when a pass asks. */
 function textEntry(
   text: string, file: string, name: string, legacy: 'knowledge' | 'rules' | undefined, rule: boolean, partBudget: number,
+  turns = false,
 ): NoteEntry {
   const note = parseNote(text);
   return {
@@ -990,7 +1086,7 @@ function textEntry(
     frontmatter: note.frontmatter,
     links: () => [...note.body.matchAll(LINK)].map((match) => [match[1], match[2]] as const),
     replaced: () => REPLACED_FRONTMATTER.test(note.frontmatter) || REPLACED_LINE.test(note.body),
-    parts: () => noteParts(note, file, name, legacy, rule, partBudget),
+    parts: () => noteParts(note, file, name, legacy, rule, partBudget, turns),
   };
 }
 
@@ -1290,6 +1386,7 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
     throw new TypeError('kind must be knowledge, docs, rules or instructions.');
   }
   const maxQuestionText = options.maxQuestionText ?? Number.POSITIVE_INFINITY;
+  const turns = options.turns === true && legacy !== 'rules';
   if (options.maxQuestionText !== undefined && (!Number.isSafeInteger(maxQuestionText) || maxQuestionText < 1)) {
     throw new TypeError('maxQuestionText must be a positive safe integer.');
   }
@@ -1333,7 +1430,7 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
       const partBudget = Math.min(maxQuestionText, request.maxQuestionText ?? maxQuestionText);
       // The stored index, for every read that is not pinned to a revision.
       const indexFolder = request.revision === undefined ? indexDirectory(options.index) : undefined;
-      const indexKey = { kind: options.kind, legacy, budget: partBudget, exclude: exclude ?? [] };
+      const indexKey = { kind: options.kind, legacy, budget: partBudget, exclude: exclude ?? [], ...(turns ? { turns } : {}) };
       const indexPath = indexFolder === undefined ? undefined : indexFilePath(indexFolder, id, indexKey);
       const requestExclude = JSON.stringify(request.exclude ?? []);
       const updates = new Map<string, NotesUpdate>();
@@ -1372,7 +1469,7 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
           return;
         }
         for await (const { file, text } of fileTexts(state, files, context, request.signal)) {
-          yield { file, entry: textEntry(text, file, nameOf(state, file), legacy, role === 'rule', partBudget) };
+          yield { file, entry: textEntry(text, file, nameOf(state, file), legacy, role === 'rule', partBudget, turns) };
         }
       };
       const seen = new Set<string>();
@@ -1478,7 +1575,7 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
           // part budget names.
           updates.set(root, await once(context, JSON.stringify(['notes', indexPath, root, requestExclude]),
             () => syncNotes(indexPath, indexFolder!, root, files, requestExclude === '[]',
-              (file, text) => textEntry(text, file, nameOf(state, file), legacy, role === 'rule', partBudget),
+              (file, text) => textEntry(text, file, nameOf(state, file), legacy, role === 'rule', partBudget, turns),
               context, request.signal)));
         }
         if (updates.size > 0 && context.removed !== undefined) {
@@ -1930,12 +2027,23 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
       // high-scoring part can never spend a newer part's place.
       const dateOf = (index: number) => parts[index]!.date ?? metas[parts[index]!.file]!.date;
       const inside = (index: number) => keepDate(dateOf(index));
-      const emit = (meta: FileMeta, part: EnumeratedPart, signals: Record<string, number>): MemoryCandidate => ({
+      // With `turns`, each part of a note's conversation knows its turn,
+      // worked out once a note from all of its parts in order.
+      const noteTurnsHeld = new Map<FileMeta, ReturnType<typeof noteTurns>>();
+      const turnsOf = (meta: FileMeta, all: () => readonly EnumeratedPart[]) => {
+        if (!turns) return undefined;
+        let held = noteTurnsHeld.get(meta);
+        if (held === undefined) noteTurnsHeld.set(meta, held = noteTurns(all()));
+        return held;
+      };
+      const emit = (meta: FileMeta, part: EnumeratedPart, signals: Record<string, number>,
+        turned?: ReturnType<typeof noteTurns>): MemoryCandidate => ({
         sourceId: id, role, ...(legacy === undefined ? { kind: options.kind } : {}),
         id: part.id,
         title: part.title,
         text: part.text,
         contentRef: part.contentRef,
+        ...turned?.get(part.id),
         ...((part.date ?? meta.date) === undefined ? {} : { date: part.date ?? meta.date }),
         ...(meta.repoPath === undefined ? {} : { path: meta.repoPath, repository: meta.repository }),
         ...(options.kind === 'instructions' ? { directory: meta.directory } : {}),
@@ -2082,13 +2190,14 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
           for await (const { entry } of walk(group, needed)) {
             const meta = needed[cursor++]!;
             let local = 0;
-            for (const part of entry.parts()) {
+            const all = [...entry.parts()];
+            for (const part of all) {
               const index = meta.partStart + local;
               local += 1;
               if (!wanted.has(index)) continue;
               const similarity = sim[index]!;
               byIndex.set(index, {
-                ...emit(meta, part, { similarity }),
+                ...emit(meta, part, { similarity }, turnsOf(meta, () => all)),
                 laneScore: similarity,
                 ...(mark && !passes(index) ? { pastLaneCut: true as const } : {}),
               });
@@ -2133,17 +2242,21 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
           if (meta.scopeSkipped) continue;
           const part = corpus!.refs[index]!;
           const count = phraseCount(part.text, request.task) + phraseCount(part.title, request.task);
-          if (count > 0) matched.push({ candidate: emit(meta, part, { phrase: count }), count });
+          if (count > 0) {
+            matched.push({ candidate: emit(meta, part, { phrase: count },
+              turnsOf(meta, () => corpus!.refs.slice(meta.partStart, meta.partStart + meta.partCount))), count });
+          }
         }
         for (const group of corpus === undefined ? groups : []) {
           let cursor = 0;
           for await (const { entry } of walk(group, group.metas)) {
             const meta = group.metas[cursor++]!;
             if (meta.scopeSkipped) continue;
-            for (const part of entry.parts()) {
+            const all = [...entry.parts()];
+            for (const part of all) {
               const count = phraseCount(part.text, request.task) + phraseCount(part.title, request.task);
               if (count === 0) continue;
-              matched.push({ candidate: emit(meta, part, { phrase: count }), count });
+              matched.push({ candidate: emit(meta, part, { phrase: count }, turnsOf(meta, () => all)), count });
             }
           }
         }
@@ -2363,7 +2476,8 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
         for await (const { entry } of walk(group, needed)) {
           const meta = needed[cursor++]!;
           let local = 0;
-          for (const part of entry.parts()) {
+          const all = [...entry.parts()];
+          for (const part of all) {
             const index = meta.partStart + local;
             local += 1;
             if (!wanted.has(index)) continue;
@@ -2380,7 +2494,7 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
             if (scores[index] !== 0) signals['bm25'] = scores[index]!;
             if (kindLane) signals['phrase'] = descriptor.phrased!;
             const candidate = {
-              ...emit(meta, part, signals),
+              ...emit(meta, part, signals, turnsOf(meta, () => all)),
               ...(mark && !passes(index) ? { pastLaneCut: true as const } : {}),
             };
             byIndex.set(index, kindLane ? { ...candidate, laneScore: sums[index]! } : candidate);

@@ -75,10 +75,12 @@ describe('a Markdown entry\'s question set and levers', () => {
     expect(NOTE_MODES.answers.read).toBe(NOTE_MODES.default.read);
   });
 
-  it('refuses the chat question sets and the levers that read a conversation\'s messages', () => {
+  it('refuses the chat question sets, and takes whole messages and hard facts for notes written as a conversation', () => {
     expect(() => parseSources({ sources: [{ type: 'markdown', path: '/notes', questions: 'judgments' }] }))
       .toThrow('Unknown questions "judgments"; allowed names are default, answers.');
-    expect(() => parseSources({ sources: [{ type: 'markdown', path: '/notes', levers: { wholeMessages: true } }] }))
-      .toThrow('levers must be an object of booleans named roles, choicePerFact;');
+    expect(parseSources({ sources: [{ type: 'markdown', path: '/notes', levers: { wholeMessages: true, hardFacts: true } }] })
+      .sources[0].levers).toEqual({ wholeMessages: true, hardFacts: true });
+    expect(() => parseSources({ sources: [{ type: 'markdown', path: '/notes', levers: { readEverything: true } }] }))
+      .toThrow('levers must be an object of booleans named wholeMessages, hardFacts, roles, choicePerFact;');
   });
 });
