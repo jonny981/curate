@@ -1032,12 +1032,33 @@ score. On the short lists of two tasks of one person's coding-agent
 history, the "answers" probabilities summed to 16.4 and 20.1 against 15
 and 12 parts that state or restate the answer, where the single narrow
 question summed to 23.3 and 47.5: a calibrated probability, which a
-keep bar can rest on, and the bar is measured per mode: for LongMemEval
-histories read as Markdown notes, rated one part a request, 0.07 is the
-highest "answers" probability that keeps every labelled answer turn of
-24 questions, keeping a median of 2 parts and about 300 tokens a
-question (the skill's Markdown "answers" set keeps at it). No weight is
-fitted; a set that weighs the fact answers in names its own:
+keep bar can rest on. The bar is measured per mode, on labelled answers,
+and each value is a candidate until answers marked right confirm it:
+for LongMemEval histories read as Markdown notes, rated one part a
+request, 0.07 is the highest "answers" probability that keeps every
+labelled answer turn of 24 questions, keeping a median of 2 parts and
+about 300 tokens a question (the skill's Markdown "answers" set keeps at
+it).
+
+A set with `combine: 'highest'` scores each part by the highest of its
+answers: the "answers" probability and each needed fact's, so a part
+that states one fact the answer needs counts as much as one that states
+the whole answer. On 22 tasks of one person's coding-agent history,
+each whole message judged alone with its hard facts, in the wording
+"Does this message state the answer to the task?" and "Does this
+message state this: {fact}?", the highest bar that lost no labelled
+answer was 0.59 on the 12 one-decision tasks (a median of 27.5 messages
+and 5,738 tokens a task) and 0.04 on the 9 everything-said tasks (186
+messages, 43,399 tokens), against 0.24 and 0.01 for the
+"answers" probability alone. Each task given the bar the others of its
+kind set loses one task in each kind: B1, whose labelled report rated
+0.59, and T0, whose lowest labelled answer rated 0.04. The skill's chat
+"answers" set keeps at these, a bar for each kind of task, asking in
+this package's wording above, not the measured one; the bars await
+answers marked right.
+
+No weight is fitted; a set that weighs the fact answers in names its
+own:
 
 ```ts
 const weighed: PickCascade = { bias: 0, questions: [{ ...ANSWER_QUESTION, weight: 1 }],
@@ -1956,7 +1977,7 @@ Each source carries six settings, tuned for its kind of history:
 - **`labelBar`:** the label bar, from 0 to 1, for which kinds the task needs and which of this source's parts join the label lane; absent means 0.5.
 - **`names`:** open one exact-phrase lane per name the task names ([names in the task](#names-in-the-task)). The reason is recall.
 - **`ruleBar`:** keep a rule scored at or above this; absent means 0. Only sources whose parts are rules use it.
-- **`mode`:** how the source's parts are judged and read: `name`; `questions`, the decision questions asked of each reference part (absent: the built-in question for the part's kind); `bar`, keep a reference part scored at or above this (absent: the set's fitted bar, or 0.0146); and `read`, `rankedRead` down the fused order or a `conversationRead()` ([the chat read](#the-chat-read)), which takes `walksOn`, `opens` and `stops` rules in place of the measured ones. Absent: the built-in question, 0.0146 and the ranked read. Off by default: `wholeMessages`, judge each ranked piece's whole message ([whole messages](#whole-messages)); `hardFacts`, fields code knows in each item's record ([hard facts](#hard-facts)); `itemsPerRequest`, how many items one decision request holds ([items per request](#items-per-request)); `roles`, what each kept part is doing ([what each kept part is doing](#what-each-kept-part-is-doing)); `choicePerFact`, a Choice per needed fact over the kept parts, whose picks lead the text ([a Choice per needed fact](#a-choice-per-needed-fact)).
+- **`mode`:** how the source's parts are judged and read: `name`; `questions`, the decision questions asked of each reference part (absent: the built-in question for the part's kind); `bar`, keep a reference part scored at or above this (absent: the set's fitted bar, or 0.0146), or one bar for each kind of task, `{ 'one decision': x, 'everything said': y }`, read for the pick's `wanted` and the lower of the two when it gives none; and `read`, `rankedRead` down the fused order or a `conversationRead()` ([the chat read](#the-chat-read)), which takes `walksOn`, `opens` and `stops` rules in place of the measured ones. Absent: the built-in question, 0.0146 and the ranked read. Off by default: `wholeMessages`, judge each ranked piece's whole message ([whole messages](#whole-messages)); `hardFacts`, fields code knows in each item's record ([hard facts](#hard-facts)); `itemsPerRequest`, how many items one decision request holds ([items per request](#items-per-request)); `roles`, what each kept part is doing ([what each kept part is doing](#what-each-kept-part-is-doing)); `choicePerFact`, a Choice per needed fact over the kept parts, whose picks lead the text ([a Choice per needed fact](#a-choice-per-needed-fact)).
 - **`decay`:** rank older notes lower by their age at the task date, as `{ halfLife: '365 days' }`; absent or `false` is off, as in every preset. Markdown sources only; see the [Markdown reader](https://github.com/jonny981/curate/blob/main/packages/markdown/README.md#decay).
 
 A source can also carry the look-back and path settings its reader ran

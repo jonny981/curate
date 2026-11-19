@@ -93,3 +93,40 @@ describe('the narrow question in two, in the answers wording', () => {
       .rejects.toThrow('a question set\'s facts question needs');
   });
 });
+
+describe('the highest of a set\'s answers, and a bar per kind of task', () => {
+  const highest: PickCascade = { ...ANSWER_CASCADE, combine: 'highest' };
+  const probabilityOf = (result: Awaited<ReturnType<typeof pick>>, id: string) => {
+    const entry = result.record.candidates.find((candidate) => candidate.id === id)!;
+    return 'probability' in entry ? entry.probability : undefined;
+  };
+
+  it('scores a part by its highest answer, a fact it states counting as much as the answer', async () => {
+    const { decide } = recording();
+    const result = await pick([part], { task, decide, needed, modesBySource: { notes: mode(highest) } });
+    // Answers 0.8, fact1 0.9, fact2 0.2: the highest is the first fact's.
+    expect(probabilityOf(result, 'n1')).toBeCloseTo(0.9, 9);
+  });
+
+  it('keeps at the bar for the pick\'s kind of task, and at the lower bar when it names none', async () => {
+    const parts = [0.3, 0.7].map((p, index): MemoryCandidate => ({ ...part, id: `n${index}`, title: `n${index}`, text: `Part ${index}.` }));
+    const decide: PickDecide = async (batch) => Object.fromEntries(batch.questions.map((question) => [question.key,
+      { status: 'answered', probability: question.questionKey === 'answers' ? (question.id === 'n0' ? 0.3 : 0.7) : 0.01 }]));
+    const byKind = { ...mode(highest), bar: { 'one decision': 0.59, 'everything said': 0.04 } };
+    const kept = async (wanted?: 'one decision' | 'everything said') => (await pick(parts, { task, decide, needed,
+      ...(wanted === undefined ? {} : { wanted }), modesBySource: { notes: byKind } })).selected.map((candidate) => candidate.id);
+    expect(await kept('one decision')).toEqual(['n1']);
+    expect(await kept('everything said')).toEqual(expect.arrayContaining(['n0', 'n1']));
+    expect(await kept()).toEqual(expect.arrayContaining(['n0', 'n1']));
+  });
+
+  it('refuses a bar per kind of task that misses a kind or leaves 0 to 1, and a combine it does not know', async () => {
+    const { decide } = recording();
+    await expect(pick([part], { task, decide, modesBySource: { notes: { ...mode(), bar: { 'one decision': 0.59 } as never } } }))
+      .rejects.toThrow("bar must be a number between 0 and 1, or one for each kind of task: { 'one decision', 'everything said' }.");
+    await expect(pick([part], { task, decide, modesBySource: { notes: { ...mode(), bar: { 'one decision': 2, 'everything said': 0.04 } } } }))
+      .rejects.toThrow('bar must be a number between 0 and 1');
+    await expect(pick([part], { task, decide, modesBySource: { notes: mode({ ...ANSWER_CASCADE, combine: 'lowest' as never }) } }))
+      .rejects.toThrow("combine must be 'highest'");
+  });
+});

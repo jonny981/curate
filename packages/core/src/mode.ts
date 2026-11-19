@@ -13,8 +13,11 @@ export interface Mode {
    *  Absent: the built-in question for each part's kind. */
   readonly questions?: PickCascade;
   /** A reference part is kept when scored at or above this. Absent:
-   *  the question set's fitted bar, or else 0.0146. */
-  readonly bar?: number;
+   *  the question set's fitted bar, or else 0.0146. One bar per kind of
+   *  task (`{ 'one decision': 0.59, 'everything said': 0.04 }`) keeps at
+   *  the bar for the pick's `wanted`, and at the lower of the two when
+   *  the pick gives none. */
+  readonly bar?: number | { readonly 'one decision': number; readonly 'everything said': number };
   /** The decision state of a request of this mode's parts lists the
    *  facts the answer needs, when the call gives them (`needed`). */
   readonly needed?: boolean;

@@ -49,7 +49,7 @@ const SOURCE_KIND_KEYS: readonly CandidateSourceKind[] = ['chat', 'git-history',
 /** The fixed keys of `ranking`, keyed by candidate kind. */
 const MEMORY_KIND_KEYS: readonly MemoryKind[] = ['knowledge', 'docs', 'rules', 'instructions'];
 const CASCADE_KEYS: readonly (keyof PickCascade)[] = [
-  'bias', 'questions', 'typed', 'first', 'band', 'firstOnly', 'written', 'named', 'facts', 'model', 'anonymousItems',
+  'bias', 'questions', 'typed', 'first', 'band', 'firstOnly', 'written', 'named', 'facts', 'model', 'anonymousItems', 'combine',
 ];
 const TAG_SET_KEYS: readonly (keyof PickTagSet)[] = ['key', 'questions'];
 const CRITERION_KEYS: readonly (keyof PickCriterion)[] = ['key', 'instructions', 'true', 'false'];
@@ -121,6 +121,9 @@ export function checkCascade(set: PickCascade | undefined): void {
   if (set === undefined) return;
   if (set.anonymousItems !== undefined && typeof set.anonymousItems !== 'boolean') {
     throw new TypeError('a question set\'s anonymousItems must be a boolean.');
+  }
+  if (set.combine !== undefined && (set.combine !== 'highest' || set.model !== undefined)) {
+    throw new TypeError('a question set\'s combine must be \'highest\', and a model-scored set takes none.');
   }
   const keys = set.questions.map((q) => q.key);
   const levelled = (q: PickCascade['questions'][number]): q is PickScoreCriterion & { readonly weight?: number } =>
@@ -379,8 +382,13 @@ export function checkMode(mode: Mode, at: string): void {
   }
   if (typeof mode.name !== 'string' || !mode.name.trim()) throw new TypeError(`${at}.name must be a nonempty string.`);
   checkCascadeKeys(mode.questions, `${at}.questions`);
-  if (mode.bar !== undefined && (typeof mode.bar !== 'number' || !Number.isFinite(mode.bar) || mode.bar < 0 || mode.bar > 1)) {
-    throw new TypeError(`${at}.bar must be a number between 0 and 1.`);
+  const between = (value: unknown) => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1;
+  if (mode.bar !== undefined && !between(mode.bar)) {
+    if (typeof mode.bar !== 'object' || mode.bar === null || Array.isArray(mode.bar)
+      || !between(mode.bar['one decision']) || !between(mode.bar['everything said'])) {
+      throw new TypeError(`${at}.bar must be a number between 0 and 1, or one for each kind of task: { 'one decision', 'everything said' }.`);
+    }
+    checkKeys(mode.bar, ['one decision', 'everything said'], `${at}.bar`);
   }
   if (typeof mode.read !== 'function') throw new TypeError(`${at}.read must be a read, such as rankedRead or conversationRead().`);
 }

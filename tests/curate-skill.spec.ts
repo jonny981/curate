@@ -1293,8 +1293,11 @@ describe('a run through core decision calls', () => {
       return new Response(JSON.stringify({ usage: null,
         answers: Object.fromEntries(Object.keys(body.questions).map((key) => [key, { noul: 0.8 }])) }));
     }));
-    const { call } = subscriptionReply({ ...searches(), needed: ['Whether the cache stays layered'] });
-    await run(['--sources', sourcesFile, 'Is the orchard cache layered?'], call);
+    const { call, calls } = subscriptionReply({ ...searches(), needed: ['Whether the cache stays layered'], wanted: 'one decision' });
+    const { record } = await run(['--sources', sourcesFile, 'Is the orchard cache layered?'], call);
+    // Its bar is the one for the kind of task the search-line call names.
+    expect(calls[0]!.prompt).toContain('"wanted"');
+    expect(Object.values(record.pick.levers.sources as Record<string, { bar: number }>).map((source) => source.bar)).toContain(0.59);
     expect(bodies.length).toBeGreaterThan(0);
     for (const body of bodies) {
       expect(body.state).toMatchObject({ needed: ['Whether the cache stays layered'] });

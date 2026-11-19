@@ -539,6 +539,12 @@ export interface PickCascade {
   /** Render each item as a date and its text only: the model never
    *  sees the part's id, title or other identifying fields. */
   readonly anonymousItems?: boolean;
+  /** How the answers make the score. Unset, the weighted logits above.
+   *  `'highest'`: the highest probability among the answers to the
+   *  set's questions and its needed-fact question, so a part is kept
+   *  when it states the answer or any one fact the answer needs; the
+   *  weights are not read. */
+  readonly combine?: 'highest';
 }
 
 /** What one setting did in one pick, for one source. */
@@ -1856,8 +1862,11 @@ export async function pick(
   const modes: Readonly<Record<string, Mode>> = options.modesBySource ?? {};
   const questionsBySource: Readonly<Record<string, PickCascade>> = Object.assign(Object.create(null), Object.fromEntries(
     Object.entries(modes).flatMap(([id, mode]) => mode.questions === undefined ? [] : [[id, mode.questions]])));
+  // A bar per kind of task is read for the pick's `wanted`, and the
+  // lower of the two when it gives none.
   const barBySource: Readonly<Record<string, number>> = Object.fromEntries(
-    Object.entries(modes).flatMap(([id, mode]) => mode.bar === undefined ? [] : [[id, mode.bar]]));
+    Object.entries(modes).flatMap(([id, mode]) => mode.bar === undefined ? [] : [[id, typeof mode.bar === 'number' ? mode.bar
+      : options.wanted !== undefined ? mode.bar[options.wanted] : Math.min(mode.bar['one decision'], mode.bar['everything said'])]]));
   for (const set of Object.values(questionsBySource)) checkCascade(set);
   const modeFor = (sourceId: string) => Object.hasOwn(modes, sourceId) ? modes[sourceId] : undefined;
   // The facts the answer needs, for the requests of parts whose mode lists them.
@@ -3248,6 +3257,13 @@ export async function pick(
                   : undefined;
               }
               answer = { status: 'answered', probability: modelScore(cascade.model, features),
+                ...(probabilities.every((a) => a === undefined || (a.status === 'answered' && a.reused === true))
+                  ? { reused: true } : {}) };
+            } else if (cascade.combine === 'highest') {
+              // The highest of the set's answers and its fact answers.
+              const all = [...probabilities.slice(0, cascade.questions.length), ...factAsks.map((q) => got.get(q.key))]
+                .flatMap((a) => a?.status === 'answered' && 'probability' in a ? [a.probability] : []);
+              answer = { status: 'answered', probability: Math.max(0, ...all),
                 ...(probabilities.every((a) => a === undefined || (a.status === 'answered' && a.reused === true))
                   ? { reused: true } : {}) };
             } else {

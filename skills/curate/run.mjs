@@ -118,9 +118,16 @@ const engineFound = () => (createRequire(import.meta.url).resolve.paths('node-ll
 // asks the only measured model-scored set, read down the ranked list,
 // and it fails closed inside chat() while its weights file is unfitted.
 export const CHAT_MODES = { default: agentTranscripts,
-  // The narrow question in two: kept by the "answers" probability, read
-  // as the default mode reads.
-  answers: { ...agentTranscripts, name: 'answers', questions: ANSWER_CASCADE },
+  // The narrow question in two, read as the default mode reads, each
+  // message kept by the highest of its answers (it states the answer, or
+  // one fact the answer needs) at a bar for the kind of task. The bars
+  // are candidates measured on labelled answers (Climb 25: 22 tasks of
+  // one person's coding-agent history, each whole message judged alone
+  // with its hard facts): the highest that loses none, 0.59 on
+  // one-decision tasks and 0.04 on everything-said tasks. Each still
+  // awaits answers marked right.
+  answers: { ...agentTranscripts, name: 'answers', questions: { ...ANSWER_CASCADE, combine: 'highest' },
+    bar: { 'one decision': 0.59, 'everything said': 0.04 } },
   judgments: { name: 'judgments', questions: JUDGMENT_CHAT_CASCADE, read: rankedRead } };
 // The decision levers a chat entry can switch on for its mode, each off by
 // default (core's Mode documents them).
@@ -139,10 +146,12 @@ const chatMode = (entry) => {
 };
 // The question sets a Markdown entry's notes can be kept by: the notes
 // mode's own, or the narrow question in two with the facts the answer
-// needs in each request's state. The latter's bar is measured, not the
-// notes mode's 0.0146, which was set for another score: on 24 LongMemEval
-// questions with labelled answer turns, rated one part a request, 0.07 is
-// the highest "answers" probability that keeps every labelled turn.
+// needs in each request's state. The latter's bar is a candidate
+// measured on labelled answers, not the notes mode's 0.0146, which was
+// set for another score: on 24 LongMemEval questions with labelled answer
+// turns, rated one part a request, 0.07 is the highest "answers"
+// probability that keeps every labelled turn. It awaits answers marked
+// right.
 export const NOTE_MODES = { default: notes, answers: { ...notes, name: 'answers', questions: ANSWER_CASCADE, needed: true, bar: 0.07 } };
 // The levers that act on notes. Whole messages and hard facts act on a
 // note written as a conversation: the reader then cuts it at each turn,
@@ -1298,8 +1307,10 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
     // same call as the search lines.
     const askNeeded = callSources.some((entry) => modeNeeds(sourceKind(entry.type) === 'chat' ? chatMode(entry)
       : entry.type === 'markdown' ? noteMode(entry) : undefined));
-    // A mode that writes hard facts gets how many answers are wanted from it too.
-    const askWanted = callSources.some((entry) => sourceKind(entry.type) === 'chat' && chatMode(entry).hardFacts === true);
+    // A mode that writes hard facts, or keeps at a bar per kind of task,
+    // gets how many answers are wanted from it too.
+    const askWanted = callSources.some((entry) => sourceKind(entry.type) === 'chat'
+      && (chatMode(entry).hardFacts === true || typeof chatMode(entry).bar === 'object'));
     const searchPrompt = searchLinesPrompt(options.task, searchKinds, scoped ? today : undefined, askNeeded, askWanted);
     const searchStart = Date.now();
     // One entry's source. A Codex entry's sessions are copied to `snapshot`.

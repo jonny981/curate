@@ -61,7 +61,8 @@ describe('values on a chat source\'s levers, and the narrow question in two as i
 
   it('name the two-question set "answers", read as the default mode reads', () => {
     expect(parseSources({ sources: [{ type: 'claude-code', questions: 'answers' }] }).sources[0].questions).toBe('answers');
-    expect(CHAT_MODES.answers).toMatchObject({ name: 'answers', questions: ANSWER_CASCADE, needed: true });
+    expect(CHAT_MODES.answers).toMatchObject({ name: 'answers', questions: { ...ANSWER_CASCADE, combine: 'highest' }, needed: true,
+      bar: { 'one decision': 0.59, 'everything said': 0.04 } });
     expect(CHAT_MODES.answers.read).toBe(CHAT_MODES.default.read);
   });
 });
