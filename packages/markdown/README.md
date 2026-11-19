@@ -29,6 +29,16 @@ with no commit yet or with uncommitted changes, and an undeclared note
 outside a repository, carries its file's modified time with meaning
 `modified`.
 
+### The request's form
+
+`notes`, the mode of `knowledgeBase()`, `markdown()` and `rules()`,
+sends its decision requests in plain text (`request: 'text'`): the task,
+then each part's id, date, title and text. Its 0.0146 bar was measured
+in that form; the JSON state rates the same parts lower. A lever that
+needs the JSON state's fields (needed facts, hard facts, whole messages,
+one part a request, a second stage) sends the JSON state. See core's
+"The request's form".
+
 ### Notes written as a conversation
 
 Off by default. With `turns: true`, a section written as a conversation

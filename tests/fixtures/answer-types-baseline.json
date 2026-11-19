@@ -115,7 +115,7 @@
         "markdown#4",
         "markdown#20"
       ],
-      "sha256": "389e4b1e507d3e9f0e5d51d7a046b0190b375cded2d04332ee958c157740fdf1"
+      "sha256": "4a8dedbbec7b0abd4b2f49143b4c0dde4069efb6e90f7e8329dbb07f53da1a60"
     },
     "defaults all": {
       "selected": [
@@ -222,7 +222,7 @@
         "git#3",
         "chat#19"
       ],
-      "sha256": "25b27e60f85a33cda388bb1d1b7b9d441a3cefbefcf73ddf2840e4377d70de0c"
+      "sha256": "9ba89beb79ed91b546451f50641584a9fdfff4e6a787514c7cff1e897b54cf53"
     },
     "chat labels": {
       "selected": [
@@ -379,7 +379,7 @@
         "git#3",
         "chat#19"
       ],
-      "sha256": "2696b6c25908eb967a5091387e990abb663c54cb890cfa3b80546e6823daf15d"
+      "sha256": "d3d41589d9ec97fd578747faa0498def0cac6b14fdbf86dae3f6a65ac784e101"
     }
   }
 }

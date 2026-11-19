@@ -84,6 +84,8 @@ export interface SourceSettings {
   readonly roles?: true;
   /** Present when its mode sets how many items one decision request holds. */
   readonly itemsPerRequest?: number;
+  /** Present when its mode asks in the plain-text form. */
+  readonly request?: 'text';
   /** The mode's second stage, when it has one: its questions, the bar it
    *  kept at for this pick, and its own settings. */
   readonly keep?: {

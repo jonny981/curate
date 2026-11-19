@@ -255,6 +255,44 @@ function itemRecord(question: PickItem) {
     ...(question.author === undefined ? {} : { author: question.author }), ...question.facts };
 }
 
+/** Jev's request body for a batch in the plain-text form
+ *  (`PickBatch.form: 'text'`), byte for byte the form main sends: the
+ *  state is the batch's task, then each distinct item once, `Item N: `
+ *  and its id, its date in brackets, its title and its text, apart by a
+ *  blank line; each question's instructions are its wording, a blank
+ *  line, then `Item N`. */
+export function jevTextRequest(batch: PickBatch, model = 'jev-latest') {
+  const items = new Map<string, PickQuestion>();
+  for (const question of batch.questions) {
+    const key = `${question.sourceId}\n${question.id}`;
+    if (!items.has(key)) items.set(key, question);
+  }
+  const numbers = new Map([...items.keys()].map((key, index) => [key, index + 1]));
+  const number = (question: PickQuestion) => numbers.get(`${question.sourceId}\n${question.id}`);
+  const state = [batch.task, ...[...items.values()].map((question) =>
+    `Item ${number(question)}: ${itemState(question)}`)].join('\n\n');
+  return {
+    model,
+    state,
+    questions: Object.fromEntries(batch.questions.map((question, index) => [`q${index}`,
+      question.levels === undefined
+        ? {
+          type: 'noul',
+          instructions: `${question.question}\n\nItem ${number(question)}`,
+          criteria: { true: question.trueCriterion, false: question.falseCriterion },
+        }
+        : {
+          type: 'score',
+          instructions: `${question.question}\n\nItem ${number(question)}`,
+          criteria: [...question.levels],
+        }])),
+  };
+}
+
+/** The request body a batch is sent as: the plain-text form when the
+ *  batch asks for it, else the JSON state. */
+const bodyOf = (batch: PickBatch, model: string) => batch.form === 'text' ? jevTextRequest(batch, model) : jevRequest(batch, model);
+
 /** Jev's request body for a batch. The state is a JSON object: the
  *  batch's task, the facts the answer needs, the person and how many
  *  answers are wanted when the batch carries them, and each distinct
@@ -369,14 +407,16 @@ export function jevListRequest(request: PickListRequest, model = 'jev-latest') {
 const JEV_STATE_CHARS = 32_000 * 3;
 const JEV_REQUEST_CHARS = 64_000 * 3;
 
-function fitsJev(body: ReturnType<typeof jevRequest>, maxChars = JEV_REQUEST_CHARS): boolean {
-  const longest = Math.max(0, ...Object.values(body.questions).map((question) =>
-    JSON.stringify(question.instructions).length + (question.type === 'choice'
+function fitsJev(body: ReturnType<typeof jevRequest> | ReturnType<typeof jevTextRequest>, maxChars = JEV_REQUEST_CHARS): boolean {
+  // Text is measured as text, as the plain-text form always was; a JSON value as it is written.
+  const measured = (value: unknown) => typeof value === 'string' ? value.length : JSON.stringify(value).length;
+  const longest = Math.max(0, ...Object.values(body.questions).map((question: { type: string; instructions: unknown; criteria: unknown }) =>
+    measured(question.instructions) + (question.type === 'choice'
       ? JSON.stringify(question.criteria).length
       : Array.isArray(question.criteria)
         ? question.criteria.join('').length
-        : (question.criteria.true ?? '').length + (question.criteria.false ?? '').length)));
-  return JSON.stringify(body.state).length + longest <= JEV_STATE_CHARS && JSON.stringify(body).length <= maxChars;
+        : ((question.criteria as { true?: string }).true ?? '').length + ((question.criteria as { false?: string }).false ?? '').length)));
+  return measured(body.state) + longest <= JEV_STATE_CHARS && JSON.stringify(body).length <= maxChars;
 }
 
 /** The batch split into requests inside Jev's limits. Whole items join a
@@ -396,7 +436,7 @@ function jevBatches(batch: PickBatch, model: string, maxChars = JEV_REQUEST_CHAR
   let questions: PickQuestion[] = [];
   for (const own of items.values()) {
     const next = { ...batch, questions: [...questions, ...own] };
-    if (questions.length > 0 && !fitsJev(jevRequest(next, model), maxChars)) {
+    if (questions.length > 0 && !fitsJev(bodyOf(next, model), maxChars)) {
       batches.push({ ...batch, questions });
       questions = own;
     } else questions = next.questions;
@@ -562,7 +602,7 @@ export function jev({ apiKey, model = 'jev-latest', url = JEV_URL, onCall,
     }
   };
   const send = async (part: PickBatch, signal: AbortSignal): Promise<[string, PickAnswer][]> => {
-    const { reply, raw, call, domain } = await exchange(JSON.stringify(jevRequest(part, model)), part.questions.length, signal, part.stage);
+    const { reply, raw, call, domain } = await exchange(JSON.stringify(bodyOf(part, model)), part.questions.length, signal, part.stage);
     try {
       if (!reply.ok) return await fail(part, signal, call, reply.text, domain);
       accepted = Math.max(accepted, call.size);

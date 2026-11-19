@@ -1255,6 +1255,37 @@ decisions come to about 5.3 cents a task at the median (6.3 at the
 mean), over a 5-cent target, and the second stage adds about a second
 to the call.
 
+### The request's form
+
+A request goes to the decision model in one of two forms. The JSON
+state (`jevRequest`, the default) holds the task, the needed facts, the
+person, the kind of task, which messages count, and each item as a
+record with the fields code knows. The plain-text form
+(`jevTextRequest`) is the task, then each item as `Item N: <id> (<date
+meaning> <date>)`, its title, a blank line and its text, the items
+apart by a blank line; each question's instructions are its wording, a
+blank line and `Item N`. A mode with `request: 'text'` asks in plain
+text whenever its request carries nothing only the JSON state holds: a
+mode with any lever on (whole messages, hard facts, items per request,
+roles, a Choice, a second stage), needed facts, the person or the kind
+of task sends the JSON state. `notes`, the mode of the Markdown
+readers, asks in plain text; agent transcripts ask in the JSON state,
+where their measured gain was made. The plain-text form is the form
+`main` sends, byte for byte: all 1,384 decision requests of a
+149-question LongMemEval run of `main`, turned back into their batches
+and sent through `jev()` in this form, came out identical.
+
+**A mode's bar is measured for the form it uses.** A change to what the
+decision model is shown moves its scale. On the same 149 LongMemEval
+questions, search lines and layout, the JSON state rated the same notes
+lower than the plain text did (46,092 of 49,024 parts) and, at the
+notes bar, answered 142.33 right against 145.33; lowering its bar to
+0.005 reached 144.33 with 35% more text. One part a request, rated
+alone, lowered every score the same way and needed 0.005 for the same
+parts; and the narrow question in two set its own bar. So a form, a
+question set or a batching that changes what the model reads carries
+its own measured bar.
+
 ### A keep bar set by measurement
 
 No default changes. `scripts/keep-bar.mjs` in the repository sets a
@@ -2071,7 +2102,7 @@ Each source carries six settings, tuned for its kind of history:
 - **`labelBar`:** the label bar, from 0 to 1, for which kinds the task needs and which of this source's parts join the label lane; absent means 0.5.
 - **`names`:** open one exact-phrase lane per name the task names ([names in the task](#names-in-the-task)). The reason is recall.
 - **`ruleBar`:** keep a rule scored at or above this; absent means 0. Only sources whose parts are rules use it.
-- **`mode`:** how the source's parts are judged and read: `name`; `questions`, the decision questions asked of each reference part (absent: the built-in question for the part's kind); `bar`, keep a reference part scored at or above this (absent: the set's fitted bar, or 0.0146), or one bar for each kind of task, `{ 'one decision': x, 'everything said': y }`, read for the pick's `wanted` and the lower of the two when it gives none; and `read`, `rankedRead` down the fused order or a `conversationRead()` ([the chat read](#the-chat-read)), which takes `walksOn`, `opens` and `stops` rules in place of the measured ones. Absent: the built-in question, 0.0146 and the ranked read. Off by default: `wholeMessages`, judge each ranked piece's whole message ([whole messages](#whole-messages)); `hardFacts`, fields code knows in each item's record ([hard facts](#hard-facts)); `itemsPerRequest`, how many items one decision request holds ([items per request](#items-per-request)); `roles`, what each kept part is doing ([what each kept part is doing](#what-each-kept-part-is-doing)); `choicePerFact`, a Choice per needed fact over the kept parts, whose picks lead the text ([a Choice per needed fact](#a-choice-per-needed-fact)).
+- **`mode`:** how the source's parts are judged and read: `name`; `questions`, the decision questions asked of each reference part (absent: the built-in question for the part's kind); `bar`, keep a reference part scored at or above this (absent: the set's fitted bar, or 0.0146), or one bar for each kind of task, `{ 'one decision': x, 'everything said': y }`, read for the pick's `wanted` and the lower of the two when it gives none; and `read`, `rankedRead` down the fused order or a `conversationRead()` ([the chat read](#the-chat-read)), which takes `walksOn`, `opens` and `stops` rules in place of the measured ones. Absent: the built-in question, 0.0146 and the ranked read. Off by default: `wholeMessages`, judge each ranked piece's whole message ([whole messages](#whole-messages)); `hardFacts`, fields code knows in each item's record ([hard facts](#hard-facts)); `itemsPerRequest`, how many items one decision request holds ([items per request](#items-per-request)); `roles`, what each kept part is doing ([what each kept part is doing](#what-each-kept-part-is-doing)); `choicePerFact`, a Choice per needed fact over the kept parts, whose picks lead the text ([a Choice per needed fact](#a-choice-per-needed-fact)); `keep`, a second stage over the read's kept parts ([a second stage](#a-second-stage)). `request` sets the form of the mode's decision requests ([the request's form](#the-requests-form)).
 - **`decay`:** rank older notes lower by their age at the task date, as `{ halfLife: '365 days' }`; absent or `false` is off, as in every preset. Markdown sources only; see the [Markdown reader](https://github.com/jonny981/curate/blob/main/packages/markdown/README.md#decay).
 
 A source can also carry the look-back and path settings its reader ran

@@ -360,7 +360,10 @@ function checkBar(bar: Mode['bar'], at: string): void {
 export function checkMode(mode: Mode, at: string): void {
   if (typeof mode !== 'object' || mode === null) throw new TypeError(`${at} must be a mode.`);
   checkKeys(mode, ['name', 'questions', 'bar', 'read', 'needed', 'textShare', 'wholeMessages', 'hardFacts', 'roles', 'choicePerFact',
-    'itemsPerRequest', 'keep'], at);
+    'itemsPerRequest', 'keep', 'request'], at);
+  if (mode.request !== undefined && mode.request !== 'text' && mode.request !== 'json') {
+    throw new TypeError(`${at}.request must be 'text' or 'json'.`);
+  }
   if (mode.keep !== undefined) {
     const keep = mode.keep;
     if (typeof keep !== 'object' || keep === null || Array.isArray(keep)) throw new TypeError(`${at}.keep must be { questions, bar? }.`);

@@ -969,6 +969,20 @@ describe('the sentence cutoff, and what the skill tells the caller', () => {
 /** A call on a notes folder whose decision requests get `reply`; the
  *  search-line and label requests are answered. Resolves to the call's
  *  result or failure, and the home folder its records go under. */
+/** The item a question asks about, and its wording, in either request form: the plain-text state (`Item N`) or
+ *  the JSON one (`items.N`). */
+function itemAsked(body: { state: unknown }, instructions: string | { question: string; item: string }) {
+  if (typeof instructions === 'string') {
+    const n = Number(/\n\nItem (\d+)$/.exec(instructions)![1]);
+    const state = body.state as string;
+    const start = state.indexOf(`\n\nItem ${n}: `);
+    const next = state.indexOf(`\n\nItem ${n + 1}: `, start + 1);
+    return { text: state.slice(start, next < 0 ? undefined : next), wording: instructions.replace(/\n\nItem \d+$/, '') };
+  }
+  const items = (body.state as { items: Record<string, { text: string }> }).items;
+  return { text: items[instructions.item.slice('items.'.length)]?.text ?? '', wording: instructions.question };
+}
+
 async function decisionCall(reply: (payload: { questions: Record<string, unknown> }) => Response | Promise<Response>, records = false,
   key = 'test-key', count = 6) {
   const directory = await folder();
@@ -986,7 +1000,9 @@ async function decisionCall(reply: (payload: { questions: Record<string, unknown
   vi.stubEnv('TYPESAFE_API_KEY', key);
   vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => {
     const payload = JSON.parse(String(init.body));
-    if (payload.state.task.startsWith('Label short excerpts') || payload.state.task.startsWith('QUESTION the user asked:')) {
+    // A notes request is plain text: its task is the state's first paragraph.
+    const task: string = typeof payload.state === 'string' ? payload.state.split('\n\n')[0] : payload.state.task;
+    if (task.startsWith('Label short excerpts') || task.startsWith('QUESTION the user asked:')) {
       return Response.json({ answers: Object.fromEntries(
         Object.keys(payload.questions).map((key) => [key, { noul: 0.8 }]),
       ) });
@@ -1608,15 +1624,15 @@ describe('a run through core decision calls', () => {
     // Row 0 of the notes and every transcript part rate warm; every answer about the rest of the notes is
     // near 0, so their decision scores go cold under any question set's weights.
     vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => {
-      const body = JSON.parse(String(init.body)) as { state: { items: Record<string, { text: string }> };
-        questions: Record<string, { type: string; criteria: unknown; instructions: { question: string; item: string } }> };
-      const warm = (item: string) => /Row 0 of|prune/i.test(body.state.items[item.slice('items.'.length)]?.text ?? '');
+      const body = JSON.parse(String(init.body)) as { state: string | { items: Record<string, { text: string }> };
+        questions: Record<string, { type: string; criteria: unknown; instructions: string | { question: string; item: string } }> };
       return new Response(JSON.stringify({ usage: null, answers: Object.fromEntries(Object.entries(body.questions)
         .map(([key, question]) => {
-          const hot = warm(question.instructions.item);
+          const { text, wording } = itemAsked(body, question.instructions);
+          const hot = /Row 0 of|prune/i.test(text);
           // A scored question gets all its weight on its top level or its bottom one.
           // The question whether a part is off the subject counts against it, so it is answered the other way.
-          const against = /different subject/.test(question.instructions.question);
+          const against = /different subject/.test(wording);
           if (question.type !== 'score') return [key, { noul: hot !== against ? 0.8 : 0.000001 }];
           const levels = (question.criteria as unknown[]).length;
           return [key, { probabilities: Object.fromEntries(Array.from({ length: levels }, (_, level) =>
@@ -1661,11 +1677,11 @@ describe('a run through core decision calls', () => {
     let requests = 0;
     vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => {
       const warm = requests++ === 0;
-      const questions = JSON.parse(String(init.body)).questions as Record<string, { instructions: { question: string } }>;
+      const questions = JSON.parse(String(init.body)).questions as Record<string, { instructions: string | { question: string } }>;
       return new Response(JSON.stringify({
         usage: null,
         answers: Object.fromEntries(Object.entries(questions).map(([key, question]) => [key, {
-          noul: !warm ? 0.8 : question.instructions.question.startsWith('Is this item about a different subject') ? 0.01 : 0.99,
+          noul: !warm ? 0.8 : (typeof question.instructions === 'string' ? question.instructions : question.instructions.question).startsWith('Is this item about a different subject') ? 0.01 : 0.99,
         }])),
       }));
     }));
@@ -1701,11 +1717,11 @@ describe('a run through core decision calls', () => {
     // A part counted as off the subject: every part scores over the keep
     // bar and under the default floor of 0.1.
     vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => {
-      const questions = JSON.parse(String(init.body)).questions as Record<string, { instructions: { question: string } }>;
+      const questions = JSON.parse(String(init.body)).questions as Record<string, { instructions: string | { question: string } }>;
       return new Response(JSON.stringify({
         usage: null,
         answers: Object.fromEntries(Object.entries(questions).map(([key, question]) => [key, {
-          noul: question.instructions.question.startsWith('Is this item about a different subject') ? 0.9 : 0.5,
+          noul: (typeof question.instructions === 'string' ? question.instructions : question.instructions.question).startsWith('Is this item about a different subject') ? 0.9 : 0.5,
         }])),
       }));
     }));

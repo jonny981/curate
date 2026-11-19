@@ -185,6 +185,10 @@ export interface PickBatch {
   /** `'keep'` on a request of a mode's second stage (`Mode.keep`),
    *  asked after the read over the parts it kept. */
   readonly stage?: 'keep';
+  /** `'text'` on a request of a mode that asks in the plain-text form
+   *  (`Mode.request: 'text'`) and carries no field the JSON state is
+   *  for: the task and each item as text. */
+  readonly form?: 'text';
   /** True on a request of a mode that sends each item alone
    *  (`itemsPerRequest: 1`): its one item is judged on its own. */
   readonly alone?: true;
@@ -2442,6 +2446,18 @@ export async function pick(
     question: PickQuestion;
     cacheKey?: string;
   };
+  // Whether a part is asked in the plain-text form: its mode asks so, and
+  // its request would carry nothing the JSON state is for (needed facts,
+  // the person, the kind of task, which messages count, hard facts, a
+  // Choice, one item alone or a second stage).
+  const textFor = (item: Pending, header: object) => {
+    const mode = modeFor(item.candidate.sourceId);
+    // Any lever of the mode's asks for the JSON state's fields.
+    const levers = mode !== undefined && (mode.wholeMessages === true || mode.hardFacts === true || mode.roles === true
+      || (mode.choicePerFact ?? false) !== false || mode.itemsPerRequest !== undefined || mode.keep !== undefined);
+    return !keepingFor(item.candidate) && mode?.request === 'text' && !levers && Object.keys(header).length === 0
+      && item.question.facts === undefined && item.question.options === undefined;
+  };
   // The fields code wrote for an item the decision model reads: a whole
   // message's request or part.
   const itemFacts = new Map<MemoryCandidate, Readonly<Record<string, unknown>>>();
@@ -2574,9 +2590,11 @@ export async function pick(
     // facts asks with them, so its answers are stored under them.
     const cacheKeyOf = (item: Pending) => {
       const header = sink === answered || sink === keepAnswers ? headerOf(item.candidate) : {};
-      return decisionKey(header.person === undefined && header.wanted === undefined && header.counts === undefined
-        ? (header.needed === undefined ? task : JSON.stringify([task, needed]))
-        : JSON.stringify([task, header]),
+      // An answer asked in the plain-text form is stored apart: the form moves the model's scale.
+      return decisionKey(textFor(item, header) ? JSON.stringify(['text', task])
+        : header.person === undefined && header.wanted === undefined && header.counts === undefined
+          ? (header.needed === undefined ? task : JSON.stringify([task, needed]))
+          : JSON.stringify([task, header]),
       cacheVersion, cache!.deciderId, limits.maxQuestionText, item.question, item.candidate.text);
     };
     // Only a fully answered result is stored: a refusal, a missing
@@ -2652,20 +2670,21 @@ export async function pick(
       : keepingFor(item.candidate) ? keepOf(item.candidate.sourceId)!.itemsPerRequest : modeFor(item.candidate.sourceId)?.itemsPerRequest;
     const groups = new Map<string, Pending[]>();
     for (const item of fresh) {
-      const key = JSON.stringify([sink === answered || sink === keepAnswers ? headerOf(item.candidate) : {}, perRequestOf(item) ?? null]);
+      const header = sink === answered || sink === keepAnswers ? headerOf(item.candidate) : {};
+      const key = JSON.stringify([header, perRequestOf(item) ?? null, textFor(item, header) ? 'text' : null]);
       const group = groups.get(key);
       if (group === undefined) groups.set(key, [item]);
       else group.push(item);
     }
     const room = limits.maxBatches - batches - packedBatches;
     const slices: Pending[][] = [];
-    const headers = new Map<Pending[], Pick<PickBatch, 'needed' | 'person' | 'wanted' | 'counts' | 'alone'>>();
+    const headers = new Map<Pending[], Pick<PickBatch, 'needed' | 'person' | 'wanted' | 'counts' | 'alone' | 'form'>>();
     for (const [key, items] of [...groups].sort(([left], [right]) =>
       Number(JSON.parse(right)[0].needed !== undefined) - Number(JSON.parse(left)[0].needed !== undefined))) {
-      const [header, perRequest] = JSON.parse(key) as [Pick<PickBatch, 'needed' | 'person' | 'wanted' | 'counts'>, number | null];
+      const [header, perRequest, form] = JSON.parse(key) as [Pick<PickBatch, 'needed' | 'person' | 'wanted' | 'counts'>, number | null, 'text' | null];
       for (const slice of pack(items, task, whole, room - slices.length, perRequest ?? undefined)) {
         slices.push(slice);
-        headers.set(slice, perRequest === 1 ? { ...header, alone: true } : header);
+        headers.set(slice, { ...header, ...(perRequest === 1 ? { alone: true } : {}), ...(form === null ? {} : { form }) });
       }
     }
     packedBatches += slices.length;
@@ -4190,6 +4209,7 @@ export async function pick(
       ...(modeFor(id)?.hardFacts === true ? { hardFacts: true as const } : {}),
       ...(modeFor(id)?.roles === true ? { roles: true as const } : {}),
       ...(modeFor(id)?.itemsPerRequest === undefined ? {} : { itemsPerRequest: modeFor(id)!.itemsPerRequest! }),
+      ...(modeFor(id)?.request === 'text' ? { request: 'text' as const } : {}),
       ...(keepOf(id) === undefined ? {} : { keep: { questions: keepOf(id)!.questions, bar: barValue(keepOf(id)!.bar ?? DEFAULT_BAR),
         ...(keepOf(id)!.wholeMessages === undefined ? {} : { wholeMessages: keepOf(id)!.wholeMessages! }),
         ...(keepOf(id)!.hardFacts === undefined ? {} : { hardFacts: keepOf(id)!.hardFacts! }),

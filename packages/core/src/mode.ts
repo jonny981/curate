@@ -21,6 +21,14 @@ export interface Mode {
   /** The decision state of a request of this mode's parts lists the
    *  facts the answer needs, when the call gives them (`needed`). */
   readonly needed?: boolean;
+  /** The form of this mode's decision requests: `'text'`, the task and
+   *  each item as plain text (`jevTextRequest`), or, unset or `'json'`,
+   *  the JSON state (`jevRequest`). A request that carries anything the
+   *  JSON state is for (the needed facts, the person, the kind of task,
+   *  hard facts, a Choice, one item alone, a second stage) is sent as
+   *  JSON whatever this says. The form moves the decision model's scale,
+   *  so a bar is measured for the form a mode uses. */
+  readonly request?: 'text' | 'json';
   /** A second stage, off by default: after the read ends, the parts it
    *  kept at the mode's own bar are judged again with these questions,
    *  and kept only at or above this stage's bar; the read itself stays

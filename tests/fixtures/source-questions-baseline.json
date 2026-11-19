@@ -221,7 +221,7 @@
       "git#3",
       "chat#19"
     ],
-    "sha256": "17819c9075651d100b89e437327454b21f53ffaf6d4871d411c8e8632f04a727"
+    "sha256": "093caca718a42be087bd41f137e378a9edee536e0bc9833ce814a4b5f6a84da3"
   },
   "chat labels": {
     "selected": [
@@ -378,6 +378,6 @@
       "git#3",
       "chat#19"
     ],
-    "sha256": "35156931d4e8b556bf9fa975382394ed4ba86226bce8afe9031263f8d2c6e0b3"
+    "sha256": "3ef46509a6625a948add0e665ca55d26aeb75bf877b99e6a94e8f96271208512"
   }
 }
