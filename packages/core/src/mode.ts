@@ -36,6 +36,27 @@ export interface Mode {
   readonly keep?: {
     readonly questions: PickCascade;
     readonly bar?: number | { readonly 'one decision': number; readonly 'everything said': number };
+    /** A bar for each kind of message (`KEEP_KINDS`: the person's
+     *  message, an agent step, tool output, a subagent's prompt or final
+     *  report, a compaction summary, a system message), each a number or
+     *  one per kind of task; a kind with none given, or a message whose
+     *  kind its reader did not mark, uses `bar`. A bar of 1 keeps a kind
+     *  only as part of an exchange. */
+    readonly barByKind?: { readonly [kind: string]: number | { readonly 'one decision': number; readonly 'everything said': number } };
+    /** Keep the exchange around what the person said: for each message
+     *  of the person this stage keeps, the agent message it replies to
+     *  and the agent's reply (the last agent message before the person's
+     *  next), whatever they rate; for each subagent's final report it
+     *  keeps, the request that asked for it. Tool output joins no
+     *  exchange. Each such message's entry says it was kept for an
+     *  exchange (`keptAs: 'exchange'`) and whose (`exchange`), and the
+     *  text lays an exchange out as one passage. `{ nearest: 'paragraph' }`
+     *  lays each agent message kept only for an exchange out as the
+     *  paragraph nearest the person's message (the closing paragraph of
+     *  the message the person answers, the opening paragraph of the
+     *  reply), marking what is left out with the message's id; a message
+     *  kept on its own rating is never cut. */
+    readonly exchange?: boolean | { readonly nearest?: 'paragraph' };
     readonly wholeMessages?: boolean;
     readonly hardFacts?: boolean;
     readonly itemsPerRequest?: number;

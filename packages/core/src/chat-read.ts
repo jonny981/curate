@@ -1,6 +1,7 @@
 import { cutScoreCurve } from './lanes.js';
 import type { EmbeddingFunction } from './meaning.js';
 import type { MemoryCandidate } from './pick.js';
+import type { KeepKind } from './task.js';
 
 // The numbers below were measured on one history: about 116,000 parts of
 // a person's own coding-agent transcripts (Claude Code and Codex, 45,000
@@ -221,6 +222,13 @@ export function transcriptMessages(parts: Iterable<MemoryCandidate>):
 /** What kind of message a transcript part is in, from what its reader
  *  marked, the person's messages named by `person` when given:
  *  undefined when the reader marked nothing certain. */
+/** A part's kind among `KEEP_KINDS`, or undefined where its reader
+ *  marked none. */
+export function keepKind(part: MemoryCandidate): KeepKind | undefined {
+  const kind = messageKind(part);
+  return kind === 'person message' ? kind : kind as KeepKind | undefined;
+}
+
 export function messageKind(part: MemoryCandidate, person?: string): string | undefined {
   const unit = part.chat?.unit;
   if (unit === 'summary') return 'compaction summary';

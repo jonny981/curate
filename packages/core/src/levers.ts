@@ -92,6 +92,7 @@ export interface SourceSettings {
     readonly wholeMessages?: boolean;
     readonly hardFacts?: boolean;
     readonly itemsPerRequest?: number;
+    readonly exchange?: true | { readonly nearest?: 'paragraph' };
   };
   /** Present when its mode compares its kept parts for each needed fact:
    *  the candidates a fact, and the sufficiency question's bar when on. */

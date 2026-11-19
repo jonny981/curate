@@ -176,7 +176,13 @@ const speakerOf = (candidate: MemoryCandidate, person: string | undefined) => ca
  *  item under its own heading, strongest first, naming its session, its
  *  time to the minute and who said it, with no grouping by date. */
 function layOutItems(taken: readonly Item[], copies: ReadonlyMap<Item, readonly Item[]>, lead = 2,
-  byMessage?: { readonly person?: string }): string {
+  byMessage?: {
+    readonly person?: string;
+    readonly exchangeOf?: (item: Item) => readonly { readonly sourceId: string; readonly id: string }[];
+    /** Whether an item was kept only for an exchange whose source lays
+     *  such messages out as their paragraph nearest the person's. */
+    readonly cutForExchange?: (item: Item) => boolean;
+  }): string {
   const source = (item: Item) => {
     const said = dayOf(item.candidate.date?.value);
     // A file's last-changed date is not when anything in it was said.
@@ -208,8 +214,62 @@ function layOutItems(taken: readonly Item[], copies: ReadonlyMap<Item, readonly 
       const who = speakerOf(item.candidate, byMessage.person);
       return `#### ${own}${who === undefined ? '' : `, ${who}`}${elsewhere.length === 0 ? '' : `, also ${elsewhere.join(', ')}`}\n\n${body(item)}`;
     };
-    const rest = taken.slice(lead).map(named);
-    return [`### Most likely answer\n\n${taken.slice(0, lead).map(named).join('\n\n')}\n`,
+    // Messages kept as one exchange are one passage: in conversation
+    // order, placed by their strongest message, each line naming who
+    // said it and when, under one heading for the passage.
+    const at = new Map(taken.map((item, index) => [JSON.stringify([item.candidate.sourceId, item.candidate.id]), index]));
+    const parent = taken.map((_, index) => index);
+    const root = (index: number): number => parent[index] === index ? index : (parent[index] = root(parent[index]!));
+    taken.forEach((item, index) => {
+      for (const anchor of byMessage.exchangeOf?.(item) ?? []) {
+        const other = at.get(JSON.stringify([anchor.sourceId, anchor.id]));
+        if (other !== undefined) parent[root(index)] = root(other);
+      }
+    });
+    const passages = new Map<number, Item[]>();
+    taken.forEach((item, index) => { passages.set(root(index), [...(passages.get(root(index)) ?? []), item]); });
+    const order = (item: Item) => [Date.parse(item.candidate.date?.value ?? '') || 0, ...(item.candidate.place?.at ?? [])];
+    const earlier = (left: Item, right: Item) => {
+      const [a, b] = [order(left), order(right)];
+      for (let index = 0; index < Math.max(a.length, b.length); index += 1) if ((a[index] ?? 0) !== (b[index] ?? 0)) return (a[index] ?? 0) - (b[index] ?? 0);
+      return 0;
+    };
+    const laid = [...passages.values()].sort((left, right) => taken.indexOf(left[0]!) - taken.indexOf(right[0]!)).map((members) => {
+      if (members.length === 1) return named(members[0]!);
+      const inOrder = [...members].sort(earlier);
+      // An agent message kept only for the exchange, cut to the paragraph
+      // nearest the person's message: the closing paragraph of one the
+      // person answers, the opening paragraph of one that replies; what
+      // is left out is marked with the message's id.
+      const keyOf = (item: Item) => JSON.stringify([item.candidate.sourceId, item.candidate.id]);
+      const position = new Map(inOrder.map((item, index) => [keyOf(item), index]));
+      const shown = (item: Item, index: number) => {
+        if (byMessage.cutForExchange?.(item) !== true) return body(item);
+        const anchors = (byMessage.exchangeOf?.(item) ?? []).flatMap((anchor) => {
+          const at = position.get(JSON.stringify([anchor.sourceId, anchor.id]));
+          return at === undefined ? [] : [at];
+        });
+        const paragraphs = body(item).split(/\n[ \t]*\n/).filter((paragraph) => paragraph.trim() !== '');
+        if (paragraphs.length <= 1 || anchors.length === 0) return body(item);
+        // A message the person answers keeps its closing paragraph; a reply
+        // to the person keeps its opening one; a message that is both keeps both.
+        const opening = anchors.some((at) => at < index);
+        const closing = anchors.some((at) => at > index);
+        const left = (where: string) => `[${where} paragraphs left out; the whole message is ${item.candidate.id}]`;
+        return [
+          ...(opening ? [paragraphs[0]!] : [left('earlier')]),
+          ...(opening && closing && paragraphs.length > 2 ? [left('middle')] : []),
+          ...(closing ? [paragraphs.at(-1)!] : [left('later')]),
+        ].join('\n\n');
+      };
+      const times = inOrder.map((item) => /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})/.exec(item.candidate.date?.value ?? ''));
+      const when = (match: RegExpExecArray | null) => match === null ? 'unknown' : `${match[1]} ${match[2]}`;
+      const where = placeOf(inOrder[0]!).replace(/ \(.*$/, '');
+      return [`#### ${where}, an exchange (said ${when(times[0]!)} to ${when(times.at(-1)!)})`,
+        ...inOrder.map((item, index) => `[${when(times[index]!)}] ${speakerOf(item.candidate, byMessage.person) ?? 'unmarked'}:\n${shown(item, index)}`)].join('\n\n');
+    });
+    const rest = laid.slice(lead);
+    return [`### Most likely answer\n\n${laid.slice(0, lead).join('\n\n')}\n`,
       ...(rest.length === 0 ? [] : [`### More messages, strongest first\n\n${rest.join('\n\n')}`])].join('\n\n');
   }
   const top = taken.slice(0, lead).map((item) => `#### ${heading(item)}\n\n${body(item)}`);
@@ -357,7 +417,18 @@ export async function curate(task: string, picked: PickResult, options: CurateOp
   const leadOf = (taken: readonly Item[]) => anyPick ? taken.filter((item) => pickOf(item) !== undefined).length : 2;
   // A text whose every item is a whole message is laid out message by
   // message, strongest first, each naming who said it.
-  const byMessage = sized.length > 0 && sized.every((item) => whole(item.candidate)) ? { ...(options.person === undefined ? {} : { person: options.person }) } : undefined;
+  const exchangeOf = (item: Item) => {
+    const entry = entries.get(JSON.stringify([item.candidate.sourceId, item.candidate.id]));
+    return entry !== undefined && entry.status === 'selected' ? entry.exchange ?? [] : [];
+  };
+  const cutForExchange = (item: Item) => {
+    const exchange = picked.record.levers.sources?.[item.candidate.sourceId]?.keep?.exchange;
+    const entry = entries.get(JSON.stringify([item.candidate.sourceId, item.candidate.id]));
+    return typeof exchange === 'object' && exchange.nearest === 'paragraph'
+      && entry !== undefined && entry.status === 'selected' && entry.keptAs === 'exchange';
+  };
+  const byMessage = sized.length > 0 && sized.every((item) => whole(item.candidate))
+    ? { ...(options.person === undefined ? {} : { person: options.person }), exchangeOf, cutForExchange } : undefined;
   let taken: Item[] = [];
   let copies = new Map<Item, readonly Item[]>();
   let log = '';

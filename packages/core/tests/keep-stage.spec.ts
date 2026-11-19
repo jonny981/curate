@@ -113,3 +113,93 @@ describe('a second stage over the read\'s kept parts', () => {
       .rejects.toThrow('keep.bar must be a number between 0 and 1');
   });
 });
+
+describe('the exchange around what the person said, each kind at its own bar', () => {
+  const said = (container: string, line: number, text: string, author: 'person' | 'agent' | 'tool', unit?: 'prompt' | 'report'): MemoryCandidate => ({
+    sourceId: 'chat', role: 'reference', id: `${container}:${line}:1:1`, title: `claude-code s1 ${author}`, text, signals: {},
+    date: { value: `2026-10-01T09:${String(line).padStart(2, '0')}:00Z`, meaning: 'recorded' }, author,
+    place: { container, at: [line, 1, 1] },
+    chat: { provider: 'claude-code', sessionId: 's1', role: author === 'agent' ? 'assistant' : 'user', ...(unit === undefined ? {} : { unit }) },
+    searchRanks: [line],
+  });
+  const main = container('s1');
+  const sub = `${main.replace(/\.jsonl$/, '')}/subagents/agent-a7.jsonl`;
+  const talk = [
+    said(main, 1, 'Should we use Postgres or SQLite?', 'agent'),
+    said(main, 2, 'Postgres, for transactions.', 'person'),
+    said(main, 3, 'build log: all green', 'tool'),
+    said(main, 4, 'Done: switched to Postgres.', 'agent'),
+    said(main, 5, 'Thanks.', 'person'),
+    said(main, 6, 'Anything else?', 'agent'),
+    said(sub, 1, 'Look into which database we use.', 'agent', 'prompt'),
+    said(sub, 9, 'We chose Postgres.', 'agent', 'report'),
+  ];
+  const ratings: Record<string, number> = { 'Postgres, for transactions.': 0.9, 'We chose Postgres.': 0.95, 'build log: all green': 0.5 };
+  const decide: PickDecide = async (batch) => Object.fromEntries(batch.questions.map((question) => [question.key, { status: 'answered',
+    probability: batch.stage !== 'keep' ? 0.5 : question.questionKey === 'answers' ? ratings[question.text] ?? 0.1 : 0.02 }]));
+  const exchangeMode = mode({ bar: 0.5, exchange: true, barByKind: { 'person message': 0.76, 'subagent final report': 0.59, 'agent step': 1,
+    'tool output': 0.81, 'subagent prompt': 1 } });
+
+  it('keeps each kind at its own bar, and the agent messages around a kept message of the person, and a report\'s request', async () => {
+    const result = await pick(talk, { task, decide, everyRanked: true, modesBySource: { chat: exchangeMode } });
+    expect(result.selected.map((part) => part.text).sort()).toEqual(['Done: switched to Postgres.', 'Look into which database we use.',
+      'Postgres, for transactions.', 'Should we use Postgres or SQLite?', 'We chose Postgres.']);
+    // Tool output at 0.5 is under its own bar of 0.81, and joins no exchange.
+    expect(entry(result, talk[2]!)).toMatchObject({ status: 'rejected', probability: 0.5 });
+    expect(entry(result, talk[1]!)).toMatchObject({ status: 'selected', keptAs: 'rating', probability: 0.9 });
+    const anchor = { sourceId: 'chat', id: talk[1]!.id };
+    expect(entry(result, talk[0]!)).toMatchObject({ status: 'selected', keptAs: 'exchange', exchange: [anchor] });
+    expect(entry(result, talk[3]!)).toMatchObject({ status: 'selected', keptAs: 'exchange', exchange: [anchor] });
+    expect(entry(result, talk[5]!)).toMatchObject({ status: 'rejected' });
+    expect(entry(result, talk[6]!)).toMatchObject({ status: 'selected', keptAs: 'exchange', exchange: [{ sourceId: 'chat', id: talk[7]!.id }] });
+    expect(result.record.keep!.sources.chat).toMatchObject({ byExchange: 3 });
+  });
+
+  it('lays each exchange out as one passage in conversation order, placed by its strongest message', async () => {
+    const result = await pick(talk, { task, decide, everyRanked: true, modesBySource: { chat: exchangeMode } });
+    const { log } = await curate(task, result, { person: 'Sam' });
+    expect(log).toBe([
+      '### Most likely answer', '',
+      '#### session s1, an exchange (said 2026-10-01 09:01 to 2026-10-01 09:09)', '',
+      '[2026-10-01 09:01] agent:\nLook into which database we use.', '',
+      '[2026-10-01 09:09] agent:\nWe chose Postgres.', '',
+      '#### session s1, an exchange (said 2026-10-01 09:01 to 2026-10-01 09:04)', '',
+      '[2026-10-01 09:01] agent:\nShould we use Postgres or SQLite?', '',
+      '[2026-10-01 09:02] Sam:\nPostgres, for transactions.', '',
+      '[2026-10-01 09:04] agent:\nDone: switched to Postgres.', '',
+    ].join('\n'));
+  });
+
+  it('cuts an agent message kept only for the exchange to the paragraph nearest the person\'s, naming the rest by id', async () => {
+    const long = [
+      said(main, 1, 'Here is the comparison.\n\nSQLite is simpler.\n\nShould we use Postgres or SQLite?', 'agent'),
+      said(main, 2, 'Postgres, for transactions.', 'person'),
+      said(main, 4, 'Done: switched to Postgres.\n\nThe migration ran.\n\nTests are green.', 'agent'),
+      said(sub, 1, 'Look into which database we use.', 'agent', 'prompt'),
+      said(sub, 9, 'We chose Postgres.\n\nIt has transactions.', 'agent', 'report'),
+    ];
+    const cutting = mode({ bar: 0.5, exchange: { nearest: 'paragraph' }, barByKind: { 'person message': 0.76, 'subagent final report': 0.59,
+      'agent step': 1, 'subagent prompt': 1 } });
+    const rate: PickDecide = async (batch) => Object.fromEntries(batch.questions.map((question) => [question.key, { status: 'answered',
+      probability: batch.stage !== 'keep' ? 0.5 : question.questionKey === 'answers' ? question.text.startsWith('Postgres,') ? 0.9
+        : question.text.startsWith('We chose') ? 0.95 : 0.1 : 0.02 }]));
+    const result = await pick(long, { task, decide: rate, everyRanked: true, modesBySource: { chat: cutting } });
+    expect(result.record.levers.sources.chat!.keep).toMatchObject({ exchange: { nearest: 'paragraph' } });
+    const { log } = await curate(task, result, { person: 'Sam' });
+    // The message he answers keeps its closing paragraph, the reply its opening one; the report, kept on its rating, stays whole.
+    expect(log).toContain(`[2026-10-01 09:01] agent:\n[earlier paragraphs left out; the whole message is ${long[0]!.id}]\n\nShould we use Postgres or SQLite?`);
+    expect(log).toContain(`[2026-10-01 09:04] agent:\nDone: switched to Postgres.\n\n[later paragraphs left out; the whole message is ${long[2]!.id}]`);
+    expect(log).toContain('We chose Postgres.\n\nIt has transactions.');
+    expect(log).not.toContain('SQLite is simpler.');
+    // Without the setting the exchange stays whole.
+    const whole = await pick(long, { task, decide: rate, everyRanked: true, modesBySource: { chat: { ...cutting, keep: { ...cutting.keep!, exchange: true } } } });
+    expect((await curate(task, whole, { person: 'Sam' })).log).toContain('SQLite is simpler.');
+  });
+
+  it('refuses a bar for a kind it does not know', async () => {
+    await expect(pick(talk, { task, decide, modesBySource: { chat: mode({ barByKind: { 'agent reply': 0.5 } }) } }))
+      .rejects.toThrow('keep.barByKind names "agent reply"');
+    await expect(pick(talk, { task, decide, modesBySource: { chat: mode({ exchange: { nearest: 'sentence' as never } }) } }))
+      .rejects.toThrow("keep.exchange must be a boolean or { nearest: 'paragraph' }.");
+  });
+});

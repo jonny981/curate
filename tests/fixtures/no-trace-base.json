@@ -95,7 +95,8 @@
    "[].path",
    "[].rank",
    "[].rating",
-   "[].source"
+   "[].source",
+   "[].text"
   ],
   "log.md": "file",
   "record.json": [

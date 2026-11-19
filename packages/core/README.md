@@ -1199,6 +1199,48 @@ requests, and per source the parts kept and left out and the bar;
 requests carries `stage: 'keep'`, which `jev()` copies into the call it
 reports, so a caller can price each stage apart.
 
+`keep.barByKind` keeps each kind of message at a bar of its own (the
+kinds the hard facts name, `KEEP_KINDS`: the person's message, an agent
+step, tool output, a subagent's prompt or final report, a compaction
+summary, a system message), each a number or one per kind of task; a
+kind with none, or a message its reader marked no kind for, keeps at
+the stage's `bar`, and a bar of 1 keeps a kind only within an exchange.
+`keep.exchange` keeps the exchange around what the person said: for
+each message of the person the stage keeps, the agent message it
+replies to and the agent's reply (the last agent message before the
+person's next), whatever they rate; for each kept final report, the
+request that asked for it. Tool output joins no exchange. Each kept
+entry says why it was kept (`keptAs`: `'rating'` or `'exchange'`) and
+whose exchanges it belongs to (`exchange`), `record.keep` counts the
+parts kept by an exchange, and `curate` lays each exchange out as one
+passage, in conversation order, placed by its strongest message, each
+line naming who said it and when. On 20 tasks of one person's
+coding-agent history, with each kind kept at the bar its labelled
+answers earned within its kind (the person's message 0.76 on
+one-decision tasks and 0.04 on everything-said tasks; final report 0.59
+and 0.95; prompt, everything said only, 0.05; compaction summary,
+everything said only, 0.37) and tool output at the bar its widened
+answers earned (0.81 and 0.13), the exchange form answered 17.6 of 20
+right against 13.8 with no cut (five answer sets), and 10.6 of 11
+one-decision tasks at 4,565 tokens against 59,125. Those bars were
+measured with the task in hand; with each task's bars learned on the
+other tasks instead, the exchange form answered 17.0 of 20 against 13.8
+(+3.2, range −0.2 to +7.0), the figure a new history can expect.
+
+`keep.exchange: { nearest: 'paragraph' }` lays each agent message kept
+only for an exchange out as the paragraph nearest the person's message:
+the closing paragraph of the message the person answers, the opening
+paragraph of the agent's reply (both, for a message that is each). The
+cut falls at a paragraph boundary, never at a count, and a line marks
+what is left out with the message's id, the id of the item in
+`record.items`, which holds the message whole (the skill writes every
+kept item with its id and whole text to `kept.json` beside the text). A
+message kept on its own rating is never cut. On the same 20 tasks the
+cut kept the score (18.4 of 20) and took one-decision texts from 4,171
+to 2,087 tokens and everything-said texts from 77,749 to 65,860, where
+tool output and compaction summaries, which it does not touch, are 43%
+of the text.
+
 Cost, as measured on 22 tasks of one person's coding-agent history:
 judging the read's kept list (13,982 whole messages, 636 a task) one
 message a request cost USD 0.808, 3.7 cents a task on average (median

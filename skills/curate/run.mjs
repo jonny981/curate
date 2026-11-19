@@ -128,6 +128,22 @@ export const CHAT_MODES = { default: agentTranscripts,
   // Each still awaits answers marked right.
   answers: { ...agentTranscripts, name: 'answers', keep: { questions: MESSAGE_ANSWER_CASCADE,
     bar: { 'one decision': 0.59, 'everything said': 0.04 }, wholeMessages: true, hardFacts: true } },
+  // The same two stages, each kind of message kept at the bar its
+  // labelled answers earned within its kind (tool output at the bar its
+  // widened answers earned; 1, kept only in an exchange, where a kind
+  // earned none), and the exchange around each kept message of the
+  // person, and each kept report's request, each agent message kept only
+  // for an exchange laid out as its paragraph nearest the person's.
+  // Measured on 20 tasks of one person's coding-agent history; the bars
+  // await the check that learns them without the task.
+  exchange: { ...agentTranscripts, name: 'exchange', keep: { questions: MESSAGE_ANSWER_CASCADE, bar: 1, exchange: { nearest: 'paragraph' },
+    wholeMessages: true, hardFacts: true, barByKind: {
+      'person message': { 'one decision': 0.76, 'everything said': 0.04 },
+      'subagent final report': { 'one decision': 0.59, 'everything said': 0.95 },
+      'subagent prompt': { 'one decision': 1, 'everything said': 0.05 },
+      'compaction summary': { 'one decision': 1, 'everything said': 0.37 },
+      'tool output': { 'one decision': 0.81, 'everything said': 0.13 },
+      'agent step': 1, 'system message': 1 } } },
   judgments: { name: 'judgments', questions: JUDGMENT_CHAT_CASCADE, read: rankedRead } };
 // The decision levers a chat entry can switch on for its mode, each off by
 // default (core's Mode documents them).
@@ -962,10 +978,12 @@ export async function writeLog(task, picked, folder, record, options = {}, textF
   const textFile = join(textFolder, 'log.md'), listFile = join(textFolder, 'kept.json');
   await writeFile(textFile, result.log, { mode: 0o600 });
   // The items are taken strongest first, so their order is the ranking.
+  // Each holds its whole text, so an id the text names where it left
+  // paragraphs out reads the rest here.
   const ranked = result.record.items;
   await writeFile(listFile, JSON.stringify(ranked.map((item, at) => ({ rank: at + 1, rating: item.weight, id: item.id,
     source: item.candidate.sourceId, ...(item.candidate.path === undefined ? {} : { path: item.candidate.path }),
-    ...(item.candidate.date === undefined ? {} : { date: item.candidate.date.value }) })), null, 1), { mode: 0o600 });
+    ...(item.candidate.date === undefined ? {} : { date: item.candidate.date.value }), text: item.candidate.text })), null, 1), { mode: 0o600 });
   record.status = 'complete';
   console.log(result.log);
   return result;

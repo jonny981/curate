@@ -14,7 +14,7 @@ import {
   ANSWER_TYPES, classifyTask, ROUTE_QUESTIONS, routeOptions, type AnswerType, type PickCounts, type PickWanted, type RouteKey, type RouteOption,
 } from './task.js';
 import { conversationRead, rankedRead, type Mode, type ModeRead, type ModeReadResult } from './mode.js';
-import { messageKey, messageKind, messagePieces, messageText, transcriptMessages } from './chat-read.js';
+import { keepKind, messageKey, messageKind, messagePieces, messageText, transcriptMessages } from './chat-read.js';
 import { CHOICE_CANDIDATES, choosePerFact, ROLE_QUESTION } from './choice.js';
 import type { EmbeddingFunction } from './meaning.js';
 import type { LeverStates } from './levers.js';
@@ -356,6 +356,12 @@ export type PickEntryStatus =
       /** The read's own score, when a second stage (`Mode.keep`) judged
        *  the part again and `probability` is that stage's. */
       readonly readProbability?: number;
+      /** Why a second stage kept the part: its own rating at its bar, or
+       *  as part of an exchange (`Mode.keep.exchange`). */
+      readonly keptAs?: 'rating' | 'exchange';
+      /** The messages (each by its first piece) whose exchange this part
+       *  belongs to, when the second stage keeps exchanges. */
+      readonly exchange?: readonly { readonly sourceId: string; readonly id: string }[];
     }
   | {
       readonly status: 'rejected';
@@ -830,7 +836,9 @@ export interface PickRecord {
     readonly asked: number;
     readonly requests: number;
     readonly unanswered: number;
-    readonly sources: Readonly<Record<string, { readonly kept: number; readonly dropped: number; readonly bar: number }>>;
+    readonly sources: Readonly<Record<string, { readonly kept: number; readonly dropped: number; readonly bar: number;
+      /** Parts kept as part of an exchange, not on their own rating. */
+      readonly byExchange?: number }>>;
   };
   /** Present when a mode compared its kept parts for each needed fact:
    *  the candidates a fact, each fact's picks in order (the item's id,
@@ -3726,9 +3734,11 @@ export async function pick(
       keeping = false;
     }
     // Each kept part's message (or the part), and its best item's score.
-    const sources: Record<string, { kept: number; dropped: number; bar: number }> = {};
+    const sources: Record<string, { kept: number; dropped: number; bar: number; byExchange?: number }> = {};
     const done = new Set<MemoryCandidate>();
     let unanswered = 0;
+    // The messages kept on their own rating, by message, for the exchange.
+    const keptOwn = new Set<string>();
     for (const candidate of keepStage) {
       if (done.has(candidate)) continue;
       const key = messageKey(candidate);
@@ -3738,14 +3748,19 @@ export async function pick(
       for (const piece of pieces) done.add(piece);
       if (scores.length === 0) { unanswered += 1; continue; }
       const score = Math.max(...scores);
-      const bar = barValue(keepOf(candidate.sourceId)!.bar ?? DEFAULT_BAR);
-      const tally = sources[candidate.sourceId] ??= { kept: 0, dropped: 0, bar };
+      const stage = keepOf(candidate.sourceId)!;
+      const stageBar = barValue(stage.bar ?? DEFAULT_BAR);
+      // A kind with a bar of its own keeps at it; any other at the stage's.
+      const kindBar = stage.barByKind?.[keepKind(candidate) ?? ''];
+      const bar = kindBar === undefined ? stageBar : barValue(kindBar);
+      const tally = sources[candidate.sourceId] ??= { kept: 0, dropped: 0, bar: stageBar };
+      if (score >= bar) keptOwn.add(key);
       for (const piece of pieces) {
         const read = statuses.get(piece);
         const readProbability = read !== undefined && 'probability' in read && read.probability !== undefined ? { readProbability: read.probability } : {};
         if (score >= bar) {
           if (!selected.includes(piece)) selected.push(piece);
-          statuses.set(piece, { status: 'selected', asked: true, probability: score, ...readProbability });
+          statuses.set(piece, { status: 'selected', asked: true, probability: score, ...readProbability, keptAs: 'rating' });
           tally.kept += 1;
         } else {
           const at = selected.indexOf(piece);
@@ -3753,6 +3768,57 @@ export async function pick(
           statuses.set(piece, { status: 'rejected', probability: score, ...readProbability });
           tally.dropped += 1;
         }
+      }
+    }
+    // The exchange around what the person said: for each message of the
+    // person kept on its rating, the agent message it replies to and the
+    // agent's last message before the person's next; for each kept final
+    // report, the request that asked for it. They are kept whatever they
+    // rate, at their own score where the stage gave one, and each names
+    // the messages whose exchange it belongs to.
+    const exchangeOf = new Map<MemoryCandidate, { sourceId: string; id: string }[]>();
+    const lists = transcriptMessages(references.filter((candidate) => candidate.role === 'reference' && asMessage(candidate)
+      && (keepOf(candidate.sourceId)?.exchange ?? false) !== false));
+    for (const list of lists.values()) {
+      const first = (index: number) => list[index]!.pieces[0]!;
+      const isAgent = (index: number) => first(index).author === 'agent' && first(index).chat?.unit === undefined;
+      list.forEach(({ key }, index) => {
+        if (!keptOwn.has(key)) return;
+        const anchor = { sourceId: first(index).sourceId, id: first(index).id };
+        const joined: number[] = [];
+        const kind = keepKind(first(index));
+        if (kind === 'person message') {
+          for (let before = index - 1; before >= 0 && first(before).author !== 'person'; before -= 1) {
+            if (isAgent(before)) { joined.push(before); break; }
+          }
+          let reply: number | undefined;
+          for (let after = index + 1; after < list.length && first(after).author !== 'person'; after += 1) if (isAgent(after)) reply = after;
+          if (reply !== undefined) joined.push(reply);
+        } else if (kind === 'subagent final report') {
+          const request = list.findIndex(({ pieces }) => pieces[0]!.chat?.unit === 'prompt');
+          if (request >= 0) joined.push(request);
+        }
+        for (const at of joined) {
+          for (const piece of list[at]!.pieces) {
+            exchangeOf.set(piece, [...(exchangeOf.get(piece) ?? []), anchor]);
+          }
+        }
+      });
+    }
+    for (const [piece, anchors] of exchangeOf) {
+      const status = statuses.get(piece);
+      const own = status?.status === 'selected' && status.keptAs === 'rating';
+      const tally = sources[piece.sourceId]!;
+      if (!own) {
+        if (!selected.includes(piece)) selected.push(piece);
+        const score = status !== undefined && 'probability' in status && status.probability !== undefined ? status.probability : 0;
+        const readProbability = status !== undefined && 'readProbability' in status && status.readProbability !== undefined
+          ? { readProbability: status.readProbability } : {};
+        statuses.set(piece, { status: 'selected', asked: status !== undefined && status.status !== 'unassessed', probability: score,
+          ...readProbability, keptAs: 'exchange', exchange: anchors });
+        tally.byExchange = (tally.byExchange ?? 0) + 1;
+      } else {
+        statuses.set(piece, { ...status, exchange: anchors });
       }
     }
     keepRecord = { asked: items!.length, requests: batches - before, unanswered, sources };
@@ -4127,7 +4193,8 @@ export async function pick(
       ...(keepOf(id) === undefined ? {} : { keep: { questions: keepOf(id)!.questions, bar: barValue(keepOf(id)!.bar ?? DEFAULT_BAR),
         ...(keepOf(id)!.wholeMessages === undefined ? {} : { wholeMessages: keepOf(id)!.wholeMessages! }),
         ...(keepOf(id)!.hardFacts === undefined ? {} : { hardFacts: keepOf(id)!.hardFacts! }),
-        ...(keepOf(id)!.itemsPerRequest === undefined ? {} : { itemsPerRequest: keepOf(id)!.itemsPerRequest! }) } }),
+        ...(keepOf(id)!.itemsPerRequest === undefined ? {} : { itemsPerRequest: keepOf(id)!.itemsPerRequest! }),
+        ...((keepOf(id)!.exchange ?? false) === false ? {} : { exchange: keepOf(id)!.exchange as true | { readonly nearest?: 'paragraph' } }) } }),
       ...(modeFor(id) === undefined || choiceOf({ sourceId: id } as MemoryCandidate) === undefined ? {} : { choicePerFact: {
         candidates: choiceOf({ sourceId: id } as MemoryCandidate)!.candidates,
         ...(choiceOf({ sourceId: id } as MemoryCandidate)!.enough === undefined ? {}

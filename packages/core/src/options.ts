@@ -6,7 +6,7 @@ import type {
 import type { CandidateReadRequest } from './source.js';
 import type { Mode } from './mode.js';
 import type { MeaningSearchOptions } from './meaning.js';
-import { ANSWER_TYPES, PICK_COUNTS, PICK_WANTED, taskNames } from './task.js';
+import { ANSWER_TYPES, KEEP_KINDS, PICK_COUNTS, PICK_WANTED, taskNames } from './task.js';
 
 /** Option names the levers change renamed, in one place: each old
  *  dotted path a caller could still pass names the option that took
@@ -364,7 +364,25 @@ export function checkMode(mode: Mode, at: string): void {
   if (mode.keep !== undefined) {
     const keep = mode.keep;
     if (typeof keep !== 'object' || keep === null || Array.isArray(keep)) throw new TypeError(`${at}.keep must be { questions, bar? }.`);
-    checkKeys(keep, ['questions', 'bar', 'wholeMessages', 'hardFacts', 'itemsPerRequest'], `${at}.keep`);
+    checkKeys(keep, ['questions', 'bar', 'barByKind', 'exchange', 'wholeMessages', 'hardFacts', 'itemsPerRequest'], `${at}.keep`);
+    if (keep.exchange !== undefined && typeof keep.exchange !== 'boolean') {
+      if (typeof keep.exchange !== 'object' || keep.exchange === null || Array.isArray(keep.exchange)
+        || (keep.exchange.nearest !== undefined && keep.exchange.nearest !== 'paragraph')) {
+        throw new TypeError(`${at}.keep.exchange must be a boolean or { nearest: 'paragraph' }.`);
+      }
+      checkKeys(keep.exchange, ['nearest'], `${at}.keep.exchange`);
+    }
+    if (keep.barByKind !== undefined) {
+      if (typeof keep.barByKind !== 'object' || keep.barByKind === null || Array.isArray(keep.barByKind)) {
+        throw new TypeError(`${at}.keep.barByKind must be an object of bars by kind of message.`);
+      }
+      for (const [kind, bar] of Object.entries(keep.barByKind)) {
+        if (!(KEEP_KINDS as readonly string[]).includes(kind)) {
+          throw new TypeError(`${at}.keep.barByKind names "${kind}"; the kinds are ${KEEP_KINDS.join(', ')}.`);
+        }
+        checkBar(bar, `${at}.keep.barByKind['${kind}']`);
+      }
+    }
     if (typeof keep.questions !== 'object' || keep.questions === null) throw new TypeError(`${at}.keep.questions must be a question set.`);
     checkCascadeKeys(keep.questions, `${at}.keep.questions`);
     checkCascade(keep.questions);
