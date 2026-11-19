@@ -45,7 +45,7 @@ describe('the count marker keeps a part below the bar', () => {
     const [entry] = picked.record.candidates;
     expect(entry).toMatchObject({ id: 'chat#0', status: 'selected', keptBy: 'instance' });
     expect((entry as { probability: number }).probability).toBeCloseTo(0.005, 6);
-    expect((entry as { probability: number }).probability).toBeLessThan(chatSettings.mode!.bar!);
+    expect((entry as { probability: number }).probability).toBeLessThan(chatSettings.mode!.bar as number);
     expect(picked.record.effects.find((e) => e.setting === 'typed')).toMatchObject({ actedOn: 1, added: 1, dropped: 0 });
   });
 

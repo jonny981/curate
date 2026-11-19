@@ -271,7 +271,7 @@ describe('a typed answer moves a part across its bar', () => {
   it('keeps a part just below the bar and drops one just above it', async () => {
     // One question at bias logit(bar): a part's answer of sigmoid(-0.1) leaves it just below the bar, sigmoid(0.1)
     // just above; the typed answer then adds about +2.94 (0.95) or -2.94 (0.05).
-    const bar = gitSettings.mode!.bar!;
+    const bar = gitSettings.mode!.bar as number;
     const sigmoid = (z: number) => 1 / (1 + Math.exp(-z));
     const ONE: PickCascade = {
       bias: Math.log(bar / (1 - bar)),
