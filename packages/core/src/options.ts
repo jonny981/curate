@@ -42,7 +42,7 @@ const READ_REQUEST_KEYS: readonly (keyof CandidateReadRequest)[] = [
   'maxQuestionText', 'taskDate', 'timeZone', 'asOf', 'taskPeriod', 'decayHalfLife', 'decayLimit', 'signal',
 ];
 const MEANING_KEYS: readonly (keyof MeaningSearchOptions)[] = ['embed', 'nearest', 'wholeLanes'];
-const CURATE_KEYS: readonly (keyof CurateOptions)[] = ['answerTokens', 'sentenceCutoff', 'decide', 'signal'];
+const CURATE_KEYS: readonly (keyof CurateOptions)[] = ['answerTokens', 'sentenceCutoff', 'decide', 'signal', 'person'];
 /** The fixed keys of the maps keyed by source kind — tagsByKind and
  *  the read request's kindLanes — and the values sourceKinds maps to. */
 const SOURCE_KIND_KEYS: readonly CandidateSourceKind[] = ['chat', 'git-history', 'markdown'];
@@ -441,6 +441,9 @@ export function checkCurateOptions(options: CurateOptions): void {
   checkKeys(options, CURATE_KEYS, '');
   if (options.answerTokens !== undefined && (!Number.isInteger(options.answerTokens) || options.answerTokens <= 0)) {
     throw new TypeError('curate: answerTokens must be a positive integer of estimated tokens.');
+  }
+  if (options.person !== undefined && (typeof options.person !== 'string' || !options.person.trim())) {
+    throw new TypeError('curate: person must be a nonempty string: the person\'s name as tasks word it.');
   }
   const cutoff: unknown = options.sentenceCutoff;
   if (cutoff !== undefined && cutoff !== false && (typeof cutoff !== 'number' || !(cutoff >= 0 && cutoff <= 1))) {

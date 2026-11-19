@@ -914,7 +914,15 @@ request (`limits.maxBatchChars`) goes as consecutive parts, each marked
 `part: 'k of n'` and, after the first, carrying the message's first
 piece as `opening`; the message takes its best part's rating. Every
 piece carries its message's rating, so a message is kept or left out
-whole, and `curate` lays it out once, whole. Only parts a transcript
+whole, and `curate` lays it out once, whole. When every item a text
+takes is a whole message, `curate` lays them out one by one, strongest
+first, each under its own heading naming its session (or a turn's
+note), the day it was said and who said it (the person, by
+`curate({ person })` when given, an agent, tool output, or a turn's
+speaker), with no grouping by date. That is the order of the text
+that scored best on 22 tasks of one person's coding-agent history, laid
+out by a test script: 16.4 of 22 answered right over five answer sets,
+against 13.8 for the uncut text. Only parts a transcript
 reader placed (`chat` and `place`) are joined, and the turns of a note
 written as a conversation, which the Markdown reader marks with `turn`
 when asked (`turns: true`): such a turn goes whole from its reader's

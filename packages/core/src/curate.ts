@@ -82,6 +82,9 @@ export interface CurateOptions {
   /** Rates each sentence for `sentenceCutoff`. */
   readonly decide?: PickDecide;
   readonly signal?: AbortSignal;
+  /** The person's name, for a text laid out message by message: their
+   *  messages are headed with it. Absent: "the person". */
+  readonly person?: string;
 }
 
 export interface CurateRecord {
@@ -160,9 +163,20 @@ function dayOf(value: unknown): string {
 // A commit with no body carries its evidence in its title.
 const body = (item: Item) => item.candidate.text.trim() ? item.candidate.text : item.candidate.title;
 
+/** Who said a message laid out on its own: a turn's speaker, the person,
+ *  an agent, tool output or the system; undefined when its reader marked
+ *  no one. */
+const speakerOf = (candidate: MemoryCandidate, person: string | undefined) => candidate.turn?.speaker
+  ?? (candidate.author === 'person' ? person ?? 'the person' : candidate.author === 'agent' ? 'agent'
+    : candidate.author === 'tool' ? 'tool output' : candidate.author === 'system' ? 'system' : undefined);
+
 /** The memory text for the items taken, strongest first. A taken item's
- *  heading also names each other place and date its copies were said. */
-function layOutItems(taken: readonly Item[], copies: ReadonlyMap<Item, readonly Item[]>, lead = 2): string {
+ *  heading also names each other place and date its copies were said.
+ *  `byMessage`, for a text whose every item is a whole message: each
+ *  item under its own heading, strongest first, naming its session and
+ *  who said it, with no grouping by date. */
+function layOutItems(taken: readonly Item[], copies: ReadonlyMap<Item, readonly Item[]>, lead = 2,
+  byMessage?: { readonly person?: string }): string {
   const source = (item: Item) => {
     const said = dayOf(item.candidate.date?.value);
     // A file's last-changed date is not when anything in it was said.
@@ -177,6 +191,24 @@ function layOutItems(taken: readonly Item[], copies: ReadonlyMap<Item, readonly 
     if (!elsewhere.length) return own;
     return `${own}, also ${elsewhere.length === 1 ? elsewhere[0] : `${elsewhere.slice(0, -1).join(', ')} and ${elsewhere[elsewhere.length - 1]}`}`;
   };
+  if (byMessage !== undefined) {
+    // A message's session, or a turn's note, in place of the source.
+    const placeOf = (item: Item) => {
+      const { said, label } = source(item);
+      const candidate = item.candidate;
+      const where = candidate.chat !== undefined ? `session ${candidate.chat.sessionId.slice(0, 8)}` : candidate.turn?.session ?? source(item).where;
+      return `${where} (${label} ${said || 'unknown'})`;
+    };
+    const named = (item: Item) => {
+      const own = placeOf(item);
+      const elsewhere = [...new Set((copies.get(item) ?? []).map(placeOf))].filter((other) => other !== own);
+      const who = speakerOf(item.candidate, byMessage.person);
+      return `#### ${own}${who === undefined ? '' : `, ${who}`}${elsewhere.length === 0 ? '' : `, also ${elsewhere.join(', ')}`}\n\n${body(item)}`;
+    };
+    const rest = taken.slice(lead).map(named);
+    return [`### Most likely answer\n\n${taken.slice(0, lead).map(named).join('\n\n')}\n`,
+      ...(rest.length === 0 ? [] : [`### More messages, strongest first\n\n${rest.join('\n\n')}`])].join('\n\n');
+  }
   const top = taken.slice(0, lead).map((item) => `#### ${heading(item)}\n\n${body(item)}`);
   const groups = new Map<string, Item[]>();
   for (const item of taken.slice(lead)) {
@@ -319,6 +351,9 @@ export async function curate(task: string, picked: PickResult, options: CurateOp
   // With picks, they make the `Most likely answer` section; without, the two strongest parts do.
   const anyPick = sized.some((item) => pickOf(item) !== undefined);
   const leadOf = (taken: readonly Item[]) => anyPick ? taken.filter((item) => pickOf(item) !== undefined).length : 2;
+  // A text whose every item is a whole message is laid out message by
+  // message, strongest first, each naming who said it.
+  const byMessage = sized.length > 0 && sized.every((item) => whole(item.candidate)) ? { ...(options.person === undefined ? {} : { person: options.person }) } : undefined;
   let taken: Item[] = [];
   let copies = new Map<Item, readonly Item[]>();
   let log = '';
@@ -333,7 +368,7 @@ export async function curate(task: string, picked: PickResult, options: CurateOp
       if (original === undefined) { firstWith.set(shown, item); taken.push(item); }
       else copies.set(original, [...(copies.get(original) ?? []), item]);
     }
-    log = layOutItems(taken, copies, leadOf(taken));
+    log = layOutItems(taken, copies, leadOf(taken), byMessage);
   } else {
     for (const [index, item] of ordered.entries()) {
       // A copy of an item already taken adds only a place and date to that item's heading.
@@ -341,7 +376,7 @@ export async function curate(task: string, picked: PickResult, options: CurateOp
       const original = taken.find((kept) => body(kept).trim() === shown);
       const nextTaken = original === undefined ? [...taken, item] : taken;
       const nextCopies = original === undefined ? copies : new Map(copies).set(original, [...(copies.get(original) ?? []), item]);
-      const text = layOutItems(nextTaken, nextCopies, leadOf(nextTaken));
+      const text = layOutItems(nextTaken, nextCopies, leadOf(nextTaken), byMessage);
       if (taken.length > 0 && estimateAnswerTokens(text) > answerTokens) { stopped = index; break; }
       [taken, copies, log] = [nextTaken, nextCopies, text];
     }
@@ -398,7 +433,7 @@ export async function curate(task: string, picked: PickResult, options: CurateOp
   });
   const left = [...shown.values()];
   const trimmed = left.length === 0 ? '' : layOutItems(left,
-    new Map([...copies].flatMap(([item, list]) => shown.has(item) ? [[shown.get(item)!, list] as const] : [])), leadOf(left));
+    new Map([...copies].flatMap(([item, list]) => shown.has(item) ? [[shown.get(item)!, list] as const] : [])), leadOf(left), byMessage);
   return { log: trimmed, record: {
     ...record, items: left, estimatedTokens: estimateAnswerTokens(trimmed),
     sentences: { ...counts, kept, unanswered, itemsTrimmed, itemsLeftOut: taken.length - left.length },

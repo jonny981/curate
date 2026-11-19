@@ -1532,6 +1532,7 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
     const layout = {
       ...(settings.answerTokens === undefined ? {} : { answerTokens: settings.answerTokens }),
       ...(settings.sentenceCutoff === undefined ? {} : { sentenceCutoff: settings.sentenceCutoff }),
+      ...(settings.person === undefined ? {} : { person: settings.person }),
       decide: jev({ apiKey, ...rates, onCall: async (call) => { record.jev.push({ step: 'sentences', ...call, usage: call.usage ?? 'unavailable' }); await save(); } }),
     };
     const reading = busyTime();

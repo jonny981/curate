@@ -70,6 +70,31 @@ describe('whole messages', () => {
     expect(log.match(/We chose Postgres/g)).toHaveLength(1);
   });
 
+  it('lays whole messages out one by one, strongest first, each with its session and who said it', async () => {
+    // Four messages over three days; the strongest is the newest, so date grouping would put it last.
+    const messages = [
+      piece('s1', 1, 1, 'Old plan: SQLite.', { rank: 0 }),
+      piece('s1', 2, 1, 'We chose Postgres.', { rank: 1 }),
+      piece('s2', 3, 1, 'Yes, Postgres it is.', { author: 'person', rank: 2 }),
+      piece('s2', 4, 1, 'Postgres decided, for its transactions.', { rank: 3 }),
+    ];
+    const weight: Record<string, number> = { 'Old plan: SQLite.': 0.3, 'We chose Postgres.': 0.6, 'Yes, Postgres it is.': 0.7,
+      'Postgres decided, for its transactions.': 0.9 };
+    const result = await pick(messages, { task, decide: recording((text) => weight[text]!).decide, modesBySource: { chat: mode(true) } });
+    const { log } = await curate(task, result, { person: 'Sam' });
+    expect(log).toBe([
+      '### Most likely answer', '',
+      '#### session s2 (said 2026-10-04), agent', '', 'Postgres decided, for its transactions.', '',
+      '#### session s2 (said 2026-10-03), Sam', '', 'Yes, Postgres it is.', '', '',
+      '### More messages, strongest first', '',
+      '#### session s1 (said 2026-10-02), agent', '', 'We chose Postgres.', '',
+      '#### session s1 (said 2026-10-01), agent', '', 'Old plan: SQLite.',
+    ].join('\n'));
+    // Without whole messages the same parts keep the layout by date.
+    const parts = await pick(messages, { task, decide: recording((text) => weight[text]!).decide, modesBySource: { chat: mode() } });
+    expect((await curate(task, parts)).log).not.toContain('strongest first');
+  });
+
   it('joins the blocks of one message apart by a blank line', async () => {
     const blocks = [piece('s1', 4, 1, 'First block.', { block: 1, rank: 0 }), piece('s1', 4, 1, 'Second block.', { block: 2 })];
     const { batches, decide } = recording();
