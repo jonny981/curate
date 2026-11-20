@@ -80,8 +80,8 @@ curate setup
 npx skills add jonny981/curate -g -a claude-code -a codex -y
 ```
 
-`curate setup` checks the [requirements](#requirements) and offers to fix some of them ([Commands](#commands) lists what it writes).
-It does not sign you in, so also run `claude auth login` or `codex login` ([requirement 5](#requirements)), and set your key ([requirement 4](#requirements)).
+`curate setup` checks [what a call needs](#what-a-call-needs) and offers to fix some of it ([Commands](#commands) lists what it writes).
+It does not sign you in, so also run `claude auth login` or `codex login` (need 5 in [What a call needs](#what-a-call-needs)), and set your key (need 4).
 
 Then ask from a folder inside a project:
 
@@ -89,7 +89,7 @@ Then ask from a folder inside a project:
 curate "What did we decide about retries, and why?"
 ```
 
-Every requirement and setting is in [The `curate` command](#the-curate-command).
+Everything a call needs, and every setting, is in [The `curate` command](#the-curate-command).
 
 ## How it works
 
@@ -206,14 +206,14 @@ In a Curate checkout built with `pnpm install --frozen-lockfile` and `pnpm build
 ### Commands
 
 - **`curate "<question>"`** prints the laid-out text for the question, from the project the working folder is in.
-- **`curate check`** lists each [requirement](#requirements) as ready or missing, with its fix. It makes no model or decision call.
+- **`curate check`** lists each [need](#what-a-call-needs) as ready or missing, with its fix. It makes no model or decision call.
 - **`curate setup`** runs the check. In a terminal it then offers to download the embedding model (about 330 MB), to create `~/.curate/sources.json` and a private key file, and to prepare the project. It does not sign you in.
 - **`curate prepare`** brings the stored index and embeddings of the sources a call would read up to date, with no model call, decision key or login. It also removes the index and vector files an earlier version of Curate kept, and names each. Run it when no call from an older version of Curate is in flight: it cannot tell whether one still reads those files.
-- **Exit codes:** 0 when the command finishes, 3 when a requirement is missing, and 1 for any other failure.
+- **Exit codes:** 0 when the command finishes, 3 when a need is missing, and 1 for any other failure.
 
 The [command's README](packages/cli/README.md) gives each command in full.
 
-### Requirements
+### What a call needs
 
 A call needs each of the following, in this order.
 A call that misses any of them stops before any work and names every one.
@@ -274,9 +274,9 @@ An example `~/.curate/sources.json`:
 | `include` (`git` only) | Only commits that changed one of the paths |
 | `always` (each source) | `true` reads the source inside any project ([Which history a call reads](#which-history-a-call-reads)) |
 | `related` | Groups of related projects ([Which history a call reads](#which-history-a-call-reads)) |
-| `embeddingModel` | The embedding model file ([requirement 3](#requirements)) |
-| `envFile` | A private file that holds `TYPESAFE_API_KEY` ([requirement 4](#requirements)) |
-| `searchModel` | `haiku` or `luna`, the model that writes the search lines ([requirement 5](#requirements)) |
+| `embeddingModel` | The embedding model file (need 3 in [What a call needs](#what-a-call-needs)) |
+| `envFile` | A private file that holds `TYPESAFE_API_KEY` (need 4) |
+| `searchModel` | `haiku` or `luna`, the model that writes the search lines (need 5). Unset, a call uses Haiku when the Claude login works and Luna otherwise |
 | `answerTokens`, `sentenceCutoff` | The text's budget and sentence cutoff ([Curate](docs/library.md#curate)) |
 | `stopWhenCold` | The rating stop. On, at a `floor` of 0.1 and a `share` of 0.2; `{ "share": 0.1 }` and the like change them, and `false` turns it off ([The rating stop](docs/library.md#the-rating-stop)). When it leaves ranked parts unread, standard error says how many |
 | `records` | `true` saves a record of each call ([Files a call writes](#files-a-call-writes)) |

@@ -1,7 +1,7 @@
 # @curatejs/git
 
 Read git commits as task evidence. The package depends only on
-`@curatejs/core`; it calls no model or network service.
+`@curatejs/core`. It calls no model or network service.
 
 ## Install
 
@@ -15,52 +15,59 @@ Node.js 22.20 or later. Git must be on `PATH`.
 
 ## Git history
 
-`git(repo)` reads a repository's commits: one candidate per
-non-merge commit, newest first, with the subject as `title`, the body as
-`text`, the commit date with meaning `recorded`, and `changedPaths`
-holding every file the commit changed relative to the repository root.
-`contentRef` keeps the full commit SHA and `id` shows the short one.
-Git runs with no shell and a scrubbed environment. A git call has no
-time or size limit: it runs until it finishes or the request's `signal`
-cancels it. Missing git, a path that is not a directory, or a directory
-outside a work tree reports `absent`; a pin the repository does not have
-throws.
+`git(repo)` reads a repository's commits: one candidate per non-merge
+commit, newest first. Each candidate holds:
 
-With no exclusions, `git log` enumerates the history in pages so one
-call's output stays small; with exclusions, paths are listed first and a
-commit that touched an excluded path is dropped before its body is ever
-fetched. Commit bodies are read in bounded batches. When a pick's lane
-cut is on, the read counts each task word in each page or batch as it
-arrives, keeps those counts per commit, and fetches bodies only for the
-commits its own score curve kept.
+- **Subject:** as `title`.
+- **Body:** as `text`.
+- **Commit date:** with meaning `recorded`.
+- **Changed files:** `changedPaths` holds every file the commit changed, relative to the repository root.
+- **SHA:** `contentRef` keeps the full commit SHA, and `id` shows the short one.
 
-A keyword search ranks each commit by the sum of its signals.
-`bm25` scores the task's words in the subject and body joined.
-A word scores more the rarer it is among the commits the search ranks.
-Each repeated mention adds less than the one before.
-A long message counts each mention for less than a short one.
-The counts cover only the commits the search ranks.
-For the main search, those are the commits left after `since`, `paths`, `exclude` and the task's date or period, up to the read's `limit`.
-For a kind search, they are the commits that contain its phrase.
-`recency` adds up to 1 and falls with the commit's age.
-`named_path_touch` and `co_change` add their weights when they apply.
-`live_lines` adds its weight plus the base-10 log of the commit's live lines.
-The subject carries no extra weight.
-On a test repository of about 2,900 commits, weighting it as a title kept no more of the expected commits than plain BM25.
+### Reading the history
+
+- **Environment:** Git runs with no shell and a scrubbed environment.
+- **No limits:** A git call has no time or size limit. It runs until it finishes or the request's `signal` cancels it.
+- **Failures:** Missing git, a path that is not a directory, or a directory outside a work tree reports `absent`. A pin the repository does not have throws.
+- **No exclusions:** `git log` enumerates the history in pages, so one call's output stays small.
+- **With exclusions:** Paths are listed first.
+- **Bodies:** Commit bodies are read in bounded batches.
+- **Lane cut:** When a pick's lane cut is on, the read counts each task word in each page or batch as it arrives. It keeps those counts per commit. It fetches bodies only for the commits its own score curve kept.
+
+### Keyword search
+
+A keyword search ranks each commit by the sum of its signals:
+
+- **`bm25`:** scores the task's words in the subject and body joined.
+  - **Rarity:** A word scores more the rarer it is among the commits the search ranks.
+  - **Repeats:** Each repeated mention adds less than the one before.
+  - **Length:** A long message counts each mention for less than a short one.
+  - **Counted commits:** The counts cover only the commits the search ranks. For the main search, those are the commits left after `since`, `paths`, `exclude` and the task's date or period, up to the read's `limit`. For a kind lane, they are the commits that contain its phrase.
+- **`recency`:** adds up to 1 and falls with the commit's age.
+- **`named_path_touch` and `co_change`:** add their weights when they apply.
+- **`live_lines`:** adds its weight plus the base-10 log of the commit's live lines.
+
+The subject carries no extra weight. On a test repository of about 2,900 commits, weighting it as a title kept no more of the expected commits than plain BM25.
+
+### Stored index
 
 By default the reader keeps one local file for this source, made on its
-first read. Every lane of a call takes each commit's subject, body and
-paths from the file. Git only lists the commit names, once per call and
-date range. Each call reads only the commits the file does not hold yet.
-If history was rewritten, the file is built again. A read pinned to a
-revision other than the one this call indexed runs git as before. `index: { directory }` chooses the
-folder, and `index: false` runs git on every read. See
-[Stored index](https://github.com/jonny981/curate/blob/main/packages/core/README.md#stored-index).
+first read.
 
-`blame: true` adds a signal for commits that wrote lines still live in
-the task's named paths; `coChange: true` adds one for commits that
-touched files which historically change with them. Both are off unless
-asked for.
+- **Lanes:** Every lane of a call takes each commit's subject, body and paths from the file.
+- **Updates:** Git only lists the commit names, once per call and date range. Each call reads only the commits the file does not hold yet.
+- **Rewritten history:** If history was rewritten, the file is built again.
+- **Pinned reads:** A read pinned to a revision other than the one this call indexed runs git as before.
+- **Options:** `index: { directory }` chooses the folder, and `index: false` runs git on every read.
+
+See [Stored index](https://github.com/jonny981/curate/blob/main/packages/core/README.md#stored-index).
+
+### Optional signals
+
+- **`blame: true`:** adds a signal for commits that wrote lines still live in the task's named paths.
+- **`coChange: true`:** adds a signal for commits that touched files which historically change with them.
+
+Both are off unless asked for.
 
 ## Usage
 
@@ -75,11 +82,16 @@ const picked = await pickFromSources(sources, { task }, { task, decide });
 
 ## Defaults and overrides
 
-`git()` reads with `gitSettings`, `{ rare: true, labels: false, names: true, bar: 0.0146 }`: a name lane for each name the task names, references kept when scored 0.0146 or more,
-ordered and weighted by decision probability, and no label kinds.
-Set `everyScored: true` on the pick to keep every scored reference from every source.
-Core's `curate()` lays out the kept parts by their exact scores, strongest first.
-The rare-word round finds unselected commits that share rare words with selected commits, counting words over this history only.
+`git()` reads with `gitSettings`, `{ rare: true, labels: false, names: true, bar: 0.0146 }`:
+
+- **Names:** a name lane for each name the task names.
+- **Selection:** candidates kept when scored 0.0146 or more, ordered and weighted by decision probability.
+- **Labels:** no label kinds.
+- **Rare words:** The rare-word round finds unselected commits that share rare words with selected commits, counting words over this history only.
+
+Set `everyScored: true` on the pick to keep every scored reference candidate from every source.
+Core's `curate()` lays out the kept candidates by their exact scores, strongest first.
+
 To change a setting, build the source with core's `historySource()`:
 
 ```ts
@@ -93,10 +105,14 @@ See [core's measured reason](https://github.com/jonny981/curate/blob/main/packag
 
 - **Keyword settings:** `GIT_KEYWORD_SETTINGS` exports the ranking defaults. Pass a partial `keyword` object to the reader to override them.
 - **Task date:** the `recency` signal is measured from the read request's `taskDate`, else its `asOf`, else now, so a replay with the same task date scores the same. With `taskDate`, a commit dated after it is not read. Commit dates keep the committer's own offset.
-- **Questions:** `gitSettings` carries `GIT_HISTORY_CASCADE`, the fitted question set `git()` asks of each commit. Core's `memory()` and `pickFromSources()` ask it. Change it with `historySource({ reader: git('.'), ...gitSettings, questions: mySet })`. The git and Markdown sets were fitted on saved answers about commits and notes. No end-to-end score has measured them.
-- **Search wording:** `GIT_SEARCH_LINE_REGISTER` describes the wording for host-written extra search lines. Copy or replace this text in your host; the package generates no lines.
-- **Kind phrases:** `GIT_HISTORY_KIND_PHRASES` exports phrases in the commit register for `directions`, `decisions` and `corrections`. Pass one list to core's `kindLanes` option, for example `{ 'git-history': GIT_HISTORY_KIND_PHRASES.decisions }`; kind lanes stay off by default.
-- **Look-back and paths:** `git(repo, { since: '14 days' })` accepts an ISO date or a duration counted back from the task date (the read request's `taskDate`, else its `asOf`, else now); the bound reaches `git log`, so an older commit is never enumerated. `paths: ['src']` reads only the commits that changed one of them. This `paths` is a filter, unlike the read request's `paths`, which only hints at ranking. `exclude: ['secret.md']` drops any commit that touched one before its body is fetched, even when it also touched an allowed path. Entries resolve like the request's `exclude`, repository-relative or absolute inside the work tree; both join that `exclude` for this source's reads only, so another source over the same repository still reads them. All three are recorded in the pick's levers.
+- **Questions:** `gitSettings` carries `GIT_HISTORY_CASCADE`, the fitted question set `git()` asks of each commit. Core's `memory()` and `pickFromSources()` ask it. Change it with `historySource({ reader: git('.'), ...gitSettings, questions: mySet })`.
+- **Question fit:** The git and Markdown sets were fitted on saved answers about commits and notes. No end-to-end score has measured them.
+- **Search wording:** `GIT_SEARCH_LINE_REGISTER` describes the wording for host-written extra search lines. Copy or replace this text in your host. The package generates no lines.
+- **Kind phrases:** `GIT_HISTORY_KIND_PHRASES` exports phrases in the commit register for `directions`, `decisions` and `corrections`. Pass one list to core's `kindLanes` option, for example `{ 'git-history': GIT_HISTORY_KIND_PHRASES.decisions }`. Kind lanes stay off by default.
+- **Look-back and paths:** All three options below are recorded in the pick's levers.
+  - **`since`:** `git(repo, { since: '14 days' })` accepts an ISO date or a duration counted back from the task date (see **Task date**). The bound reaches `git log`, so an older commit is never enumerated.
+  - **`paths`:** `paths: ['src']` reads only the commits that changed one of them. This `paths` is a filter, unlike the read request's `paths`, which only hints at ranking.
+  - **`exclude`:** `exclude: ['secret.md']` drops any commit that touched one before its body is fetched, even when it also touched an allowed path. Entries resolve like the request's `exclude`, repository-relative or absolute inside the work tree. Both join that `exclude` for this source's reads only, so another source over the same repository still reads them.
 
 ```ts
 import { git, GIT_KEYWORD_SETTINGS, GIT_HISTORY_CASCADE, GIT_SEARCH_LINE_REGISTER } from '@curatejs/git';

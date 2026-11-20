@@ -1,7 +1,7 @@
 # @curatejs/chat
 
 Read local Claude Code and Codex transcripts. The package depends only on
-`@curatejs/core`; it calls no model or network service.
+`@curatejs/core`. It calls no model or network service.
 
 ## Install
 
@@ -15,7 +15,7 @@ Node.js 22.20 or later.
 
 ## Chat transcripts
 
-`chat(options)` reads local JSONL transcripts as reference candidates.
+`chat(options)` reads local JSONL transcripts as reference parts.
 
 ```ts
 import { chat } from '@curatejs/chat';
@@ -23,102 +23,46 @@ import { chat } from '@curatejs/chat';
 const source = chat({ providers: ['claude-code', 'codex'], since: '14 days' });
 ```
 
-- **Providers:** Claude Code reads `~/.claude/projects/`; Codex reads
-  `~/.codex/sessions/`. Both folders are scanned recursively. `providers`
-  defaults to both. `paths: ['/path/to/transcripts']` replaces the default
-  folders for each selected provider.
-- **Compressed Codex sessions:** Codex compresses older sessions as
-  `<name>.jsonl.zst`. Each is read as the session `<name>.jsonl`, with
-  Node's own zstd, decoded a line at a time and never held whole: the
-  same session id, the same part ids and the same
-  place in the stored index, so a session indexed before it was
-  compressed keeps its parts, and only lines it gained before then are
-  read. When both forms of a session sit side by side, the uncompressed
-  one is read, since it is the one that can still grow. Every zstd frame
-  of a compressed session is read, and the file is checked against its
-  own frame structure: a session that is empty, cut off inside a frame,
-  holds bytes after its last frame, or does not decompress is left out
-  and counted, and the read is not complete, with `partial` saying how
-  many. A file cut exactly between two whole frames cannot be told from
-  a whole one. A session Codex compresses after a read lists the folder
-  is read in its compressed form; one gone in both forms is counted the
-  same way.
-- **`firstSessionLine(path)`:** the first line of a session file, plain
-  (`.jsonl`) or compressed (`.jsonl.zst`), read no further than that line.
-  It rejects an empty or damaged compressed file, so a caller can admit a
-  session by its header with the same frame walk the reader uses.
-- **Dates:** `since` accepts an ISO date or a duration such as `'14 days'`
-  or `'12 hours'`. An ISO date is the cutoff itself. A duration counts
-  back from the task date: the read request's `taskDate`, else its `asOf`,
-  else now. Only messages at or after the cutoff are emitted. Omit it to read all dated messages. With `taskDate`,
-  a message dated after it is not read.
-- **Exclusions:** `exclude: ['project/old-sessions']` joins the read
-  request's `exclude` for this source's reads only. An entry is an
-  absolute path or one relative to the provider folder; an excluded file
-  or folder is never opened. Another source over the same transcripts
-  still reads them.
-- **Records read:** Claude Code `user` and `assistant` records, and the
-  `attachment` records whose `attachment.type` is `queued_command`. Claude
-  Code saves a message typed while an agent works as a queued attachment;
-  the reader reads its `prompt` as a user part dated by the record's
-  `timestamp`. A list prompt's text blocks are joined by line breaks. Every
-  other attachment type stays unread. Codex `response_item` messages are
-  read, and the first record's `session_meta` says what started the session.
-- **Parts:** Each user or assistant text block becomes a candidate. Text
-  is split at line ends into at most 700 characters. Longer lines are
-  hard-cut. `maxQuestionText` and the request's text budget can tighten
-  that limit. Joining the parts reproduces the scrubbed block.
-- **Metadata:** `candidate.chat` carries `provider`, `sessionId`, the
-  message `role`, the part's `author` and, when the transcript names an
-  agent, `authorName`. The title names the author after the role, for
-  example `claude-code <session> user (the person) <date>` or
-  `user (agent team-lead)`. The candidate's own `role` stays `'reference'`. `date`
-  holds the message timestamp with meaning `'recorded'`, as an ISO
-  date-time with the offset of the read request's `timeZone`, or of the
-  system's zone when it has none: 23:30 UTC on 1 June is
-  `2025-06-02T00:30:00.000+01:00` in `Europe/London`. UTC is written
-  `+00:00`. The candidate's title carries the same value. `contentRef`
-  names the provider, session, JSONL line, block and part.
-- **Tools:** Tool calls and results are excluded by default.
-  `includeTools: true` includes them with message roles `'tool-call'` and
-  `'tool-result'`. Thinking blocks and Codex event copies are excluded.
-- **Scrubbing:** Full message blocks and tool arguments are scrubbed
-  before splitting or ranking. Patterns cover private keys, common API
-  keys and tokens, named passwords and credentials, credentials in URLs,
-  and long strings that look like secrets. A 40-character hex commit id
-  is retained. Pattern matching is not a guarantee that arbitrary secret
-  text will be recognized. A part's `id` (the folder read, the
-  transcript's path in it, and the part's line, block and piece) has
-  the folder and the path scrubbed each on its own before they are
-  joined, so a name that looks like a secret is masked and every id
-  stays distinct.
-- **Ranking:** Chat uses the LongMemEval settings: BM25 with `k1: 0.6`
-  and `b: 0`, Porter word stems, short identifiers, noun weights, and
-  merged rankings for the full query, content words and names. Markdown
-  and git use their own settings. No model or network call is made.
+### Files and dates
+
+- **Providers:** Claude Code reads `~/.claude/projects/`. Codex reads `~/.codex/sessions/`. Both folders are scanned recursively. `providers` defaults to both.
+- **Paths:** `paths: ['/path/to/transcripts']` replaces the default folders for each selected provider.
+- **Compressed Codex sessions:** Codex compresses older sessions as `<name>.jsonl.zst`. Each is read with Node's own zstd, decoded a line at a time and never held whole.
+  - **Same session:** Each compressed file is read as the session `<name>.jsonl`: the same session id, the same part ids and the same place in the stored index. So a session indexed before it was compressed keeps its parts, and only lines it gained before then are read.
+  - **Both forms:** When both forms of a session sit side by side, the uncompressed one is read, since it is the one that can still grow.
+  - **Frame check:** Every zstd frame of a compressed session is read, and the file is checked against its own frame structure.
+  - **Damaged sessions:** A session that is empty, cut off inside a frame, holds bytes after its last frame, or does not decompress is left out and counted. The read is not complete, with `partial` saying how many. A file cut exactly between two whole frames cannot be told from a whole one.
+  - **Compressed after listing:** A session Codex compresses after a read lists the folder is read in its compressed form. One gone in both forms is counted the same way.
+- **`firstSessionLine(path)`:** the first line of a session file, plain (`.jsonl`) or compressed (`.jsonl.zst`), read no further than that line. It rejects an empty or damaged compressed file, so a caller can admit a session by its header with the same frame walk the reader uses.
+- **Dates:** `since` accepts an ISO date or a duration such as `'14 days'` or `'12 hours'`. An ISO date is the cutoff itself. A duration counts back from the task date: the read request's `taskDate`, else its `asOf`, else now.
+- **Cutoff:** Only messages at or after the cutoff are emitted. Omit `since` to read all dated messages. With `taskDate`, a message dated after it is not read.
+- **Exclusions:** `exclude: ['project/old-sessions']` joins the read request's `exclude` for this source's reads only. An entry is an absolute path or one relative to the provider folder. An excluded file or folder is never opened. Another source over the same transcripts still reads them.
+
+### Messages and parts
+
+- **Records read:** Claude Code `user` and `assistant` records, and the `attachment` records whose `attachment.type` is `queued_command`. Every other attachment type stays unread. Codex `response_item` messages are read, and the first record's `session_meta` says what started the session.
+- **Queued messages:** Claude Code saves a message typed while an agent works as a queued attachment. The reader reads its `prompt` as a user part dated by the record's `timestamp`. A list prompt's text blocks are joined by line breaks.
+- **Parts:** Each user or assistant text block is split at line ends into parts of at most 700 characters. Longer lines are hard-cut. `maxQuestionText` and the request's text budget can tighten that limit. Joining the parts reproduces the scrubbed block.
+- **Metadata:** `candidate.chat` carries `provider`, `sessionId`, the message `role`, the part's `author` and, when the transcript names an agent, `authorName`. The part's own `role` stays `'reference'`. `contentRef` names the provider, session, JSONL line, block and part.
+- **Titles:** The title names the author after the role, for example `claude-code <session> user (the person) <date>` or `user (agent team-lead)`.
+- **Timestamps:** `date` holds the message timestamp with meaning `'recorded'`, as an ISO date-time with the offset of the read request's `timeZone`, or of the system's zone when it has none: 23:30 UTC on 1 June is `2025-06-02T00:30:00.000+01:00` in `Europe/London`. UTC is written `+00:00`. The part's title carries the same value.
+- **Tools:** Tool calls and results are excluded by default. `includeTools: true` includes them with message roles `'tool-call'` and `'tool-result'`. Thinking blocks and Codex event copies are excluded.
+- **Scrubbing:** Full message blocks and tool arguments are scrubbed before splitting or ranking. Patterns cover private keys, common API keys and tokens, named passwords and credentials, credentials in URLs, and long strings that look like secrets. A 40-character hex commit id is retained. Pattern matching is not a guarantee that arbitrary secret text will be recognised.
+- **Part ids:** A part's `id` (the folder read, the transcript's path in it, and the part's line, block and piece) has the folder and the path scrubbed each on its own before they are joined, so a name that looks like a secret is masked and every id stays distinct.
+- **Scrubber:** `scrubChat(text)` exports the transcript secret scrubber.
+
+### Ranking and meaning search
+
+- **Ranking:** Chat uses the LongMemEval settings: BM25 with `k1: 0.6` and `b: 0`, Porter word stems, short identifiers, noun weights, and merged rankings for the full query, content words and names. Markdown and git use their own settings.
 - **Meaning search:** Each part embeds with the previous part from the same file. For a reply that is often its question, but it can be a tool output or an earlier slice of the same message. Decision text stays unchanged.
-- **Read results:** Missing folders return `absent` when none can be read.
-  Missing folders alongside readable folders, skipped symbolic links,
-  undated messages, and a candidate limit make the read incomplete.
-  Excluded paths are refused before opening content. Cancellation and
-  file or JSON failures throw `SourceReadError`. Revision pins return
-  `absent` because transcripts have no git revision.
-- **Memory:** The read streams the history: one pass over the transcripts
-  collects keyword statistics, a second scores each part against them,
-  and a third reads back only the transcripts the read keeps. With the
-  lane cut on (`wholeLanes` off, the `pickFromSources` default), peak heap stays roughly
-  flat as the history grows. A search lane where nothing scores above
-  zero keeps only ids, never bodies; a read that keeps nothing
-  records `noSearchMatch` so the caller can ask more broadly. A read
-  with `wholeLanes: true` returns every part. A phrase lane needs only
-  the matching pass.
-- **Stored index:** By default the reader keeps one local file for this
-  source, made on its first read, and every lane reads it instead of the
-  transcripts. Each call reads only what changed: the new bytes of a
-  transcript that grew, a changed transcript whole, and any new one.
-  `index: { directory }` chooses the folder, and `index: false` reads the
-  transcripts directly on every read. See
-  [Stored index](https://github.com/jonny981/curate/blob/main/packages/core/README.md#stored-index).
+
+### Results, memory and stored index
+
+- **Read results:** Missing folders return `absent` when none can be read. Missing folders alongside readable folders, skipped symbolic links, undated messages, and a part limit make the read incomplete. Cancellation and file or JSON failures throw `SourceReadError`. Revision pins return `absent` because transcripts have no git revision.
+- **Memory:** The read streams the history: one pass over the transcripts collects keyword statistics, a second scores each part against them, and a third reads back only the transcripts the read keeps. A phrase lane needs only the matching pass.
+- **Lane cut:** With the lane cut on (`wholeLanes` off, the `pickFromSources` default), peak heap stays roughly flat as the history grows. A read with `wholeLanes: true` returns every part.
+- **No match:** A search lane where nothing scores above zero keeps only ids, never bodies. A read that keeps nothing records `noSearchMatch` so the caller can ask more broadly.
+- **Stored index:** By default the reader keeps one local file for this source, made on its first read, and every lane reads it instead of the transcripts. Each call reads only what changed: the new bytes of a transcript that grew, a changed transcript whole, and any new one. `index: { directory }` chooses the folder, and `index: false` reads the transcripts directly on every read. See [Stored index](https://github.com/jonny981/curate/blob/main/packages/core/README.md#stored-index).
 
 ## Who wrote each part
 
@@ -164,11 +108,16 @@ title without it.
 
 ## Defaults and overrides
 
-`chat()` reads with `chatSettings` and the `AGENT_CHAT_CASCADE` question set: no rare-word round, core's seven label kinds, a name lane for each name the task names, and references kept when scored 0.0146 or more,
-ordered and weighted by decision probability.
-Set `everyScored: true` on the pick to keep every scored reference from every source.
+`chat()` reads with `chatSettings` and the `AGENT_CHAT_CASCADE` question set:
+
+- **Rare words:** no rare-word round.
+- **Labels:** core's seven label kinds. Labels are on because they find parts the keyword search missed, which recall needs.
+- **Names:** a name lane for each name the task names.
+- **Selection:** parts kept when scored 0.0146 or more, ordered and weighted by decision probability.
+
+Set `everyScored: true` on the pick to keep every scored reference part from every source.
 Core's `curate()` lays out the kept parts by their exact scores, strongest first.
-Labels are on because they find parts the keyword search missed, which recall needs.
+
 To change a setting, build the source with core's `historySource()`. To turn labels off for one chat source:
 
 ```ts
@@ -180,8 +129,24 @@ const source = historySource({ reader: chat({ paths: ['transcripts'] }), ...chat
 
 See [core's measured reason](https://github.com/jonny981/curate/blob/main/packages/core/README.md#defaults-and-evidence) for the saved-decision sweep's answer-turn losses.
 
-- **Keyword settings:** `CHAT_KEYWORD_SETTINGS` exports the ranking defaults. Pass a partial `keyword` object to the reader to override them.
-- **Questions:** `chat()` uses `AGENT_CHAT_CASCADE`: `relevant` first, then `needed` inside the question band. It leaves out `own`. Core's `memory()` and `pickFromSources()` ask this set. Shared `chatSettings` keeps `CHAT_CASCADE`, including `own`, for host-provided personal histories. Spreading `chatSettings` into `historySource()` selects that shared set. Set `questions: AGENT_CHAT_CASCADE` to preserve agent questions when you change other settings.
+### Keyword settings
+
+`CHAT_KEYWORD_SETTINGS` exports the ranking defaults. Pass a partial `keyword` object to the reader to override them.
+
+```ts
+import { chat, CHAT_KEYWORD_SETTINGS, CHAT_CASCADE, CHAT_SEARCH_LINE_REGISTER } from '@curatejs/chat';
+
+const source = chat({ paths: ['transcripts'], keyword: { k1: 1.2 } });
+```
+
+- **Ranking function:** `rankChat(parts, task, keyword)` accepts the same keyword overrides.
+- **Merged rankings:** `rrf: false` keeps the full-query keyword score without merging content and name rankings. The default is `true`.
+- **Ordinary settings:** To use ordinary keyword settings, pass `{ k1: 1.2, b: 0.75, stem: false, short: false, stop: 'baseline', nouns: false, rrf: false }`.
+
+### Question sets
+
+- **Questions:** `AGENT_CHAT_CASCADE` asks `relevant` first, then `needed` inside the question band. It leaves out `own`. Core's `memory()` and `pickFromSources()` ask this set.
+- **Shared settings:** Shared `chatSettings` keeps `CHAT_CASCADE`, including `own`, for host-provided personal histories. Spreading `chatSettings` into `historySource()` selects that shared set. Set `questions: AGENT_CHAT_CASCADE` to preserve agent questions when you change other settings.
 - **Question band:** `AGENT_CHAT_CASCADE.band`, `[0.1, 0.9]`, decides when the other questions are asked. A part whose answer to the first question, `relevant`, falls outside the band is scored on that answer alone. Set your own band through `questions`:
 
   ```ts
@@ -190,7 +155,8 @@ See [core's measured reason](https://github.com/jonny981/curate/blob/main/packag
 
   const source = historySource({ reader: chat(), ...chatSettings, questions: { ...AGENT_CHAT_CASCADE, band: [0.05, 0.95] } });
   ```
-- **Personal questions:** `PERSONAL_CHAT_CASCADE` is a question set for histories of a person's own life: events, purchases, people, ages, places and numbers. It asks first whether the user says something about their own life that bears on the task, then `needed`, `aside` and `preference` inside the 0.1 to 0.9 band. On saved answers for chat-history tasks, it ranked the parts holding an answer above the hard non-answers of their own task more often than `CHAT_CASCADE` did: 0.815 against 0.778. It is not the default because `chat()` mostly reads coding-agent transcripts. A clear "no" to its first question settles a part with no further question, so a coding decision such as "we'll use Postgres" would likely be dropped. Use it through `historySource`:
+- **Personal questions:** `PERSONAL_CHAT_CASCADE` is a question set for histories of a person's own life: events, purchases, people, ages, places and numbers. It asks first whether the user says something about their own life that bears on the task, then `needed`, `aside` and `preference` inside the 0.1 to 0.9 band. On saved answers for chat-history tasks, it ranked the parts holding an answer above the hard non-answers of their own task more often than `CHAT_CASCADE` did: 0.815 against 0.778.
+- **Using personal questions:** `PERSONAL_CHAT_CASCADE` is not the default because `chat()` mostly reads coding-agent transcripts. A clear "no" to its first question settles a part with no further question, so a coding decision such as "we'll use Postgres" would likely be dropped. Use it through `historySource`:
 
   ```ts
   import { historySource } from '@curatejs/core';
@@ -198,7 +164,8 @@ See [core's measured reason](https://github.com/jonny981/curate/blob/main/packag
 
   const source = historySource({ reader: chat(), ...chatSettings, questions: PERSONAL_CHAT_CASCADE });
   ```
-- **Personal questions with written ones:** `PERSONAL_CHAT_WRITTEN_CASCADE` holds the same questions, fitted together with two to four questions a model writes for each task and a question asked once per name the task names ([core's name question](https://github.com/jonny981/curate/blob/main/packages/core/README.md#a-question-about-each-name)). It needs core's `writeQuestions` pick option; `taskQuestionWriter(write)` builds one from a `write` function that sends a prompt to a model and returns its reply text. A pick with this set and no writer throws. See [core's written questions](https://github.com/jonny981/curate/blob/main/packages/core/README.md#questions-written-for-each-task).
+- **Personal questions with written ones:** `PERSONAL_CHAT_WRITTEN_CASCADE` holds the same questions, fitted together with two to four questions a model writes for each task and a question asked once per name the task names ([core's name question](https://github.com/jonny981/curate/blob/main/packages/core/README.md#a-question-about-each-name)).
+- **Question writer:** `PERSONAL_CHAT_WRITTEN_CASCADE` needs core's `writeQuestions` pick option. `taskQuestionWriter(write)` builds one from a `write` function that sends a prompt to a model and returns its reply text. A pick with this set and no writer throws. See [core's written questions](https://github.com/jonny981/curate/blob/main/packages/core/README.md#questions-written-for-each-task).
 
   ```ts
   import { historySource, memory, taskQuestionWriter, type CurateWrite } from '@curatejs/core';
@@ -215,28 +182,23 @@ See [core's measured reason](https://github.com/jonny981/curate/blob/main/packag
     pick: { writeQuestions: taskQuestionWriter(write) },
   });
   ```
-- **Judgment questions:** `JUDGMENT_CHAT_CASCADE` asks two narrow questions of every part: `topic_match`, a yes/no subject match, and `answerhood`, a five-level "could this excerpt itself be the answer" score. It combines the answers with facts the code computes per part (position, keyword rank, task kind and the rest) through the fitted constants in `judgment-chat-weights.json`, shipped beside the bundle. Items render anonymously: a date and their text, no id, title or session. Select it with `questions`, and override its fitted selection bar with `bar`:
+- **Judgment questions:** `JUDGMENT_CHAT_CASCADE` asks two narrow questions of every part: `topic_match`, a yes/no subject match, and `answerhood`, a five-level "could this excerpt itself be the answer" score. It combines the answers with facts the code computes per part (position, keyword rank, task kind and the rest) through the fitted constants in `judgment-chat-weights.json`, shipped beside the bundle. Parts render anonymously: a date and their text, no id, title or session. Select it with `questions`, and override its fitted selection bar with `bar`:
 
   ```ts
   const source = chat({ paths: ['transcripts'], questions: JUDGMENT_CHAT_CASCADE, bar: 0.3 });
   ```
+- **Judgment weights:** The weights file ships empty, so the set throws until a fitted run writes `keys`, `mu`, `sd`, `w`, `b` and `bar` beside the bundle, plus a `provenance` block naming the population the fit measured. The set never borrows another set's weights or bar.
+- **Fit population:** The population the fit measured is the saved benchmark's: 700-character transcript chunks, session dates, full pools and adapter-assigned roles. A pass validates the set on that population only. It is not calibration for ordinary `/curate` sources.
+- **Curate skill:** The `curate` skill selects `JUDGMENT_CHAT_CASCADE` per chat source with `questions: "judgments"` in `sources.json`.
 
-  The weights file ships empty, so the set throws until a fitted run writes `keys`, `mu`, `sd`, `w`, `b` and `bar` beside the bundle, plus a `provenance` block naming the population the fit measured. That population is the saved benchmark's: 700-character transcript chunks, session dates, full pools and adapter-assigned roles. A pass validates the set on that population only; it is not calibration for ordinary `/curate` sources. The set never borrows another set's weights or bar. The `curate` skill selects it per chat source with `questions: "judgments"` in `sources.json`.
+### Labels
+
 - **Label bar:** `labelBar` sets how sure a label must be, 0.5 when absent. A higher bar brings fewer parts in through the label lane: `historySource({ reader: chat(), ...chatSettings, labelBar: 0.7, questions: AGENT_CHAT_CASCADE })`.
-- **Labels:** `labels: true` asks core's seven `LABEL_KINDS` for transcript facts; a list of kinds asks your own set instead. See [core's label options](https://github.com/jonny981/curate/blob/main/packages/core/README.md#label-gate).
-- **Search wording:** `CHAT_SEARCH_LINE_REGISTER` describes the wording for host-written extra search lines. Copy or replace this text in your host; the package generates no lines.
-- **Kind phrases:** `CHAT_KIND_PHRASES` exports phrases in the chat register for `directions`, `decisions` and `corrections`. Pass one list to core's `kindLanes` option, for example `{ chat: CHAT_KIND_PHRASES.directions }`; kind lanes stay off by default.
+- **Labels:** `labels: true` asks core's seven `LABEL_KINDS` for transcript facts. A list of kinds asks your own set instead. See [core's label options](https://github.com/jonny981/curate/blob/main/packages/core/README.md#label-gate).
 
-```ts
-import { chat, CHAT_KEYWORD_SETTINGS, CHAT_CASCADE, CHAT_SEARCH_LINE_REGISTER } from '@curatejs/chat';
+### Search wording and kind phrases
 
-const source = chat({ paths: ['transcripts'], keyword: { k1: 1.2 } });
-```
-
-`rankChat(parts, task, keyword)` accepts the same keyword overrides.
-`rrf: false` keeps the full-query keyword score without merging content
-and name rankings. The default is `true`. To use ordinary keyword settings,
-pass `{ k1: 1.2, b: 0.75, stem: false, short: false, stop: 'baseline', nouns: false, rrf: false }`.
-`scrubChat(text)` exports the transcript secret scrubber.
+- **Search wording:** `CHAT_SEARCH_LINE_REGISTER` describes the wording for host-written extra search lines. Copy or replace this text in your host. The package generates no lines.
+- **Kind phrases:** `CHAT_KIND_PHRASES` exports phrases in the chat register for `directions`, `decisions` and `corrections`. Pass one list to core's `kindLanes` option, for example `{ chat: CHAT_KIND_PHRASES.directions }`. Kind lanes stay off by default.
 
 See [core](https://github.com/jonny981/curate/blob/main/packages/core/README.md) for selection, search lines, optional cuts and curation.
