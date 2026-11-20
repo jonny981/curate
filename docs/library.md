@@ -15,7 +15,6 @@ const mem = memory({
 ```
 
 Batch sizes change request size without dropping evidence.
-Limits that leave a read incomplete or decisions unfinished make `recall()` throw.
 The [core package](../packages/core/README.md) documents every option and record field.
 
 ## What recall returns
@@ -27,16 +26,15 @@ const { log, rules, picked, result } = await mem.recall('What billing constraint
 ```
 
 - **Source questions are automatic.** Each reader brings its own set of narrow questions.
-- **Incomplete collection throws.** An absent or incomplete read, an unanswered candidate, or interrupted decisions stop recall. Parts intentionally excluded by the label questions are allowed. Read and model errors reach the caller.
+- **Incomplete collection throws.** An absent or incomplete read, an unanswered part, or unfinished decisions stop recall, including those a limit leaves. Each stays visible in the record. Parts intentionally excluded by the label questions stay in the record without stopping recall. Read and model errors reach the caller.
 - **Rules stay exact.** `rules` joins the selected rule text with blank lines. The laid-out text holds reference evidence, not rules.
-- **Every kept part is laid out whole.** No budget cuts the text and no sentence is rated unless `curate.answerTokens` or `curate.sentenceCutoff` is set. A pick that kept nothing gives an empty text. See [Layout](#layout).
 - **Cancellation is optional.** Pass an `AbortSignal` as `mem.recall(task, { signal })`.
 
 ## Settings for each source
 
 Each source carries its own settings, tuned for that kind of history.
 
-| Source | Rare-word round | Labels | Label bar | Name lanes | Decision-score bar | Rule bar | Questions |
+| Source | Rare-word round | Labels | Label bar | Name lanes | Keep bar | Rule bar | Questions |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `chat()` | Off | On, the seven kinds | 0.5 | On | 0.0146 | | `AGENT_CHAT_CASCADE` |
 | `git()` | On | Off | | On | 0.0146 | | `GIT_HISTORY_CASCADE` |
@@ -47,32 +45,43 @@ Each source carries its own settings, tuned for that kind of history.
 - **Labels:** check each history part for seven kinds of personal fact, such as what someone owns, prefers or decided. This helps Curate find relevant parts that keyword search missed. Each part is labelled once and the label stored for later questions.
 - **Label bar (`labelBar`):** Curate checks which kinds of fact the task needs. If a kind scores at least `labelBar`, Curate brings in the source's parts whose label for that kind also scores at least `labelBar`. 0.5 for every source that carries labels.
 - **Name lanes (`names`):** search once more for each person or thing the task names, as an exact phrase, so every part that mentions it reaches the decision step. A part the search loses can never be picked. Off for rules, which are chosen by where they apply, not by search.
-- **Decision-score bar:** keep a reference part the decision model scored at or above this.
-- **Rule bar:** keep a rule the decision model scored at or above this. Only sources whose parts are rules use it: `rules()`, and `markdown()` with kind `rules` or `instructions`.
-- **Questions:** the yes/no questions the decision model answers about each reference part, with fitted weights that combine the answers into its score.
+- **Keep bar (`bar`):** keep a reference part whose rating is at or above this.
+- **Rule bar (`ruleBar`):** keep a rule whose rating is at or above this. Only sources whose parts are rules use it: `rules()`, and `markdown()` with kind `rules` or `instructions`.
+- **Questions:** the yes/no questions the decision model answers about each reference part, with fitted weights that combine the answers into its rating.
 
-Sources can still affect each other.
-A selected commit brings in a note it changed, and the [whole-call options](#whole-call-options) are shared by every source.
+Sources can still affect each other:
+
+- **Linked parts:** a selected commit brings in a note it changed.
+- **One fused order:** the fused order and `pick.everyRanked: { c }` rank every source's parts in one list before they read or cut.
+- **Shared limits:** a stopping limit in `pick.limits` (questions, batches, time) is shared by every source.
+
+With any of them, one source's settings can change what Curate picks from another.
 The pick record names the settings each source ran with under `levers.sources`, such as `{ kind: 'chat', labels: true, labelBar: 0.5, rare: false, bar: 0.0146 }`, with `questions` holding the question set its parts were asked.
 Each pick record's `effects` list says what each setting changed: the parts it brought in or kept out, and why when it changed nothing ([what each setting did](../packages/core/README.md#what-each-setting-did)).
 
+## Labels
+
+- **Where labels are stored:** in `$XDG_CACHE_HOME/curate/labels`, or `~/.cache/curate/labels` when `XDG_CACHE_HOME` is unset. Use `pick.labels: { directory: 'my-labels' }` to choose a folder.
+- **Hosted decision models:** the hosted helpers identify their label answers as `typesafe:${model}:items-once` and `openai:${model}`.
+- **Your own `decide`:** set its `deciderId` property; an explicit `pick.labels.deciderId` overrides it. Without an ID it uses `'custom'`, so different handwritten decision functions must supply different IDs to keep their saved labels apart.
+- **Local servers:** labels from each server are stored under its own ID: `local:<host><path>:<model>` for `localDecisions()`, and `jev:<host><path>:<model>:items-once` for `jev()` at another address. The ID leaves out the scheme and the query, so set `pick.labels.deciderId` yourself for two servers that differ only there.
+- **Decision cache:** a decision cache keeps the `deciderId` you give it, so give each server its own.
+
 ## Whole-call options
 
-| Option | Out of the box |
-| --- | --- |
-| `read.wholeLanes` | Off: cut each search lane |
-| `pick.stopWhenCold` | Off: rate every part of the fused order. `{}`, or `{ floor, share }`, stops where the decision scores go cold |
-| `pick.feed` | Unset: the whole fused order. `{ order: 'combsum', size }` orders by summed lane places and reads at most `size` parts |
-| `pick.everyRanked` | Unset: the decision step reads the fused order. `true` decides every ranked part; `{ c }` a scaled top-k |
-| `pick.route` | Off |
-| `pick.everyScored` | Unset: each source's bar. When set, one bar for every source |
-| `pick.rare` | Unset: each source's setting. When set, one setting for every source |
-| `pick.taskPeriod` | On: a task that names a period lets in the parts dated inside it |
-| `curate.answerTokens` | Unset: no budget, every kept part is laid out. A number keeps the text within that many estimated tokens |
-| `curate.sentenceCutoff` | Unset: no sentence is rated. A number keeps the sentences `decide` rates at it or more |
-
-The fused order and `pick.everyRanked: { c }` rank every source's parts in one fused list before they read or cut, and a stopping limit in `pick.limits` (questions, batches, time) is shared by every source.
-With any of them, one source's settings can change what Curate picks from another.
+| Option | Default | Explained in |
+| --- | --- | --- |
+| `read.wholeLanes` | Off: each search lane is cut | [Rank](#rank) |
+| `pick.stopWhenCold` | Off: the decision model rates every part of the fused order | [The rating stop](#the-rating-stop) |
+| `pick.feed` | Unset: the whole fused order | [Decide](#decide) |
+| `pick.everyRanked` | Unset: the decision step reads the fused order | [Decide](#decide) |
+| `pick.everyScored` | Unset: each source's keep bar | [Decide](#decide) |
+| `pick.rare` | Unset: each source's setting | [Decide](#decide) |
+| `pick.answerTypes` | Off | [Answer types](#answer-types) |
+| `pick.taskPeriod` | On | [Time](#time) |
+| `pick.route` | Off | [core's label gate](../packages/core/README.md#label-gate) |
+| `curate.answerTokens` | Unset: no budget | [Curate](#curate) |
+| `curate.sentenceCutoff` | Unset: no sentence is rated | [Curate](#curate) |
 
 ## Rank
 
@@ -83,29 +92,34 @@ Set `read.wholeLanes: true` to keep every part the readers return.
 
 - **Extra wording:** Supply `read.searchLines` for phrases or hypothetical answers that describe the evidence you need. Curate does not generate them.
 - **Kinds of statement:** Supply `read.kindLanes` for phrases that help find directions, decisions or corrections.
-- **Meaning search:** Supply an embedding function, which turns text into numbers for similarity search. It is off by default and needs no database.
+- **Meaning search:** Supply an embedding function, which turns text into numbers for similarity search. It is off by default and needs no database. [Run it on your own machine](#run-it-on-your-own-machine) shows the local embedder.
 
 ## Decide
 
-By default, Curate combines search results from all sources into a ranked list, and the decision model rates every part of it.
-Curate keeps those that score at least their source's decision-score bar (0.0146 for every reader), highest scores first.
-Unanswered candidates and unfinished decisions stay visible in the record and stop `recall()`.
-Parts intentionally excluded by the label questions stay in the record without stopping recall.
+By default, Curate combines search results from all sources into one ranked list, the fused order, and the decision model rates every part of it.
+Curate keeps the parts whose rating reaches their source's keep bar (0.0146 for every reader), highest ratings first.
 
-- **Where the read stops:** off by default, so a call's cost grows with the parts the search lanes keep, about $0.00002 a part. `pick.stopWhenCold: {}` reads the list two batches at a time and stops at the first batch whose best rating is under `floor` (0.1), or under `share` (0.2) times the best rating of every batch before it. It never stops before the read has kept a part and rated one at or above `floor`, so a question the history holds nothing for, and a history whose every part rates under `floor`, read the whole order, at the cost of the stop off. A higher `share` stops sooner; a higher `floor` can make a read longer, since the read goes on until some part rates at or above it. Parts below the stop stay unasked and record `stopWhenCold` ([details](../packages/core/README.md#stop-when-the-ratings-go-cold)).
-- **What the stop costs and saves:** on three benchmark runs' saved scores, `{}` rated 64% (LoCoMo), 55% (DolphinBench) and 83% (BEAM) of the parts the runs rated and kept 98.5%, 95.2% and 100% of the evidence they found. On the published runs it saved $0.0012 a LoCoMo question and $0.0067 a LongMemEval question; it cost about 5 to 12 of LoCoMo's 1,540 right answers, the 4 lost in both answer runs each because evidence left the text, and stayed inside the noise on LongMemEval. On DolphinBench's 5,800-part transcripts it rated about half the parts, about $0.026 saved a test; its effect on answers there is not measured.
-- **Other ways to read less:** `pick.feed: { order: 'combsum', size }` reads at most `size` parts, and parts past it record `feed`. `pick.everyRanked: true` decides every ranked part instead, and `pick.everyRanked: { c }` keeps the top `round(c × N^0.8)` reference parts, where N is the number of reference parts. Rules pass through uncut in every mode. The skipped parts are unassessed, so use the [separate selection API](#separate-selection-and-curation) to inspect them.
-- **Score cuts:** a source's `bar` sets its score cut. `pick.everyScored: { bar }` sets one cut for every source, and `pick.everyScored: true` keeps every scored reference.
-- **More evidence:** Git and Markdown run the rare-word round through their settings, each within its own parts. `pick.rare: true` runs it on every source; `pick.rare: false` turns it off. With the stop set, the round asks the parts it pulls, a part below the stop included, two batches at a time under a stop of its own; with a `feed` size it asks only while the size still has room.
+- **Shorter feeds:** `pick.feed: { order: 'combsum', size }` orders the list by summed lane places and reads at most `size` parts, and parts past it record `feed`. `pick.everyRanked: true` decides every ranked part instead, and `pick.everyRanked: { c }` keeps the top `round(c × N^0.8)` reference parts, where N is the number of reference parts. Rules pass through uncut in every mode. The skipped parts are unassessed, so use the [separate selection API](#separate-selection-and-curation) to inspect them.
+- **Keep bars:** a source's `bar` sets its keep bar. `pick.everyScored: { bar }` sets one keep bar for every source, and `pick.everyScored: true` keeps every rated reference part.
+- **More evidence:** Git and Markdown run the rare-word round through their settings, each within its own parts. `pick.rare: true` runs it on every source; `pick.rare: false` turns it off. With the rating stop on, the round asks the parts it pulls, a part below the stop included, two batches at a time under a stop of its own; with a `feed` size it asks only while the size still has room.
 - **Tags:** `pick.tags` labels selected items with their intent, importance, emphasis and whether they correct something earlier.
-- **Label store:** labels are stored in `$XDG_CACHE_HOME/curate/labels`, or `~/.cache/curate/labels` when `XDG_CACHE_HOME` is unset. Use `pick.labels: { directory: 'my-labels' }` to choose a folder.
 
-## Layout
+### The rating stop
+
+`pick.stopWhenCold` sets where the decision model stops reading the fused order.
+
+- **Off by default:** the decision model rates every part, at about $0.00002 a part, so a call's cost grows with the parts the search lanes keep: $0.0033 for a 170-part LoCoMo conversation and $0.053 for the 2,361 parts a DolphinBench test rated on average.
+- **On:** `pick.stopWhenCold: {}` reads the order two batches at a time. It stops at the first batch whose best rating is under `floor` (0.1), or under `share` (0.2) times the best rating of every batch before it. `{ floor, share }` changes the two numbers. The `curate` command turns the stop on at these levels.
+- **Never before a find:** it never stops before the read has kept a part and rated one at or above `floor`. So a question the history holds nothing for, and a history whose every part rates under `floor`, read the whole order, at the cost of the stop off.
+- **Tuning:** a higher `share` stops sooner and costs less; a lower one reads further and finds more. A higher `floor` can make a read longer, since the read goes on until some part rates at or above it.
+- **Unread parts:** parts below the stop stay unasked and record `stopWhenCold` ([details](../packages/core/README.md#stop-when-the-ratings-go-cold)).
+- **Measured:** on three benchmark runs' saved scores, `{}` rated 64% (LoCoMo), 55% (DolphinBench) and 83% (BEAM) of the parts the runs rated and kept 98.5%, 95.2% and 100% of the evidence they found. On the published runs it saved $0.0012 a LoCoMo question and $0.0067 a LongMemEval question; it cost about 5 to 12 of LoCoMo's 1,540 right answers, the 4 lost in both answer runs each because evidence left the text, and stayed inside the noise on LongMemEval. On DolphinBench's 5,800-part transcripts it rated about half the parts, about $0.026 saved a test; its effect on answers there is not measured.
+
+## Curate
 
 `curate()` lays out the kept reference parts in their own words.
-No model writes the text.
 
-- **Strongest first:** the two parts with the highest decision score sit under `### Most likely answer`. Every other part is grouped by the date it was said and its source, oldest first and strongest first inside a group. A part with no date sits under `(said unknown)`, last. A date that is only a file's last change reads `(file changed <date>)`.
+- **Strongest first:** the two parts with the highest rating sit under `### Most likely answer`. Every other part is grouped by the date it was said and its source, oldest first and strongest first inside a group. A part with no date sits under `(said unknown)`, last. A date that is only a file's last change reads `(file changed <date>)`.
 - **Copies taken once:** a part whose text is the same as a stronger kept part's is left out, and the kept part's heading names where else it was said.
 - **Budget:** off by default: every kept part is laid out, and the record's `estimatedTokens` states the text's size. `curate.answerTokens` keeps the text within that many estimated tokens. The strongest part is always kept whole. The record's `leftOut` counts the parts the budget stopped before.
 - **Sentence cutoff:** off by default. Set `curate.sentenceCutoff` to a number and curate rates each sentence of the taken parts with `decide` in one request and keeps those rated that number or more. `…` marks where text was left out. When the request fails, the whole text comes back and the record says why.
@@ -152,6 +166,7 @@ const commits = historySource({ reader: git('.'), ...gitSettings, questions: myS
 
 The decision model can say, from the task's words alone, what kind of answer the task needs: a date, a number, a name, the order of events and so on.
 `pick.answerTypes` asks the task the ten questions in `ANSWER_TYPES`, in one request per pick.
+
 A source's question set can hold `typed` questions. Each is asked of the source's parts only when the task needs its answer type, and its answer counts toward the part's score like the set's other questions.
 `pick.answerTypes` is off by default, and no preset carries a typed question.
 
@@ -187,7 +202,8 @@ Give it with each call, beside the person's time zone:
 const { log } = await mem.recall('What did I decide in March?', { taskDate: '2025-06-02', timeZone: 'Europe/London' });
 ```
 
-- **The task date:** an ISO 8601 date or date-time, such as `2025-06-02` or `2025-06-02T09:15:00+01:00`. A date alone means the end of that day. Without one, the task date is now. Git recency and a chat `since` duration count back from it. The pick record names the moment as `asOf`, so a replay with the same values reads the same history.
+- **The task date:** an ISO 8601 date or date-time, such as `2025-06-02` or `2025-06-02T09:15:00+01:00`. A date alone means the end of that day. Without one, the task date is now. Git recency and a chat `since` duration count back from it.
+- **Replays:** the pick record names the moment as `asOf`, so a replay with the same values reads the same history.
 - **Nothing from after it:** with `taskDate`, a chat message or a git commit dated after it is not read. Markdown keeps notes dated after it: a note can declare an `effective` date ahead, and a rule that takes effect next month is still a rule. To read notes as they stood, pin the read to a revision with `read: { revision }`.
 - **The person's time zone:** chat dates carry the zone's offset, so a message sent at 00:30 in London in summer is dated that day, not the day before. `timeZone` is an IANA name such as `Europe/London`. Without it, the system's own zone applies.
 - **The task's period:** a task that names a period, such as "in March", "last week" or "on 2025-03-04", lets the parts dated inside it reach the decision step even when no search kept them. Nothing is dropped for its date. A part is dated when it was written, so a message in April that recalls March is dated April, and a filter on March would drop the answer. `pick: { taskPeriod: false }` turns it off.
@@ -200,7 +216,7 @@ The built-in helpers use `fetch` and need no model SDK.
 
 - **`decide` answers narrow questions.** It receives `{ task, questions }` and an `AbortSignal`. Return an answer under each question's `key`, with `status: 'answered'` and a finite `probability` from 0 to 1. See [`PickDecide`](../packages/core/src/pick.ts) for question fields and unavailable answers.
 - **OpenAI.** Use `openAIDecisions()` for [OpenAI's Decisions API](https://developers.openai.com/api/docs/guides/decisions) in place of `jev()`.
-- **Label IDs.** The hosted helpers identify their label answers as `typesafe:${model}:items-once` and `openai:${model}`. For a handwritten `decide`, set its `deciderId` property; an explicit `pick.labels.deciderId` overrides it. Without an ID it uses `'custom'`, so different handwritten decision functions must supply different IDs to keep their saved labels apart.
+- **Label IDs.** Each decision model stores its labels under its own ID; see [Labels](#labels).
 
 ```js
 import { openAIDecisions } from '@curatejs/core/models';
@@ -240,10 +256,6 @@ try {
   await local.dispose();
 }
 ```
-
-Labels from each server are stored under its own ID: `local:<host><path>:<model>` for `localDecisions()`, and `jev:<host><path>:<model>:items-once` for `jev()` at another address.
-The ID leaves out the scheme and the query, so set `pick.labels.deciderId` yourself for two servers that differ only there.
-A decision cache keeps the `deciderId` you give it, so give each server its own.
 
 ## Separate selection and curation
 
