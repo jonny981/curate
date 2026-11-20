@@ -296,7 +296,7 @@ An example `~/.curate/sources.json`:
 
 Curate reads your history on your machine. A `curate` call sends text to two services:
 
-- **The decision model, TypeSafe's Jev.** Each decision request holds the question and, for each part it is asked to rate, the part's id, date, title and text. A part's id can hold the path of the file it came from. One more request then holds the question and the sentences of the laid-out text, with each part's date on its first sentence and no id or title.
+- **The decision model, TypeSafe's Jev.** Each decision request holds the question and, for each part it is asked to rate, the part's id, date, title and text. A part's id can hold the path of the file it came from. When a `sentenceCutoff` is set, one more request holds the question and the sentences of the laid-out text, with each part's date on its first sentence and no id or title.
 - **The search-line model.** One call writes the search lines, through the `claude` command to Claude Haiku or through the `codex` command to GPT-6 Luna, on your own login. It receives the question, fixed wording guidance for each kind of history, and today's date. A reply that cannot be read goes back to the same model once, for repair. A failed subscription call never falls back to an API.
 - **Codex instructions.** Codex also sends your global Codex instructions (`AGENTS.md` in `~/.codex`, or in `CODEX_HOME`) on every system other than macOS, and on macOS when Curate itself runs inside a sandbox.
 
