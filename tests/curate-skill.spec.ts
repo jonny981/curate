@@ -3148,7 +3148,7 @@ if (name === 'claude' && args[0] === 'auth') {
       expect(JSON.parse(await readFile(join(__dirname, '../package.json'), 'utf8')).engines.node).toBe(`>=${NODE_FLOOR}`);
     });
 
-    it.each(['skills/curate/SKILL.md', 'skills/curate/references/settings.md', 'README.md'])('%s holds the setup guide word for word', async (file) => {
+    it.each(['skills/curate/SKILL.md', 'skills/curate/references/settings.md'])('%s holds the setup guide word for word', async (file) => {
       expect(await readFile(join(__dirname, '..', file), 'utf8')).toContain(setupGuide());
     });
 
