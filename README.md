@@ -117,7 +117,7 @@ flowchart LR
 3. **[Curate](docs/library.md#curate).** Code, not a model, lays out what was kept: strongest first, word for word, each under its source and date.
 4. **Read.** The agent reads this before it starts. It still has its own tools, and each heading points back to the source if it wants more.
 
-### Why it works this way
+### Built for memory that keeps growing
 
 - **Nothing to do when history is written.** Curate reads transcripts, git and Markdown where they already are, when a task asks. There's no extraction step, no graph to keep in sync, and no database or vector store to host. It builds local index files on first use.
 - **Straight from the source.** [Mem0](https://docs.mem0.ai/core-concepts/memory-operations/add) extracts facts with a model, [Mastra](https://mastra.ai/docs/memory/observational-memory) keeps observations a model wrote, and [Zep](https://help.getzep.com/v4/how-graph-creation-works) builds a knowledge graph. Curate picks from the original history every time.
@@ -297,7 +297,7 @@ An example `~/.curate/sources.json`:
 | `searchModel` | `haiku` or `luna`: which model writes the search lines (item 5). By default Curate uses Haiku if you're logged in to Claude, and Luna if not |
 | `answerTokens`, `sentenceCutoff` | Optional limits on the size of the result ([Curate](docs/library.md#curate)). Unset by default |
 | `stopWhenCold` | Stops rating once the ratings go cold, which keeps a question cheap. On by default, with a `floor` of 0.1 and a `share` of 0.2. Change them with, say, `{ "share": 0.1 }`, or set `false` to rate everything ([The rating stop](docs/library.md#the-rating-stop)). Curate tells you on standard error how many passages it left unread |
-| `records` | `true` saves a record of each question ([Files it writes](#files-it-writes)) |
+| `records` | `true` saves a record of each question ([Local files](#local-files)) |
 
 ### Search
 
@@ -305,7 +305,7 @@ The command searches by keyword and by meaning.
 Two extra search steps the library offers, label admission and the rare-word round, are off.
 Identical text is only rated once.
 
-### Files it writes
+### Local files
 
 - **By default, only caches.** They live under `~/.cache/curate`, or `$XDG_CACHE_HOME/curate` if that's set: the index, the embeddings and the label store. Embeddings are reused as long as the model file and the text haven't changed.
 - **`curate setup` writes only what you say yes to:** the settings and key files under `~/.curate`, and the embedding model if `embeddingModel` points outside the caches.
