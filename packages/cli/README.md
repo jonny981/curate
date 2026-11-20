@@ -37,7 +37,7 @@ The command hides Node's experimental-feature warning for SQLite, which the stor
 ## Settings and data
 
 The settings, the history a call reads, and what each setting does are in the skill's [settings reference](https://github.com/jonny981/curate/blob/main/skills/curate/references/settings.md).
-What a call sends to the decision service and to the search-line model is in [What leaves your machine](https://github.com/jonny981/curate#what-leaves-your-machine).
+What a call sends to the decision service and to the search-line model is in [Privacy](https://github.com/jonny981/curate#privacy).
 
 ### Where a call stops reading
 

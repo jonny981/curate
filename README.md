@@ -297,7 +297,7 @@ An example `~/.curate/sources.json`:
 | `searchModel` | `haiku` or `luna`: which model writes the search lines (item 5). By default Curate uses Haiku if you're logged in to Claude, and Luna if not |
 | `answerTokens`, `sentenceCutoff` | Optional limits on the size of the result ([Curate](docs/library.md#curate)). Unset by default |
 | `stopWhenCold` | Stops rating once the ratings go cold, which keeps a question cheap. On by default, with a `floor` of 0.1 and a `share` of 0.2. Change them with, say, `{ "share": 0.1 }`, or set `false` to rate everything ([The rating stop](docs/library.md#the-rating-stop)). Curate tells you on standard error how many passages it left unread |
-| `records` | `true` saves a record of each question ([Local files](#local-files)) |
+| `records` | `true` saves a log of each question ([Logs](#logs)) |
 
 ### Search
 
@@ -305,13 +305,17 @@ The command searches by keyword and by meaning.
 Two extra search steps the library offers, label admission and the rare-word round, are off.
 Identical text is only rated once.
 
-### Local files
+### Caches
 
-- **By default, only caches.** They live under `~/.cache/curate`, or `$XDG_CACHE_HOME/curate` if that's set: the index, the embeddings and the label store. Embeddings are reused as long as the model file and the text haven't changed.
-- **`curate setup` writes only what you say yes to:** the settings and key files under `~/.curate`, and the embedding model if `embeddingModel` points outside the caches.
-- **With `"records": true`,** each question also saves its result, what it read, model usage and timings under `~/.curate/runs/`.
+Curate keeps its index, embeddings and label store under `~/.cache/curate`, or `$XDG_CACHE_HOME/curate` if that's set.
+Embeddings are reused until the model file or the text changes.
+`curate setup` also writes the settings and key files under `~/.curate`, but only the ones you say yes to.
 
-### What leaves your machine
+### Logs
+
+Off by default. Set `"records": true` and each question saves its result, what it read, model usage and timings under `~/.curate/runs/`.
+
+### Privacy
 
 Curate reads your history locally. A question sends text to two services:
 
