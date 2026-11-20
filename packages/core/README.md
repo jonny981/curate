@@ -58,7 +58,7 @@ See [levers and source settings](#levers-and-source-settings) for each source's 
 
 `pickFromSources()` and `curate()` remain separate public calls for hosts that manage each step themselves.
 `pickFromSources()` asks each source its own question set, as `memory()` does.
-See the [runnable example](https://github.com/jonny981/curate#use-it) for installation and source setup.
+See the [runnable example](https://github.com/jonny981/curate#quick-start) for installation and source setup.
 
 ## Model helpers
 
