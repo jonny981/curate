@@ -16,13 +16,64 @@ The library, though not the `curate` command, can also decide with a model on yo
 Use Node.js 22.20 or later.
 Tested on macOS and Linux; Windows is untested.
 
-### The library
+### In a project
+
+Run these in a git repository you already work in.
+Curate reads the history that is already there: its commits, its Markdown, and its Claude Code and Codex transcripts.
+
+```sh
+cd ~/projects/your-app
+npm install -g @curatejs/cli
+curate setup
+```
+
+`curate setup` checks [what a call needs](#what-a-call-needs) and offers to fix what it can: the embedding model download, a settings file, a private key file, and a first index of the project.
+It does not sign you in or set your key, so do both:
+
+```sh
+claude auth login        # or: codex login
+export TYPESAFE_API_KEY='your-typesafe-key'
+```
+
+`curate check` then confirms that a call would run:
+
+```console
+$ curate check
+ready    Node.js 22.20 or later: Node.js 22.23.2
+ready    The embedding engine (`node-llama-cpp`): `node-llama-cpp` is installed
+ready    An embedding model file: ~/.cache/curate/models/embeddinggemma-300M-Q8_0.gguf
+ready    The decision key (`TYPESAFE_API_KEY`): set in the environment
+ready    A login for the search lines: Claude Haiku, on the Claude login
+ready    History to read: 3 sources
+All 6 needs met: a call would run.
+```
+
+Ask a question about the project:
+
+```sh
+curate "Why do webhook retries stop after three attempts?"
+```
+
+The command prints the parts of the history that bear on the question, strongest first, each under a heading that names its source and date.
+
+To ask from Claude Code and Codex, install the `/curate` skill, which calls the command:
+
+```sh
+npx skills add jonny981/curate -g -a claude-code -a codex -y
+```
+
+Every command and setting is in [The `curate` command](#the-curate-command).
+
+### In your own code
+
+The library gives the same recall inside your own agent.
+This script reads the project's `docs` folder; [Sources](#sources) adds its commits and transcripts.
 
 ```sh
 pnpm add @curatejs/core @curatejs/markdown
 ```
 
-Save this as `recall.mjs`:
+Save this as `recall.mjs` in the project and run it with `node recall.mjs`:
 
 ```js
 import { memory } from '@curatejs/core';
@@ -39,27 +90,7 @@ const { log } = await mem.recall('What billing constraint must this change prese
 console.log(log);
 ```
 
-Create a source note:
-
-```sh
-mkdir -p docs
-cat > docs/billing.md <<'NOTE'
----
-date: 2026-01-12
----
-# Billing
-Invoices must preserve the currency recorded when the order was placed.
-NOTE
-```
-
-Set the model key and run:
-
-```sh
-export TYPESAFE_API_KEY='your-typesafe-key'
-node recall.mjs
-```
-
-The text heads each part with its source and the date it was said:
+In a project whose `docs/billing.md` is dated 12 January 2026 and says that invoices keep the order's currency, it prints:
 
 ```text
 ### Most likely answer
@@ -69,27 +100,6 @@ The text heads each part with its source and the date it was said:
 # Billing
 Invoices must preserve the currency recorded when the order was placed.
 ```
-
-### The command
-
-To ask about your projects' history from the terminal, and from Claude Code and Codex through the `/curate` skill:
-
-```sh
-npm install -g @curatejs/cli
-curate setup
-npx skills add jonny981/curate -g -a claude-code -a codex -y
-```
-
-`curate setup` checks [what a call needs](#what-a-call-needs) and offers to fix some of it ([Commands](#commands) lists what it writes).
-It does not sign you in, so also run `claude auth login` or `codex login` (need 5 in [What a call needs](#what-a-call-needs)), and set your key (need 4).
-
-Then ask from a folder inside a project:
-
-```sh
-curate "What did we decide about retries, and why?"
-```
-
-Everything a call needs, and every setting, is in [The `curate` command](#the-curate-command).
 
 ## How it works
 
