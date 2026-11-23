@@ -1,6 +1,7 @@
 # @curatejs/cli
 
-The `curate` command. It recalls what was decided, tried or said before, from the history of the project you are in: its commits, its Markdown, and its Claude Code and Codex transcripts. It prints the strongest evidence in the speakers' own words, each part headed by where and when it was said.
+The `curate` command answers a question from the history of the project you're in: its commits, its Markdown, and its Claude Code and Codex transcripts.
+You get back the passages that answer it, word for word, each under a heading with its source and date.
 
 ## Install
 
@@ -10,46 +11,61 @@ curate setup
 npx skills add jonny981/curate -g -a claude-code -a codex -y
 ```
 
-The last line installs the `/curate` skill for Claude Code and Codex. The skill calls this command.
+`curate setup` checks what you need and offers to sort out what it can.
+The last line installs the `/curate` skill, which lets Claude Code and Codex run the command and turn the result into a cited summary.
 
 ## Requirements
 
-- **Node.js 22.20 or later.** Tested on macOS and Linux; Windows is untested.
-- **A paid decision key.** Curate asks TypeSafe's Jev to rate the parts of your history, at about $0.00002 a part; a call rates them from the top of its ranked list and stops where the ratings go cold. Get a key at [typesafe.ai](https://typesafe.ai) and set `TYPESAFE_API_KEY`, or put it in the private file `curate setup` creates.
-- **A Claude or ChatGPT login.** One small call writes the search lines, through `claude auth login` or `codex login`.
-- **An embedding model file.** `curate setup` offers to download EmbeddingGemma 300M (about 330 MB).
+You need Node.js 22.20 or later. It's tested on macOS and Linux; Windows is untested.
+
+You also need a paid key from [TypeSafe](https://typesafe.ai). Curate has TypeSafe's Jev rate passages from your history, at about $0.00002 a passage, and stops once the ratings go cold. Set the key as `TYPESAFE_API_KEY`, or put it in the private file `curate setup` creates.
+
+A Claude or ChatGPT login (`claude auth login` or `codex login`) covers one small call that writes the search lines, the queries Curate searches with.
+And you need an embedding model file, which `curate setup` offers to download (EmbeddingGemma 300M, about 330 MB).
+
+The full list, with the fix for each, is in the root README's [Requirements](https://github.com/jonny981/curate#requirements).
 
 ## Commands
 
-- **`curate "<question>"`** prints the evidence for the question, from the project the working folder is in.
-- **`curate check`** lists each need as ready or missing, with its fix. It makes no model or decision call. It exits 0 when a call would run, and 3 when it would not.
-- **`curate setup`** runs the check. In a terminal it then offers the steps below, each answered no unless you type y. It then checks again and exits 0 or 3. Without a terminal it only prints the check, writes nothing and downloads nothing.
-  - **Download the embedding model,** streaming to a `.part` file that takes the model's name only when complete.
-  - **Create `~/.curate/sources.json` and a private `~/.curate/credentials.env`** (mode 0600) for your key, never overwriting either. It never prompts for or prints your key.
-  - **Prepare the project.**
-- **`curate prepare`** brings the stored index and embeddings of the project's history up to date, with no model call and no key. The first run reads and embeds the whole history. It also removes the cache files an earlier version of Curate kept, and names each one; a call never removes them, since an older process can still be reading them. Run it when no call from an older version of Curate is in flight: it cannot tell whether one still reads those files.
-- **`--sources <file>`** reads that settings file in place of `~/.curate/sources.json`. `--version` and `--help` print the version and the usage.
+| Command | What it does |
+| --- | --- |
+| `curate "<question>"` | Prints the passages that answer the question, from the project you're in. |
+| `curate check` | Shows each requirement as ready or missing, with the fix. It calls no model. |
+| `curate setup` | Runs the check, then offers to fix what's missing ([below](#curate-setup)). |
+| `curate prepare` | Brings the project's index and embeddings up to date. It needs no model, key or login. |
+| `--sources <file>` | Uses that settings file alone, in place of `~/.curate/sources.json` and any `curate.json`. |
+| `--version`, `--help` | Prints the version, or the usage. |
 
-A word names a step only when it is the whole command line: `curate "check the retry decision"` is a question.
-Any other failure exits 1.
-The command hides Node's experimental-feature warning for SQLite, which the stored index uses, and no other warning.
+`check`, `setup` and `prepare` count as commands only when they're the whole command line, so `curate "check the retry decision"` is a question.
 
-## Settings and data
+Exit codes are 0 on success, 3 when a requirement is missing, and 1 for anything else.
 
-The settings, the history a call reads, and what each setting does are in the skill's [settings reference](https://github.com/jonny981/curate/blob/main/skills/curate/references/settings.md).
-What a call sends to the decision service and to the search-line model is in [Privacy](https://github.com/jonny981/curate#privacy).
+### `curate setup`
 
-### Where a call stops reading
+In a terminal, `curate setup` runs the check, then asks before each of these steps. The answer is no unless you type `y`.
 
-- **The stop.** A call has Jev rate the ranked history from the top, two batches of parts at a time. It stops at the first batch whose best rating is under 0.1, or under 0.2 times the best rating before it.
-- **Never before a find.** It never stops before the read has kept a part and rated one at or above 0.1. So a question the history holds nothing for, and a history whose every part rates under 0.1, read the whole order, at the cost of the stop off: about $0.00002 a part.
-- **Unread parts.** When the stop leaves ranked parts unread, one line on standard error says how many and names the settings file to turn it off in.
-- **Changing the numbers.** `stopWhenCold` in the settings file sets the stop: `{ "floor": 0.2, "share": 0.1 }` and the like change the two numbers. A higher share stops sooner and costs less, and a lower one reads further and finds more.
-- **The floor.** The floor is both the level a batch's best rating must reach to keep the read going and the level some part must reach before the stop may fire. So a higher floor can also make a read longer: it reads on until some part rates at or above it, to the end of the ranked history if none does.
-- **Turning it off.** `false` turns it off: Jev then rates every part of the ranked history the search lanes keep, so a call's cost grows with that number: about $0.00002 a part.
-- **Measured.** On three benchmark runs' saved scores, `{}` rated 64% (LoCoMo), 55% (DolphinBench) and 83% (BEAM) of the parts the runs rated and kept 98.5%, 95.2% and 100% of the evidence they found. On the published runs it saved $0.0012 a LoCoMo question and $0.0067 a LongMemEval question; it cost about 5 to 12 of LoCoMo's 1,540 right answers, the 4 lost in both answer runs each because evidence left the text, and stayed inside the noise on LongMemEval. On DolphinBench's 5,800-part transcripts it rated about half the parts, about $0.026 saved a test; its effect on answers there is not measured.
+1. **Download the embedding model.** It streams to a `.part` file and only takes the model's name once it's complete.
+2. **Create `~/.curate/sources.json` and a private `~/.curate/credentials.env`** (mode 0600) for your key. It never overwrites either file, and it never asks for or prints your key.
+3. **Prepare the project.**
+
+It then checks again and exits 0 or 3. Without a terminal it only prints the check: it writes nothing and downloads nothing.
+
+### `curate prepare`
+
+The first run reads and embeds the whole history, which can take a while. Run it from a hook or a scheduled job to make the next question faster.
+
+It also deletes index files left by older versions of Curate, and lists them. A question never deletes them, since an older process might still be reading them. So don't run `prepare` while an older version of Curate is mid-run: it can't tell.
+
+## Configuration and privacy
+
+The root README covers [what Curate reads](https://github.com/jonny981/curate#what-it-reads), its [configuration](https://github.com/jonny981/curate#configuration), its [caches](https://github.com/jonny981/curate#caches) and [logs](https://github.com/jonny981/curate#logs), and what it sends where, in [Privacy](https://github.com/jonny981/curate#privacy).
+
+Every setting is explained in full in the [settings reference](https://github.com/jonny981/curate/blob/main/skills/curate/references/settings.md). That includes [the rating stop](https://github.com/jonny981/curate/blob/main/skills/curate/references/settings.md#the-rating-stop): how Curate decides when to stop rating, how to tune or turn it off, and what it saved and cost on benchmarks.
+
+## How it runs
 
 The command runs the skill's script, `skills/curate/run.mjs`, which this package ships as `dist/run.mjs`.
+It hides Node's experimental-feature warning for SQLite, which the index uses, and no other warning.
 
 ## License
 
