@@ -1059,6 +1059,7 @@ interface NotesUpdate {
 async function syncNotes(
   path: string, directory: string, root: string, files: readonly string[], prune: boolean,
   build: (file: string, text: string) => NoteEntry, context: CandidateReadContext, signal: AbortSignal | undefined,
+  firstIndex?: (done: number, total: number) => void,
 ): Promise<NotesUpdate> {
   const database = await openIndexFile(path, directory);
   try {
@@ -1115,7 +1116,11 @@ async function syncNotes(
       const modified = new Map<string, string>();
       let added = 0;
       let removed = 0;
-      for (const file of files) {
+      // A root that holds no note yet is built from nothing: say how far it has got.
+      const told = rows.size === 0 && files.length > 0 ? firstIndex : undefined;
+      told?.(0, files.length);
+      for (const [done, file] of files.entries()) {
+        if (done > 0) told?.(done, files.length);
         if (signal?.aborted) throw new SourceReadError('cancelled', 'The read was cancelled.');
         let info;
         try {
@@ -1155,6 +1160,7 @@ async function syncNotes(
         added += stored.parts.length;
         total += stored.parts.length;
       }
+      told?.(files.length, files.length);
       if (prune) {
         const walked = new Set(files);
         const remove = database.prepare('DELETE FROM notes WHERE id = ?');
@@ -1479,7 +1485,8 @@ export function markdownSource(options: MarkdownOptions, legacy?: 'knowledge' | 
           updates.set(root, await once(context, JSON.stringify(['notes', indexPath, root, requestExclude]),
             () => syncNotes(indexPath, indexFolder!, root, files, requestExclude === '[]',
               (file, text) => textEntry(text, file, nameOf(state, file), legacy, role === 'rule', partBudget),
-              context, request.signal)));
+              context, request.signal,
+              context.onFirstIndex === undefined ? undefined : (done, total) => context.onFirstIndex!(id, done, total, 'files'))));
         }
         if (updates.size > 0 && context.removed !== undefined) {
           context.removed.push(...await removeEarlierFormats(indexFolder!, id, indexKey));

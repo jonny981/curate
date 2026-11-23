@@ -282,7 +282,10 @@ export type PickEntryStatus =
        *  keyword lanes never held whose stored or answered labels
        *  cleared no needed kind. A part a lane limit cut or a stop
        *  left unlabelled keeps that reason instead. */
-      readonly reason: 'limits' | 'time' | 'cancelled' | 'document' | 'error' | 'gate' | 'pick' | 'stopWhenCold' | 'feed' };
+      readonly reason: 'limits' | 'time' | 'cancelled' | 'document' | 'error' | 'gate' | 'pick' | 'stopWhenCold' | 'feed';
+      /** For a part the rating stop left unread: its place in the fused
+       *  order the decide step read, counted from 0. */
+      readonly place?: number };
 
 export type PickRecordEntry = {
   readonly sourceId: string;
@@ -3072,8 +3075,11 @@ export async function pick(
   // The parts below the stop leave the feed: the decide step never
   // reached them.
   if (main.unread.size > 0) {
+    const places = new Map(feed.map((candidate, place) => [candidate, place]));
     feed = feed.filter((candidate) => !main.unread.has(candidate));
-    for (const candidate of main.unread) statuses.set(candidate, { status: 'unassessed', reason: 'stopWhenCold' });
+    for (const candidate of main.unread) {
+      statuses.set(candidate, { status: 'unassessed', reason: 'stopWhenCold', place: places.get(candidate)! });
+    }
   }
 
   // The reference bar may rise with the decided set's size, so the

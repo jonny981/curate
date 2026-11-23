@@ -201,12 +201,14 @@ describe('preparing the sources while the search lines are written', () => {
       return { sourcesFile, at };
     }
 
-    it('keeps the copy of the sessions it made early when the source is searched', async () => {
-      const { sourcesFile } = await withCodex();
+    it('searches the copy of the sessions it made early, and removes it when the call ends', async () => {
+      const { sourcesFile, at } = await withCodex();
       const { record, folder } = await run(['--sources', sourcesFile, 'What grows in the orchard?'], searchLinesCall(lines()));
       expect(record.sessions).toHaveLength(1);
-      expect(record.sessions[0].snapshot).toBe(join(folder, 'codex-1'));
-      expect(readdirSync(folder)).toContain('codex-1');
+      expect(record.sessions[0].snapshot).toMatch(/codex-1$/);
+      expect(existsSync(record.sessions[0].snapshot)).toBe(false);
+      expect(readdirSync(folder).filter((name) => name.startsWith('codex-'))).toEqual([]);
+      expect(await readdir(at('tmp'))).toEqual([]);
       expect(record.sourcesRead).toHaveLength(2);
     });
 

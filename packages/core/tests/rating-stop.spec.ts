@@ -61,6 +61,8 @@ describe('the rating stop', () => {
     const unread = picked.record.candidates.filter((entry) => index(entry.id) >= 4);
     expect(unread).toHaveLength(16);
     expect(unread.every((entry) => entry.status === 'unassessed' && entry.reason === 'stopWhenCold')).toBe(true);
+    // Each unread part keeps its place in the fused order, counted from 0.
+    expect(unread.map((entry) => (entry as { place?: number }).place)).toEqual(Array.from({ length: 16 }, (_, i) => i + 4));
     expect(picked.record.pick!.kept).toBe(4);
 
     // maxInFlight still bounds the requests open at once inside a wave.

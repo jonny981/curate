@@ -286,6 +286,13 @@ export interface CandidateReadContext {
    *  removed here. An ordinary read never removes them, since an older
    *  reader can still have one open. */
   readonly removed?: string[];
+  /** Told how far a reader has got building its stored index from
+   *  nothing, so a command can say what a slow call is doing: `done` of
+   *  the `total` items it reads (`unit` names them: transcripts, files or
+   *  commits), first with 0 before it reads one, and last with `done`
+   *  equal to `total`. A reader whose index already holds the source
+   *  never calls it. */
+  readonly onFirstIndex?: (source: string, done: number, total: number, unit: string) => void;
 }
 
 export interface CandidateSource {

@@ -728,6 +728,50 @@ export function rankMatches(candidates, settings = {}) {
   }));
 }
 
+// What a read file keeps: the read's own report, with how many parts it
+// returned (`returned`), how many a meaning lane scored (`meaningScored`) and
+// how many ids a pool read named (`pooled`), never the parts themselves.
+// Every part the pick ranked is in the run record's `pick.candidates` once,
+// with its id, source, ranks, scores and status, and the parts the call kept
+// are in `selection.json` with their text; a list in each read file would
+// repeat them for every lane, and a meaning lane's or pool read's list
+// names the whole history.
+function savedRead(result) {
+  if (result.status !== 'read') return result;
+  const { candidates, meaningScores, poolIds, ...rest } = result;
+  return { ...rest,
+    ...(candidates === undefined ? {} : { returned: candidates.length }),
+    ...(meaningScores === undefined ? {} : { meaningScored: meaningScores.length }),
+    ...(poolIds === undefined ? {} : { pooled: poolIds.length }) };
+}
+
+// The pick's record as a run record keeps it: every part the decision model
+// rated, and every other part it ranked, in full, but a part the rating stop
+// left unread only by its id and its place in the fused order. Those are
+// listed per source in `unread`, in that order, with a count, and the start
+// all the source's ids share written once as `prefix`: a large call leaves
+// tens of thousands of them, and a full entry is about 700 bytes.
+export function savedPick(pick) {
+  const unread = new Map();
+  const candidates = pick.candidates.filter((entry) => {
+    if (entry.status !== 'unassessed' || entry.reason !== 'stopWhenCold') return true;
+    if (!unread.has(entry.sourceId)) unread.set(entry.sourceId, []);
+    unread.get(entry.sourceId).push(entry);
+    return false;
+  });
+  if (unread.size === 0) return pick;
+  return { ...pick, candidates, unread: Object.fromEntries([...unread].map(([source, entries]) => {
+    entries.sort((one, other) => one.place - other.place);
+    const prefix = entries.reduce((shared, { id }) => {
+      let at = 0;
+      while (at < shared.length && shared[at] === id[at]) at += 1;
+      return shared.slice(0, at);
+    }, entries[0].id);
+    return [source, { count: entries.length, prefix,
+      ids: entries.map(({ id }) => id.slice(prefix.length)), places: entries.map(({ place }) => place) }];
+  })) };
+}
+
 // Each word can admit evidence; the package's score only orders it.
 export function searchSource(source, searches, audit, folder, settings = {}) {
   const lines = [...searches[source.kind].keywords, ...searches[source.kind].answers];
@@ -768,7 +812,7 @@ export function searchSource(source, searches, audit, folder, settings = {}) {
     } else {
       const file = `read-${audit.length + 1}.json`;
       audit.push({ ...entry, file });
-      await writeFile(join(folder, file), JSON.stringify(result), { mode: 0o600 });
+      await writeFile(join(folder, file), JSON.stringify(savedRead(result)), { mode: 0o600 });
     }
     return result;
   } };
@@ -1049,8 +1093,8 @@ export async function searchLines(prompt, folder, record, save, callSubscription
   }
 }
 
-// The temporary folders of the calls now running, so a stopped command can
-// remove them.
+// The temporary folders of the calls now running, the session copies among
+// them, so a stopped command can remove them.
 const workingFolders = new Set();
 
 // Resolves to { memory, record, folder }: the printed memory, the
@@ -1070,6 +1114,94 @@ async function warmSource(source, request, embed, context, signal) {
       meaningLane: { embed }, meaningQueries: [request.task] }, context);
   }
   return read;
+}
+
+// What standard error says while a call or `--prepare` does work that can
+// take minutes: a stored index built from nothing, once it has run for five
+// seconds, and an embedding of more than EMBED_LINES parts (about 40 seconds
+// at 50 parts a second), as it starts. Each then says how far it has got at
+// most every ten seconds, with the time left at its rate so far, and says
+// when it ends. Quick work says nothing. It also counts, per source, what
+// the record keeps: whether its index was built from nothing, and how many
+// texts were embedded for it and in how long.
+export const EMBED_LINES = 2000;
+const INDEX_LINES_MS = 5000;
+const STEP_LINES_MS = 10_000;
+const number = (count) => count.toLocaleString('en-US');
+const plural = (count, word) => `${number(count)} ${word}${count === 1 ? '' : 's'}`;
+const duration = (ms) => ms < 90_000 ? plural(Math.max(1, Math.round(ms / 1000)), 'second') : plural(Math.round(ms / 60_000), 'minute');
+
+export function prepareReport(labels, write = (line) => console.error(line), now = Date.now) {
+  const sources = new Map();
+  const counts = (id) => {
+    if (!sources.has(id)) sources.set(id, { firstIndex: false, embedded: 0, embedMs: 0 });
+    return sources.get(id);
+  };
+  const name = (id) => labels.get(id) ?? id;
+  const runs = new Map();
+  return {
+    // A reader building its stored index from nothing: `done` of `total` `unit` read.
+    index(id, done, total, unit) {
+      const key = `index\0${id}`;
+      const at = now();
+      if (done === 0) { counts(id).firstIndex = true; runs.set(key, { started: at }); return; }
+      const work = runs.get(key);
+      if (work === undefined) return;
+      const spent = at - work.started;
+      if (done >= total) {
+        runs.delete(key);
+        if (work.said !== undefined) write(`Built the stored index of ${name(id)} in ${duration(spent)}: ${number(total)} ${unit} read.`);
+        return;
+      }
+      const left = `about ${duration((total - done) * spent / done)} left`;
+      if (work.said === undefined && spent >= INDEX_LINES_MS) {
+        write(`Building the stored index of ${name(id)} from scratch: ${number(done)} of ${number(total)} ${unit} read, ${left}. `
+          + "This happens on a source's first call, and again when an update or a change to the source's settings starts a new index.");
+        work.said = at;
+      } else if (work.said !== undefined && at - work.said >= STEP_LINES_MS) {
+        write(`Indexed ${number(done)} of ${number(total)} ${unit} of ${name(id)}, ${left}.`);
+        work.said = at;
+      }
+    },
+    // One embedding through the vector store: `done` of the `total` texts it
+    // has to embed. The total drops by each text another call stores first,
+    // and a count lower than the last one heard starts a new embedding.
+    embedded(id, done, total) {
+      const key = `embed\0${id}`;
+      const at = now();
+      let work = runs.get(key);
+      if (work === undefined || done < work.done) {
+        work = { started: at, last: at, done: 0, ...(total > EMBED_LINES ? { said: at } : {}) };
+        runs.set(key, work);
+        if (total > EMBED_LINES) {
+          write(`Embedding ${number(total)} parts of ${name(id)} that have no stored vector yet. Each part is embedded once; later calls reuse its vector.`);
+        }
+      }
+      counts(id).embedded += done - work.done;
+      counts(id).embedMs += at - work.last;
+      work.done = done;
+      work.last = at;
+      if (done >= total) {
+        runs.delete(key);
+        if (work.said !== undefined) write(`Embedded ${number(total)} parts of ${name(id)} in ${duration(at - work.started)}.`);
+      } else if (work.said !== undefined && done > 0 && at - work.said >= STEP_LINES_MS) {
+        write(`Embedded ${number(done)} of ${number(total)} parts of ${name(id)}, about ${duration((total - done) * (at - work.started) / done)} left.`);
+        work.said = at;
+      }
+    },
+    entry: (id) => ({ source: id, ...counts(id) }),
+  };
+}
+
+const KIND_NAMES = { 'claude-code': 'Claude Code chats', codex: 'Codex sessions', git: 'git history', markdown: 'Markdown files' };
+
+// A source as standard error names it: this project's own, or by its folder.
+function sourceLabel(entry, project) {
+  const own = project !== undefined && (entry.path === project
+    || entry.path === join(homedir(), '.claude/projects', project.replace(/[^a-zA-Z0-9]/g, '-')));
+  if (own) return `this project's ${KIND_NAMES[entry.type]}`;
+  const home = homedir();
+  return `the ${KIND_NAMES[entry.type]} in ${within(entry.path, home) ? `~/${relative(home, entry.path)}` : entry.path}`;
 }
 
 // `prepare: false` builds and reads every source only after the search lines
@@ -1127,6 +1259,11 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
     : await realpath(await mkdtemp(join(tmpdir(), 'curate-work-')));
   if (records) await mkdir(folder, { recursive: true, mode: 0o700 });
   else workingFolders.add(folder);
+  // The copies of the Codex sessions a call reads exist only while it runs,
+  // in a temporary folder whether or not records are on: a record never
+  // keeps them, and every way the call ends removes them.
+  const copies = records ? await realpath(await mkdtemp(join(tmpdir(), 'curate-sessions-'))) : folder;
+  if (records) workingFolders.add(copies);
   const started = Date.now();
   const record = { task: options.task, sourcesFile: options.sources, ...(configFile === undefined ? {} : { configFile }), settings, status: 'started', subscription: [], sessions: [], reads: [], jev: [], timings: {} };
   let local;
@@ -1134,6 +1271,24 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
   let preparing = Promise.resolve();
   let embedder;
   const held = new Map();
+  // Each built source's name for standard error, its stored index's report
+  // as its first read gave it, and what preparing it took.
+  const labels = new Map();
+  const indexes = new Map();
+  // The sources the call reads, or `--prepare` prepares, which the record lists.
+  const readIds = new Set();
+  const report = prepareReport(labels);
+  const noteIndex = (id, read) => {
+    if (read?.index !== undefined && !indexes.has(id)) indexes.set(id, read.index);
+    return read;
+  };
+  // The vector store as one source uses it: what it embeds is told and counted under that source.
+  const views = new Map();
+  const embedFor = (model, id) => {
+    if (model.embed.withProgress === undefined) return model.embed;
+    if (!views.has(id)) views.set(id, model.embed.withProgress((done, total) => report.embedded(id, done, total)));
+    return views.get(id);
+  };
   // Overlapping callers each get a full snapshot, written one after
   // another: two writes to the same file can never interleave, and the
   // last write holds every entry pushed before it ran. A failed write
@@ -1164,7 +1319,7 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
     const searchPrompt = searchLinesPrompt(options.task, searchKinds, scoped ? today : undefined);
     const searchStart = Date.now();
     // One entry's source. A Codex entry's sessions are copied to `snapshot`.
-    const build = async (entry, snapshot) => {
+    const make = async (entry, snapshot) => {
       // An entry's include/exclude paths resolve inside its own path.
       const inside = (list) => list?.map((entry_) => isAbsolute(entry_) ? entry_ : join(entry.path, entry_));
       if (entry.type === 'git') {
@@ -1199,6 +1354,11 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
         ...(entry.questions === undefined ? {} : { questions: CHAT_QUESTION_SETS[entry.questions] }),
         ...(entry.bar === undefined ? {} : { bar: entry.bar }) }) };
     };
+    const build = async (entry, snapshot) => {
+      const made = await make(entry, snapshot);
+      labels.set(made.source.id, sourceLabel(entry, project));
+      return made;
+    };
     const modelPath = settings.embeddingModel ?? defaultModelPath();
     const cacheDirectory = join(process.env.XDG_CACHE_HOME ?? join(homedir(), '.cache'), 'curate/embeddings');
     // A load that fails names the need it shows missing: the engine or the
@@ -1211,7 +1371,8 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
     };
     // `--prepare` runs between calls, when no older reader still has the
     // files earlier formats wrote open, so its reads remove them.
-    const context = { files: new Map(), shared: new Map(), ...(options.prepareOnly ? { removed: [] } : {}) };
+    const context = { files: new Map(), shared: new Map(), ...(options.prepareOnly ? { removed: [] } : {}),
+      onFirstIndex: (id, done, total, unit) => report.index(id, done, total, unit) };
     // Every need this command has, checked before any work and reported
     // together. --prepare needs no key or login, and a call given a stand-in
     // for the search-lines model needs no login. A call finds the model by its
@@ -1273,10 +1434,13 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
     // and stops: no search lines, no decisions, so no model call and no key.
     if (options.prepareOnly) {
       local = await loaded();
+      const prepareStart = Date.now();
       const reads = await Promise.all(callSources.map(async (entry, index) => {
-        const { source } = await build(entry, join(folder, `codex-${index + 1}`));
-        return { source: source.id, ...await warmSource(source, { task: options.task || 'prepare' }, local.embed, context) };
+        const { source } = await build(entry, join(copies, `codex-${index + 1}`));
+        readIds.add(source.id);
+        return { source: source.id, ...noteIndex(source.id, await warmSource(source, { task: options.task || 'prepare' }, embedFor(local, source.id), context)) };
       }));
+      record.timings.prepareMs = Date.now() - prepareStart;
       for (const read of reads) if (readWarning(read) !== undefined) console.error(readWarning(read));
       const removed = [...context.removed, ...await local.embed.removeEarlierFiles?.() ?? []];
       record.status = 'prepared';
@@ -1300,12 +1464,13 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
         const halt = () => stop.abort();
         stoppers.add(halt);
         stop.signal.addEventListener('abort', () => stoppers.delete(halt), { once: true });
-        const built = build(entry, join(folder, `codex-${codex.indexOf(entry) + 1}`));
+        const built = build(entry, join(copies, `codex-${codex.indexOf(entry) + 1}`));
         // A failure here is dropped: the pick's own read raises it, where the
         // call always raised it.
         const warmed = built.then(async ({ source }) => {
           const model = await embedder.catch(() => undefined);
-          await warmSource(source, { task: options.task }, model?.embed, context, stop.signal).catch(() => {});
+          await warmSource(source, { task: options.task }, model === undefined ? undefined : embedFor(model, source.id), context, stop.signal)
+            .then((read) => noteIndex(source.id, read), () => {});
         }, () => {});
         held.set(entry, { built, warmed, stop });
       }
@@ -1335,9 +1500,10 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
     const sources = [];
     for (const entry of entries) {
       const { source, session } = await (held.get(entry)?.built
-        ?? build(entry, join(folder, `codex-${record.sessions.length + 1}`)));
+        ?? build(entry, join(copies, `codex-${record.sessions.length + 1}`)));
       if (session !== undefined) record.sessions.push(session);
       sources.push(source);
+      readIds.add(source.id);
     }
     record.timings.filterMs = Date.now() - filterStart;
     await save();
@@ -1345,8 +1511,11 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
     local = await loaded();
     record.embedding = { modelPath, cacheDirectory };
     record.timings.embeddingLoadMs = Date.now() - embeddingStart;
-    // The kept sources' early work ends before the pick reads them.
+    // The kept sources' early work ends before the pick reads them. What of
+    // it ran on past the search lines is the call's wait here.
+    const prepareStart = Date.now();
     await preparing;
+    record.timings.prepareMs = Date.now() - prepareStart;
     // Core's jev() sends the requests and reports each one, split
     // requests included; the run record keeps them all.
     const service = jev({ apiKey, onCall: async (call) => { record.jev.push(call); await save(); } });
@@ -1393,9 +1562,12 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
       // never written, even to the temporary folder.
       const searched = searchSource({ ...source, labelKinds: [], rare: false }, record.searches, record.reads, folder,
         records ? settings : { ...settings, readAudit: false });
-      return { ...searched, read: (readRequest, context_) => reading.track(() => searched.read(readRequest, context_)) };
+      const ownEmbed = (readRequest) => readRequest.meaningLane === undefined ? readRequest
+        : { ...readRequest, meaningLane: { ...readRequest.meaningLane, embed: embedFor(local, source.id) } };
+      return { ...searched, read: (readRequest, context_) => reading.track(async () =>
+        noteIndex(source.id, await searched.read(ownEmbed(readRequest), context_))) };
     }), request, pickOptions, context);
-    record.pick = picked.record;
+    record.pick = savedPick(picked.record);
     record.sourcesRead = picked.reads.map((read, i) => ({ source: sources[i].id, status: read.status,
       parts: read.candidates?.length ?? 0, complete: read.complete, partial: read.partial, reason: read.reason,
       ...(read.noSearchMatch === true ? { noSearchMatch: true } : {}),
@@ -1424,7 +1596,7 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
   } catch (error) {
     // A PickError carries the pick's record: the failed batch's ids, the
     // unanswered candidates, and the answers that came back. Keep it.
-    if (error?.record !== undefined) record.pick = error.record;
+    if (error?.record !== undefined) record.pick = savedPick(error.record);
     record.status = 'failed'; record.error = error.message; throw error;
   }
   finally {
@@ -1435,9 +1607,17 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
     local ??= await embedder?.catch(() => undefined);
     try { await local?.dispose(); }
     finally {
+      // Per source read: whether its index was built from nothing, its
+      // index's report, and the texts embedded for it and how long that took.
+      if (readIds.size > 0) {
+        record.prepared = [...readIds].map((id) => ({ ...report.entry(id), ...(indexes.has(id) ? { index: indexes.get(id) } : {}) }));
+      }
       record.timings.totalMs = Date.now() - started;
       await save();
-      if (!records) { await rm(folder, { recursive: true, force: true }); workingFolders.delete(folder); }
+      for (const temporary of records ? [copies] : [folder]) {
+        await rm(temporary, { recursive: true, force: true });
+        workingFolders.delete(temporary);
+      }
     }
   }
   return { memory, record, folder: records ? folder : null };

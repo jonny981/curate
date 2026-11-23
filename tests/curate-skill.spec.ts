@@ -591,9 +591,10 @@ it('keeps the original task and each source register while core interleaves all 
   expect(audit).toHaveLength(16);
   expect(new Set(audit.map((entry) => entry.file)).size).toBe(16);
   for (const entry of audit) {
+    // A read file is the read's report: how many parts it returned, never the parts.
     const saved = JSON.parse(await readFile(join(directory, entry.file), 'utf8'));
     expect(entry.parts).toBe(2);
-    expect(saved.candidates.map((candidate: { signals: { keyword: number } }) => candidate.signals.keyword)).toEqual([1, 0]);
+    expect(saved).toEqual({ status: 'read', complete: true, returned: 2 });
   }
 });
 
@@ -1806,7 +1807,7 @@ describe('readAudit through the skill', () => {
   const strip = (value: unknown) => JSON.parse(JSON.stringify(value,
     (key, v) => (key === 'ms' || key === 'started' || key === 'timings' || key === 'file' || key === 'asOf' ? undefined : v)));
 
-  it.each([undefined, true, false])('writes full read files only while readAudit is not false (%s)', async (readAudit) => {
+  it.each([undefined, true, false])('writes read files only while readAudit is not false (%s)', async (readAudit) => {
     const { runFolder, record } = await stubRun(readAudit);
     const files = (await readdir(runFolder)).filter((name) => /^read-\d+\.json$/.test(name));
     if (readAudit === false) {
@@ -1817,9 +1818,10 @@ describe('readAudit through the skill', () => {
       expect(files).toHaveLength(record.reads.length);
       for (const entry of record.reads) {
         expect(typeof entry.file).toBe('string');
-        const full = JSON.parse(await readFile(join(runFolder, entry.file), 'utf8'));
-        expect(full.status).toBe(entry.status);
-        expect(Array.isArray(full.candidates)).toBe(true);
+        const saved = JSON.parse(await readFile(join(runFolder, entry.file), 'utf8'));
+        expect(saved.status).toBe(entry.status);
+        expect(saved.meaningScored ?? saved.returned ?? 0).toBe(entry.parts);
+        expect(saved.candidates).toBeUndefined();
       }
     }
     expect(record.status).toBe('complete');

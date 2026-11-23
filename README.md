@@ -222,6 +222,7 @@ The [`/curate` skill](skills/curate/SKILL.md) runs it for Claude Code and Codex,
 | `curate prepare` | Brings the project's index and embeddings up to date. Free: no model, key or login. It also deletes index files left by older versions of Curate and lists them, so don't run it while an older version is mid-run. |
 
 Exit codes are 0 on success, 3 when a requirement is missing, and 1 for anything else.
+A project's first question, and the first after an update that changes the index, can take minutes while Curate indexes and embeds the history. It says what it's doing on standard error, with the time left; `curate prepare` does the same work ahead of time.
 The [command's README](packages/cli/README.md) has the detail.
 
 Working in a Curate checkout? After `pnpm install --frozen-lockfile` and `pnpm build`, `node skills/curate/run.mjs` takes the same arguments, with `--check` and `--prepare` instead of `check` and `prepare`.
@@ -308,12 +309,15 @@ Identical text is only rated once.
 ### Caches
 
 Curate keeps its index, embeddings and label store under `~/.cache/curate`, or `$XDG_CACHE_HOME/curate` if that's set.
-Embeddings are reused until the model file or the text changes.
+Embeddings are reused until the model file or the text changes, including after an update that rebuilds the index.
+Building a source's index from scratch, or embedding more than 2,000 passages, prints its progress on standard error.
 `curate setup` also writes the settings and key files under `~/.curate`, but only the ones you say yes to.
 
 ### Logs
 
 Off by default. Set `"records": true` and each question saves its result, what it read, model usage and timings under `~/.curate/runs/`.
+The timings include how long the question waited on indexing and embedding, and `prepared` says per source whether its index was built from scratch and how many passages were embedded.
+A record keeps the text of the passages a question kept, and only ids, ranks and scores for the rest.
 
 ### Privacy
 

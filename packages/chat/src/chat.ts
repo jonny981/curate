@@ -870,6 +870,7 @@ async function syncChatIndex(
   own: readonly string[], requested: readonly string[], includeTools: boolean, size: number,
   keyword: Partial<ChatKeywordSettings> | undefined, signal: AbortSignal | undefined,
   walk: (root: string, exclusions: readonly string[]) => Promise<{ files: string[]; symlinks: string[] }>,
+  firstIndex?: (done: number, total: number) => void,
 ): Promise<ChatIndex> {
   const database = await openIndexFile(path, directory);
   try {
@@ -907,12 +908,21 @@ async function syncChatIndex(
       let removed = 0;
       const seen = new Set<string>();
       const loaded = new Map<string, { transcripts: StoredTranscript[]; symlinks: string[]; broken: string[]; gone: string[] }>();
-      for (const { provider, slot, root } of roots) {
-        const { files, symlinks } = await walk(root, [...own, ...requested]);
+      const listings: { files: string[]; symlinks: string[] }[] = [];
+      for (const { root } of roots) listings.push(await walk(root, [...own, ...requested]));
+      // A file that holds no transcript yet is built from nothing: say how far it has got.
+      const toRead = listings.reduce((sum, listing) => sum + listing.files.length, 0);
+      const told = rows.size === 0 && toRead > 0 ? firstIndex : undefined;
+      let done = 0;
+      told?.(0, toRead);
+      for (const [at, { provider, slot, root }] of roots.entries()) {
+        const { files, symlinks } = listings[at]!;
         const transcripts: StoredTranscript[] = [];
         const broken: string[] = [];
         const gone: string[] = [];
         for (const listed of files) {
+          if (done > 0) told?.(done, toRead);
+          done += 1;
           /** Stores one decoded part of this file as row `ordinal` of transcript `id`. */
           const insertOne = (id: number, ordinal: number, part: LinePart, before: string | undefined) => {
             const words = storedChatWords(part.text, keyword);
@@ -1072,6 +1082,7 @@ async function syncChatIndex(
         }
         loaded.set(rootKey(provider, root), { transcripts, symlinks, broken, gone });
       }
+      told?.(done, toRead);
       // A transcript no walk met is gone, unless this request's own
       // exclusions hid it or its root was not walked this call.
       const walked = new Map(roots.map(({ provider, slot, root }) => [`${provider}\0${slot}`, root]));
@@ -1198,7 +1209,8 @@ export function chat(options: ChatOptions = {}): CandidateSource {
       if (walking === undefined) byRoot.set(key, walking = walkTranscripts(root, exclusions, signal));
       return walking;
     };
-    const index = await syncChatIndex(path, directory, found, own, requested, includeTools, size, options.keyword, signal, walk);
+    const index = await syncChatIndex(path, directory, found, own, requested, includeTools, size, options.keyword, signal, walk,
+      context?.onFirstIndex === undefined ? undefined : (done, total) => context.onFirstIndex!(id, done, total, 'transcripts'));
     if (context?.removed !== undefined) context.removed.push(...await removeEarlierFormats(directory, id, key));
     return index;
   };

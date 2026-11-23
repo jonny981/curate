@@ -80,3 +80,37 @@ it('embeds a shared text once when source reads overlap', async () => {
   expect(calls).toEqual([['shared', 'first'], ['second']]);
   expect(results[0]![0]).toEqual(results[1]![0]);
 });
+
+it('shares the embedding with another call embedding the same texts at once, rather than repeating it', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'curate-embeddings-'));
+  directories.push(directory);
+  const texts = Array.from({ length: 640 }, (_, index) => `part ${index}`);
+  const vectorOf = (text: string) => [Number.parseInt(text.slice('part '.length), 10) + 1, 1];
+  // Each store is its own connection and queue, as each call's is; the
+  // model yields between batches, so the two calls run side by side.
+  const embedded: string[] = [];
+  const model = async (batch: readonly string[]) => {
+    embedded.push(...batch);
+    await new Promise((done) => { setTimeout(done, 2); });
+    return batch.map(vectorOf);
+  };
+  const alone = await cachedEmbeddings(async (batch) => batch.map(vectorOf), { directory: join(directory, 'alone'), modelId: 'model-a' })(texts);
+
+  // Started together: each embeds about half, and each gets every vector.
+  const together = await Promise.all([0, 1].map(() => cachedEmbeddings(model, { directory, modelId: 'model-a' })(texts)));
+  for (const vectors of together) expect(vectors).toEqual(alone);
+  expect(new Set(embedded).size).toBe(texts.length);
+  expect(embedded.length).toBeLessThanOrEqual(texts.length + 32);
+
+  // One started after the other had embedded a quarter: still no text twice beyond one batch.
+  embedded.length = 0;
+  const later = texts.map((text) => `${text} again`);
+  const first = cachedEmbeddings(model, { directory, modelId: 'model-a' });
+  const second = cachedEmbeddings(model, { directory, modelId: 'model-a' });
+  const running = first(later);
+  while (embedded.length < 160) await new Promise((done) => { setTimeout(done, 1); });
+  const [early, late] = await Promise.all([running, second(later)]);
+  expect(late).toEqual(early);
+  expect(new Set(embedded).size).toBe(later.length);
+  expect(embedded.length).toBeLessThanOrEqual(later.length + 32);
+});

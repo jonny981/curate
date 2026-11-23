@@ -475,6 +475,7 @@ A failed tag request leaves the selection standing and records the error on the 
 ### Order
 
 Kept reference parts are ordered by rating, strongest first, with no fixed size cap.
+A candidate with `part` and `documentId` is one part of a longer item, such as a long commit message. The kept parts of one item sit together, at the place of the strongest, under the item's title and in their own order. `…` marks parts left out, and a last line says how many, for example `11 of 12 parts of commit 3ad5901 were not kept.`
 Three options change that order; all three are off by default ([measured](measurements.md#defaults-and-evidence)).
 
 | Option | What it does |

@@ -13,6 +13,13 @@ export type EmbeddingFunction = (
   signal?: AbortSignal,
 ) => Promise<readonly ArrayLike<number>[]>;
 
+/** Told how far one embedding has got: `embedded` of the `missing` texts
+ *  it has to embed, first with 0 before any is embedded, then after each
+ *  batch. `missing` starts as the texts the store held no vector for and
+ *  drops by each one another process stores first. A lookup that embeds
+ *  nothing never calls it. */
+export type EmbedProgress = (embedded: number, missing: number) => void;
+
 /** An embedding function that also hands out stored vectors by key. */
 export interface StoredEmbeddingFunction extends EmbeddingFunction {
   /** Hands `visit` the stored unit vector of each of `keys`, by its index
@@ -32,6 +39,9 @@ export interface StoredEmbeddingFunction extends EmbeddingFunction {
    *  standard error says so. An older process can still have them open,
    *  so only a run between calls, such as the skill's `--prepare`, asks. */
   removeEarlierFiles(): Promise<readonly string[]>;
+  /** The same store, telling `progress` how far each embedding made
+   *  through it has got, whether by `eachVector` or a plain call. */
+  withProgress(progress: EmbedProgress): StoredEmbeddingFunction;
 }
 
 /** Reuse vectors across runs, keyed by the model identity and complete
@@ -144,7 +154,8 @@ export function cachedEmbeddings(
     return removed;
   };
   let opened: Promise<{ database: IndexDatabase; dimensions: () => number | undefined;
-    record: IndexStatement; every: IndexStatement; odd: IndexStatement; put: (rows: readonly Row[]) => void }> | undefined;
+    record: IndexStatement; every: IndexStatement; odd: IndexStatement; put: (rows: readonly Row[]) => void;
+    turn: () => number }> | undefined;
   // ponytail: the data file only grows: the vector of a changed or deleted
   // part stays, about 6 KB each at 768 numbers. The way up is a compaction
   // that gathers every source's stored vector keys and copies only their
@@ -223,16 +234,29 @@ export function cachedEmbeddings(
       every: database.prepare('SELECT key, record FROM keys'),
       odd: database.prepare('SELECT vector FROM odd WHERE key = ?'),
       put: (rows: readonly Row[]) => locked(() => putLocked(rows)),
+      // How many embeddings into this store began before this one, from
+      // any process: its parity picks the end an embedding starts from.
+      turn: () => {
+        let before = 0;
+        locked(() => {
+          before = (fact.get('embeddings') as { value: number } | undefined)?.value ?? 0;
+          setFact.run('embeddings', before + 1);
+        });
+        return before;
+      },
     };
   });
   const bytesOf = (vector: Float64Array) => new Uint8Array(vector.buffer, vector.byteOffset, vector.byteLength);
   // The local context evaluates one input at a time; serialize cache
   // misses too, so concurrent source reads never embed a text twice.
   let pending: Promise<unknown> = Promise.resolve();
-  const eachVector: StoredEmbeddingFunction['eachVector'] = (keys, text, visit, signal) => {
+  const eachVector = (
+    keys: readonly string[], text: (index: number) => string,
+    visit: (index: number, vector: Float64Array) => void, signal: AbortSignal | undefined, progress: EmbedProgress | undefined,
+  ): Promise<void> => {
     const result = pending.then(async () => {
       signal?.throwIfAborted();
-      const { dimensions, record, every, odd, put } = await store();
+      const { dimensions, record, every, odd, put, turn } = await store();
       const wanted = new Map<string, number[]>();
       keys.forEach((key, index) => {
         const at = wanted.get(key);
@@ -262,20 +286,7 @@ export function cachedEmbeddings(
       }
       // What the data file lacks: a vector of another length, kept in the
       // key file; from the JSON folder; else embedded, a bounded batch at a time.
-      let batch: [string, number][] = [];
-      const embedBatch = async () => {
-        if (batch.length === 0) return;
-        const embedded = await embed(batch.map(([, index]) => text(index)), signal);
-        if (embedded.length !== batch.length) throw new TypeError('embed must return one vector per input text.');
-        signal?.throwIfAborted();
-        // The lane that scored the text normalized the stored vector
-        // again, so the store holds normalize of what the JSON store
-        // would have held: bit for bit what the lanes saw before.
-        const vectors = embedded.map((vector) => markUnit(normalize(normalize(vector))));
-        put(batch.map(([key], at) => ({ key, vector: bytesOf(vectors[at]!) })));
-        batch.forEach(([key], at) => hand(key, vectors[at]!));
-        batch = [];
-      };
+      const missing: [string, number][] = [];
       for (const [key, [index]] of [...wanted]) {
         const kept = vectorOf((odd.get(key) as { vector: Uint8Array } | undefined)?.vector);
         if (kept !== undefined) {
@@ -292,21 +303,55 @@ export function cachedEmbeddings(
           hand(key, vector);
           continue;
         }
-        batch.push([key, index!]);
-        if (batch.length === 32) await embedBatch();
+        missing.push([key, index!]);
       }
-      await embedBatch();
+      // Another process can be embedding the same texts. Each batch is
+      // looked up again just before it is embedded, and what that process
+      // stored meanwhile is read rather than embedded. Every other
+      // embedding starts from the far end of its list, and one that meets
+      // texts stored ahead of it turns round, so two calls share the work.
+      // The order is only a hint: every text is handed once, read or made.
+      let low = 0;
+      let high = missing.length;
+      let forward = missing.length === 0 || turn() % 2 === 0;
+      let made = 0;
+      let left = missing.length;
+      if (left > 0) progress?.(0, left);
+      while (low < high) {
+        const size = Math.min(32, high - low);
+        const batch = forward ? missing.slice(low, low + size) : missing.slice(high - size, high);
+        if (forward) low += size;
+        else high -= size;
+        const length = dimensions();
+        const stored = length === undefined ? [] : batch.flatMap(([key]) => {
+          const row = record.get(key) as { record: number } | undefined;
+          return row === undefined ? [] : [{ record: row.record, key }];
+        });
+        if (stored.length > 0) {
+          stored.sort((one, other) => one.record - other.record);
+          readRecords(data, length!, stored, (key, vector) => hand(key, markUnit(vector)));
+          forward = !forward;
+        }
+        const fresh = batch.filter(([key]) => wanted.has(key));
+        left -= batch.length - fresh.length;
+        if (fresh.length > 0) {
+          const embedded = await embed(fresh.map(([, index]) => text(index)), signal);
+          if (embedded.length !== fresh.length) throw new TypeError('embed must return one vector per input text.');
+          signal?.throwIfAborted();
+          // The lane that scored the text normalized the stored vector
+          // again, so the store holds normalize of what the JSON store
+          // would have held: bit for bit what the lanes saw before.
+          const vectors = embedded.map((vector) => markUnit(normalize(normalize(vector))));
+          put(fresh.map(([key], at) => ({ key, vector: bytesOf(vectors[at]!) })));
+          fresh.forEach(([key], at) => hand(key, vectors[at]!));
+          made += fresh.length;
+        }
+        progress?.(made, left);
+      }
       signal?.throwIfAborted();
     });
     pending = result.catch(() => {});
     return result;
-  };
-  // Each vector copied out: a vector read in place is only good during its visit.
-  const cached: EmbeddingFunction = async (texts, signal) => {
-    const vectors: Float64Array[] = Array.from({ length: texts.length });
-    await eachVector(texts.map(textKey), (index) => texts[index]!,
-      (index, vector) => { vectors[index] = markUnit(Float64Array.from(vector)); }, signal);
-    return vectors;
   };
   const removeEarlierFiles = () => {
     const result = pending.then(async () => {
@@ -316,7 +361,20 @@ export function cachedEmbeddings(
     pending = result.catch(() => {});
     return result;
   };
-  return Object.assign(cached, { eachVector, removeEarlierFiles });
+  // Every view shares the one store and the one queue; only what it tells differs.
+  const view = (progress?: EmbedProgress): StoredEmbeddingFunction => {
+    const each: StoredEmbeddingFunction['eachVector'] = (keys, text, visit, signal) =>
+      eachVector(keys, text, visit, signal, progress);
+    // Each vector copied out: a vector read in place is only good during its visit.
+    const cached: EmbeddingFunction = async (texts, signal) => {
+      const vectors: Float64Array[] = Array.from({ length: texts.length });
+      await each(texts.map(textKey), (index) => texts[index]!,
+        (index, vector) => { vectors[index] = markUnit(Float64Array.from(vector)); }, signal);
+      return vectors;
+    };
+    return Object.assign(cached, { eachVector: each, removeEarlierFiles, withProgress: view });
+  };
+  return view();
 }
 
 export interface MeaningSearchOptions {

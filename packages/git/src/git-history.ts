@@ -450,7 +450,7 @@ async function listCommits(
 async function syncGitIndex(
   path: string, directory: string, toplevel: string, head: string, own: readonly string[],
   only: readonly string[] | undefined, range: readonly string[], requested: readonly string[],
-  size: number, signal: AbortSignal | undefined,
+  size: number, signal: AbortSignal | undefined, firstIndex?: (done: number, total: number) => void,
 ): Promise<GitIndex> {
   const database = await openIndexFile(path, directory);
   try {
@@ -467,6 +467,8 @@ async function syncGitIndex(
       const held = new Set((database.prepare('SELECT sha FROM commits').all() as { sha: string }[]).map((row) => row.sha));
       const skipped = new Set((database.prepare('SELECT sha FROM skipped').all() as { sha: string }[]).map((row) => row.sha));
       const rebuilt = [...held, ...skipped].some((sha) => !reached.has(sha));
+      // A file that holds no commit yet is built from nothing: say how far it has got.
+      const fresh = held.size === 0 && skipped.size === 0;
       let removed = 0;
       if (rebuilt) {
         removed = held.size;
@@ -483,7 +485,10 @@ async function syncGitIndex(
       const missing = order.map((commit) => commit.sha)
         .filter((sha) => !held.has(sha) && !skipped.has(sha) && (dated === undefined || dated.has(sha)));
       let added = 0;
+      const told = fresh && missing.length > 0 ? firstIndex : undefined;
+      told?.(0, missing.length);
       for (let start = 0; start < missing.length; start += BODY_PAGE) {
+        if (start > 0) told?.(start, missing.length);
         let batch = missing.slice(start, start + BODY_PAGE);
         if (own.length !== 0 || only !== undefined || requested.length !== 0) {
           const listed = parseLog(await runGit(toplevel, [
@@ -528,6 +533,7 @@ async function syncGitIndex(
           added += 1;
         }
       }
+      told?.(missing.length, missing.length);
       return { path, directory, head, held, order, ranges: new Map(), read: { fields: new Map(), postings: new Map() },
         report: { parts: held.size, added, removed, rebuilt, ms: Math.round(performance.now() - started) } };
     });
@@ -610,6 +616,7 @@ export function git(
   const loadIndex = async (
     directory: string, toplevel: string, head: string, range: readonly string[], requested: readonly string[],
     size: number, signal: AbortSignal | undefined, removed: string[] | undefined,
+    firstIndex: ((done: number, total: number) => void) | undefined,
   ) => {
     // The source's own exclusions, path list and look-back decide which
     // commits exist, and the part size which parts: they name the file.
@@ -624,7 +631,7 @@ export function git(
     const key = { ...before, layout: GIT_INDEX_LAYOUT };
     const path = indexFilePath(directory, id, key);
     const index = await syncGitIndex(path, directory, toplevel, head, await resolveExcluded(exclude ?? [], toplevel),
-      paths === undefined ? undefined : await resolveExcluded(paths, toplevel), range, requested, size, signal);
+      paths === undefined ? undefined : await resolveExcluded(paths, toplevel), range, requested, size, signal, firstIndex);
     if (removed !== undefined) {
       removed.push(...await removeEarlierFormats(directory, id, key));
       // The files named before the layout number was part of the name.
@@ -739,7 +746,8 @@ export function git(
           let loading = byRead?.get(key)?.find((update) => update.since <= since && update.until >= until)?.loading;
           if (loading === undefined && request.revision === undefined) {
             loading = loadIndex(directory, toplevel, sha, dateRange(since, until), requested, size, signal,
-              context?.removed);
+              context?.removed,
+              context?.onFirstIndex === undefined ? undefined : (done, total) => context.onFirstIndex!(id, done, total, 'commits'));
             if (byRead !== undefined) byRead.set(key, [...byRead.get(key) ?? [], { since, until, loading }]);
           }
           const loaded = await loading;

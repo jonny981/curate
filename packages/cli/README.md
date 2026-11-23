@@ -64,6 +64,8 @@ Every setting is explained in full in the [settings reference](https://github.co
 
 ## How it runs
 
+If a question, or `curate prepare`, has slow work to do first, it tells you on standard error: what it's doing, how far it's got and roughly how long is left. That happens when it builds a source's index from scratch or embeds more than 2,000 parts. Standard output only ever holds the result.
+
 The command runs the skill's script, `skills/curate/run.mjs`, which this package ships as `dist/run.mjs`.
 It hides Node's experimental-feature warning for SQLite, which the index uses, and no other warning.
 
