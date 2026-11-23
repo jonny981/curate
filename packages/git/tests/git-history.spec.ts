@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { pickFromSources, type CandidateSource } from '@curatejs/core';
+import { curate, DEFAULT_MAX_QUESTION_TEXT, pickFromSources, type CandidateSource } from '@curatejs/core';
 import { git as gitSource } from '../src/index.js';
 import { commitDate, indexFilePath, STORED_INDEX_FORMAT } from '@curatejs/core/internal';
 
@@ -923,6 +923,230 @@ describe('git', () => {
   });
 });
 
+describe('a long commit message', () => {
+  const task = 'Why was the battery backup retry limit raised?';
+  const relevant = 'The battery backup retry limit was raised from three to five, because the night outage showed '
+    + 'three retries end before the inverter wakes.';
+  const filler = (n: number, side: string) => `Section ${n} ${side} covers the dashboard colours, the settings screen `
+    + `and the font sizes in plain words. It lists the contrast checks for panel ${n}, the spacing between cards and `
+    + 'the order of the menu items. Nothing here changes how the service stores or sends data.';
+  // About 60,000 characters: a squash merge that carries a whole pull
+  // request description, one paragraph of which bears on the task.
+  const longBody = Array.from({ length: 85 }, (_, n) => [`## Section ${n}`, filler(n, 'first'), filler(n, 'second'),
+    ...(n === 40 ? [relevant] : [])].join('\n\n')).join('\n\n');
+  const history = () => repository([
+    { subject: 'add the battery backup job', body: 'The backup runs nightly from src.', date: '2026-10-01T10:00:00Z',
+      files: { 'src/backup.ts': 'a' } },
+    { subject: 'merge the interface rework (#42)', body: longBody, date: '2026-10-05T10:00:00Z',
+      files: { 'src/ui.ts': 'b', 'src/backup.ts': 'c' } },
+  ]);
+  const shas = async (directory: string) => ({
+    short: (await git(directory, ['rev-parse', 'HEAD~1'])).trim(),
+    long: (await git(directory, ['rev-parse', 'HEAD'])).trim(),
+  });
+
+  it('keeps a short commit whole: the same id, title and text as before', async () => {
+    const directory = await history();
+    const { short } = await shas(directory);
+    const whole = await read(gitSource(directory), { task });
+    const cut = await read(gitSource(directory), { task, maxQuestionText: DEFAULT_MAX_QUESTION_TEXT });
+    if (whole.status !== 'read' || cut.status !== 'read') throw new Error('Expected a read');
+    // Its scores move only because the long commit's parts now count in
+    // the keyword statistics; a history with no long commit scores the same.
+    const { signals: _whole, ...before } = whole.candidates.find((candidate) => candidate.contentRef === short)!;
+    expect(before).toMatchObject({ id: `commit ${short.slice(0, 7)}`, title: 'add the battery backup job',
+      text: 'The backup runs nightly from src.' });
+    expect(cut.candidates.filter((candidate) => candidate.contentRef === short)
+      .map(({ signals: _cut, ...rest }) => rest)).toEqual([before]);
+    expect(before).not.toHaveProperty('part');
+    expect(before).not.toHaveProperty('documentId');
+    // A read given no part size keeps the long commit whole too.
+    expect(whole.candidates.find((candidate) => candidate.contentRef !== short)!.text).toBe(longBody);
+  });
+
+  it('cuts a long body into parts within the part size, at headings and blank lines, each carrying the commit', async () => {
+    const directory = await history();
+    const { long } = await shas(directory);
+    const result = await read(gitSource(directory), { task, maxQuestionText: DEFAULT_MAX_QUESTION_TEXT });
+    if (result.status !== 'read') throw new Error('Expected a read');
+    const parts = result.candidates.filter((candidate) => candidate.contentRef === long);
+    expect(parts.length).toBeGreaterThan(80);
+    parts.forEach((part, at) => {
+      expect(part).toMatchObject({
+        id: `commit ${long.slice(0, 7)}#${at + 1}`,
+        documentId: `commit ${long.slice(0, 7)}`,
+        part: { index: at + 1, of: parts.length },
+        title: 'merge the interface rework (#42)',
+        date: { value: '2026-10-05T10:00:00+00:00', meaning: 'recorded' },
+        changedPaths: ['src/backup.ts', 'src/ui.ts'],
+      });
+      expect(part.text.length).toBeLessThanOrEqual(DEFAULT_MAX_QUESTION_TEXT);
+      // Never cut mid-sentence: every paragraph here ends with a full stop.
+      expect(part.text).toMatch(/\.$/);
+      expect(part.signals['recency']).toBeGreaterThan(0);
+    });
+    // Each heading starts a part, and no text is lost.
+    expect(parts.filter((part) => part.text.startsWith('## Section '))).toHaveLength(85);
+    expect(parts.map((part) => part.text).join('\n\n')).toBe(longBody);
+    // Only the part that holds the task's words scores on them.
+    const scoring = parts.filter((part) => (part.signals['bm25'] ?? 0) > 0);
+    expect(scoring).toHaveLength(1);
+    expect(scoring[0]!.text).toContain(relevant);
+  });
+
+  it('lays out only the part the decision kept, under its commit, and says how many parts were not kept', async () => {
+    const directory = await history();
+    const { long } = await shas(directory);
+    const cache = await mkdtemp(join(tmpdir(), 'curate-git-index-'));
+    temporaryDirectories.push(cache);
+    const asked: string[] = [];
+    // A stand-in for the decision model: yes to every question about the
+    // part that holds the answer, no to every question about anything else.
+    const picked = await pickFromSources([gitSource(directory, { index: { directory: cache } })], { task }, {
+      task,
+      decide: async (batch) => Object.fromEntries(batch.questions.map((question) => {
+        asked.push(question.text);
+        const yes = question.text.includes('retry limit') !== (question.questionKey === 'offtopic');
+        return [question.key, { status: 'answered' as const, probability: yes ? 0.95 : 0.01 }];
+      })),
+    });
+    // No decision request carries more than one part's text.
+    expect(asked.length).toBeGreaterThan(0);
+    expect(Math.max(...asked.map((text) => text.length))).toBeLessThanOrEqual(DEFAULT_MAX_QUESTION_TEXT);
+    const { log, record } = await curate(task, picked);
+    const all = await read(gitSource(directory), { task, maxQuestionText: DEFAULT_MAX_QUESTION_TEXT });
+    if (all.status !== 'read') throw new Error('Expected a read');
+    const parts = all.candidates.filter((candidate) => candidate.contentRef === long);
+    const kept = parts.find((candidate) => candidate.text.includes(relevant))!;
+    expect(kept.part!.index).toBeGreaterThan(1);
+    expect(kept.part!.index).toBeLessThan(parts.length);
+    expect(log).toBe([
+      '### Most likely answer\n\n',
+      `#### git:${directory} (said 2026-10-05)\n\n`,
+      'merge the interface rework (#42)\n\n…\n\n',
+      `${kept.text}\n\n…\n\n`,
+      `${parts.length - 1} of ${parts.length} parts of commit ${long.slice(0, 7)} were not kept.\n`,
+    ].join(''));
+    expect(log.length).toBeLessThan(1_000);
+    expect(record.partsNotKept).toBe(parts.length - 1);
+    expect(record.items.map((item) => item.candidate.id)).toEqual([kept.id]);
+  });
+
+  // GitHub's squash merge of five commits, as GitHub writes it: each
+  // commit's subject on a `* ` line, its body, its trailers, and the pull
+  // request's trailers after a `---------` line. The fourth is longer than
+  // one part.
+  const fillers = (side: string, ...ns: number[]) => ns.map((n) => filler(n, side)).join('\n\n');
+  const squashed = [
+    { subject: 'feat: lay the panels on one grid', body: fillers('grid', 1, 2) },
+    { subject: 'fix: raise the battery backup retry limit', body: relevant },
+    { subject: 'style: tidy the menu order', body: fillers('menu', 3, 4) },
+    { subject: 'docs: describe the new palette', body: fillers('palette', 5, 6, 7, 8) },
+    { subject: 'test: cover the grid at narrow widths', body: fillers('narrow', 9, 10) },
+  ];
+  const squashBody = `${squashed.map(({ subject, body }) => `* ${subject}\n\n${body}\n\nCo-authored-by: A <a@example.com>`)
+    .join('\n\n')}\n\n---------\n\nCo-authored-by: B <b@example.com>`;
+
+  it('cuts a GitHub squash merge at the commits it squashed, one part each, and a long one further', async () => {
+    const directory = await repository([{ subject: 'merge the interface rework (#43)', body: squashBody,
+      date: '2026-10-06T10:00:00Z', files: { 'src/ui.ts': 'a' } }]);
+    const result = await read(gitSource(directory), { task, maxQuestionText: DEFAULT_MAX_QUESTION_TEXT });
+    if (result.status !== 'read') throw new Error('Expected a read');
+    const texts = result.candidates.map((candidate) => candidate.text);
+    expect(squashBody.length).toBeGreaterThan(4 * DEFAULT_MAX_QUESTION_TEXT);
+    // Five squashed commits, the fourth in two parts: six parts in all.
+    expect(texts).toHaveLength(6);
+    expect(texts.filter((text) => text.startsWith('* ')).map((text) => text.split('\n')[0]))
+      .toEqual(squashed.map(({ subject }) => `* ${subject}`));
+    expect(texts[1]).toBe(`* ${squashed[1]!.subject}\n\n${relevant}\n\nCo-authored-by: A <a@example.com>`);
+    expect(texts.every((text) => text.length <= DEFAULT_MAX_QUESTION_TEXT)).toBe(true);
+    expect(texts.join('\n\n')).toBe(squashBody);
+    expect(result.candidates.every((candidate) => candidate.title === 'merge the interface rework (#43)')).toBe(true);
+  });
+
+  it('lays out only the squashed commit that holds the answer, under the squash commit', async () => {
+    const directory = await repository([{ subject: 'merge the interface rework (#43)', body: squashBody,
+      date: '2026-10-06T10:00:00Z', files: { 'src/ui.ts': 'a' } }]);
+    const sha = (await git(directory, ['rev-parse', 'HEAD'])).trim();
+    const picked = await pickFromSources([gitSource(directory, { index: false })], { task }, {
+      task,
+      decide: async (batch) => Object.fromEntries(batch.questions.map((question) => {
+        const yes = question.text.includes('retry limit') !== (question.questionKey === 'offtopic');
+        return [question.key, { status: 'answered' as const, probability: yes ? 0.95 : 0.01 }];
+      })),
+    });
+    const { log, record } = await curate(task, picked);
+    expect(log).toBe([
+      '### Most likely answer\n\n',
+      `#### git:${directory} (said 2026-10-06)\n\n`,
+      'merge the interface rework (#43)\n\n…\n\n',
+      `* ${squashed[1]!.subject}\n\n${relevant}\n\nCo-authored-by: A <a@example.com>\n\n…\n\n`,
+      `5 of 6 parts of commit ${sha.slice(0, 7)} were not kept.\n`,
+    ].join(''));
+    expect(record.partsNotKept).toBe(5);
+  });
+
+  it('cuts a git merge --squash commit at the commits it lists', async () => {
+    const directory = await repository([{ subject: 'chore: start', files: { 'base.md': 'a' } }]);
+    await git(directory, ['checkout', '-b', 'side']);
+    for (let n = 1; n <= 5; n++) {
+      await writeFiles(directory, { [`f${n}.md`]: String(n) });
+      await commit(directory, `feat: change ${n}\n\nChange ${n} moves panel ${n} onto the grid and keeps its labels `
+        + 'short, so the menu stays on one line.');
+    }
+    await git(directory, ['checkout', 'main']);
+    await git(directory, ['merge', '--squash', 'side']);
+    await git(directory, ['commit', '--no-edit'], IDENTITY);
+    const squashSha = (await git(directory, ['rev-parse', 'HEAD'])).trim();
+    const size = 260;
+    const message = (await git(directory, ['log', '-1', '--format=%b'])).trim();
+    expect(message.length).toBeGreaterThan(4 * size);
+    const result = await read(gitSource(directory), { task: 'panel grid', maxQuestionText: size });
+    if (result.status !== 'read') throw new Error('Expected a read');
+    const parts = result.candidates.filter((candidate) => candidate.contentRef === squashSha);
+    expect(parts[0]!.title).toBe('Squashed commit of the following:');
+    // `git merge --squash` lists the newest commit first.
+    expect(parts.map((part) => /^ {4}(feat: change \d)$/m.exec(part.text)?.[1]))
+      .toEqual([5, 4, 3, 2, 1].map((n) => `feat: change ${n}`));
+    expect(parts.every((part) => /^commit [0-9a-f]{40}\nAuthor: /.test(part.text) && part.text.length <= size)).toBe(true);
+    expect(parts.map((part) => part.text).join('\n\n')).toBe(message);
+  });
+
+  it('does not take a bullet list in one commit\'s prose for a squash', async () => {
+    // A tight list opens the body, as a review bot's summary does, and each
+    // section holds a loose two-item list after its prose.
+    const sections = Array.from({ length: 12 }, (_, n) => [`## Topic ${n}`, filler(n, 'topic'),
+      `* point one of topic ${n}`, `* point two of topic ${n}`, `More prose closes topic ${n}.`].join('\n\n'));
+    const body = ['* **Bug Fixes**\n* New values now match the quote style of the file.', ...sections].join('\n\n');
+    const directory = await repository([{ subject: 'fix: keep the quote style (#44)', body, files: { 'a.md': 'a' } }]);
+    const result = await read(gitSource(directory), { task, maxQuestionText: DEFAULT_MAX_QUESTION_TEXT });
+    if (result.status !== 'read') throw new Error('Expected a read');
+    const texts = result.candidates.map((candidate) => candidate.text);
+    expect(body.length).toBeGreaterThan(4 * DEFAULT_MAX_QUESTION_TEXT);
+    // Cut at headings and blank lines: the opening list, then one part a section.
+    expect(texts).toEqual(['* **Bug Fixes**\n* New values now match the quote style of the file.', ...sections]);
+  });
+
+  it('keeps every commit whole under pickFromSources with maxQuestionText: Infinity', async () => {
+    const directory = await history();
+    const { long } = await shas(directory);
+    const picked = await pickFromSources([gitSource(directory, { maxQuestionText: Infinity, index: false })], { task }, {
+      task, everyRanked: true, everyScored: true, rare: false,
+      decide: async (batch) => Object.fromEntries(
+        batch.questions.map((question) => [question.key, { status: 'answered' as const, probability: 0.9 }])),
+    });
+    if (picked.reads[0]!.status !== 'read') throw new Error('Expected a read');
+    expect(picked.reads[0]!.candidates.filter((candidate) => candidate.contentRef === long)
+      .map((candidate) => candidate.text)).toEqual([longBody]);
+  });
+
+  it('rejects a part size that is not a positive integer or Infinity', () => {
+    for (const maxQuestionText of [0, -1, 1.5, Number.NaN]) {
+      expect(() => gitSource('.', { maxQuestionText })).toThrow(TypeError);
+    }
+  });
+});
+
 it('marks the commits the cut would drop when a read keeps whole lanes', async () => {
   const directory = await repository(['battery backup decided', 'unrelated breakfast', 'battery cells degrade', 'a fourth note']
     .map((subject, index) => ({ subject: `we said ${subject}`, date: '2026-10-01T10:00:00Z', files: { [`f${index}.md`]: subject } })));
@@ -1145,15 +1369,68 @@ describe('git stored index', () => {
     }
   });
 
+  it('returns the same candidates for a history of short commits whether or not the read gives a part size', async () => {
+    const directory = await history();
+    for (const settings of [{}, { since: '2026-10-01', paths: ['src', 'docs'], exclude: ['docs/retention.md'] }]) {
+      for (const lane of lanes) {
+        const request = { ...lane, taskDate: '2026-10-28T12:00:00Z' };
+        const source = gitSource(directory, { ...settings, index: false });
+        expect(await read(source, { ...request, maxQuestionText: DEFAULT_MAX_QUESTION_TEXT }), JSON.stringify([settings, lane]))
+          .toEqual(await read(source, request));
+      }
+    }
+  });
+
+  it('returns the same parts of a long commit from the stored index as from git, for every lane', { timeout: 60_000 }, async () => {
+    const directory = await history();
+    // A body over four part sizes, with the task's words in one part and
+    // a name in another.
+    const body = [
+      '## Plan', 'The interface rework moves every panel onto one grid. Colours follow the new palette.',
+      '## Backup', 'The battery backup retry now waits for the inverter. It runs from src as before.',
+      '## People', 'Alice reviewed the grid on the night shift. She asked for larger labels.',
+      'A last paragraph runs on about spacing, margins and borders. It then covers the order of the menu items '
+        + 'in the side bar, which is longer than one part.',
+    ].join('\n\n');
+    expect(body.length).toBeGreaterThan(400);
+    await writeFiles(directory, { 'src/backup.ts': 'f', 'docs/grid.md': 'g' });
+    await commit(directory, `merge the interface rework\n\n${body}`, '2026-10-15T10:00:00Z');
+    for (const settings of [{}, { since: '2026-10-01', paths: ['src', 'docs'], exclude: ['docs/retention.md'] }]) {
+      for (const lane of lanes) {
+        const cache = await mkdtemp(join(tmpdir(), 'curate-git-index-'));
+        temporaryDirectories.push(cache);
+        const request = { ...lane, taskDate: '2026-10-28T12:00:00Z', maxQuestionText: 100 };
+        const direct = withoutReport(await read(gitSource(directory, { ...settings, index: false }), request));
+        const first = await read(gitSource(directory, { ...settings, index: { directory: cache } }), request);
+        const second = await read(gitSource(directory, { ...settings, index: { directory: cache } }), request);
+        expect(withoutReport(first), JSON.stringify([settings, lane])).toEqual(direct);
+        expect(withoutReport(second), JSON.stringify([settings, lane])).toEqual(direct);
+      }
+    }
+    // The whole read returns the long commit in parts.
+    const whole = await read(gitSource(directory, { index: false }), { task, wholeLanes: true, maxQuestionText: 100 });
+    if (whole.status !== 'read') throw new Error('Expected a read');
+    const parts = whole.candidates.filter((candidate) => candidate.title === 'merge the interface rework');
+    expect(parts.length).toBeGreaterThan(4);
+    expect(parts.every((part) => part.text.length <= 100)).toBe(true);
+  });
+
   it('removes the files earlier formats wrote only when a run between calls asks', async () => {
     const directory = await history();
     const cache = await mkdtemp(join(tmpdir(), 'curate-git-index-'));
     temporaryDirectories.push(cache);
     const source = gitSource(directory, { index: { directory: cache } });
-    const key = { exclude: [] };
-    const earlier = Array.from({ length: STORED_INDEX_FORMAT - 1 }, (_, at) => indexFilePath(cache, source.id, key, at + 1));
+    // The file's name carries the layout of a commit's row. The files
+    // written before it did, in any format, are this source's too.
+    const before = { exclude: [] };
+    const key = { ...before, layout: 2 };
+    const earlier = [
+      ...Array.from({ length: STORED_INDEX_FORMAT }, (_, at) => indexFilePath(cache, source.id, before, at + 1)),
+      ...Array.from({ length: STORED_INDEX_FORMAT - 1 }, (_, at) => indexFilePath(cache, source.id, key, at + 1)),
+    ];
     for (const path of earlier) await writeFile(path, 'x');
-    const request = { task: 'orchard', wholeLanes: false };
+    // The part size pickFromSources reads with keeps the file's name.
+    const request = { task: 'orchard', wholeLanes: false, maxQuestionText: DEFAULT_MAX_QUESTION_TEXT };
     // An ordinary read removes nothing: an older reader can still have one open.
     expect((await source.read(request, { files: new Map() })).status).toBe('read');
     expect(existsSync(indexFilePath(cache, source.id, key))).toBe(true);

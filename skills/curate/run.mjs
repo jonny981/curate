@@ -347,7 +347,9 @@ export function citable(candidate, project) {
   const shown = (path) => project !== undefined && within(path, project) ? relative(project, path) : path;
   if (candidate.sourceId.startsWith('git:') && candidate.id.startsWith('commit ')) {
     const repository = candidate.repository ?? candidate.sourceId.slice('git:'.length);
-    return { ...candidate, path: project !== undefined && relative(project, repository) === '' ? candidate.id : `${candidate.id} in ${repository}` };
+    // A part of a long commit is headed by its commit.
+    const commit = candidate.documentId ?? candidate.id;
+    return { ...candidate, path: project !== undefined && relative(project, repository) === '' ? commit : `${commit} in ${repository}` };
   }
   if (candidate.repository !== undefined && candidate.path !== undefined) {
     return { ...candidate, path: shown(join(candidate.repository, candidate.path)) };

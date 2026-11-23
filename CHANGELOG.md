@@ -27,7 +27,7 @@ Five packages:
   including the Codex sessions Codex compresses (`.jsonl.zst`). It
   scrubs likely secrets before ranking.
 - **`@curatejs/git`** reads commit history, with optional blame and co-change
-  signals.
+  signals. A long commit message is cut into parts, like a long note.
 - **`@curatejs/markdown`** reads Markdown folders, files and globs as
   knowledge, docs, rules or instructions, including scoped rule files and
   git-pinned revisions.

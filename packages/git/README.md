@@ -45,6 +45,7 @@ The pick's levers record `since`, `paths` and `exclude`.
 ## What it reads
 
 The reader gives one candidate per commit, newest first, and leaves out merges.
+A long commit message is cut into parts: see [Long commit messages](#long-commit-messages).
 Each candidate holds:
 
 - **`title`:** the subject.
@@ -58,6 +59,24 @@ A git call has no time or size limit: it runs until it finishes or the request's
 
 If git is missing, the path isn't a folder, or the folder is outside a work tree, the read returns `absent`.
 A pin to a revision the repository doesn't have throws.
+
+## Long commit messages
+
+A squash merge can put a whole pull request description in one commit.
+You don't want all of it because one sentence matches. So the reader cuts
+a long body into parts, the way the Markdown reader cuts a long note.
+The decision model rates each part, and only the parts that bear on the
+task are laid out.
+
+- **When:** a body longer than four part sizes is cut. `pickFromSources` reads with a part size of 700 characters, so a body over 2,800 characters is cut. A shorter commit stays whole: one candidate.
+- **Squash merges first:** a squash merge is cut at the commits it squashed, one part each, starting with that commit's own subject line. The reader knows two forms from the text:
+  - **GitHub's:** each commit starts with a `* <subject>` line that has a blank line above and below it, the body opens with one, and there are at least two. A bullet list inside prose doesn't count: its items sit on lines next to each other, or prose opens the body.
+  - **`git merge --squash`:** each commit starts with a `commit <sha>` line followed by an `Author:` or `Merge:` line, and there are at least two.
+- **Where else:** a body that is not a squash merge, or one squashed commit longer than a part, is cut at blank lines and before each Markdown heading outside a code block. A paragraph longer than one part is cut at its last sentence end that fits, else at a space.
+- **Each part:** has the commit's subject as its `title`, and the commit's date, SHA, changed files and signals. Its `id` is the commit's with `#<n>` added, for example `commit 3ad5901#4`. `documentId` names the commit, and `part` gives its place, for example `{ index: 4, of: 12 }`.
+- **Scoring:** each part is scored on its own words. The subject counts once, with the first part.
+- **Layout:** core's `curate()` shows the kept parts of one commit together, under its subject, in their own order. `…` marks parts left out, and a last line says how many, for example `11 of 12 parts of commit 3ad5901 were not kept.` Run `git show 3ad5901` to read the whole commit.
+- **Part size:** `git(repo, { maxQuestionText: 1000 })` sets another size. The read request's own `maxQuestionText` makes it smaller still. `maxQuestionText: Infinity` keeps every commit whole. A read given no size at all keeps every commit whole too.
 
 ## Dates
 
@@ -117,6 +136,7 @@ The file goes in `~/.cache/curate/index`, or `$XDG_CACHE_HOME/curate/index` if t
 Set `index: { directory }` to choose the folder, or `index: false` to run git on every read.
 
 Core's [Stored index](https://github.com/jonny981/curate/blob/main/packages/core/README.md#stored-index) has the detail.
+The file also keeps each long commit's parts and their word counts. Each part size has its own file.
 
 ## Defaults and overrides
 

@@ -33,6 +33,11 @@ export interface MemoryCandidate {
   readonly contentRef?: string;
   /** Optional document identity for hosts that supply parts themselves. */
   readonly documentId?: string;
+  /** Set, with `documentId`, on a part cut from a longer item, such as a
+   *  long commit message: its place among the item's parts, from 1, and
+   *  how many parts the item has. Curate lays out the kept parts of one
+   *  item together, in this order, and says how many were not kept. */
+  readonly part?: { readonly index: number; readonly of: number };
   /** Zero-based rank within this source for each search line; null means absent. */
   readonly searchRanks?: readonly (number | null)[];
   /** True when the source supplies this part from its uncut pool only:

@@ -42,7 +42,11 @@ function estimateAnswerTokens(text: string): number {
  *  may be a quote, a rejected plan or a later restatement, and the longer
  *  item's place and date are not its own. The taken item's heading then also names where and when the
  *  copy was said, when that differs: `<heading>, also <source> (said
- *  <date>)`. */
+ *  <date>)`. The kept parts of an item cut into parts (`part` and
+ *  `documentId` set), such as a long commit message, sit together at the
+ *  place of the first taken, under the item's title and in their own
+ *  order, with `…` where parts were left out and a last line saying how
+ *  many. */
 export interface CurateOptions {
   /** Keep the whole text within this many estimated tokens. The
    *  estimate needs no tokenizer and is set a little high, but it is an
@@ -97,6 +101,9 @@ export interface CurateRecord {
   /** How many items were left out as copies of an item taken before
    *  them: the same text. */
   readonly collapsed: number;
+  /** Present when the text shows an item in parts, such as a long commit
+   *  message: how many of those items' parts it does not show. */
+  readonly partsNotKept?: number;
   /** The selected items an `answerTokens` budget stopped before: how
    *  many, the highest weight among them, and how many have a weight of
    *  0.5 or more. None when no budget is set. A copy counted in
@@ -146,6 +153,57 @@ function dayOf(value: unknown): string {
 // A commit with no body carries its evidence in its title.
 const body = (item: Item) => item.candidate.text.trim() ? item.candidate.text : item.candidate.title;
 
+/** The taken items as the layout shows them: each on its own, except
+ *  the parts of one item cut into parts (`part` and `documentId` set),
+ *  which join the place of the first of them taken. */
+function blocksOf(taken: readonly Item[]): Item[][] {
+  const blocks: Item[][] = [];
+  const byDocument = new Map<string, Item[]>();
+  for (const item of taken) {
+    const { part, documentId, sourceId, sourceRevision } = item.candidate;
+    if (part === undefined || documentId === undefined) {
+      blocks.push([item]);
+      continue;
+    }
+    const key = JSON.stringify([sourceId, sourceRevision, documentId]);
+    const block = byDocument.get(key);
+    if (block === undefined) {
+      const opened = [item];
+      byDocument.set(key, opened);
+      blocks.push(opened);
+    } else block.push(item);
+  }
+  return blocks;
+}
+
+/** A block's text. Parts of one item show under its title, in their own
+ *  order, with `…` where parts between or after them were not kept, and
+ *  a last line saying how many were not kept. */
+function blockText(block: readonly Item[]): string {
+  const first = block[0]!.candidate;
+  if (first.part === undefined || first.documentId === undefined) return body(block[0]!);
+  const parts = [...block].sort((left, right) => left.candidate.part!.index - right.candidate.part!.index);
+  const lines = [first.title];
+  let last = 0;
+  for (const item of parts) {
+    if (item.candidate.part!.index > last + 1) lines.push('…');
+    lines.push(body(item));
+    last = item.candidate.part!.index;
+  }
+  const notKept = first.part.of - parts.length;
+  if (notKept === 0) return lines.join('\n\n');
+  if (last < first.part.of) lines.push('…');
+  return [...lines, `${notKept} of ${first.part.of} parts of ${first.documentId} were not kept.`].join('\n\n');
+}
+
+/** `partsNotKept` for the record: present when the text shows an item in parts. */
+function partsNotKept(taken: readonly Item[]): { partsNotKept?: number } {
+  const shown = blocksOf(taken).filter((block) => block[0]!.candidate.part !== undefined
+    && block[0]!.candidate.documentId !== undefined);
+  return shown.length === 0 ? {}
+    : { partsNotKept: shown.reduce((sum, block) => sum + block[0]!.candidate.part!.of - block.length, 0) };
+}
+
 /** The memory text for the items taken, strongest first. A taken item's
  *  heading also names each other place and date its copies were said. */
 function layOutItems(taken: readonly Item[], copies: ReadonlyMap<Item, readonly Item[]>): string {
@@ -163,15 +221,17 @@ function layOutItems(taken: readonly Item[], copies: ReadonlyMap<Item, readonly 
     if (!elsewhere.length) return own;
     return `${own}, also ${elsewhere.length === 1 ? elsewhere[0] : `${elsewhere.slice(0, -1).join(', ')} and ${elsewhere[elsewhere.length - 1]}`}`;
   };
-  const top = taken.slice(0, 2).map((item) => `#### ${heading(item)}\n\n${body(item)}`);
-  const groups = new Map<string, Item[]>();
-  for (const item of taken.slice(2)) {
+  const blocks = blocksOf(taken);
+  const top = blocks.slice(0, 2).map((block) => `#### ${heading(block[0]!)}\n\n${blockText(block)}`);
+  const groups = new Map<string, Item[][]>();
+  for (const block of blocks.slice(2)) {
+    const item = block[0]!;
     // The heading closes the key, so an item whose copies were said elsewhere never shares a heading with one whose were not.
     const key = `${source(item).said}|${item.candidate.sourceId}|${source(item).where}|${source(item).label}|${heading(item)}`;
-    groups.set(key, [...(groups.get(key) ?? []), item]);
+    groups.set(key, [...(groups.get(key) ?? []), block]);
   }
   const rest = [...groups].sort(([left], [right]) => (left < right ? -1 : 1))
-    .map(([, group]) => `### ${heading(group[0]!)}\n\n${group.map(body).join('\n\n')}`);
+    .map(([, group]) => `### ${heading(group[0]![0]!)}\n\n${group.map(blockText).join('\n\n')}`);
   return [`### Most likely answer\n\n${top.join('\n\n')}\n`, ...rest].join('\n\n');
 }
 
@@ -295,6 +355,7 @@ export async function curate(task: string, picked: PickResult, options: CurateOp
     levers: picked.record.levers,
     items: taken, estimatedTokens: estimateAnswerTokens(log), ...(answerTokens === undefined ? {} : { answerTokens }),
     collapsed: [...copies.values()].reduce((sum, list) => sum + list.length, 0),
+    ...partsNotKept(taken),
     leftOut: {
       count: leftOut.length, ...(leftOut.length ? { strongestWeight: leftOut[0]!.weight } : {}),
       atHalfOrMore: leftOut.filter((item) => item.weight >= 0.5).length,
@@ -342,8 +403,9 @@ export async function curate(task: string, picked: PickResult, options: CurateOp
   const left = [...shown.values()];
   const trimmed = left.length === 0 ? '' : layOutItems(left,
     new Map([...copies].flatMap(([item, list]) => shown.has(item) ? [[shown.get(item)!, list] as const] : [])));
+  const { partsNotKept: _before, ...rest } = record;
   return { log: trimmed, record: {
-    ...record, items: left, estimatedTokens: estimateAnswerTokens(trimmed),
+    ...rest, ...partsNotKept(left), items: left, estimatedTokens: estimateAnswerTokens(trimmed),
     sentences: { ...counts, kept, unanswered, itemsTrimmed, itemsLeftOut: taken.length - left.length },
   } };
 }

@@ -57,6 +57,31 @@ describe('curate', () => {
     expect(log).toBe(LAID_OUT);
   });
 
+  it('shows the kept parts of an item cut into parts together, in their own order, and says how many were not kept', async () => {
+    const piece = (index: number, text: string) => ({ ...part('history', `commit 5031f8b#${index}`, '2024-03-04', text),
+      title: 'merge the orchard plan', documentId: 'commit 5031f8b', part: { index, of: 6 } });
+    const late = piece(5, 'The quince row moved to the south wall.');
+    const early = piece(2, 'The medlar stays by the gate.');
+    const { log, record } = await curate(TASK, picked([[late, 0.9, 0], [KOI, 0.8, 1], [early, 0.4, 2]]), {});
+    expect(log).toBe([
+      '### Most likely answer\n\n',
+      '#### history (said 2024-03-04)\n\n',
+      'merge the orchard plan\n\n…\n\nThe medlar stays by the gate.\n\n…\n\nThe quince row moved to the south wall.\n\n…\n\n',
+      '4 of 6 parts of commit 5031f8b were not kept.\n\n',
+      '#### pond (said 2024-03-02)\n\nNetted the koi pond.\n',
+    ].join(''));
+    expect(record.partsNotKept).toBe(4);
+    expect(record.items.map((item) => item.candidate.id)).toEqual(['commit 5031f8b#5', KOI.id, 'commit 5031f8b#2']);
+    // Every part kept: the item reads whole, with no note.
+    const all = Array.from({ length: 6 }, (_, at) => piece(at + 1, `Line ${at + 1}.`));
+    const whole = await curate(TASK, picked(all.map((item, at) => [item, 0.9 - at / 10, at] as const)), {});
+    expect(whole.log).toBe(`### Most likely answer\n\n#### history (said 2024-03-04)\n\nmerge the orchard plan\n\n${
+      all.map((item) => item.text).join('\n\n')}\n`);
+    expect(whole.record.partsNotKept).toBe(0);
+    // A text with no item in parts carries no count.
+    expect((await curate(TASK, GARDEN, {})).record).not.toHaveProperty('partsNotKept');
+  });
+
   it('breaks a weight tie by the fused order', async () => {
     const { record } = await curate(TASK, GARDEN, {});
     expect(record.items.map((item) => item.candidate.id)).toEqual(['b', 'a', 'd', 'c', 'e', 'f']);

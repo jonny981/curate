@@ -272,7 +272,7 @@ Identical text is rated once: copies share each answer when the question and cri
 
 #### Batches
 
-Batches change request size without dropping parts. They're sized to Jev's documented request limit: 32,000 tokens for the state plus the longest question, at an estimate of three characters per token. Each item's evidence goes into the request's state once, however many of its questions the batch holds. Each decision sees the item's full text, so commit bodies aren't cut.
+Batches change request size without dropping parts. They're sized to Jev's documented request limit: 32,000 tokens for the state plus the longest question, at an estimate of three characters per token. Each item's evidence goes into the request's state once, however many of its questions the batch holds. Each decision sees the part's full text. A commit body over 2,800 characters is first cut into parts of at most 700 characters, the way a long note is, so a squash merge's long message never goes whole into one decision. The result shows only the kept parts of such a commit, together under its subject, with `…` where parts were left out and a last line such as `11 of 12 parts of commit 3ad5901 were not kept.`
 
 If the service rejects a request as too large, Curate sends it again in halves, each item keeping its questions, and splits a rejected half again. A single item too large on its own is resent with its evidence halved and its answers marked `truncated`. After a rejection, later batches are sized inside the largest request the service accepted.
 
@@ -403,6 +403,8 @@ With `records` off, a question writes nothing of its own outside its caches: the
 
 A question's working files sit in a temporary folder that's removed before it returns: on success, on failure, and when the command is interrupted or terminated. A forced kill (`kill -9`) can leave that folder behind.
 
+If a question or `curate prepare` has slow work to do first, it says so on standard error. Building a source's index from scratch is announced once it has run five seconds, and embedding more than 2,000 parts as it starts. Each then reports progress at most every ten seconds, with the time left, and says when it ends. Quick work prints nothing, and standard output only ever holds the result. Two questions running at once share the embedding work.
+
 Within one question, every read shares one read context, so a reader reuses its index update, folder walk, `git status` result and parsed notes. Nothing carries over to the next question.
 
 ### Records
@@ -411,10 +413,19 @@ Records are off by default. Set `records` to `true` in the settings file to keep
 
 Each question then saves its source reads, ranked parts, decision answers, model token usage and timings beside the log, under `~/.curate/runs/<timestamp>/`. A failed step fails the run, writes no log, and records the step and the calls made. Failed runs keep their records too.
 
-Each read's full result goes to `read-N.json`, and the read's record entry names it in `file`. A meaning lane's read file holds every part's id and score, and whole candidates only for the parts the read keeps. Set `readAudit` to `false` to keep only the per-read summaries: the entries then carry no `file` name, and no `read-N.json` is written. `readAudit` defaults to `true` and does nothing while `records` is off.
+A record holds what explains the question, not a copy of your history, so it stays small: about 5 MB for a question that ranks 60,000 parts.
+
+- **`read-N.json`** is one read's report: its status, its index update, and how many parts it returned (`returned`), a meaning lane scored (`meaningScored`) or a pool read named (`pooled`). It never holds the parts. The read's record entry names the file in `file`.
+- **`pick.candidates`** lists each part the decision model rated, and every other part the pick ranked, once: id, source, ranks, scores and status.
+- **`pick.unread`** lists the parts the rating stop left unread, per source, in ranked order: a count, the start their ids share, the rest of each id, and each part's place.
+- **`selection.json`** holds the kept parts with their text. No text of a part that wasn't kept is saved anywhere.
+
+Set `readAudit` to `false` to drop the read files: the entries then carry no `file` name. `readAudit` defaults to `true` and does nothing while `records` is off.
 
 | Record field | What it holds |
 | --- | --- |
+| `timings.prepareMs` | How long the question waited, after the search lines, for indexing and embedding |
+| `prepared` | Per source: whether its index was built from scratch (`firstIndex`), the index's report (`index`), how many parts were embedded (`embedded`) and how long that took (`embedMs`) |
 | `timings.sourceReadMs` | Each source's read times, added up |
 | `timings.rankAndDecide` | The rank-and-decide time, split into reads, ranking and decisions |
 | `searches` | The search-lines call, with its own reply files |

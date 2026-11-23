@@ -275,6 +275,9 @@ Between calls, `removeEarlierFiles()` on the cached `embed` deletes the `.flat` 
 `<model>.vectors.sqlite` is only ever read, so an older checkout sharing the folder keeps its vectors, and a text the files don't hold is read once from the earlier per-text JSON files, which are never written.
 
 `cachedEmbeddings(embed, { directory, modelId })` gives any embedding function the same store.
+`withProgress(progress)` returns the same store and calls `progress(embedded, missing)` as an embedding goes: 0 before the first batch, then after each batch of 32. A lookup that embeds nothing never calls it.
+
+Two processes embedding the same texts share the work. Each looks a batch up again just before it embeds it and reads what the other stored meanwhile, and every other embedding starts from the far end of its list. Two calls started together over 640 texts embedded 672 between them, where each used to embed all 640.
 
 ### Meaning ranks for parts you already have
 
@@ -352,14 +355,16 @@ The file's name comes from the source id, a format version, and the settings tha
 | Reader | Settings in the name |
 | --- | --- |
 | Chat | `includeTools`, the part size, the source's own `exclude` and the keyword `stem` setting |
-| Git | The source's own `exclude`, `paths` and `since` |
+| Git | The source's own `exclude`, `paths` and `since`, and the part size when it isn't the default 700 |
 | Markdown | The reader (`markdown()`, `knowledgeBase()` or `rules()`), the kind, the part size and the source's own `exclude` |
+
+A read context's `onFirstIndex(source, done, total, unit)` hears how far a file built from nothing has got, from 0 to every transcript, Markdown file or commit read. A file that already holds the source never calls it.
 
 A read never deletes a file an earlier format wrote, since an older reader may still have it open.
 A run between calls does: a read context given a `removed` list brings the file up to date, deletes the files earlier formats wrote for the same source and settings, and adds each deleted path to the list. `curate prepare` runs this way.
 
 The file holds every part the reader produces, with its id, title, text, date and metadata, plus a word count for each word in each part, so a keyword lane reads its counts from the file.
-Chat stores its words stemmed when its settings stem, git stores the subject and body's words together, and Markdown also stores each note's frontmatter, fields, links and whether it says it was replaced.
+Chat stores its words stemmed when its settings stem, git stores the subject and body's words together (a long commit cut into parts stores each part's words, the subject with the first), and Markdown also stores each note's frontmatter, fields, links and whether it says it was replaced.
 Chat and Markdown also keep each part's vector key (for chat, the key of the part together with the part before it in its transcript, which is what a meaning lane embeds unless a date window starts between them), and a phrase index (SQLite's FTS5) that finds the parts holding a phrase, name or kind-lane phrase, with the same results as scanning every part.
 Chat stores each part's scrubbed id, made under the real path of the folder it was read from; a read through another path makes the ids again.
 
@@ -487,7 +492,7 @@ A part that was never rated records `unassessed` with a reason:
 
 | Reason | Why |
 | --- | --- |
-| `'stopWhenCold'` | It sat past the rating stop. The rare-word round can still pull it in |
+| `'stopWhenCold'` | It sat past the rating stop. It also records its `place` in the fused order, counted from 0. The rare-word round can still pull it in |
 | `'feed'` | No lane placed it in the order, or it sat past a `feed` size |
 | `'pick'` | It sat below an `everyRanked: { c }` count |
 | `'gate'` | The keyword lanes never held it, and its stored or answered labels left it out. A part a lane limit cut or a stop left unlabelled keeps that reason instead |
@@ -561,6 +566,7 @@ A labels or cache write that fails adds a `warning` to `labels` or `cache`.
 | `estimatedTokens` | The estimated size of the returned text |
 | `answerTokens` | The budget, when one was set |
 | `collapsed` | How many copies were taken once |
+| `partsNotKept` | When the text shows an item in parts: how many of its parts were not kept, added up |
 | `leftOut` | How many kept parts the budget stopped before, the strongest weight among them, and how many weigh 0.5 or more |
 | `nothingKept` | `true` when the pick kept no reference part |
 | `sentences` | When sentences were rated: the `cutoff`, the sentences `kept` of how many (`of`), how many were `unanswered`, the parts that lost a sentence (`itemsTrimmed`) or every sentence (`itemsLeftOut`), `estimatedTokensBefore`, and `failed` when the request failed |

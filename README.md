@@ -145,7 +145,7 @@ const mem = memory({ sources: [chat(), git('.'), markdown({ paths: ['docs'], kin
 ```
 
 - **Transcripts (`@curatejs/chat`).** Reads Claude Code and Codex transcripts on your machine. Leave `paths` out to use their default folders, or point it at your own. The [transcript reader](packages/chat/README.md) covers date filters, tool messages and secret scrubbing.
-- **Git history (`@curatejs/git`).** Reads commits (not merges): message, date and changed paths. Git has to be on your `PATH`. The [git reader](packages/git/README.md) covers keyword settings and two optional signals, live lines and files that change together.
+- **Git history (`@curatejs/git`).** Reads commits (not merges): message, date and changed paths. A long commit message is cut into parts, like a long note, so you get the part that matters. Git has to be on your `PATH`. The [git reader](packages/git/README.md) covers keyword settings and two optional signals, live lines and files that change together.
 - **Markdown (`@curatejs/markdown`).** Reads folders, files and globs. Use kind `knowledge` or `docs` for reference material, and `rules` or `instructions` for rules to follow exactly. The [Markdown reader](packages/markdown/README.md) covers dates, rule scopes and revision pins.
 - **Rules (`rules()`).** Reads a rule library and keeps only the rules that apply to the task. Always-on files like `CLAUDE.md` and `AGENTS.md` stay with your agent.
 - **Knowledge bases (`knowledgeBase()`).** Reads an [Open Knowledge Format](packages/markdown/README.md#open-knowledge-format) bundle: its page dates, titles, root links, index and log.

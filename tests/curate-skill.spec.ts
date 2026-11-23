@@ -2804,6 +2804,10 @@ describe('a call reads the project its working folder sits in', () => {
     expect(citable(commit, '/work/project').path).toBe('commit 5031f8b in /work/other');
     expect(citable(commit, '/work/other').path).toBe('commit 5031f8b');
     expect(citable(commit, undefined).path).toBe('commit 5031f8b in /work/other');
+    // A part of a long commit is headed by its commit.
+    const piece = { ...commit, id: 'commit 5031f8b#3', documentId: 'commit 5031f8b', part: { index: 3, of: 9 } };
+    expect(citable(piece, '/work/other').path).toBe('commit 5031f8b');
+    expect(citable(piece, '/work/project').path).toBe('commit 5031f8b in /work/other');
     const note = { sourceId: 'knowledge-base:/notes', id: 'plans/orchard.md#2', contentRef: 'plans/orchard.md#L4-L9',
       role: 'reference', title: 'Plan', text: 'Text', signals: {} };
     expect(citable(note, '/work/project').path).toBe('/notes/plans/orchard.md');
