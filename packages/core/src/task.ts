@@ -3,6 +3,19 @@ import type { PickCriterion, PickOptions } from './pick.js';
 
 export type TaskKind = 'count' | 'date' | 'advice' | 'named' | 'other';
 
+/** How many answers a task wants, as a model call judged from its
+ *  wording: one decision or fact, or everything said on a subject. */
+export const PICK_WANTED = ['one decision', 'everything said'] as const;
+export type PickWanted = (typeof PICK_WANTED)[number];
+
+
+/** The kinds of message a second stage can keep at bars of their own
+ *  (`Mode.keep.barByKind`): the kinds the hard facts name, the person's
+ *  message under one name whatever the person is called. */
+export const KEEP_KINDS = ['person message', 'agent step', 'tool output', 'subagent prompt', 'subagent final report',
+  'compaction summary', 'system message'] as const;
+export type KeepKind = (typeof KEEP_KINDS)[number];
+
 /** Classify only the task's words. A task can need more than one kind of answer. */
 export function classifyTask(task: string): readonly TaskKind[] {
   const text = task.replace(/\s*\(asked .*\)\s*$/, '');

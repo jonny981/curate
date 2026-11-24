@@ -1,13 +1,14 @@
 import type {
-  CandidateSourceKind, MemoryCandidate, PickCascade, PickOptions, PickResult, PickSourceRead, SearchLaneOrigin,
+  CandidateSourceKind, MemoryCandidate, PickOptions, PickResult, PickSourceRead, SearchLaneOrigin,
 } from './pick.js';
 import { DEFAULT_MAX_QUESTION_TEXT, pick } from './pick.js';
 import { phraseCount, poolSizing, stripSearchInstructions } from './search.js';
 import { addMeaningRanks, type MeaningSearchOptions } from './meaning.js';
 import { cutLane, laneBend, laneScoreOf, type SearchLaneReport } from './lanes.js';
 import {
-  checkCascade, checkCascadeKeys, checkPickOptions, checkReadRequest, checkWriteQuestions, findTaskNames,
+  checkCascade, checkMode, checkPickOptions, checkReadRequest, checkWriteQuestions, findTaskNames,
 } from './options.js';
+import { type Mode } from './mode.js';
 import { LABEL_KINDS, type LabelKind } from './labels.js';
 import { datedIn, durationMs, taskMoment, taskPeriod, timeZoneOf, zonedIso, type TaskPeriod } from './time.js';
 import type { StoredIndexReport } from './stored-index.js';
@@ -112,19 +113,18 @@ export interface CandidateReadRequest {
    *  reader that ignores it returns every part as before. */
   readonly keptBodiesOnly?: boolean;
   /** Internal to pickFromSources: 'gate' when the pick's label gate is
-   *  on, 'count' when only a decide-feed dial is (`everyRanked: { c }`
-   *  or `rare`). The read result also carries the reference source's
-   *  full uncut primary-search pool — every part a lane cut or the
-   *  read `limit` dropped, marked absent from every lane — beside the
-   *  kept members. 'gate' means the gate labels that pool, so a part
-   *  sharing no words with the task can still reach the decide step
-   *  and the merged list carries the miss flag; 'count' means the dial
-   *  only counts the pool toward the history's size, its members reach
-   *  decide only when the rare-word round pulls one in, and a keyword
-   *  miss keeps `noSearchMatch`. 'size' means the fused order only
-   *  needs the history's size: the pool's parts are counted into
-   *  the result's `historySize` and never join it. Leave unset when none
-   *  is on. */
+   *  on, 'count' when the fused order or a decide-feed dial reads it
+   *  (`everyRanked` unset or `{ c }`). The read result also carries the
+   *  reference source's full uncut primary-search pool — every part a
+   *  lane cut or the read `limit` dropped, marked absent from every
+   *  lane — beside the kept members. 'gate' means the gate labels that
+   *  pool, so a part sharing no words with the task can still reach the
+   *  decide step and the merged list carries the miss flag; 'count'
+   *  means the pool counts toward the history's size, the fused order
+   *  places its members, and a keyword miss keeps `noSearchMatch`.
+   *  'size' means the fused order only needs the history's size: the
+   *  pool's parts are counted into the result's `historySize` and never
+   *  join it. Leave unset when none is on. */
   readonly labelPool?: 'gate' | 'count' | 'size';
   /** Internal to pickFromSources, on the whole read that sizes the
    *  history: the reader may answer with `poolIds`, the ids of the parts
@@ -298,22 +298,21 @@ export interface CandidateReadContext {
 export interface CandidateSource {
   /** Stable identity, recorded on every candidate and in PickRecord. */
   readonly id: string;
-  /** Optional content kind, recorded per source and used by tag sets keyed by kind. */
+  /** Optional content kind, recorded per source and used by tag sets
+   *  and kind lanes keyed by kind. */
   readonly kind?: CandidateSourceKind;
-  /** The decision questions asked of this source's reference parts; set by `historySource()`. */
-  readonly questions?: PickCascade;
+  /** How this source's parts are judged and read: the decision
+   *  questions asked of its reference parts, their keep bar and their
+   *  read; set by `historySource()`. Omitted: the built-in question for
+   *  each part's kind, the 0.0146 bar and the ranked read. */
+  readonly mode?: Mode;
   /** Kinds this source can add through the label lane. Omitted means none. */
   readonly labelKinds?: readonly LabelKind[];
   /** The label bar for this source's parts; set by `historySource()`.
    *  Omitted means LABEL_LANE_BAR, 0.5. */
   readonly labelBar?: number;
-  /** Run the rare-word round on this source's reference evidence by default. */
-  readonly rare?: boolean;
   /** Open one exact-phrase lane per name the task names; set by `historySource()`. */
   readonly names?: boolean;
-  /** The decision-score bar for this source's reference parts: a part
-   *  scored at or above it is kept. Omitted means 0.0146. */
-  readonly bar?: number;
   /** The bar for this source's rule parts. Omitted means 0. */
   readonly ruleBar?: number;
   /** The decay half-life this source's Markdown parts rank with; set by `historySource()`. */
@@ -341,8 +340,6 @@ export interface CandidateSource {
 /** The settings a history source carries: they act on its own parts
  *  only. */
 export interface HistorySettings {
-  /** Run the rare-word round on this source's parts. */
-  readonly rare: boolean;
   /** The label kinds asked of each part, so parts the keyword search
    *  missed can reach the decision step: true for LABEL_KINDS, a list
    *  for those kinds, false for none. */
@@ -352,13 +349,13 @@ export interface HistorySettings {
    *  or more on that kind in the label lane. Absent means
    *  LABEL_LANE_BAR, 0.5. */
   readonly labelBar?: number;
-  /** The decision-score bar for this source's reference parts. */
-  readonly bar: number;
   /** The bar for this source's rule parts; absent means 0. */
   readonly ruleBar?: number;
-  /** The decision questions asked of this source's reference parts.
-   *  Absent: the built-in question for the part's kind. */
-  readonly questions?: PickCascade;
+  /** How this source's parts are judged and read: the decision
+   *  questions asked of its reference parts, the bar they are kept at,
+   *  and their read. Absent: the built-in question for each part's
+   *  kind, the 0.0146 bar and the ranked read. */
+  readonly mode?: Mode;
   /** Rank older notes lower, by their age at the task date. A duration
    *  such as '365 days': the age at which a note has lost half of the
    *  full decay. Absent or false: off. Markdown sources only. */
@@ -378,9 +375,11 @@ export interface HistorySettings {
  *  what `chat()`, `git()` or `markdown()` return, or your own. Spread a
  *  reader package's settings object to start from its tuned values. */
 export function historySource(config: { readonly reader: CandidateSource } & HistorySettings): CandidateSource {
-  const { reader, rare, labels, labelBar, bar, ruleBar, questions, names, decay } = config;
-  checkCascadeKeys(questions, 'questions');
-  checkCascade(questions);
+  const { reader, labels, labelBar, ruleBar, mode, names, decay } = config;
+  if (mode !== undefined) {
+    checkMode(mode, 'mode');
+    checkCascade(mode.questions);
+  }
   if (labelBar !== undefined && (typeof labelBar !== 'number' || !Number.isFinite(labelBar) || labelBar < 0 || labelBar > 1)) {
     throw new TypeError('labelBar must be a number from 0 to 1.');
   }
@@ -388,13 +387,13 @@ export function historySource(config: { readonly reader: CandidateSource } & His
     if (reader.kind !== 'markdown') throw new TypeError('decay applies to Markdown sources only.');
     durationMs(decay?.halfLife, 'decay.halfLife');
   }
-  const { labelKinds: _labelKinds, labelBar: _labelBar, ruleBar: _ruleBar, questions: _questions, names: _names, decay: _decay,
+  const { labelKinds: _labelKinds, labelBar: _labelBar, ruleBar: _ruleBar, mode: _mode, names: _names, decay: _decay,
     ...rest } = reader;
   const labelKinds = labels === true ? LABEL_KINDS : labels === false ? [] : labels;
-  return { ...rest, rare, bar, names,
+  return { ...rest, names,
     ...(labelKinds.length ? { labelKinds } : {}), ...(labelBar === undefined ? {} : { labelBar }),
     ...(ruleBar === undefined ? {} : { ruleBar }),
-    ...(questions === undefined ? {} : { questions }),
+    ...(mode === undefined ? {} : { mode }),
     ...(decay === undefined || decay === false ? {} : { decay: { halfLife: decay.halfLife } }) };
 }
 
@@ -775,8 +774,8 @@ async function readSearches(
     const partial = [read.partial, full.partial].filter(Boolean).join('; ');
     // When the gate can label the pool a member can still reach the
     // decide step, so the miss flag reads the merged list. When the
-    // pool only counts toward the dial's N its members reach decide
-    // only through the rare-word round, so a keyword miss keeps
+    // pool only counts toward the dial's N or is placed by the fused
+    // order, no search matched it, so a keyword miss keeps
     // noSearchMatch.
     const missed = request.labelPool === 'count' && read.noSearchMatch === true;
     const { noSearchMatch: _miss, ...mergedRead } = read;
@@ -831,10 +830,9 @@ async function readSearches(
   const lanes = [...(read.lanes ?? [])];
 
   // The miss reads actual lane membership when the pool only counts
-  // toward the dial's N: a pool member no lane ranked stays poolOnly
-  // and reaches decide only when the rare-word round pulls it in, so a
-  // read that kept only pool members is still a miss. Otherwise any
-  // kept candidate is a match.
+  // toward the dial's N or is placed by the fused order: a pool member
+  // no lane ranked stays poolOnly, so a read that kept only pool
+  // members is still a miss. Otherwise any kept candidate is a match.
   const matched = (list: readonly MemoryCandidate[]) =>
     request.labelPool === 'count' || request.labelPool === 'size'
       ? list.some((candidate) => candidate.searchRanks?.some((rank) => rank !== null) === true)
@@ -1114,27 +1112,20 @@ export async function pickFromSources(
   const labelKindsBySource: Record<string, readonly LabelKind[]> = Object.fromEntries(
     sources.map((source) => [source.id, source.labelKinds ?? []]),
   );
-  const rareBySource: Record<string, boolean> = Object.fromEntries(
-    sources.map((source) => [source.id, source.rare ?? false]),
-  );
   // Each history a 'size' read sized: its candidates and the parts no lane kept.
   const historySizeBySource: Record<string, number> = Object.create(null);
   const labelBarBySource: Record<string, number> = Object.fromEntries(
     sources.flatMap((source) => source.labelBar === undefined ? [] : [[source.id, source.labelBar]]),
   );
-  const barBySource: Record<string, number> = Object.fromEntries(
-    sources.flatMap((source) => source.bar === undefined ? [] : [[source.id, source.bar]]),
-  );
   const ruleBarBySource: Record<string, number> = Object.fromEntries(
     sources.flatMap((source) => source.ruleBar === undefined ? [] : [[source.id, source.ruleBar]]),
   );
   // No prototype, so a candidate's source id such as `__proto__` is stored as its own key.
-  const questionsBySource: Record<string, PickCascade> = Object.assign(Object.create(null), Object.fromEntries(
-    sources.flatMap((source) => source.questions === undefined ? [] : [[source.id, source.questions]]),
+  const modesBySource: Record<string, Mode> = Object.assign(Object.create(null), Object.fromEntries(
+    sources.flatMap((source) => source.mode === undefined ? [] : [[source.id, source.mode]]),
   ));
-  checkPickOptions({ ...options, labelKindsBySource, labelBarBySource, rareBySource, barBySource, ruleBarBySource,
-    questionsBySource });
-  checkWriteQuestions({ ...options, questionsBySource });
+  checkPickOptions({ ...options, labelKindsBySource, labelBarBySource, ruleBarBySource, modesBySource });
+  checkWriteQuestions({ ...options, modesBySource });
   // The task's names, found once for every source with name lanes on.
   const found = sources.some((source) => source.names === true) ? await findTaskNames(options) : undefined;
   const namesFor = (source: CandidateSource) => source.names === true ? found!.found : [];
@@ -1148,14 +1139,15 @@ export async function pickFromSources(
       // positions every pool member, so the history's size
       // and a pool member's own meaning score come from the uncut pool,
       // as 'count' reads it for the other feed dials.
-      // The fused order with no rare-word round and no task period only
-      // sizes the history. A part the period brings in that no lane kept is
-      // ordered among the pool's parts, so a period keeps the pool.
+      // The fused order with no task period only sizes the history. A
+      // part the period brings in that no lane kept is ordered among the
+      // pool's parts, so a period keeps the pool.
       labelPool: (source.labelKinds?.length ?? 0) > 0 ? 'gate'
-        : poolSizing.on && options.everyRanked === undefined && (options.rare ?? source.rare ?? false) === false
-          && period === undefined ? 'size'
-          : options.everyRanked !== true || (options.rare ?? source.rare ?? false) !== false
-            ? 'count' : undefined,
+        : poolSizing.on && options.everyRanked === undefined && period === undefined
+          // A read that walks each part's whole transcript keeps its
+          // source's whole pool.
+          && source.mode?.read.walks !== true ? 'size'
+          : options.everyRanked !== true ? 'count' : undefined,
       // The fused order reads every part's meaning position, so the
       // meaning lanes keep every part's similarity for it.
       ...(options.everyRanked === undefined ? { meaningPositions: true } : {}),
@@ -1183,12 +1175,10 @@ export async function pickFromSources(
     // when they were candidates.
     for (const candidate of [...read.candidates, ...sized.map(([sourceId]) => ({ sourceId }))]) {
       labelKindsBySource[candidate.sourceId] = sources[index]!.labelKinds ?? [];
-      rareBySource[candidate.sourceId] = sources[index]!.rare ?? false;
-      const { labelBar, bar, ruleBar, questions } = sources[index]!;
+      const { labelBar, ruleBar, mode } = sources[index]!;
       if (labelBar !== undefined) labelBarBySource[candidate.sourceId] = labelBar;
-      if (bar !== undefined) barBySource[candidate.sourceId] = bar;
       if (ruleBar !== undefined) ruleBarBySource[candidate.sourceId] = ruleBar;
-      if (questions !== undefined) questionsBySource[candidate.sourceId] = questions;
+      if (mode !== undefined) modesBySource[candidate.sourceId] = mode;
       const kind = sources[index]!.kind;
       if (kind !== undefined) sourceKinds[candidate.sourceId] = kind;
     }
@@ -1251,11 +1241,16 @@ export async function pickFromSources(
     for (const id of Object.keys(read.historySize ?? {})) readsBySource[id] = sourceRead;
   }
   // A caller's findNames answers the pick from the names found above, so it is called once.
+  // Each source reads the call's task and search lines unless the
+  // caller names its own; the units of agent work are ranked against them.
+  const queries = [...new Set([request.task, ...(request.searchLines ?? [])].map((line) => line.trim()).filter(Boolean))];
   const result = await pick(combined, {
     ...options, taskDate: asOf, timeZone,
+    queriesBySource: Object.fromEntries(sources.map((source) => [source.id, options.queriesBySource?.[source.id] ?? queries])),
+    ...(options.embed ?? request.meaning?.embed ? { embed: options.embed ?? request.meaning!.embed } : {}),
     ...(options.findNames === undefined || found === undefined ? {} : { findNames: async () => found.found }),
-    rulesEnumerationComplete, sourceKinds, labelKindsBySource, labelBarBySource, rareBySource, barBySource,
-    ruleBarBySource, questionsBySource, readsBySource,
+    rulesEnumerationComplete, sourceKinds, labelKindsBySource, labelBarBySource,
+    ruleBarBySource, modesBySource, readsBySource,
     ...(Object.keys(historySizeBySource).length === 0 ? {} : { historySizeBySource }),
   });
   // The read request's lever joins the pick's resolved set.

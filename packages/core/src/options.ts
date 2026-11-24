@@ -4,14 +4,15 @@ import type {
   PickLabels, PickLimits, PickOptions, PickScoreCriterion, PickTagSet, PickThresholds,
 } from './pick.js';
 import type { CandidateReadRequest } from './source.js';
+import type { Mode } from './mode.js';
 import type { MeaningSearchOptions } from './meaning.js';
-import { ANSWER_TYPES, taskNames } from './task.js';
+import { ANSWER_TYPES, KEEP_KINDS, PICK_WANTED, taskNames } from './task.js';
 
 /** Option names the levers change renamed, in one place: each old
  *  dotted path a caller could still pass names the option that took
  *  its place. */
 const RENAMED_OPTIONS: Readonly<Record<string, string>> = {
-  pick: '`everyRanked` or `rare`',
+  pick: '`everyRanked`',
   'thresholds.reference': '`everyScored`',
   'thresholds.referenceBySize': '`everyScored.bySize`',
   laneCut: '`wholeLanes`',
@@ -20,11 +21,11 @@ const RENAMED_OPTIONS: Readonly<Record<string, string>> = {
 };
 
 const PICK_OPTION_KEYS: readonly (keyof PickOptions)[] = [
-  'ranking', 'task', 'decide', 'questionsBySource', 'sourceKinds', 'labelKindsBySource', 'labelBarBySource',
+  'ranking', 'task', 'decide', 'modesBySource', 'needed', 'person', 'wanted', 'sourceKinds', 'labelKindsBySource', 'labelBarBySource',
   'keepTop', 'rankProtection', 'bestPartFirst', 'tags', 'tagsByKind',
-  'labels', 'cache', 'route', 'answerTypes', 'writeQuestions', 'findNames', 'everyRanked', 'everyScored', 'rare', 'rareBySource',
+  'labels', 'cache', 'route', 'answerTypes', 'writeQuestions', 'findNames', 'everyRanked', 'everyScored',
   'stopWhenCold', 'feed',
-  'barBySource', 'ruleBarBySource', 'rulesEnumerationComplete', 'readsBySource', 'historySizeBySource', 'limits', 'thresholds',
+  'ruleBarBySource', 'rulesEnumerationComplete', 'readsBySource', 'historySizeBySource', 'queriesBySource', 'embed', 'limits', 'thresholds',
   'taskDate', 'timeZone', 'taskPeriod', 'signal',
 ];
 const THRESHOLD_KEYS: readonly (keyof PickThresholds)[] = ['linkedPathBar'];
@@ -41,14 +42,14 @@ const READ_REQUEST_KEYS: readonly (keyof CandidateReadRequest)[] = [
   'maxQuestionText', 'taskDate', 'timeZone', 'asOf', 'taskPeriod', 'decayHalfLife', 'decayLimit', 'signal',
 ];
 const MEANING_KEYS: readonly (keyof MeaningSearchOptions)[] = ['embed', 'nearest', 'wholeLanes'];
-const CURATE_KEYS: readonly (keyof CurateOptions)[] = ['answerTokens', 'sentenceCutoff', 'decide', 'signal'];
+const CURATE_KEYS: readonly (keyof CurateOptions)[] = ['answerTokens', 'sentenceCutoff', 'decide', 'signal', 'person'];
 /** The fixed keys of the maps keyed by source kind — tagsByKind and
  *  the read request's kindLanes — and the values sourceKinds maps to. */
 const SOURCE_KIND_KEYS: readonly CandidateSourceKind[] = ['chat', 'git-history', 'markdown'];
 /** The fixed keys of `ranking`, keyed by candidate kind. */
 const MEMORY_KIND_KEYS: readonly MemoryKind[] = ['knowledge', 'docs', 'rules', 'instructions'];
 const CASCADE_KEYS: readonly (keyof PickCascade)[] = [
-  'bias', 'questions', 'typed', 'first', 'band', 'firstOnly', 'written', 'named', 'model', 'anonymousItems',
+  'bias', 'questions', 'typed', 'first', 'band', 'firstOnly', 'written', 'named', 'facts', 'model', 'anonymousItems', 'combine',
 ];
 const TAG_SET_KEYS: readonly (keyof PickTagSet)[] = ['key', 'questions'];
 const CRITERION_KEYS: readonly (keyof PickCriterion)[] = ['key', 'instructions', 'true', 'false'];
@@ -64,6 +65,7 @@ const TYPED_QUESTION_KEYS: readonly (keyof NonNullable<PickCascade['typed']>[num
 const FIRST_ONLY_KEYS: readonly (keyof NonNullable<PickCascade['firstOnly']>)[] = ['bias', 'weight'];
 const WRITTEN_KEYS: readonly (keyof NonNullable<PickCascade['written']>)[] = ['highest', 'second'];
 const NAMED_KEYS: readonly (keyof NonNullable<PickCascade['named']>)[] = ['question', 'highest', 'hasNames'];
+const FACTS_KEYS: readonly (keyof NonNullable<PickCascade['facts']>)[] = ['question', 'highest'];
 /** The keys Curate gives the written questions, in order. */
 export const WRITTEN_QUESTION_KEYS = ['task1', 'task2', 'task3', 'task4'] as const;
 
@@ -94,6 +96,8 @@ export function checkCascadeKeys(set: PickCascade | undefined, path: string): vo
   checkKeys(set?.written, WRITTEN_KEYS, `${path}.written`);
   checkKeys(set?.named, NAMED_KEYS, `${path}.named`);
   checkKeys(set?.named?.question, CRITERION_KEYS, `${path}.named.question`);
+  checkKeys(set?.facts, FACTS_KEYS, `${path}.facts`);
+  checkKeys(set?.facts?.question, CRITERION_KEYS, `${path}.facts.question`);
   for (const [index, question] of (set?.questions ?? []).entries()) {
     checkKeys(question, CASCADE_QUESTION_KEYS, `${path}.questions[${index}]`);
   }
@@ -107,7 +111,7 @@ export function checkCascadeKeys(set: PickCascade | undefined, path: string): vo
  *  shares, whose answer type is one of ANSWER_TYPES and whose keepAt is
  *  between 0 and 1, first, band and firstOnly together or not at all,
  *  finite written weights beside keys that leave `task1` to `task4`
- *  free, and a complete name question with finite weights whose key,
+ *  free, a complete name question with finite weights whose key,
  *  followed by a number, is no other question's key. A model-scored
  *  set follows a different shape: a complete fitted model, questions
  *  that each carry true and false or at least two ordered levels, no
@@ -117,6 +121,9 @@ export function checkCascade(set: PickCascade | undefined): void {
   if (set === undefined) return;
   if (set.anonymousItems !== undefined && typeof set.anonymousItems !== 'boolean') {
     throw new TypeError('a question set\'s anonymousItems must be a boolean.');
+  }
+  if (set.combine !== undefined && (set.combine !== 'highest' || set.model !== undefined)) {
+    throw new TypeError('a question set\'s combine must be \'highest\', and a model-scored set takes none.');
   }
   const keys = set.questions.map((q) => q.key);
   const levelled = (q: PickCascade['questions'][number]): q is PickScoreCriterion & { readonly weight?: number } =>
@@ -135,9 +142,9 @@ export function checkCascade(set: PickCascade | undefined): void {
         + 'of the same nonzero length, a finite b, and a bar from 0 to 1.');
     }
     if (set.first !== undefined || set.band !== undefined || set.firstOnly !== undefined
-      || set.typed !== undefined || set.written !== undefined || set.named !== undefined) {
+      || set.typed !== undefined || set.written !== undefined || set.named !== undefined || set.facts !== undefined) {
       throw new TypeError('a model question set selects through its weights alone: '
-        + 'it cannot carry first, band, firstOnly, typed, written or named.');
+        + 'it cannot carry first, band, firstOnly, typed, written, named or facts.');
     }
     const nouled = (q: PickCascade['questions'][number]) =>
       'true' in q && 'false' in q && q.true !== undefined && q.false !== undefined;
@@ -190,6 +197,20 @@ export function checkCascade(set: PickCascade | undefined): void {
         + 'and hasNames weights, and a key that, followed by a number, is no other question\'s key.');
     }
   }
+  if (set.facts !== undefined) {
+    const facts: Partial<NonNullable<PickCascade['facts']>> =
+      typeof set.facts === 'object' && set.facts !== null ? set.facts : {};
+    const question = facts.question;
+    const all = [...keys, ...(set.typed ?? []).map((q) => q.key), ...(set.written === undefined ? [] : WRITTEN_QUESTION_KEYS),
+      ...(set.named === undefined ? [] : [set.named.question.key])];
+    if (typeof question !== 'object' || question === null
+      || [question.key, question.instructions, question.true, question.false].some((text) => typeof text !== 'string' || !text.trim())
+      || !Number.isFinite(facts.highest)
+      || all.some((key) => key.startsWith(question.key) && /^\d*$/.test(key.slice(question.key.length)))) {
+      throw new TypeError('a question set\'s facts question needs a key, instructions, true and false, a finite highest '
+        + 'weight, and a key that, followed by a number, is no other question\'s key.');
+    }
+  }
   if (set.first !== undefined || set.band !== undefined || set.firstOnly !== undefined) {
     if (!keys.includes(set.first!) || !set.band || set.band.length !== 2
       || set.band.some((p) => !Number.isFinite(p) || p < 0 || p > 1)
@@ -231,13 +252,17 @@ export function checkPickOptions(options: PickOptions): void {
   }
   checkKeys(options.cache, CACHE_KEYS, 'cache');
   checkKeys(options.everyRanked, ['c'], 'everyRanked');
-  checkKeys(options.stopWhenCold, ['floor', 'share'], 'stopWhenCold');
+  checkKeys(options.stopWhenCold, ['floor', 'share', 'parts'], 'stopWhenCold');
   if (options.stopWhenCold !== undefined) {
     const stop: unknown = options.stopWhenCold;
+    const { parts, ...levels } = typeof stop === 'object' && stop !== null ? stop as Record<string, unknown> : {};
     if (stop !== false && (typeof stop !== 'object' || stop === null || Array.isArray(stop)
-      || Object.values(stop).some((value) => value !== undefined
+      || Object.values(levels).some((value) => value !== undefined
         && (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 1)))) {
       throw new TypeError('stopWhenCold must be false or hold a floor and a share between 0 and 1.');
+    }
+    if (parts !== undefined && (!Number.isSafeInteger(parts) || (parts as number) < 1)) {
+      throw new TypeError('stopWhenCold.parts must be a whole number, 1 or more.');
     }
     // The dials name two different feeds and are never combined.
     if (options.everyRanked !== undefined) {
@@ -257,15 +282,21 @@ export function checkPickOptions(options: PickOptions): void {
     }
   }
   checkKeys(options.everyScored, ['bar', 'bySize'], 'everyScored');
-  checkKeys(options.rare, ['share', 'bar'], 'rare');
+  if (options.needed !== undefined && (!Array.isArray(options.needed)
+    || options.needed.some((fact) => typeof fact !== 'string' || !fact.trim()))) {
+    throw new TypeError('needed must be a list of facts, each a nonempty string.');
+  }
+  if (options.person !== undefined && (typeof options.person !== 'string' || !options.person.trim())) {
+    throw new TypeError('person must be a nonempty string: the person\'s name as tasks word it.');
+  }
+  if (options.wanted !== undefined && !(PICK_WANTED as readonly unknown[]).includes(options.wanted)) {
+    throw new TypeError(`wanted must be ${PICK_WANTED.map((value) => `'${value}'`).join(' or ')}.`);
+  }
   checkKeys(options.answerTypes, ['bar'], 'answerTypes');
   if (options.taskPeriod !== undefined && typeof options.taskPeriod !== 'boolean') {
     throw new TypeError('taskPeriod must be a boolean.');
   }
-  for (const [id, enabled] of Object.entries(options.rareBySource ?? {})) {
-    if (typeof enabled !== 'boolean') throw new TypeError(`rareBySource.${id} must be a boolean.`);
-  }
-  for (const [name, bars] of [['labelBarBySource', options.labelBarBySource], ['barBySource', options.barBySource],
+  for (const [name, bars] of [['labelBarBySource', options.labelBarBySource],
     ['ruleBarBySource', options.ruleBarBySource]] as const) {
     for (const [id, bar] of Object.entries(bars ?? {})) {
       if (typeof bar !== 'number' || !Number.isFinite(bar) || bar < 0 || bar > 1) {
@@ -275,8 +306,9 @@ export function checkPickOptions(options: PickOptions): void {
   }
   checkKeys(options.ranking, MEMORY_KIND_KEYS, 'ranking');
   checkKeys(options.tagsByKind, SOURCE_KIND_KEYS, 'tagsByKind');
-  for (const [id, set] of Object.entries(options.questionsBySource ?? {})) {
-    checkCascadeKeys(set, `questionsBySource.${id}`);
+  for (const [id, mode] of Object.entries(options.modesBySource ?? {})) {
+    checkMode(mode, `modesBySource.${id}`);
+    const set = mode.questions;
     // A typed question is asked only when the task needs its answer
     // type, so with answerTypes off it would sit unread.
     if ((set?.typed?.length ?? 0) > 0 && (options.answerTypes === undefined || options.answerTypes === false)) {
@@ -309,11 +341,109 @@ export function checkPickOptions(options: PickOptions): void {
   }
 }
 
+/** A bar from 0 to 1, or one for each kind of task. */
+function checkBar(bar: Mode['bar'], at: string): void {
+  const between = (value: unknown) => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1;
+  if (bar === undefined || between(bar)) return;
+  if (typeof bar !== 'object' || bar === null || Array.isArray(bar)
+    || !between(bar['one decision']) || !between(bar['everything said'])) {
+    throw new TypeError(`${at} must be a number between 0 and 1, or one for each kind of task: { 'one decision', 'everything said' }.`);
+  }
+  checkKeys(bar, ['one decision', 'everything said'], at);
+}
+
+/** A mode's own fields: a name, an optional question set, an optional
+ *  bar from 0 to 1 and a read. */
+export function checkMode(mode: Mode, at: string): void {
+  if (typeof mode !== 'object' || mode === null) throw new TypeError(`${at} must be a mode.`);
+  checkKeys(mode, ['name', 'questions', 'bar', 'read', 'needed', 'textShare', 'wholeMessages', 'hardFacts', 'roles', 'choicePerFact',
+    'itemsPerRequest', 'keep', 'request', 'searchAgain', 'stopWindow'], at);
+  if (mode.searchAgain !== undefined && typeof mode.searchAgain !== 'boolean') throw new TypeError(`${at}.searchAgain must be a boolean.`);
+  if (mode.stopWindow !== undefined && mode.stopWindow !== 'request') throw new TypeError(`${at}.stopWindow must be 'request'.`);
+  if (mode.request !== undefined && mode.request !== 'text' && mode.request !== 'json') {
+    throw new TypeError(`${at}.request must be 'text' or 'json'.`);
+  }
+  if (mode.keep !== undefined) {
+    const keep = mode.keep;
+    if (typeof keep !== 'object' || keep === null || Array.isArray(keep)) throw new TypeError(`${at}.keep must be { questions, bar? }.`);
+    checkKeys(keep, ['questions', 'bar', 'barByKind', 'exchange', 'exchangeBar', 'wholeMessages', 'hardFacts', 'itemsPerRequest'], `${at}.keep`);
+    if (keep.exchangeBar !== undefined) checkBar(keep.exchangeBar, `${at}.keep.exchangeBar`);
+    if (keep.exchange !== undefined && typeof keep.exchange !== 'boolean') {
+      if (typeof keep.exchange !== 'object' || keep.exchange === null || Array.isArray(keep.exchange)
+        || (keep.exchange.nearest !== undefined && keep.exchange.nearest !== 'paragraph')) {
+        throw new TypeError(`${at}.keep.exchange must be a boolean or { nearest: 'paragraph' }.`);
+      }
+      checkKeys(keep.exchange, ['nearest'], `${at}.keep.exchange`);
+    }
+    if (keep.barByKind !== undefined) {
+      if (typeof keep.barByKind !== 'object' || keep.barByKind === null || Array.isArray(keep.barByKind)) {
+        throw new TypeError(`${at}.keep.barByKind must be an object of bars by kind of message.`);
+      }
+      for (const [kind, bar] of Object.entries(keep.barByKind)) {
+        if (!(KEEP_KINDS as readonly string[]).includes(kind)) {
+          throw new TypeError(`${at}.keep.barByKind names "${kind}"; the kinds are ${KEEP_KINDS.join(', ')}.`);
+        }
+        checkBar(bar, `${at}.keep.barByKind['${kind}']`);
+      }
+    }
+    if (typeof keep.questions !== 'object' || keep.questions === null) throw new TypeError(`${at}.keep.questions must be a question set.`);
+    checkCascadeKeys(keep.questions, `${at}.keep.questions`);
+    checkCascade(keep.questions);
+    for (const key of ['typed', 'written', 'named', 'first', 'band', 'firstOnly', 'model'] as const) {
+      if (keep.questions[key] !== undefined) throw new TypeError(`${at}.keep.questions takes no ${key}: the second stage asks its questions and needed facts only.`);
+    }
+    for (const key of ['wholeMessages', 'hardFacts'] as const) {
+      if (keep[key] !== undefined && typeof keep[key] !== 'boolean') throw new TypeError(`${at}.keep.${key} must be a boolean.`);
+    }
+    if (keep.itemsPerRequest !== undefined && (!Number.isSafeInteger(keep.itemsPerRequest) || keep.itemsPerRequest < 1)) {
+      throw new TypeError(`${at}.keep.itemsPerRequest must be a positive whole number.`);
+    }
+    checkBar(keep.bar, `${at}.keep.bar`);
+  }
+  if (mode.itemsPerRequest !== undefined && (!Number.isSafeInteger(mode.itemsPerRequest) || mode.itemsPerRequest < 1)) {
+    throw new TypeError(`${at}.itemsPerRequest must be a positive whole number.`);
+  }
+  if (mode.textShare !== undefined && (typeof mode.textShare !== 'number' || !Number.isFinite(mode.textShare)
+    || mode.textShare < 0 || mode.textShare > 1)) {
+    throw new TypeError(`${at}.textShare must be a number between 0 and 1.`);
+  }
+  if (mode.needed !== undefined && typeof mode.needed !== 'boolean') throw new TypeError(`${at}.needed must be a boolean.`);
+  for (const key of ['wholeMessages', 'hardFacts', 'roles'] as const) {
+    if (mode[key] !== undefined && typeof mode[key] !== 'boolean') throw new TypeError(`${at}.${key} must be a boolean.`);
+  }
+  const choice: unknown = mode.choicePerFact;
+  if (choice !== undefined && typeof choice !== 'boolean') {
+    if (typeof choice !== 'object' || choice === null || Array.isArray(choice)) {
+      throw new TypeError(`${at}.choicePerFact must be a boolean or { bar }.`);
+    }
+    checkKeys(choice as object, ['candidates', 'enough'], `${at}.choicePerFact`);
+    const { candidates, enough } = choice as { candidates?: unknown; enough?: unknown };
+    const between = (value: unknown) => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1;
+    if (candidates !== undefined && (!Number.isSafeInteger(candidates) || (candidates as number) < 1)) {
+      throw new TypeError(`${at}.choicePerFact.candidates must be a positive whole number.`);
+    }
+    if (enough !== undefined && typeof enough !== 'boolean') {
+      if (typeof enough !== 'object' || enough === null || Array.isArray(enough)) {
+        throw new TypeError(`${at}.choicePerFact.enough must be a boolean or { bar }.`);
+      }
+      checkKeys(enough as object, ['bar'], `${at}.choicePerFact.enough`);
+      const { bar: enoughBar } = enough as { bar?: unknown };
+      if (enoughBar !== undefined && !between(enoughBar)) {
+        throw new TypeError(`${at}.choicePerFact.enough.bar must be a number between 0 and 1.`);
+      }
+    }
+  }
+  if (typeof mode.name !== 'string' || !mode.name.trim()) throw new TypeError(`${at}.name must be a nonempty string.`);
+  checkCascadeKeys(mode.questions, `${at}.questions`);
+  checkBar(mode.bar, `${at}.bar`);
+  if (typeof mode.read !== 'function') throw new TypeError(`${at}.read must be a read, such as rankedRead or conversationRead().`);
+}
+
 /** A writer no source's set weighs would be paid for and never read.
  *  Run once every source's set is known. */
 export function checkWriteQuestions(options: PickOptions): void {
   if (options.writeQuestions !== undefined
-    && !Object.values(options.questionsBySource ?? {}).some((set) => set?.written !== undefined)) {
+    && !Object.values(options.modesBySource ?? {}).some((mode) => mode.questions?.written !== undefined)) {
     throw new TypeError('writeQuestions is set, but no source\'s question set has written weights.');
   }
 }
@@ -354,6 +484,9 @@ export function checkCurateOptions(options: CurateOptions): void {
   checkKeys(options, CURATE_KEYS, '');
   if (options.answerTokens !== undefined && (!Number.isInteger(options.answerTokens) || options.answerTokens <= 0)) {
     throw new TypeError('curate: answerTokens must be a positive integer of estimated tokens.');
+  }
+  if (options.person !== undefined && (typeof options.person !== 'string' || !options.person.trim())) {
+    throw new TypeError('curate: person must be a nonempty string: the person\'s name as tasks word it.');
   }
   const cutoff: unknown = options.sentenceCutoff;
   if (cutoff !== undefined && cutoff !== false && (typeof cutoff !== 'number' || !(cutoff >= 0 && cutoff <= 1))) {

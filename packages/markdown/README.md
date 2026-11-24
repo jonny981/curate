@@ -10,6 +10,7 @@ It has three readers:
 | `markdown({ paths, kind })` | Folders, files and glob patterns | Any Markdown. You say what [kind](#kinds) it is. |
 | `knowledgeBase(dir)` | One folder of notes | A [knowledge base](#knowledge-bases), including an [Open Knowledge Format](#open-knowledge-format) bundle. |
 | `rules(dir)` | One folder of rules | A [rule library](#rule-library): many small rules, of which a task needs a few. |
+| `whatsapp(path)` | One WhatsApp chat export | The messages between two people, or in a group ([WhatsApp exports](#whatsapp-exports)). |
 
 ## Install
 
@@ -46,6 +47,7 @@ const picked = await pickFromSources(sources, { task }, { task, decide });
 | `keyword` | all | `MARKDOWN_KEYWORD_SETTINGS` | Your changes to the keyword ranking. See [Keyword settings](#keyword-settings). |
 | `index` | all | on | `{ directory }` picks where the index file goes, and `false` reads the files directly every time. See [Stored index](#stored-index). |
 | `repository` | `markdown()`, `knowledgeBase()` | the work tree's top folder | The key shared with `git()` that links a commit to the notes it changed. |
+| `turns` | `markdown()`, `knowledgeBase()` | off | Cuts a note written as a conversation at each turn. See [Notes written as a conversation](#notes-written-as-a-conversation). |
 
 `exclude` is added to the read request's `exclude` for this source only, so another source over the same folder still reads those files.
 The pick's levers record `since` and `exclude`.
@@ -96,6 +98,18 @@ Notes inside a repository also carry `path`, their file relative to the reposito
 That's what lets a selected commit link them in.
 
 A `revision` pin reads the tree that revision names: the earlier contents, no later files, and the resolved SHA on the result.
+
+### Notes written as a conversation
+
+Off by default. With `turns: true`, a section written as a conversation is cut first at each turn, then each turn at line ends to the part size, so no part holds two turns.
+
+A section is a conversation when its paragraphs open with a speaker's name and a colon (`user: ...`, `Ana: ...`). The speakers are the names that open at least two of its paragraphs. In a short exchange where no two names do, they're the names of its last two such paragraphs, when those differ (`conversationTurns()`). What comes before the first speaker, such as the heading and a `Date:` line, opens the first turn, so it's never judged alone: every part already carries the note's date and title. Any other note is cut and read exactly as without the setting.
+
+Each part carries its `turn`: the speaker, the note, the turn's number in it, how many pieces it was cut into, the whole turn's text, and the whole turns before and after it with their first pieces' ids. Its `place` is the section and `[turn, 1, piece]`. The stored index keeps this cut apart from the plain one.
+
+A mode with `wholeMessages` then judges each turn whole. One with `hardFacts` writes its speaker as `author`, the note as `session`, its `position`, its `pieces`, and the turns either side as `replies_to` and `answered_by`, each its first 1,000 characters.
+
+Of LongMemEval's 7,164 session notes, 7,157 read as conversations. In 272 of them (about 1 in 26), a label repeated inside a turn, such as `Note:` or `Day 2:`, also starts a turn of its own. Judged whole, one turn a request, with hard facts and the "answers" set, LongMemEval's 149 questions scored under the notes mode's own pieces: 139.33 right at its bar, against 145.33. In the labels, the whole turn showed no gain: of the 255 labelled answer turns that are one paragraph, 75 ranked better whole and 75 as a piece, with the same questions. Assistant turns over 1,000 characters were 78% of its text, and held 16 of the 274 labelled answers.
 
 ### Rule library
 
@@ -184,6 +198,41 @@ A page with an unknown type, an unknown key, a missing field or a broken link is
 Some fields have no handling of their own: `sources`, `verified`, `usage_window`, `resource`, `tags` and the Attested Computation fields.
 Like all frontmatter, their words count toward the `file-words` signal, and a replaced word among them, such as `deprecated`, ranks the page lower.
 They aren't part text, so the decision model doesn't read them.
+
+## WhatsApp exports
+
+`whatsapp(path)` reads the text file of WhatsApp's "Export chat" (`_chat.txt`): the messages between two people, or in a group.
+
+```ts
+import { whatsapp } from '@curatejs/markdown';
+
+const source = whatsapp('exports/mel/_chat.txt');
+```
+
+| Option | Default | What it does |
+| --- | --- | --- |
+| `since` | no limit | Only days on or after an ISO date, or a duration such as `'30 days'` |
+| `dates` | settled by the export | `'day-first'` or `'month-first'`, for an export whose dates don't settle it |
+| `directory` | `~/.cache/curate/messages`, or `$XDG_CACHE_HOME/curate/messages` | Where the export's days are kept as notes |
+| `mode` | `directMessages` | How its parts are judged and read |
+
+How it reads an export:
+
+- **Lines:** it reads the iOS form, `[13/05/2023, 14:02:51] Mel: text`, and the Android form, `13/05/2023, 14:02 - Mel: text`. A date may use `/`, `.` or `-`, with a two- or four-digit year, or the year first. A time may leave out seconds and may carry AM or PM. A line that doesn't open with a date continues the message before it.
+- **Senders:** it learns them from the export. The text before a line's first colon names one when it recurs on other lines or looks like a name. A name always followed by the same colon and words, such as `Dr: Jones`, takes them in. A line's sender is the longest of these names it opens with, so `Dr: Jones: the ferry` is from `Dr: Jones`, and `Sam: Note: bring the tickets` is from `Sam`.
+- **Lines that only look like messages:** a line that opens with a date but no sender of the export, or with a date earlier than the message before it, stays part of that message, as a pasted line would. With no message before it, or at or after that message's time, a line with a date and no sender is the app's own notice, such as the end-to-end encryption notice or a change of subject, and is left out.
+- **Day and month:** a number over 12 settles whether the export writes the day or the month first. So does the order of the dates when it's clear: an export lists messages in the order they were sent, so the reading under which the dates go back at least three fewer times wins. One line, such as an old message pasted into a new one, can move that count by two at most, so it never settles the order alone. When neither settles it, an export with a 12-hour clock and two-digit years, as a month-first phone writes it, reads month first, and any other export day first. The read then says so in `partial`, and isn't `complete`, until `dates` says which. `parseWhatsapp(text, dates?)` returns the messages, the order taken and whether the export settled it.
+- **Sessions:** the messages of one day are one session, by the date each was sent. The runs that measured this kind of history read sessions of one day each.
+- **Notes:** each session is written as a Markdown note and read through `knowledgeBase()`, so the parts, search lanes, name lanes and stored index are this package's. A note has the day as its `date`, a `# session session-NNN` heading, a `Date:` line, and each message as `<sender>: <text>`, the messages apart by a blank line. A note is written again only when its text changes, and a day the export no longer holds leaves no note.
+- **Speakers:** each part lists the export's senders in `speakers`, so when `curate()` leaves out the first sentence of a message, the first kept sentence still starts with the sender's name. A long message is cut into parts of 700 characters, and a part cut from inside a message opens with its sender's name, as the message's first part does, so the decision model and the layout see who said it.
+- **Mode:** `directMessages` asks `MARKDOWN_CASCADE`, keeps parts scored 0.0146 or more and reads down the ranked list: the settings the LoCoMo runs measured on sessions read as notes. Its text takes every kept part. A text share of 0.1 answered 384 of 400 LoCoMo questions right, against 387 without it, so `textShare` is a dial you set. Pass `mode` to change it.
+- **Same parts as the LoCoMo runs:** LoCoMo's ten conversations, written as iOS export lines and read through `whatsapp()`, give the 272 session notes the LoCoMo harness writes, byte for byte, and the same 1,675 parts in the same order. The exception is the 8 parts cut from inside a message, which open with the sender's name.
+
+Some shapes need a guess, and no setting changes it. When one matters, edit the export file itself:
+
+- A sender whose name holds a colon and who writes one line only (`Dr: Jones`, once) is read as `Dr`, with the rest of the line as the message.
+- A pasted line that opens with a date at or after the message it was pasted into is taken as the app's own notice and dropped, while the line after it stays in that message.
+- A real message from another person, pasted with its earlier date between two of one person's messages, joins the first of those messages.
 
 ## Decay
 
@@ -274,12 +323,13 @@ Core's [Stored index](https://github.com/jonny981/curate/blob/main/packages/core
 
 ## Defaults and overrides
 
-`markdown()` and `knowledgeBase()` read with `markdownSettings`, `{ rare: true, labels: false, names: true, bar: 0.0146 }`:
+`markdown()` and `knowledgeBase()` read with `markdownSettings`, `{ labels: false, names: true, mode: notes }`:
 
-- **Rare-word round on:** it finds unselected parts that share rare words with selected ones, counting words over this source only.
 - **No labels.**
 - **Name lanes:** one for each name the task names.
-- **A bar of 0.0146:** references scoring 0.0146 or more are kept, ordered and weighted by decision probability.
+- **The `notes` mode:** each part is asked `MARKDOWN_CASCADE`, and references scoring 0.0146 or more are kept, ordered and weighted by decision probability.
+
+`notes` sends its decision requests in plain text (`request: 'text'`): the task, then each part's id, date, title and text. Its 0.0146 bar was measured in that form, and the JSON state rates the same parts lower. A lever that needs the JSON state's fields (needed facts, hard facts, whole messages, one part a request, a second stage) sends the JSON state instead. Its [rating stop](https://github.com/jonny981/curate/blob/main/docs/library.md#the-rating-stop) judges each request alone (`stopWindow: 'request'`), the rule its questions and bar were measured with.
 
 `rules()` reads with `rulesSettings`, `{ ...markdownSettings, names: false, ruleBar: 0.5 }`.
 It opens no name lane, because rules are chosen by where they apply, not by search.
@@ -321,8 +371,8 @@ Weights you leave out are 1, and the pick record stores the weights.
 
 ### Question sets
 
-`markdownSettings` carries `MARKDOWN_CASCADE`, the fitted question set `markdown()`, `knowledgeBase()` and `rules()` ask of each reference part.
-Change it with `historySource({ reader: knowledgeBase('docs'), ...markdownSettings, questions: mySet })`.
+`markdownSettings` carries the `notes` mode, and with it `MARKDOWN_CASCADE`, the fitted question set `markdown()`, `knowledgeBase()` and `rules()` ask of each reference part.
+Change it with `historySource({ reader: knowledgeBase('docs'), ...markdownSettings, mode: { ...notes, questions: mySet } })`.
 Rule parts keep their own question, whether the rule applies.
 
 The git and Markdown sets were fitted on saved answers about commits and notes.

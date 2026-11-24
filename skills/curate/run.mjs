@@ -5,11 +5,11 @@ import { createRequire } from 'node:module';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { curate, DEFAULT_MAX_QUESTION_TEXT, levelDistribution, pickFromSources, sinceCutoff, taskPeriod } from '@curatejs/core';
+import { ANSWER_CASCADE, curate, DEFAULT_MAX_QUESTION_TEXT, levelDistribution, pickFromSources, rankedRead, sinceCutoff, taskPeriod } from '@curatejs/core';
 import { jev } from '@curatejs/core/models';
-import { chat, firstSessionLine, scrubChat, AGENT_CHAT_CASCADE, CHAT_SEARCH_LINE_REGISTER, JUDGMENT_CHAT_CASCADE } from '@curatejs/chat';
+import { agentTranscripts, chat, firstSessionLine, scrubChat, AGENT_CHAT_CASCADE, CHAT_SEARCH_LINE_REGISTER, JUDGMENT_CHAT_CASCADE, MESSAGE_ANSWER_CASCADE } from '@curatejs/chat';
 import { git, GIT_HISTORY_CASCADE, GIT_SEARCH_LINE_REGISTER } from '@curatejs/git';
-import { knowledgeBase, markdown, MARKDOWN_CASCADE, MARKDOWN_SEARCH_LINE_REGISTER } from '@curatejs/markdown';
+import { knowledgeBase, markdown, notes, whatsapp, MARKDOWN_CASCADE, MARKDOWN_SEARCH_LINE_REGISTER } from '@curatejs/markdown';
 
 // A settings path: absolute, from the home folder (`~/`), or from `base`.
 const homePath = (path, base = process.cwd()) => resolve(base, path.startsWith('~/') ? join(homedir(), path.slice(2)) : path);
@@ -38,6 +38,8 @@ export function parseArgs(args, command = 'node skills/curate/run.mjs') {
 export const NODE_FLOOR = '22.20.0';
 // The exit code of a command stopped because its setup is not complete.
 export const SETUP_EXIT = 3;
+// A call the decision service refused, or could not reach, exits with this.
+export const DECISION_EXIT = 4;
 const SCRIPT = fileURLToPath(import.meta.url);
 export const MODEL_URL = 'https://huggingface.co/ggml-org/embeddinggemma-300M-GGUF/resolve/main/embeddinggemma-300M-Q8_0.gguf';
 // Where a call looks for the model when the settings name none: under the
@@ -111,17 +113,94 @@ const atLeast = (version, floor) => {
 const engineFound = () => (createRequire(import.meta.url).resolve.paths('node-llama-cpp') ?? [])
   .some((folder) => existsSync(join(folder, 'node-llama-cpp', 'package.json')));
 
-// The question sets a chat source can select by name. 'default' is the
-// same set an omitted questions key produces; 'judgments' is the only
-// measured model-scored set, and it fails closed inside chat() while
-// its weights file is unfitted.
-export const CHAT_QUESTION_SETS = { default: AGENT_CHAT_CASCADE, judgments: JUDGMENT_CHAT_CASCADE };
+// The modes a chat source can select by its question set's name.
+// 'default' is the mode an omitted questions key produces; 'judgments'
+// asks the only measured model-scored set, read down the ranked list,
+// and it fails closed inside chat() while its weights file is unfitted.
+export const CHAT_MODES = { default: agentTranscripts,
+  // Read as the default mode reads, on its own questions and bar; then
+  // a second stage judges each kept message whole, with its hard facts,
+  // batched, in the measured wording, and keeps it by the highest of its
+  // answers (it states the answer, or one fact the answer needs) at a bar
+  // for the kind of task. The bars are measured on labelled answers (22
+  // tasks of one person's coding-agent history): the highest that loses
+  // none, 0.59 on one-decision tasks and 0.04 on everything-said tasks.
+  // A message's rating moves between calls of the same task (other search
+  // Each still awaits answers marked right.
+  answers: { ...agentTranscripts, name: 'answers', keep: { questions: MESSAGE_ANSWER_CASCADE,
+    bar: { 'one decision': 0.59, 'everything said': 0.04 }, wholeMessages: true, hardFacts: true } },
+  // The same two stages, each kind of message kept at the bar its
+  // labelled answers earned within its kind (tool output at the bar its
+  // widened answers earned; 1, kept only in an exchange, where a kind
+  // earned none), and the exchange around each kept message of the
+  // person, and each kept report's request, each agent message kept only
+  // for an exchange laid out as its paragraph nearest the person's.
+  // Measured on 20 tasks of one person's coding-agent history. A
+  // message's rating moves between calls of the same task (other search
+  // lines, other needed facts): of 537 messages rated 0.5 or more in one
+  // run, a tenth fell more than 2.07 in logit in another. So on
+  // one-decision tasks the person's message is kept at its learned 0.76
+  // moved down by that fall, 0.28, and its exchange is attached only
+  // from 0.76 (`exchangeBar`): under it the message is kept alone. On
+  // the 20 tasks, five answer sets, with the report bar at 0.95: 18.2
+  // right against 18.4 at the learned bars (the 0.2 one task's answer
+  // noise, its answer in every text), one-decision text a median of
+  // 5,213 tokens against 2,087, 99% of the added text the person's own
+  // words; moving the exchange's bar down too gave 14,125.
+  // Climb 27's best text had no second search, and on the owner's history
+  // it added 11 to 21 seconds and most of the size, so this set has none.
+  exchange: { ...agentTranscripts, name: 'exchange', searchAgain: false, keep: { questions: MESSAGE_ANSWER_CASCADE, bar: 1, exchange: { nearest: 'paragraph' },
+    wholeMessages: true, hardFacts: true, barByKind: {
+      'person message': { 'one decision': 0.28, 'everything said': 0.04 },
+      'subagent final report': { 'one decision': 0.59, 'everything said': 0.95 },
+      'subagent prompt': { 'one decision': 1, 'everything said': 0.05 },
+      'compaction summary': { 'one decision': 1, 'everything said': 0.37 },
+      'tool output': { 'one decision': 0.81, 'everything said': 0.13 },
+      'agent step': 1, 'system message': 1 },
+    exchangeBar: { 'one decision': 0.76, 'everything said': 0.04 } } },
+  judgments: { name: 'judgments', questions: JUDGMENT_CHAT_CASCADE, read: rankedRead } };
+// The decision levers a chat entry can switch on for its mode, each off by
+// default (core's Mode documents them).
+export const CHAT_LEVERS = ['wholeMessages', 'hardFacts', 'roles', 'choicePerFact', 'itemsPerRequest'];
+// Whether a lever's value is one it takes: on or off, a count of items
+// per request, or the Choice's candidates and sufficiency question.
+const wholeNumber = (value) => Number.isSafeInteger(value) && value >= 1;
+const leverValue = (key, value) => key === 'itemsPerRequest' ? wholeNumber(value)
+  : typeof value === 'boolean' || (key === 'choicePerFact' && value !== null && typeof value === 'object' && !Array.isArray(value)
+    && Object.entries(value).every(([name, own]) => (name === 'candidates' && wholeNumber(own)) || (name === 'enough' && typeof own === 'boolean')));
+// A chat entry's mode, with its own bar and levers when it sets them.
+const chatMode = (entry) => {
+  const mode = CHAT_MODES[entry.questions ?? 'default'];
+  return entry.bar === undefined && entry.levers === undefined ? mode
+    : { ...mode, ...(entry.bar === undefined ? {} : { bar: entry.bar }), ...entry.levers };
+};
+// The question sets a Markdown entry's notes can be kept by: the notes
+// mode's own, or the narrow question in two with the facts the answer
+// needs in each request's state. The latter's bar is a candidate
+// measured on labelled answers, not the notes mode's 0.0146, which was
+// set for another score: on 24 LongMemEval questions with labelled answer
+// turns, rated one part a request, 0.07 is the highest "answers"
+// probability that keeps every labelled turn. It awaits answers marked
+// right.
+export const NOTE_MODES = { default: notes, answers: { ...notes, name: 'answers', questions: { ...ANSWER_CASCADE, combine: 'highest' }, needed: true, bar: 0.07 } };
+// The levers that act on notes. Whole messages and hard facts act on a
+// note written as a conversation: the reader then cuts it at each turn,
+// and each turn is judged whole, with its speaker and the turns either
+// side; any other note is read as without them.
+export const NOTE_LEVERS = ['wholeMessages', 'hardFacts', 'roles', 'choicePerFact', 'itemsPerRequest'];
+// A Markdown entry's mode, or undefined to keep the reader's own.
+const noteMode = (entry) => entry.questions === undefined && entry.levers === undefined ? undefined
+  : { ...NOTE_MODES[entry.questions ?? 'default'], ...entry.levers };
+// Whether an entry's mode needs the facts the answer needs from the
+// search lines: in its requests' state, or for a Choice per needed fact.
+const modeNeeds = (mode) => mode !== undefined && (mode.needed === true || (mode.choicePerFact ?? false) !== false);
 
 const SOURCE_ENTRY_KEYS = {
-  'claude-code': ['type', 'path', 'since', 'exclude', 'questions', 'bar', 'always'],
-  codex: ['type', 'path', 'since', 'exclude', 'allowedCwd', 'questions', 'bar', 'always'],
+  'claude-code': ['type', 'path', 'since', 'exclude', 'questions', 'bar', 'levers', 'always'],
+  codex: ['type', 'path', 'since', 'exclude', 'allowedCwd', 'questions', 'bar', 'levers', 'always'],
   git: ['type', 'path', 'since', 'exclude', 'include', 'always'],
-  markdown: ['type', 'path', 'since', 'exclude', 'always'],
+  markdown: ['type', 'path', 'since', 'exclude', 'questions', 'levers', 'always'],
+  whatsapp: ['type', 'path', 'since', 'dates', 'always'],
 };
 
 // The settings may list no source: a call inside a git repository reads the
@@ -133,7 +212,7 @@ export function parseSources(value, base = process.cwd()) {
   const sources = (value.sources ?? []).map((source) => {
     // A chat entry with no path reads the project's own transcripts for its tool.
     const pathless = source?.path === undefined && ['claude-code', 'codex'].includes(source?.type);
-    if (!source || !['claude-code', 'codex', 'git', 'markdown'].includes(source.type)
+    if (!source || !['claude-code', 'codex', 'git', 'markdown', 'whatsapp'].includes(source.type)
       || (!pathless && (typeof source.path !== 'string' || !source.path.trim()))) {
       throw new Error('Each source needs a type, and a path unless it is a claude-code or codex source.');
     }
@@ -155,14 +234,23 @@ export function parseSources(value, base = process.cwd()) {
         throw new Error(`${key} must be an array of paths.`);
       }
     }
-    if (source.questions !== undefined && !Object.hasOwn(CHAT_QUESTION_SETS, source.questions)) {
-      throw new Error(`Unknown questions "${source.questions}"; allowed names are ${Object.keys(CHAT_QUESTION_SETS).join(', ')}.`);
+    const modes = source.type === 'markdown' ? NOTE_MODES : CHAT_MODES;
+    if (source.questions !== undefined && !Object.hasOwn(modes, source.questions)) {
+      throw new Error(`Unknown questions "${source.questions}"; allowed names are ${Object.keys(modes).join(', ')}.`);
     }
     if (source.bar !== undefined
       && (typeof source.bar !== 'number' || !Number.isFinite(source.bar) || source.bar < 0 || source.bar > 1)) {
       throw new Error('bar must be a number between 0 and 1.');
     }
+    const levers = source.type === 'markdown' ? NOTE_LEVERS : CHAT_LEVERS;
+    if (source.levers !== undefined && (source.levers === null || typeof source.levers !== 'object' || Array.isArray(source.levers)
+      || Object.entries(source.levers).some(([key, on]) => !levers.includes(key) || !leverValue(key, on)))) {
+      throw new Error(`levers must be an object of booleans named ${levers.filter((name) => name !== 'itemsPerRequest').join(', ')}; itemsPerRequest, a positive whole number; and choicePerFact may instead be { candidates, enough }, candidates a positive whole number and enough a boolean.`);
+    }
     if (source.always !== undefined && typeof source.always !== 'boolean') throw new Error('always must be a boolean.');
+    if (source.dates !== undefined && !['day-first', 'month-first'].includes(source.dates)) {
+      throw new Error('dates must be "day-first" or "month-first".');
+    }
     const allowed = source.allowedCwd;
     if (source.type === 'codex' && !pathless) {
       const folders = Array.isArray(allowed) ? allowed : [allowed];
@@ -182,9 +270,10 @@ export function parseSources(value, base = process.cwd()) {
   if (value.stopWhenCold !== undefined && value.stopWhenCold !== false) {
     const stop = value.stopWhenCold;
     if (stop === null || typeof stop !== 'object' || Array.isArray(stop)
-      || Object.entries(stop).some(([key, number]) => !['floor', 'share'].includes(key)
-        || typeof number !== 'number' || !(number >= 0 && number <= 1))) {
-      throw new Error('stopWhenCold must be false or { floor, share }, each a number between 0 and 1.');
+      || Object.entries(stop).some(([key, number]) => !['floor', 'share', 'parts'].includes(key)
+        || (key === 'parts' ? !(Number.isSafeInteger(number) && number >= 1)
+          : typeof number !== 'number' || !(number >= 0 && number <= 1)))) {
+      throw new Error('stopWhenCold must be false or { floor, share, parts }: floor and share each a number between 0 and 1, parts a whole number, 1 or more.');
     }
   }
   if (value.answerTokens !== undefined && (!Number.isSafeInteger(value.answerTokens) || value.answerTokens < 1)) {
@@ -205,7 +294,10 @@ export function parseSources(value, base = process.cwd()) {
   if (value.maxCandidates !== undefined || value.userMaxCandidates !== undefined) {
     throw new Error('Remove maxCandidates and userMaxCandidates; the decision feed has no count limit.');
   }
-  for (const key of ['userFirst', 'recentFirst', 'records', 'scope']) {
+  if (value.userFirst !== undefined) {
+    throw new Error("Remove userFirst; a chat source's read starts from the person's own parts itself.");
+  }
+  for (const key of ['recentFirst', 'records', 'scope']) {
     if (value[key] !== undefined && typeof value[key] !== 'boolean') throw new Error(`${key} must be a boolean.`);
   }
   if (value.embeddingModel !== undefined && (typeof value.embeddingModel !== 'string' || !value.embeddingModel.trim())) {
@@ -217,8 +309,16 @@ export function parseSources(value, base = process.cwd()) {
   if (value.maxInFlight !== undefined && (!Number.isSafeInteger(value.maxInFlight) || value.maxInFlight < 1)) {
     throw new Error('maxInFlight must be a positive integer.');
   }
+  for (const key of ['requestsPerSecond', 'tokensPerSecond']) {
+    if (value[key] !== undefined && !(typeof value[key] === 'number' && Number.isFinite(value[key]) && value[key] > 0)) {
+      throw new Error(`${key} must be a positive number: your organization's limit, as the TypeSafe console shows it.`);
+    }
+  }
   if (value.searchModel !== undefined && !['haiku', 'luna'].includes(value.searchModel)) {
     throw new Error("searchModel must be 'haiku' or 'luna'.");
+  }
+  if (value.person !== undefined && (typeof value.person !== 'string' || !value.person.trim())) {
+    throw new Error('person must be your name as your tasks word it.');
   }
   if (value.envFile !== undefined && (typeof value.envFile !== 'string' || !value.envFile.trim())) {
     throw new Error('envFile must be a file path.');
@@ -497,9 +597,7 @@ export async function snapshotCodex(entry, folder) {
   }
   const source = chat({ id: `chat:codex:${entry.path}`, providers: ['codex'], paths: [folder],
     ...(entry.since === undefined ? {} : { since: entry.since }),
-    ...(exclude === undefined ? {} : { exclude }),
-    ...(entry.questions === undefined ? {} : { questions: CHAT_QUESTION_SETS[entry.questions] }),
-    ...(entry.bar === undefined ? {} : { bar: entry.bar }) });
+    ...(exclude === undefined ? {} : { exclude }), mode: chatMode(entry) });
   // A session whose compressed header does not decompress, or that was
   // gone, was never copied: the read says how many, as the reader says of
   // a body.
@@ -511,8 +609,10 @@ export async function snapshotCodex(entry, folder) {
     const result = await source.read(request, context);
     return result.status !== 'read' ? result : { ...result,
       ...(unread === undefined ? {} : { complete: false, partial: result.partial === undefined ? unread : `${result.partial}; ${unread}` }),
-      candidates: result.candidates.map((candidate) =>
-        ({ ...candidate, id: candidate.id.replace(folder, entry.path) })),
+      candidates: result.candidates.map((candidate) => ({ ...candidate, id: candidate.id.replace(folder, entry.path),
+        // The transcript a part sits in is named by the same path.
+        ...(candidate.place === undefined ? {} : { place: { ...candidate.place,
+          container: candidate.place.container.replace(folder, entry.path) } }) })),
       // A meaning lane's id and score list names the same parts, so the
       // same remap applies; without it those ids keep the snapshot path.
       ...(result.meaningScores === undefined ? {} : { meaningScores: result.meaningScores.map((score) =>
@@ -714,10 +814,10 @@ export function rankMatches(candidates, settings = {}) {
     const date = Date.parse(candidate.date?.value ?? '') || 0;
     sessions.set(candidate.chat.sessionId, Math.max(sessions.get(candidate.chat.sessionId) ?? 0, date));
   }
-  const userRank = (candidate) => candidate.chat?.author === 'person' ? 2 : Number(candidate.chat?.role === 'user');
+  // A chat source's read starts from the person's own parts itself, so
+  // a lane keeps its match order: its top parts lead the read elsewhere.
   const sorted = [...candidates].sort((a, b) =>
-    (settings.userFirst === false ? 0 : userRank(b) - userRank(a))
-    || score(b) - score(a)
+    score(b) - score(a)
     || (settings.recentFirst === false || !a.chat || !b.chat ? 0
       : sessions.get(b.chat.sessionId) - sessions.get(a.chat.sessionId)
         || (Date.parse(b.date?.value ?? '') || 0) - (Date.parse(a.date?.value ?? '') || 0))
@@ -747,27 +847,31 @@ function savedRead(result) {
 
 // The pick's record as a run record keeps it: every part the decision model
 // rated, and every other part it ranked, in full, but a part the rating stop
-// left unread only by its id and its place in the fused order. Those are
-// listed per source in `unread`, in that order, with a count, and the start
-// all the source's ids share written once as `prefix`: a large call leaves
-// tens of thousands of them, and a full entry is about 700 bytes.
+// or a chat read left unread only by its id and its place in the order that
+// read read. Those are listed per source in `unread`, in that order, with a
+// count, and the start all the source's ids share written once as `prefix`:
+// a large call leaves tens of thousands of them, and a full entry is about
+// 700 bytes. A source a chat read left parts of says so in `reason`.
 export function savedPick(pick) {
   const unread = new Map();
   const candidates = pick.candidates.filter((entry) => {
-    if (entry.status !== 'unassessed' || entry.reason !== 'stopWhenCold') return true;
-    if (!unread.has(entry.sourceId)) unread.set(entry.sourceId, []);
-    unread.get(entry.sourceId).push(entry);
+    if (entry.status !== 'unassessed' || (entry.reason !== 'stopWhenCold' && entry.reason !== 'chatRead')
+      || entry.place === undefined) return true;
+    const key = JSON.stringify([entry.sourceId, entry.reason]);
+    if (!unread.has(key)) unread.set(key, []);
+    unread.get(key).push(entry);
     return false;
   });
   if (unread.size === 0) return pick;
-  return { ...pick, candidates, unread: Object.fromEntries([...unread].map(([source, entries]) => {
+  return { ...pick, candidates, unread: Object.fromEntries([...unread].map(([key, entries]) => {
+    const [source, reason] = JSON.parse(key);
     entries.sort((one, other) => one.place - other.place);
     const prefix = entries.reduce((shared, { id }) => {
       let at = 0;
       while (at < shared.length && shared[at] === id[at]) at += 1;
       return shared.slice(0, at);
     }, entries[0].id);
-    return [source, { count: entries.length, prefix,
+    return [source, { count: entries.length, ...(reason === 'chatRead' ? { reason } : {}), prefix,
       ids: entries.map(({ id }) => id.slice(prefix.length)), places: entries.map(({ place }) => place) }];
   })) };
 }
@@ -860,8 +964,7 @@ export async function pickFullSources(sources, call, options, context = { files:
     // asks for it: its parts, or only their ids when the pick only sizes
     // the history.
     const pooled = source.role === 'reference' && (source.labelKinds?.length
-      || options.everyRanked !== true
-      || (options.rare ?? source.rare ?? false) !== false);
+      || options.everyRanked !== true);
     const pools = new Map();
     return { ...source, async read(readRequest) {
       const { wholeLanes, limit } = readRequest;
@@ -882,9 +985,110 @@ export async function pickFullSources(sources, call, options, context = { files:
   return pickFromSources(cached, request, options);
 }
 
+// The second search on coding-agent transcripts, in the sequence it was
+// measured in. Round one runs to its end. The rarest names, numbers and
+// words of its warmest rated parts become a second search's lines, and a
+// second pick reads that search's order with the same stop and round
+// one's decisions, so only parts round one never rated are rated; a
+// reused decision counts toward that stop with its stored rating, and
+// round two's record counts its new and reused parts apart. The
+// parts round two keeps join round one's. Measured with the plain read
+// of the ranked list: on long chats with an assistant (BEAM, 40
+// questions, read as Markdown) round two's new parts held 99 evidence
+// units where reading round one on by as many parts held 96; on
+// coding-agent transcripts (the DolphinBench check) it reached all 4
+// messages no lane of round one held, and the ratings kept them.
+
+/** Round one's warmest rated parts that give round two its lines: three,
+ *  as in both measurements. */
+const SECOND_SEARCH_SEEDS = 3;
+/** The words each of those parts gives its line, rarest first: eight, as
+ *  in both measurements. */
+const SECOND_SEARCH_WORDS = 8;
+/** A word is rare when at least RARE_LEAST of the history's parts hold
+ *  it and at most RARE_SHARE of them do (never fewer than RARE_LEAST):
+ *  the bounds both measurements used. */
+const RARE_LEAST = 2;
+const RARE_SHARE = 0.005;
+// A name or word of three or more characters, or a number of two or more.
+const searchTokens = (text) => new Set((text.match(/[A-Za-z][A-Za-z'’-]{2,}|\d[\d,.:/-]*\d/g) ?? [])
+  .map((token) => token.toLowerCase()));
+
+/** A word shaped like a credential, at any length: one that opens with
+ *  a key prefix the scrubber knows, or one the scrubber would mask. It
+ *  never becomes a search line, which the record keeps. */
+const credentialShaped = (token) => /^(?:sk|xai|pk|rk|xox[abeoprs])-/i.test(token) || scrubChat(token) !== token;
+/** The word of the mark the scrubber leaves where it masked a secret,
+ *  `[redacted]`: it says nothing about the history, so it is never a
+ *  search line either. */
+const SCRUB_MARK = searchTokens('[redacted]');
+
+/** Round two's lines: for each seed text, its rarest words in `parts`
+ *  (the history's parts) that the task does not use, of five or more
+ *  characters or a number, rarest first and then alphabetical, leaving
+ *  out any word shaped like a credential and the scrubber's mark. A seed
+ *  with no such word gives no line. */
+export function rareLines(task, seeds, parts) {
+  const counts = new Map();
+  for (const part of parts) for (const token of searchTokens(part.text)) counts.set(token, (counts.get(token) ?? 0) + 1);
+  const most = Math.max(RARE_LEAST, Math.floor(RARE_SHARE * parts.length));
+  const asked = searchTokens(task);
+  return seeds.map((text) => [...searchTokens(text)]
+    .filter((token) => counts.get(token) >= RARE_LEAST && counts.get(token) <= most && !asked.has(token)
+      && (token.length >= 5 || /^\d/.test(token)) && !credentialShaped(token) && !SCRUB_MARK.has(token))
+    .sort((left, right) => counts.get(left) - counts.get(right) || (left < right ? -1 : left > right ? 1 : 0))
+    .slice(0, SECOND_SEARCH_WORDS).join(' ')).filter((line) => line !== '');
+}
+
+/** The sources the second search reads: those read as the agent mode
+ *  reads, unless their mode turns the second search off
+ *  (`searchAgain: false`). */
+export const secondSearchIds = (sources) => new Set(sources
+  .filter((source) => source.mode?.read === agentTranscripts.read && source.mode?.searchAgain !== false).map((source) => source.id));
+
+/** Search the coding-agent sources `agentIds` again from round one's
+ *  pick `first`. `pickAgain(lines)` runs the second pick over those
+ *  sources with `lines` (two keyword and four answer lines) and round
+ *  one's decisions. Resolves to round one's pick with the parts round
+ *  two kept added, and, when round two ran, its seeds, lines and record.
+ *  Round two is a pick of its own, so on a source the chat read reads,
+ *  the chat read starts again on round two's order: round one's stop
+ *  does not carry over. */
+export async function searchAgain(task, first, agentIds, pickAgain) {
+  const key = (part) => JSON.stringify([part.sourceId, part.id]);
+  // Every part of the agent sources: the pool round one read.
+  const parts = [...new Map(first.reads.flatMap((read) => read.status === 'read' ? read.candidates : [])
+    .filter((part) => agentIds.has(part.sourceId)).map((part) => [key(part), part])).values()];
+  const texts = new Map(parts.map((part) => [key(part), part.text]));
+  const seeds = first.record.candidates
+    .filter((entry) => agentIds.has(entry.sourceId) && ['selected', 'rejected'].includes(entry.status)
+      && entry.probability > 0 && texts.has(key(entry)))
+    .sort((left, right) => right.probability - left.probability).slice(0, SECOND_SEARCH_SEEDS);
+  const found = rareLines(task, seeds.map((seed) => texts.get(key(seed))), parts);
+  if (!found.length) return { picked: first };
+  // The lines fill the two keyword and four answer lines, the task
+  // filling any line left over.
+  const filled = [...found, task, task].slice(0, Math.max(2, found.length));
+  const lines = { keywords: filled.slice(0, 2), answers: [...filled, task, task].slice(0, 4) };
+  const second = await pickAgain(lines);
+  const had = new Set(first.selected.map(key));
+  const added = second.selected.filter((part) => !had.has(key(part)));
+  const addedKeys = new Set(added.map(key));
+  return {
+    picked: { ...first, selected: [...first.selected, ...added], record: { ...first.record, candidates: [
+      ...first.record.candidates.filter((entry) => !addedKeys.has(key(entry))),
+      ...second.record.candidates.filter((entry) => addedKeys.has(key(entry))),
+    ] } },
+    seeds: seeds.map(({ sourceId, id, probability }) => ({ sourceId, id, probability })),
+    lines, added: added.length, record: second.record,
+  };
+}
+
 // No model writes the memory: curate lays out the kept parts in their own
-// words, and `decide`, when given, rates each sentence of them.
-export async function writeLog(task, picked, folder, record, options = {}) {
+// words, and `decide`, when given, rates each sentence of them. The whole
+// text goes to `log.md` and every kept part, strongest first with its
+// rating, to `kept.json`, in `textFolder`, on every call.
+export async function writeLog(task, picked, folder, record, options = {}, textFolder = folder) {
   const started = Date.now();
   const result = await curate(task, picked, options);
   record.curate = result.record;
@@ -897,7 +1101,16 @@ export async function writeLog(task, picked, folder, record, options = {}) {
   if (result.record.nothingKept) console.error('No part was kept: none reached its source\'s keep bar, so the text is empty.');
   if (sentences?.failed !== undefined) console.error(`Sentence request failed (${sentences.failed}); the whole text is returned.`);
   else if (sentences !== undefined && sentences.kept === 0) console.error(`No sentence was rated at sentenceCutoff ${sentences.cutoff} or more; the text is empty.`);
-  await writeFile(join(folder, 'log.md'), result.log, { mode: 0o600 });
+  await mkdir(textFolder, { recursive: true, mode: 0o700 });
+  const textFile = join(textFolder, 'log.md'), listFile = join(textFolder, 'kept.json');
+  await writeFile(textFile, result.log, { mode: 0o600 });
+  // The items are taken strongest first, so their order is the ranking.
+  // Each holds its whole text, so an id the text names where it left
+  // paragraphs out reads the rest here.
+  const ranked = result.record.items;
+  await writeFile(listFile, JSON.stringify(ranked.map((item, at) => ({ rank: at + 1, rating: item.weight, id: item.id,
+    source: item.candidate.sourceId, ...(item.candidate.path === undefined ? {} : { path: item.candidate.path }),
+    ...(item.candidate.date === undefined ? {} : { date: item.candidate.date.value }), text: item.candidate.text })), null, 1), { mode: 0o600 });
   record.status = 'complete';
   console.log(result.log);
   return result;
@@ -929,7 +1142,10 @@ function keepAskedLines(searches, required, record) {
   return searches;
 }
 
-const sourceKind = (type) => type === 'git' ? 'git-history' : type === 'markdown' ? 'markdown' : 'chat';
+// A WhatsApp export is searched with the Markdown search lines, as its
+// sessions were measured, and a task that says to look in a chat reads it.
+const sourceKind = (type) => type === 'git' ? 'git-history' : type === 'markdown' || type === 'whatsapp' ? 'markdown' : 'chat';
+const readFor = (type, kinds_) => kinds_.includes('all') || kinds_.includes(sourceKind(type)) || (type === 'whatsapp' && kinds_.includes('chat'));
 
 // A kind counts as named only when the task says to look there, so a task
 // about chat transcripts or about Git history does not narrow to that source.
@@ -1015,18 +1231,32 @@ export function acceptScope(proposed, task, searchKinds, now = Date.now(), timeZ
 // its own look-back.
 export function scopedEntries(entries, scope, now = Date.now()) {
   const later = (own) => own === undefined || sinceCutoff(own, now) < sinceCutoff(scope.since, now) ? scope.since : own;
-  return entries.filter((entry) => scope.kinds.includes('all') || scope.kinds.includes(sourceKind(entry.type)))
+  return entries.filter((entry) => readFor(entry.type, scope.kinds))
     .map((entry) => scope.since === 'none' ? entry : { ...entry, since: later(entry.since) });
 }
 
 const scopeAsk = (today) => `\nThe JSON also holds a key "scope": {"kinds": [...], "since": "..."}, set only from the task's own words. "kinds" lists the source kinds the task says to look in: "chat" for a chat, conversation or session, "git-history" for a commit or the Git history, "markdown" for a note or document. Use ["all"] when the task does not say where to look; a source that is only the task's subject does not count. "since" is how far back to search, as "N days" counted back from today, or "none" when the task names no time. When the task names a time, pad it generously: at least twice the span it names and never under 14 days, because a window that is too tight loses the answer. Never guess. Today's date is ${today}.`;
 
-export function searchLinesPrompt(task, searchKinds, scopeDate = undefined) {
+// The facts the answer needs, asked in the same call as the search lines
+// when the call reads a mode that lists them in its decision state. The
+// wording is the separate facts prompt the measurement used.
+const neededAsk = (said) => '\nAlso split the task into the separate facts that a complete answer needs, where each fact may be stated in a different message.'
+  + (said ? SAID_ASK : '') + ' Write each as one thing a single message could say in plain words, as a person would say it: an age rather than a birth date; what was paid rather than a saving worked out from it; when something happened as a message might say it (a date, or a time such as "three weeks ago") rather than a date worked out; one event or item of a list, worded to fit each of them ("a charity event the user took part in, and when"), rather than the list, a count or a comparison. When the task asks for suggestions, the facts are what the user has said about their own situation, likes, plans or past attempts that the suggestions should fit. Give one to five facts; give one fact when a single message can answer the task. Answer from the task text only. Return them as one more JSON key, "needed": a list of short strings.';
+// Asked only when a transcript mode lists the facts, where it was measured
+// (the person's questions and requests then rate as answers); on notes it
+// turned 12 of 64 LongMemEval facts into what the user asked, which no
+// message of the history states.
+const SAID_ASK = ' When the task asks what someone said, word each fact as what they said, asked or requested about it ("What Ana said, asked or requested about ..."), so their questions and requests count as well as their statements.';
+// How many answers the task wants, asked in the same call when the call
+// reads a mode that writes hard facts into its decision state.
+const WANTED_ASK = '\nAlso say whether the task wants one decision or fact, or everything said on a subject. Answer from the task text only. Return it as one more JSON key, "wanted": exactly "one decision" or "everything said".';
+
+export function searchLinesPrompt(task, searchKinds, scopeDate = undefined, askNeeded = false, askWanted = false, askSaid = false) {
   const registers = { chat: CHAT_SEARCH_LINE_REGISTER, 'git-history': GIT_SEARCH_LINE_REGISTER, markdown: MARKDOWN_SEARCH_LINE_REGISTER };
   return `TASK: ${task}\nWrite search expansions, not a factual answer. For each source kind, give two keyword lines (one naming the subject, one without it) and four plausible hypothetical-answer lines (two naming the subject, two without it). Use varied wording for directions, constraints, tried ideas, rejected ideas and unfinished experiments where the task asks for them. Do not invent evidence.\nRegisters:\n${searchKinds.map((kind) => `${kind}: ${registers[kind]}`).join('\n')}\n${searchKinds.length === kinds.length
     ? 'Return only JSON with these three keys, each containing {"keywords":[...],"answers":[...]}.'
     : `Return only JSON for ${searchKinds.map((kind) => `"${kind}"`).join(', ')}, each containing {"keywords":[...],"answers":[...]}.`}
-Write exactly two keyword lines and exactly four answer lines for each source kind. No other text.${scopeDate === undefined ? '' : scopeAsk(scopeDate)}`;
+Write exactly two keyword lines and exactly four answer lines for each source kind. No other text.${scopeDate === undefined ? '' : scopeAsk(scopeDate)}${askNeeded ? neededAsk(askSaid) : ''}${askWanted ? WANTED_ASK : ''}`;
 }
 
 // Haiku sometimes names a group after the task's words ("chat" for "our
@@ -1058,6 +1288,22 @@ function asAsked(value, required, record) {
   }
   if (renamed) record.renamedSearchKinds = renamed;
   return out;
+}
+
+// The reply's facts the answer needs: one to five nonempty strings, or
+// why there are none.
+export function neededFrom(value) {
+  return Array.isArray(value) && value.length >= 1 && value.length <= 5
+    && value.every((fact) => typeof fact === 'string' && fact.trim())
+    ? { facts: value.map((fact) => fact.trim()) }
+    : { missing: value === undefined ? 'the reply gave no facts' : 'the reply\'s facts were not one to five strings' };
+}
+
+// The reply's judgment of how many answers the task wants, or why there
+// is none.
+export function wantedFrom(value) {
+  return value === 'one decision' || value === 'everything said' ? { value }
+    : { missing: value === undefined ? 'the reply gave no answer' : 'the reply was not "one decision" or "everything said"' };
 }
 
 // The search reply gets one repair round: a reply that fails JSON parsing
@@ -1259,6 +1505,9 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
     : await realpath(await mkdtemp(join(tmpdir(), 'curate-work-')));
   if (records) await mkdir(folder, { recursive: true, mode: 0o700 });
   else workingFolders.add(folder);
+  // The whole text and the list of kept parts outlive the call, records on
+  // or off, so an agent can read past what was printed.
+  const textFolder = join(homedir(), '.curate/runs', startedAt.replace(/[:.]/g, '-'));
   // The copies of the Codex sessions a call reads exist only while it runs,
   // in a temporary folder whether or not records are on: a record never
   // keeps them, and every way the call ends removes them.
@@ -1316,7 +1565,18 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
     // decides which sources are searched.
     const searchKinds = kinds.filter((kind) => callSources.some((entry) => sourceKind(entry.type) === kind));
     const scoped = settings.scope !== false;
-    const searchPrompt = searchLinesPrompt(options.task, searchKinds, scoped ? today : undefined);
+    // A mode that lists the facts the answer needs gets them from the
+    // same call as the search lines.
+    const askNeeded = callSources.some((entry) => modeNeeds(sourceKind(entry.type) === 'chat' ? chatMode(entry)
+      : entry.type === 'markdown' ? noteMode(entry) : undefined));
+    // A mode that writes hard facts, keeps at a bar per kind of task or
+    // has a second stage gets how many answers are wanted from it too.
+    const askWanted = callSources.some((entry) => sourceKind(entry.type) === 'chat'
+      && (chatMode(entry).hardFacts === true || typeof chatMode(entry).bar === 'object' || chatMode(entry).keep !== undefined));
+    // A fact about what someone said covers their questions and requests
+    // only when a transcript mode lists the facts.
+    const askSaid = callSources.some((entry) => sourceKind(entry.type) === 'chat' && modeNeeds(chatMode(entry)));
+    const searchPrompt = searchLinesPrompt(options.task, searchKinds, scoped ? today : undefined, askNeeded, askWanted, askSaid);
     const searchStart = Date.now();
     // One entry's source. A Codex entry's sessions are copied to `snapshot`.
     const make = async (entry, snapshot) => {
@@ -1336,9 +1596,15 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
         };
         // The project's own Markdown goes through the reader that leaves out
         // what git ignores and any node_modules folder.
+        const mode = noteMode(entry);
+        const turns = entry.levers?.wholeMessages === true || entry.levers?.hardFacts === true ? { turns: true } : {};
         return { source: entry.own === true
           ? markdown({ paths: [entry.path], kind: 'docs', maxQuestionText: DEFAULT_MAX_QUESTION_TEXT, ...options })
-          : knowledgeBase(entry.path, options) };
+          : mode === undefined ? knowledgeBase(entry.path, options) : { ...knowledgeBase(entry.path, { ...options, ...turns }), mode } };
+      }
+      if (entry.type === 'whatsapp') {
+        return { source: whatsapp(entry.path, { ...(entry.since === undefined ? {} : { since: entry.since }),
+          ...(entry.dates === undefined ? {} : { dates: entry.dates }) }) };
       }
       if (entry.type === 'codex') {
         const { source, filter } = await snapshotCodex(entry, snapshot);
@@ -1351,8 +1617,7 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
         ...(entry.since === undefined ? {} : { since: entry.since }),
         ...(entry.exclude === undefined ? {} : { exclude: [...new Set(folders.flatMap((folder) =>
           entry.exclude.map((path) => isAbsolute(path) ? path : join(folder, path))))] }),
-        ...(entry.questions === undefined ? {} : { questions: CHAT_QUESTION_SETS[entry.questions] }),
-        ...(entry.bar === undefined ? {} : { bar: entry.bar }) }) };
+        mode: chatMode(entry) }) };
     };
     const build = async (entry, snapshot) => {
       const made = await make(entry, snapshot);
@@ -1477,8 +1742,31 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
       preparing = Promise.all([...held.values()].map((entry) => entry.warmed));
     }
     const writeLines = callSubscription ?? facts.writer;
-    const { scope: proposedScope, ...searchedLines } = await searchLines(searchPrompt, folder, record, save, writeLines, searchKinds);
+    const { scope: proposedScope, needed: neededReply, wanted: wantedReply, ...searchedLines } = await searchLines(searchPrompt, folder, record, save, writeLines, searchKinds);
     record.searches = searchedLines;
+    // With no usable list the decision state goes without it, and the
+    // record says why.
+    const needed = askNeeded ? neededFrom(neededReply) : undefined;
+    let wanted = askWanted ? wantedFrom(wantedReply) : undefined;
+    // The kind of task left out of the reply or given in a form it does
+    // not take is asked for once more, alone, so one incomplete reply
+    // never changes what the call keeps unseen.
+    if (wanted?.missing !== undefined) {
+      const prompt = `TASK: ${options.task}\n${WANTED_ASK.trim().replace(/^Also /, '')}\nReturn only JSON with the key "wanted". No other text.`;
+      const reply = await writeLines(prompt, folder, 'fields', record, save).then((text) => {
+        try { return JSON.parse(String(text).trim().replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, '')); } catch { return {}; }
+      }, () => ({}));
+      wanted = { ...wantedFrom(reply?.wanted), askedAgain: true };
+    }
+    if (needed !== undefined) record.needed = needed;
+    if (wanted !== undefined) record.wanted = wanted;
+    // What a field still missing changes, said where the person sees it.
+    if (wanted?.missing !== undefined && callSources.some((entry) => sourceKind(entry.type) === 'chat'
+      && (typeof chatMode(entry).bar === 'object' || chatMode(entry).keep !== undefined))) {
+      wanted = { ...wanted, bars: 'the lower of each kind of task\'s bars' };
+      record.wanted = wanted;
+      console.error(`The search-line call gave no kind of task (${wanted.missing}), asked twice; the call keeps at the lower of each kind of task's bars.`);
+    }
     record.timings.searchesMs = Date.now() - searchStart;
     let entries = callSources;
     if (scoped) {
@@ -1518,12 +1806,18 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
     record.timings.prepareMs = Date.now() - prepareStart;
     // Core's jev() sends the requests and reports each one, split
     // requests included; the run record keeps them all.
-    const service = jev({ apiKey, onCall: async (call) => { record.jev.push(call); await save(); } });
+    // The organization's own rate limits, from the TypeSafe console; unset, jev()'s stand-ins.
+    const rates = {
+      ...(settings.requestsPerSecond === undefined ? {} : { requestsPerSecond: settings.requestsPerSecond }),
+      ...(settings.tokensPerSecond === undefined ? {} : { tokensPerSecond: settings.tokensPerSecond }),
+    };
+    const service = jev({ apiKey, ...rates, onCall: async (call) => { record.jev.push(call); await save(); } });
     // The sentence ratings' request goes in the same list, marked with its step.
     const layout = {
       ...(settings.answerTokens === undefined ? {} : { answerTokens: settings.answerTokens }),
       ...(settings.sentenceCutoff === undefined ? {} : { sentenceCutoff: settings.sentenceCutoff }),
-      decide: jev({ apiKey, onCall: async (call) => { record.jev.push({ step: 'sentences', ...call, usage: call.usage ?? 'unavailable' }); await save(); } }),
+      ...(settings.person === undefined ? {} : { person: settings.person }),
+      decide: jev({ apiKey, ...rates, onCall: async (call) => { record.jev.push({ step: 'sentences', ...call, usage: call.usage ?? 'unavailable' }); await save(); } }),
     };
     const reading = busyTime();
     const deciding = busyTime();
@@ -1533,7 +1827,9 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
         throw new Error('Decision service left questions unanswered.');
       }
       return answers;
-    }), { deciderId: 'curate-skill:typesafe:jev-latest' });
+    }), { deciderId: 'curate-skill:typesafe:jev-latest',
+      // A Choice per needed fact asks list requests of the same service, its time counted with the rest.
+      list: Object.assign((request, signal) => deciding.track(() => service.list(request, signal)), { maxChars: service.list.maxChars }) });
     // Jev documents 32,000 tokens for a request's state plus its longest
     // question; three characters per token is a conservative estimate for
     // English text and JSON. Subtracting the longest question's characters
@@ -1543,30 +1839,47 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
     // count the way a yes/no question's criteria do.
     const maxBatchChars = maxDecisionBatchChars([
       AGENT_CHAT_CASCADE, GIT_HISTORY_CASCADE, MARKDOWN_CASCADE,
-      ...new Set(sources.map((source) => source.questions).filter(Boolean)),
+      ...new Set(sources.map((source) => source.mode?.questions).filter(Boolean)),
     ]);
     const count = Math.max(...searchKinds.map((kind) => record.searches[kind].keywords.length + record.searches[kind].answers.length));
     const pickStart = Date.now();
-    const request = { task: options.task, searchLines: Array.from({ length: count }, (_, i) => `curate-search:${i}`),
-      meaning: { embed: local.embed } };
+    const lineNames = (length) => Array.from({ length }, (_, i) => `curate-search:${i}`);
+    const request = { task: options.task, searchLines: lineNames(count), meaning: { embed: local.embed } };
+    // The coding-agent transcripts: the sources read as the agent mode reads.
+    const agentIds = secondSearchIds(sources);
+    // Their second search reuses round one's decisions, from a store
+    // that lasts this call only.
+    const decisions = new Map();
+    // The search texts each source reads, the task first: the read of
+    // the agent sources ranks their units of work against them.
+    const queriesOf = (searches) => Object.fromEntries(sources.map((source) => [source.id,
+      [options.task, ...(searches[source.kind]?.keywords ?? []), ...(searches[source.kind]?.answers ?? [])]]));
     // A call stops where the ratings go cold, at the library's own levels,
     // unless the settings turn the stop off with false or set its levels.
-    const pickOptions = { task: options.task, decide,
+    const pickOptions = { task: options.task, decide, queriesBySource: queriesOf(record.searches),
       limits: { maxBatchChars,
         ...(settings.maxInFlight === undefined ? {} : { maxInFlight: settings.maxInFlight }) },
       stopWhenCold: settings.stopWhenCold ?? {},
       ...(settings.feed === undefined ? {} : { feed: settings.feed }),
-      ...(settings.threshold === undefined ? {} : { everyScored: { bar: settings.threshold } }) };
-    const picked = await pickFullSources(sources.map((source) => {
+      ...(settings.threshold === undefined ? {} : { everyScored: { bar: settings.threshold } }),
+      ...(needed?.facts === undefined ? {} : { needed: needed.facts }),
+      ...(settings.person === undefined ? {} : { person: settings.person }),
+      ...(wanted?.value === undefined ? {} : { wanted: wanted.value }),
+      ...(agentIds.size === 0 ? {} : { cache: { deciderId: decide.deciderId, store: {
+        get: async (key) => decisions.get(key), set: async (key, value) => { decisions.set(key, value); } } } }) };
+    const searched = (source, searches) => {
       // A read's full result can be very large, so with records off it is
       // never written, even to the temporary folder.
-      const searched = searchSource({ ...source, labelKinds: [], rare: false }, record.searches, record.reads, folder,
+      const wrapped = searchSource({ ...source, labelKinds: [] }, searches, record.reads, folder,
         records ? settings : { ...settings, readAudit: false });
+      // Each source embeds through its own view of the store, so what it
+      // embeds is told and counted under it.
       const ownEmbed = (readRequest) => readRequest.meaningLane === undefined ? readRequest
         : { ...readRequest, meaningLane: { ...readRequest.meaningLane, embed: embedFor(local, source.id) } };
-      return { ...searched, read: (readRequest, context_) => reading.track(async () =>
-        noteIndex(source.id, await searched.read(ownEmbed(readRequest), context_))) };
-    }), request, pickOptions, context);
+      return { ...wrapped, read: (readRequest, context_) => reading.track(async () =>
+        noteIndex(source.id, await wrapped.read(ownEmbed(readRequest), context_))) };
+    };
+    const picked = await pickFullSources(sources.map((source) => searched(source, record.searches)), request, pickOptions, context);
     record.pick = savedPick(picked.record);
     record.sourcesRead = picked.reads.map((read, i) => ({ source: sources[i].id, status: read.status,
       parts: read.candidates?.length ?? 0, complete: read.complete, partial: read.partial, reason: read.reason,
@@ -1590,13 +1903,40 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
       record.timings.sourceReadMs[read.source] = (record.timings.sourceReadMs[read.source] ?? 0) + read.ms;
     }
     await save();
-    await writeFile(join(folder, 'selection.json'), JSON.stringify({ selected: picked.selected, record: { ...picked.record, candidates: picked.record.candidates.filter((entry) => entry.status === 'selected') } }), { mode: 0o600 });
-    const cited = { ...picked, selected: picked.selected.map((candidate) => citable(candidate, project)) };
-    memory = (await writeLog(options.task, cited, folder, record, layout)).log;
+    let final = picked;
+    if (agentIds.size > 0) {
+      const againStart = Date.now();
+      const again = await searchAgain(options.task, picked, agentIds, (lines) => pickFullSources(
+        sources.filter((source) => agentIds.has(source.id)).map((source) => searched(source, { ...record.searches, chat: lines })),
+        { ...request, searchLines: lineNames(lines.keywords.length + lines.answers.length) },
+        { ...pickOptions, queriesBySource: queriesOf({ ...record.searches, chat: lines }) }, context));
+      final = again.picked;
+      if (again.record !== undefined) {
+        record.secondSearch = { seeds: again.seeds, lines: again.lines, added: again.added, pick: savedPick(again.record),
+          ms: Date.now() - againStart };
+        await save();
+      }
+    }
+    await writeFile(join(folder, 'selection.json'), JSON.stringify({ selected: final.selected, record: { ...final.record, candidates: final.record.candidates.filter((entry) => entry.status === 'selected') } }), { mode: 0o600 });
+    const cited = { ...final, selected: final.selected.map((candidate) => citable(candidate, project)) };
+    memory = (await writeLog(options.task, cited, folder, record, layout, textFolder)).log;
   } catch (error) {
     // A PickError carries the pick's record: the failed batch's ids, the
     // unanswered candidates, and the answers that came back. Keep it.
     if (error?.record !== undefined) record.pick = savedPick(error.record);
+    if (error?.record?.decideError !== undefined) {
+      error.message = decisionFailure(error, records ? join(folder, 'record.json') : undefined);
+      error.exitCode = DECISION_EXIT;
+      // The record keeps error words on the failure, on each part and
+      // question a refused request left unanswered (each request's own
+      // words), and on each request: every such value is masked.
+      const hide = (value, key) => typeof value === 'string' ? (ERROR_KEYS.has(key) ? masked(value) : value)
+        : Array.isArray(value) ? value.map((item) => hide(item, key))
+          : value !== null && typeof value === 'object' ? Object.fromEntries(Object.entries(value).map(([name, item]) => [name, hide(item, name)]))
+            : value;
+      record.pick = hide(savedPick(error.record));
+      record.jev = hide(record.jev);
+    }
     record.status = 'failed'; record.error = error.message; throw error;
   }
   finally {
@@ -1621,6 +1961,39 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
     }
   }
   return { memory, record, folder: records ? folder : null };
+}
+
+// The record's fields that hold an error's words.
+const ERROR_KEYS = new Set(['message', 'detail', 'error']);
+
+// Text from the decision service, or a network error, as the command shows
+// and records it: the configured key's exact value and anything shaped like
+// a credential are masked, since a reply can echo what the request sent.
+const masked = (text) => {
+  const key = process.env.TYPESAFE_API_KEY;
+  return scrubChat(key ? String(text).split(key).join('[redacted]') : String(text));
+};
+
+// What a call the decision service refused prints: why and what to do
+// first, then how many parts went undecided and where their ids are.
+function decisionFailure(error, recordFile) {
+  const cause = error.cause;
+  const stopped = 'so Curate stopped before deciding which parts answer the question.';
+  const said = cause?.said === undefined || cause.said === '' ? '' : ` The service said: ${masked(cause.said)}`;
+  const lead = cause?.reason === 'credit'
+    ? `The decision service has no credit, ${stopped} Add credit to the TypeSafe account, then ask again.${said}`
+    : cause?.reason === 'key'
+      ? `The decision service refused the key in \`TYPESAFE_API_KEY\` (HTTP ${cause.status}), ${stopped} Set a current key from TypeSafe (https://typesafe.ai), then ask again.${said}`
+      : cause?.reason === 'unreachable'
+        ? `Curate could not reach the decision service (${masked(cause.said)}), ${stopped.replace('Curate ', 'it ')} Check the network connection, then ask again.`
+        : cause?.reason === 'busy'
+          ? `The decision service is still asking Curate to wait (HTTP 429), ${stopped} Ask again in a few minutes.${said}`
+          : cause?.reason === 'refused'
+            ? `The decision service refused a request (HTTP ${cause.status}), ${stopped}${said}`
+            : `The decision step failed (${masked(error.record.decideError.message)}), ${stopped}`;
+  const count = error.record.decideError.candidates.length;
+  return `${lead}\n${count === 1 ? 'One part was' : `${count} parts were`} left undecided; `
+    + (recordFile === undefined ? 'set `records` to true to keep their ids.' : `${recordFile} lists them under pick.decideError.`);
 }
 
 // The command as a person runs it: a signal ends what the call started and

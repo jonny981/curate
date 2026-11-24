@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { historySource, type PickCascade } from '@curatejs/core';
-import { AGENT_CHAT_CASCADE, chat, chatSettings, JUDGMENT_CHAT_CASCADE } from '../src/index.js';
+import { historySource, rankedRead, type PickCascade } from '@curatejs/core';
+import { AGENT_CHAT_CASCADE, agentTranscripts, chat, chatSettings, JUDGMENT_CHAT_CASCADE } from '../src/index.js';
 
 /** A model-scored set with invented weights, for the selection tests. */
 const FITTED: PickCascade = {
@@ -41,27 +41,22 @@ describe('JUDGMENT_CHAT_CASCADE', () => {
   });
 
   it('fails closed while its weights file is unfitted', () => {
-    expect(() => chat({ questions: JUDGMENT_CHAT_CASCADE })).toThrowError(TypeError);
-    expect(() => historySource({ reader: chat(), ...chatSettings, questions: JUDGMENT_CHAT_CASCADE }))
-      .toThrowError(TypeError);
+    const judgments = { name: 'judgments', questions: JUDGMENT_CHAT_CASCADE, read: rankedRead };
+    expect(() => chat({ mode: judgments })).toThrowError(TypeError);
+    expect(() => historySource({ reader: chat(), ...chatSettings, mode: judgments })).toThrowError(TypeError);
   });
 });
 
-describe('chat() question and bar selection', () => {
-  it('keeps AGENT_CHAT_CASCADE and the 0.0146 bar by default', () => {
-    const source = chat({ id: 'a' });
-    expect(source.questions).toBe(AGENT_CHAT_CASCADE);
-    expect(source.bar).toBe(0.0146);
+describe('chat() modes', () => {
+  it('reads in the agent mode by default: AGENT_CHAT_CASCADE, the 0.0146 bar and the conversation read', () => {
+    expect(chat({ id: 'a' }).mode).toBe(agentTranscripts);
+    expect(agentTranscripts).toMatchObject({ questions: AGENT_CHAT_CASCADE, bar: 0.0146, read: expect.any(Function) });
+    expect(agentTranscripts.read).not.toBe(rankedRead);
   });
 
-  it('selects a caller question set and reads its fitted bar', () => {
-    const source = chat({ id: 'a', questions: FITTED });
-    expect(source.questions).toBe(FITTED);
-    expect(source.bar).toBe(0.42);
-  });
-
-  it('lets an explicit bar win over the fitted bar', () => {
-    expect(chat({ id: 'a', questions: FITTED, bar: 0.5 }).bar).toBe(0.5);
-    expect(chat({ id: 'a', bar: 0.5 }).bar).toBe(0.5);
+  it('takes a caller mode', () => {
+    const mode = { name: 'fitted', questions: FITTED, read: rankedRead };
+    expect(chat({ id: 'a', mode }).mode).toBe(mode);
+    expect(chat({ id: 'a', mode: { ...agentTranscripts, bar: 0.5 } }).mode?.bar).toBe(0.5);
   });
 });

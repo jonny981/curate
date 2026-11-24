@@ -1,12 +1,12 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
 
-import { pickFromSources, type PickAnswer, type PickCascade } from '@curatejs/core';
+import { pickFromSources, rankedRead, type PickAnswer, type PickCascade } from '@curatejs/core';
 import { jev } from '@curatejs/core/models';
-import { AGENT_CHAT_CASCADE, chat, JUDGMENT_CHAT_CASCADE } from '@curatejs/chat';
+import { AGENT_CHAT_CASCADE, agentTranscripts, chat, JUDGMENT_CHAT_CASCADE } from '@curatejs/chat';
 import { GIT_HISTORY_CASCADE } from '@curatejs/git';
 import { MARKDOWN_CASCADE } from '@curatejs/markdown';
 // @ts-expect-error The standalone JavaScript command has no type declarations.
-import { CHAT_QUESTION_SETS, maxDecisionBatchChars, parseSources } from '../skills/curate/run.mjs';
+import { CHAT_MODES, maxDecisionBatchChars, parseSources } from '../skills/curate/run.mjs';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -40,17 +40,18 @@ describe('sources.json judgment selection', () => {
         ...(type === 'codex' ? { allowedCwd: '/x' } : {}) }] });
       expect(parsed.sources[0]).toMatchObject({ questions: 'judgments', bar: 0.3 });
     }
-    expect(CHAT_QUESTION_SETS.judgments).toBe(JUDGMENT_CHAT_CASCADE);
-    // 'default' names today's set: the same source an omitted key produces.
-    expect(CHAT_QUESTION_SETS.default).toBe(AGENT_CHAT_CASCADE);
+    expect(CHAT_MODES.judgments).toMatchObject({ questions: JUDGMENT_CHAT_CASCADE, read: rankedRead });
+    // 'default' names today's mode: the same source an omitted key produces.
+    expect(CHAT_MODES.default).toBe(agentTranscripts);
     const named = parseSources({ sources: [{ type: 'claude-code', path: '/x', questions: 'default' }] });
     expect(named.sources[0]).toMatchObject({ questions: 'default' });
     expect(() => parseSources({ sources: [{ type: 'claude-code', path: '/x', questions: 'other' }] }))
       .toThrowError(/questions/);
     expect(() => parseSources({ sources: [{ type: 'git', path: '.', questions: 'judgments' }] }))
       .toThrowError(/Unknown key/);
+    // A Markdown source takes questions, but only the sets that judge notes.
     expect(() => parseSources({ sources: [{ type: 'markdown', path: '/x', questions: 'judgments' }] }))
-      .toThrowError(/Unknown key/);
+      .toThrowError('Unknown questions "judgments"; allowed names are default, answers.');
     expect(() => parseSources({ sources: [{ type: 'claude-code', path: '/x', bar: 2 }] }))
       .toThrowError(/bar/);
   });
@@ -62,18 +63,20 @@ describe('a fitted model set through pickFromSources', () => {
     read: async () => ({ status: 'read' as const, complete: true, candidates: [item] }),
   });
 
-  it('selects the set through chat({ questions }) and scores it at its fitted bar', async () => {
-    const selected = await pickFromSources([source({ questions: FITTED })], { task: 'the task' },
+  const fitted = { name: 'fitted', questions: FITTED, read: rankedRead };
+
+  it('selects the set through chat({ mode }) and scores it at its fitted bar', async () => {
+    const selected = await pickFromSources([source({ mode: fitted })], { task: 'the task' },
       { task: 'the task', decide });
     expect(selected.record.candidates[0]!.status).toBe('selected');
 
-    const rejected = await pickFromSources([source({ questions: FITTED, bar: 0.999 })], { task: 'the task' },
+    const rejected = await pickFromSources([source({ mode: { ...fitted, bar: 0.999 } })], { task: 'the task' },
       { task: 'the task', decide });
     expect(rejected.record.candidates[0]!.status).toBe('rejected');
   });
 
   it('lets the everyScored pick override win over the source bar', async () => {
-    const result = await pickFromSources([source({ questions: FITTED })], { task: 'the task' },
+    const result = await pickFromSources([source({ mode: fitted })], { task: 'the task' },
       { task: 'the task', decide, everyScored: { bar: 0.999 } });
     expect(result.record.candidates[0]!.status).toBe('rejected');
   });
@@ -88,7 +91,7 @@ describe('a fitted model set through pickFromSources', () => {
 
 describe('decision request bodies for a judgment set', () => {
   it('renders anonymous items and score criteria while the default set stays identified', async () => {
-    const bodies: { state: string; questions: Record<string, { type: string; criteria: unknown }> }[] = [];
+    const bodies: { state: { items: Record<string, unknown> }; questions: Record<string, { type: string; criteria: unknown }> }[] = [];
     vi.stubGlobal('fetch', vi.fn<typeof globalThis.fetch>().mockImplementation(async (_url, init) => {
       const body = JSON.parse(String(init!.body));
       bodies.push(body);
@@ -101,21 +104,24 @@ describe('decision request bodies for a judgment set', () => {
     }));
     const readers = (set: PickCascade, id: string) => ({
       id, role: 'reference' as const, kind: 'chat' as const,
-      questions: set,
+      mode: { name: id, questions: set, read: rankedRead },
       read: async () => ({ status: 'read' as const, complete: true,
         candidates: [{ ...item, sourceId: id }] }),
     });
+    // Every ranked part is decided, so both items can share a request: on
+    // the fused order the agent set's part has the chat read's own requests.
     await pickFromSources([readers(FITTED, 'anon'), readers(AGENT_CHAT_CASCADE, 'named')], { task: 'the task' },
-      { task: 'the task', decide: jev({ apiKey: 'test' }) });
+      { task: 'the task', decide: jev({ apiKey: 'test' }), everyRanked: true });
 
     // The first body holds both items: the judgment set's anonymous
     // item renders as text alone, the default set's identified item as
     // id, title and text. A second band-round body renumbers its lone
     // item, so the id check is scoped to the shared body.
-    const shared = bodies.find((body) => body.state.includes('Item 2:'))!;
-    expect(shared.state).toContain('Item 1: user: evidence');
-    expect(shared.state).toContain('Item 2: chat:r:f:1:1:1\nt\n\nuser: evidence');
-    expect(shared.state).not.toContain('Item 1: chat:r:f:1:1:1');
+    const shared = bodies.find((body) => '2' in body.state.items)!;
+    expect(shared.state.items).toEqual({
+      1: { date: null, text: 'user: evidence' },
+      2: { id: 'chat:r:f:1:1:1', date: null, title: 't', text: 'user: evidence' },
+    });
     const types = bodies.flatMap((body) => Object.values(body.questions).map((q) => q.type));
     expect(types).toContain('score');
     expect(types).toContain('noul');

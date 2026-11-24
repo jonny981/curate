@@ -35,10 +35,10 @@ function recording(how: PickDecide = decide) {
 }
 
 const chat = (labels: boolean) =>
-  historySource({ reader: fixtureSource('chat', parts('chat', 'chatword'), { rare: false }), ...chatSettings, labels });
-const git = () => historySource({ reader: fixtureSource('git', parts('git', 'gitword'), { rare: true }), ...gitSettings });
+  historySource({ reader: fixtureSource('chat', parts('chat', 'chatword')), ...chatSettings, labels });
+const git = () => historySource({ reader: fixtureSource('git', parts('git', 'gitword')), ...gitSettings });
 const markdown = () =>
-  historySource({ reader: fixtureSource('markdown', parts('markdown', 'noteword'), { rare: false }), ...markdownSettings });
+  historySource({ reader: fixtureSource('markdown', parts('markdown', 'noteword')), ...markdownSettings });
 
 const RUNS: Readonly<Record<string, () => CandidateSource[]>> = {
   'defaults chat': () => [chat(false)],
@@ -51,7 +51,8 @@ const RUNS: Readonly<Record<string, () => CandidateSource[]>> = {
 
 // The picks the build before answer types made on this fixture, one fresh label store per run: each run's
 // selected ids in order and the SHA-256 of its canonical `JSON.stringify([selected, record, requests])`, the
-// whole record with its effects and every decide request.
+// whole record with its effects and every decide request, with git's and Markdown's parts kept to those their
+// keyword lanes held.
 interface Baseline {
   readonly runs: Readonly<Record<string, { readonly selected: readonly string[]; readonly sha256: string }>>;
 }
@@ -63,12 +64,13 @@ const baseline = (): Baseline => JSON.parse(readFileSync(BASELINE, 'utf8'));
  *  time zone and the task-period entries, which the task date added. */
 const asBaseline = (record: PickRecord): PickRecord => {
   const slim: Partial<Record<keyof PickRecord, unknown>> = { ...record,
-    // `pick`'s decide-call counts and the lane-0 ranks single-search
-    // reads now carry were added since the baseline: strip both. The
+    // `pick`'s decide-call counts, the lane-0 ranks single-search reads
+    // now carry and a source's text share were added since the
+    // baseline: strip them. The
     // old build wrote `pick` only under a dial, so counts alone go too.
     candidates: record.candidates.map(({ searchRanks: _ranks, ...candidate }) => candidate),
     levers: { ...record.levers, sources: Object.fromEntries(Object.entries(record.levers.sources)
-      .map(([id, { labelBar: _labelBar, ...settings }]) => [id, settings])) },
+      .map(([id, { labelBar: _labelBar, textShare: _textShare, ...settings }]) => [id, settings])) },
     effects: record.effects.filter((entry) => entry.setting !== 'names' && entry.setting !== 'taskPeriod')
       .map((entry) => entry.setting !== 'labels' ? entry
         : { ...entry, summary: entry.summary.replace(` at the label bar ${LABEL_LANE_BAR}:`, ':') }) };
@@ -77,7 +79,7 @@ const asBaseline = (record: PickRecord): PickRecord => {
   delete slim.timeZone;
   if (record.pick !== undefined) {
     const { sent: _sent, questions: _questions, ...pick } = record.pick;
-    if (pick.rare === undefined && pick.c === undefined) delete slim.pick;
+    if (pick.c === undefined) delete slim.pick;
     else slim.pick = pick;
   }
   return slim as PickRecord;
@@ -198,7 +200,7 @@ describe('answerTypes asks the ten types in one request', () => {
     const constraint: readonly LabelKind[] = [{ key: 'constraint', name: 'a constraint',
       part: { true: 'The excerpt states a constraint.', false: 'The excerpt states no constraint.' } }];
     const sources = () => [chat(true), historySource({
-      reader: fixtureSource('markdown', parts('markdown', 'noteword'), { rare: false }), ...markdownSettings, labels: constraint })];
+      reader: fixtureSource('markdown', parts('markdown', 'noteword')), ...markdownSettings, labels: constraint })];
     const about = async (answerTypes: boolean) => {
       freshStore();
       const { requests, decide: how } = recording(typed({}));
@@ -220,7 +222,7 @@ const DATED: PickCascade = {
     true: 'It gives the date or time of the decision', false: 'It gives no date for the decision', weight: 1 }],
 };
 const datedGit = () =>
-  historySource({ reader: fixtureSource('git', parts('git', 'gitword'), { rare: true }), ...gitSettings, questions: DATED });
+  historySource({ reader: fixtureSource('git', parts('git', 'gitword')), ...gitSettings, mode: { ...gitSettings.mode!, questions: DATED } });
 
 describe('a typed question is asked only when the task needs its type', () => {
   const run = async (date: number) => {
@@ -250,7 +252,7 @@ describe('a typed question is asked only when the task needs its type', () => {
 
   it('records the typed entry for a source that returned no part', async () => {
     const empty = () =>
-      historySource({ reader: fixtureSource('git', [], { rare: true }), ...gitSettings, questions: DATED });
+      historySource({ reader: fixtureSource('git', []), ...gitSettings, mode: { ...gitSettings.mode!, questions: DATED } });
     const effect = async (date: number) => {
       freshStore();
       const picked = await pickFromSources([empty(), chat(false)], { task }, { task, decide: typed({ date }), answerTypes: true });
@@ -269,7 +271,7 @@ describe('a typed answer moves a part across its bar', () => {
   it('keeps a part just below the bar and drops one just above it', async () => {
     // One question at bias logit(bar): a part's answer of sigmoid(-0.1) leaves it just below the bar, sigmoid(0.1)
     // just above; the typed answer then adds about +2.94 (0.95) or -2.94 (0.05).
-    const bar = gitSettings.bar;
+    const bar = gitSettings.mode!.bar as number;
     const sigmoid = (z: number) => 1 / (1 + Math.exp(-z));
     const ONE: PickCascade = {
       bias: Math.log(bar / (1 - bar)),
@@ -278,7 +280,7 @@ describe('a typed answer moves a part across its bar', () => {
     };
     const pool: MemoryCandidate[] = ['below', 'above'].map((name, i) => ({ sourceId: 'git', id: `git#${name}`,
       title: name, role: 'reference', text: `deploy billing ${name}`, signals: { keyword: 1 - i / 10 } }));
-    const source = historySource({ reader: fixtureSource('git', pool, { rare: false }), ...gitSettings, rare: false, questions: ONE });
+    const source = historySource({ reader: fixtureSource('git', pool), ...gitSettings, mode: { ...gitSettings.mode!, questions: ONE } });
     const answer = (q: PickQuestion) => q.questionKey === 'about' ? sigmoid(q.id === 'git#below' ? -0.1 : 0.1)
       : q.questionKey === 'when-decided' ? (q.id === 'git#below' ? 0.95 : 0.05) : undefined;
     freshStore();
@@ -305,8 +307,8 @@ describe('settings that would sit unread throw', () => {
     const [question] = DATED.typed!;
     for (const typed of [[{ ...question!, key: 'current' }], [{ ...question!, weight: Number.NaN }],
       [{ ...question!, answerType: 'colour' }]]) {
-      expect(() => historySource({ reader: fixtureSource('git', [], { rare: false }), ...gitSettings,
-        questions: { ...GIT_HISTORY_CASCADE, typed } as PickCascade }))
+      expect(() => historySource({ reader: fixtureSource('git', []), ...gitSettings,
+        mode: { ...gitSettings.mode!, questions: { ...GIT_HISTORY_CASCADE, typed } as PickCascade } }))
         .toThrow('a question set\'s typed questions need keys unique across questions and typed, '
           + 'finite weights and a known answerType.');
     }

@@ -42,6 +42,11 @@ The [library reference](https://github.com/jonny981/curate/blob/main/docs/librar
 | `memory()` | Read, decide and lay out in one call ([library reference](https://github.com/jonny981/curate/blob/main/docs/library.md)) |
 | `pickFromSources()`, `pick()`, `curate()` | The three steps, to call yourself ([Call the steps yourself](#call-the-steps-yourself)) |
 | `historySource()`, `HistorySettings` | A source with your own settings ([Your own source settings](https://github.com/jonny981/curate/blob/main/docs/library.md#your-own-source-settings)) |
+| `Mode`, `rankedRead`, `conversationRead()` | How a source's parts are judged and read: its questions, its keep bar and its read ([Modes](https://github.com/jonny981/curate/blob/main/docs/library.md#modes)) |
+| `walksOn`, `opens`, `stops`, `ConversationRules` | The chat read's measured rules, to change with `conversationRead()` ([The chat read](https://github.com/jonny981/curate/blob/main/docs/library.md#the-chat-read)) |
+| `ANSWER_QUESTION`, `FACT_QUESTION`, `ANSWER_CASCADE` | The narrow question in two, and the set that keeps by it ([The narrow question in two](https://github.com/jonny981/curate/blob/main/docs/library.md#the-narrow-question-in-two)) |
+| `choosePerFact()`, `FACT_CHOICE`, `ENOUGH_QUESTION`, `CHOICE_CANDIDATES`, `CHOICE_OPTIONS`, `ROLE_QUESTION` | A Choice per needed fact, and what each kept part is doing ([A Choice per needed fact](https://github.com/jonny981/curate/blob/main/docs/library.md#a-choice-per-needed-fact)) |
+| `KEEP_KINDS`, `PICK_WANTED` | The kinds of message a second stage can keep at bars of their own, and the two kinds of task ([A second stage](https://github.com/jonny981/curate/blob/main/docs/library.md#a-second-stage)) |
 | `CandidateSource`, `CandidateReadRequest`, `CandidateReadResult`, `CandidateReadContext`, `SourceReadError` | The contract a source implements ([Write your own source](#write-your-own-source)) |
 | `taskNames()`, `classifyTask()` | The names a task mentions, and the kinds of answer its words ask for ([Names](https://github.com/jonny981/curate/blob/main/docs/library.md#names)) |
 | `taskPeriod()`, `taskMoment()`, `sinceCutoff()` | The period a task names, the moment a task date means, and the moment a `since` look-back means ([Time](https://github.com/jonny981/curate/blob/main/docs/library.md#time)) |
@@ -55,11 +60,12 @@ The [library reference](https://github.com/jonny981/curate/blob/main/docs/librar
 | `addMeaningRanks()`, `cachedEmbeddings()`, `EmbeddingFunction` | Meaning ranks for parts you already have, and a vector store for any embedding function ([Local embeddings](#local-embeddings)) |
 | `cutLane()`, `cutScoreCurve()`, `laneBend()`, `laneScoreOf()` | The cut each search lane makes where its scores level off ([Lane cut](https://github.com/jonny981/curate/blob/main/docs/library.md#lane-cut)) |
 | `judgmentFacts()`, `judgmentPopulation()`, `modelScore()` | The code facts and fitted score behind a question set's `model` field |
-| `jevRequest()` | Builds the body of a Jev request ([Decision models](#decision-models)) |
+| `jevRequest()`, `jevTextRequest()`, `jevListRequest()` | Build the body of a Jev request: the JSON state, the plain-text form, and a Choice ([Jev](#jev)) |
 | `DEFAULT_MAX_QUESTION_TEXT`, `PICK_QUESTION_VERSION` | The default reader part size (700 characters), and the decision questions' version |
 | `PickDecide`, `PickCascade`, `PickRecord`, `CurateResult`, `LeverStates`, `SourceSettings` and the other types | The shapes of `decide`, question sets and records |
 | **`@curatejs/core/models`** | |
 | `jev()`, `openAIDecisions()`, `localDecisions()` | Ready-made decision functions ([Decision models](#decision-models)) |
+| `DecisionServiceError` | What `jev()` throws when the service refuses a request or can't be reached ([Jev](#jev)) |
 | **`@curatejs/core/local-embeddings`** | |
 | `createLocalEmbedder()` | Meaning search with a model on your machine ([Local embeddings](#local-embeddings)) |
 | **`@curatejs/core/internal`** | |
@@ -74,7 +80,7 @@ Options you pass to `memory()` apply to the whole call, beside each source's own
 
 ```ts
 const mem = memory({
-  sources: [historySource({ reader: chat(), ...chatSettings, questions: AGENT_CHAT_CASCADE }), git('.')],
+  sources: [historySource({ reader: chat(), ...chatSettings, mode: agentTranscripts }), git('.')],
   decide,
   read: { wholeLanes: true },
   pick: { everyScored: { bar: 0.05 } },
@@ -85,12 +91,17 @@ const mem = memory({
 | Lever | Set on | Default | Cost when on |
 | --- | --- | --- | --- |
 | [`wholeLanes`](https://github.com/jonny981/curate/blob/main/docs/library.md#lane-cut) | Read | Off | The decision step also reads the parts each lane's cut would drop, and deciding is the costly step |
-| [`stopWhenCold`](https://github.com/jonny981/curate/blob/main/docs/library.md#the-rating-stop) | Pick | Off | On saves cost: it rates the parts before the ratings go cold, and at most one batch past them |
+| [`stopWhenCold`](https://github.com/jonny981/curate/blob/main/docs/library.md#the-rating-stop) | Pick | Off | On saves cost: it rates the parts before the ratings go cold, and at most one wave past them |
 | [`everyRanked`](https://github.com/jonny981/curate/blob/main/docs/library.md#every-ranked-part) | Pick | Unset | `true` decides the whole ranking; `{ c }` decides `round(c × N^0.8)` parts |
-| [`bar`, `everyScored`](https://github.com/jonny981/curate/blob/main/docs/library.md#keep-bars) | Source, pick | Each source's `bar`, 0.0146 | A lower bar sends more parts to the layout: about 70 of a LongMemEval history's 850 at 0.0146 |
+| [`bar`, `everyScored`](https://github.com/jonny981/curate/blob/main/docs/library.md#keep-bars) | Source's mode, pick | Each mode's `bar`, 0.0146 | A lower bar sends more parts to the layout: about 70 of a LongMemEval history's 850 at 0.0146 |
 | [`labels`](https://github.com/jonny981/curate/blob/main/docs/library.md#labels) | Source | On for chat | One question per kind for each part and task, once per text, kind set and decision model; later picks reuse the stored answers |
 | [`route`](https://github.com/jonny981/curate/blob/main/docs/library.md#routing) | Pick | Off | Four questions of the task, once a pick |
-| [`rare`](https://github.com/jonny981/curate/blob/main/docs/library.md#rare-word-round) | Source, pick | On for git and Markdown | The parts it pulls in are rated, or their ratings reused: 12.9 a question at the defaults on the tuning half |
+| [`wholeMessages`](https://github.com/jonny981/curate/blob/main/docs/library.md#whole-messages) | Source's mode | Off | 2.47 times the request text on one coding-agent history |
+| [`hardFacts`](https://github.com/jonny981/curate/blob/main/docs/library.md#hard-facts) | Source's mode | Off | 1.48 times the request text, batched |
+| [`itemsPerRequest`](https://github.com/jonny981/curate/blob/main/docs/library.md#items-per-request) | Source's mode | Off | One part a request: 1.38 times the request text on pieces, and a request for each part |
+| [`roles`](https://github.com/jonny981/curate/blob/main/docs/library.md#what-each-kept-part-is-doing) | Source's mode | Off | One Choice per kept part, after selection: about one request a LongMemEval question |
+| [`choicePerFact`](https://github.com/jonny981/curate/blob/main/docs/library.md#a-choice-per-needed-fact) | Source's mode | Off | One Choice per needed fact a round, after selection, the rounds one after another |
+| [`keep`](https://github.com/jonny981/curate/blob/main/docs/library.md#a-second-stage) | Source's mode | Off | The read's kept parts judged again: about 2.7 cents a coding-agent task, batched |
 
 The [measurements](https://github.com/jonny981/curate/blob/main/docs/measurements.md) show what each lever gains and costs.
 The decision cache isn't a lever: it loses no quality, so it's on whenever you pass one.
@@ -99,7 +110,7 @@ Some options have new names. An old name throws a `TypeError` that names its rep
 
 | Old name | Use |
 | --- | --- |
-| `pick` | `everyRanked` or `rare` |
+| `pick` | `everyRanked` |
 | `thresholds.reference` | `everyScored` |
 | `thresholds.referenceBySize` | `everyScored.bySize` |
 | `laneCut` | `wholeLanes` |
@@ -131,12 +142,12 @@ A direct `pick()` has parts, not sources, so it takes them as maps keyed by each
 
 | Option | What it holds |
 | --- | --- |
-| `questionsBySource` | Each source's question set, such as `{ conversations: CHAT_CASCADE }` |
-| `barBySource` | Each source's keep bar; a source it doesn't name uses 0.0146 |
+| `modesBySource` | Each source's mode, such as `{ conversations: assistantChatHistory }`: its questions, keep bar and read. A source it doesn't name asks the built-in question, keeps at 0.0146 and takes the ranked read |
 | `ruleBarBySource` | Each source's rule bar |
 | `labelKindsBySource` | Each source's label kinds; an absent or empty entry means no label work |
 | `labelBarBySource` | Each source's label bar |
-| `rareBySource` | Whether each source runs the rare-word round; an absent or `false` entry leaves it off |
+| `queriesBySource` | Each source's search texts, the task first, which the chat read ranks units of agent work against. `pickFromSources()` fills a source it leaves out with the call's task and search lines |
+| `embed` | The call's embedding function, for the same ranking. `pickFromSources()` takes it from the request's meaning lanes |
 | `sourceKinds` | Each source's kind, such as `{ conversations: 'chat' }`, for `tagsByKind`. A source's own declared kind wins. With `tagsByKind`, the record keeps the map and each entry its `sourceKind` |
 
 ```ts
@@ -157,6 +168,7 @@ Sources without ranks keep their ordinary signal order.
 ### When a decision fails
 
 A `decide` call that throws fails the pick with a `PickError`, unless the elapsed limit stopped it or your signal cancelled it.
+Its message leads with the decide error's own message, then says how many parts of the refused request weren't decided, and its `cause` is that error.
 The error's `record` names the request's parts and holds the error's message in `decideError`.
 A failed decision request leaves its parts unanswered, even if an earlier request answered some of their questions. There's no retry and no fallback.
 
@@ -166,7 +178,7 @@ A failed decision request leaves its parts unanswered, even if an earlier reques
 
 | Helper | Options | Default model | Talks to |
 | --- | --- | --- | --- |
-| `jev()` | `apiKey`, `model`, `url`, `onCall` | `'jev-latest'` | TypeSafe's System One endpoint, or any server that speaks Jev's format at `url`, such as a Clef server |
+| `jev()` | `apiKey`, `model`, `url`, `onCall`, `requestsPerSecond`, `tokensPerSecond` | `'jev-latest'` | TypeSafe's System One endpoint, or any server that speaks Jev's format at `url`, such as a Clef server |
 | `openAIDecisions()` | `apiKey`, `model` | `'gpt-6-luna'` | OpenAI's [Decisions API](https://developers.openai.com/api/docs/guides/decisions) |
 | `localDecisions()` | `url`, `model`, `apiKey` | You name it | An OpenAI-compatible chat completions address |
 
@@ -177,9 +189,12 @@ No `authorization` header is sent without a key, and cancellation reaches `fetch
 
 ### Jev
 
-A Jev request's state is the batch's task, then each item once, numbered, with its id, date, title and text.
-Each question's instructions are its wording followed by its item's number, so an item asked seven questions is sent once.
-`jevRequest(batch, model?)`, from `@curatejs/core`, builds that body.
+A Jev request goes in one of two forms ([The request's form](https://github.com/jonny981/curate/blob/main/docs/library.md#the-requests-form)):
+
+- **The JSON state,** the default. The state is a JSON object: the batch's task, the facts the answer needs when the batch carries them (`needed`), and each item once, as a record under its number in `items`, with its id, date, title and text, its `author` where its reader marked one, and any fields code wrote about it. Each question's instructions are an object holding its wording and its item's path, such as `items.3`. `jevRequest(batch, model?)` builds this body.
+- **Plain text,** for a mode that asks with `request: 'text'`. The state is the task, then each item once, numbered, with its id, date, title and text. Each question's instructions are its wording followed by its item's number. `jevTextRequest(batch, model?)` builds this body.
+
+Either way, an item asked seven questions is sent once. Both builders come from `@curatejs/core`.
 
 Jev limits a request to 32,000 tokens for the state plus the longest question, and 64,000 for the whole request.
 At an estimate of three characters a token, `jev()` splits a batch so that each request's state plus its longest question's instructions and criteria is at most 96,000 characters, and the whole body at most 192,000.
@@ -189,9 +204,31 @@ If the service rejects a request as too large (HTTP 400 or 413), `jev()` splits 
 A lone item is resent with its text halved, and its answers are marked `truncated`.
 `jev()` remembers the largest body the service accepted and plans later batches inside it after a rejection. A request rejected at or under that size, or a lone item cut to nothing, didn't fail for size, so the reply is thrown as sent and the error carries its whole body.
 
-On HTTP 429, `jev()` waits as the reply's Retry-After header says (one second if it names none) and sends the same request again, for at most 60 seconds from the first 429.
-A wait that would end later throws `Model request failed: HTTP 429` with the seconds waited, the wait the last reply asked for and that reply's body.
-Other HTTP failures throw.
+On HTTP 429 (over a rate limit) or 529 (the service overloaded), `jev()` waits as the reply asks and sends the same request again, for at most 60 seconds from the first such reply.
+It reads `retry-after-ms` first, as TypeSafe's own client does, then `Retry-After`, and waits one second when neither is there.
+
+Any failure throws a `DecisionServiceError`, whose message leads with the reason and then gives the service's own message:
+
+| `reason` | When | Message starts |
+| --- | --- | --- |
+| `credit` | HTTP 402 | `The decision service has no credit (HTTP 402)` |
+| `key` | HTTP 401 or 403 | `The decision service refused the API key` |
+| `busy` | Still 429 or 529 after 60 seconds; the message gives the time waited | `The decision service is still rate-limiting requests`, or `is still overloaded` |
+| `unreachable` | No reply | `The decision service could not be reached` |
+| `refused` | Any other status | `The decision service refused the request` |
+
+It also carries `status` (0 with no reply), `reply`, the reply's whole body, and `said`, the service's message.
+A cancellation stays a cancellation.
+
+#### Rate limits
+
+TypeSafe sets request and token rates per organization and shows them in its developer console.
+Set yours with `requestsPerSecond` and `tokensPerSecond`: `jev()` queues every request inside both and never sends faster.
+Unset, it keeps to 320 requests and 400,000 estimated tokens a second, at three characters a token, as stand-ins; TypeSafe publishes no figures and its replies carry no rate headers.
+
+On one call of 141 requests, raised in steps with no 429 or 529 at any pace, the decision step took 22.1 seconds at 100,000 tokens a second, 15.1 at 200,000, 11.9 at 400,000, 14.6 at 800,000 and 19.2 unpaced.
+Past 400,000 the service answered each request more slowly: the slowest tenth took over 0.37 seconds at 400,000, 1.0 at 800,000 and 4.1 unpaced.
+A pace that slows itself when the service's replies slow down isn't tried.
 
 `onCall` is called once per request, planned, split and resent alike, with a `JevCall`: when it was sent, the number of questions, the body's size, the reply's status, the milliseconds it took, and the usage and answers the reply held.
 Its `splits` counts the extra requests a rejection caused: 2 for a split, 1 for a resent item, 0 otherwise.
@@ -403,19 +440,25 @@ They say which settings were on (`levers`), what each one did (`effects`), and w
 | Field | What it holds |
 | --- | --- |
 | `kind` | The source's kind, when it declares one |
+| `mode` | The name of its mode, when it carries one |
 | `labels` | Whether labels ran on its parts |
 | `labelBar` | The label bar it used, when it carries label kinds |
-| `rare` | Whether the rare-word round was on |
 | `bar` | The bar its reference parts were cut at, 0 when every rated part was kept |
 | `ruleBar` | The bar its rules were cut at, when it produced rules |
 | `questions` | The question set its reference parts were asked, when it carries one; absent means the built-in question |
+| `textShare` | Its mode's text share, when it sets one |
+| `wholeMessages`, `hardFacts`, `roles` | `true` when its mode turns that lever on |
+| `itemsPerRequest` | How many items one decision request held, when its mode sets it |
+| `request` | `'text'` when its mode asks in plain text |
+| `keep` | Its mode's second stage: its questions, the bar it kept at for this pick, and its own settings |
+| `choicePerFact` | When its mode compares its kept parts for each needed fact: the candidates a fact, and the sufficiency bar |
 | `decay` | The half-life its parts ranked with, when `decay` is on. Only a `pickFromSources()` record has it |
 
-A chat source with labels on reads `{ kind: 'chat', labels: true, labelBar: 0.5, rare: false, bar: 0.0146 }`.
+A chat source with labels on reads `{ kind: 'chat', mode: 'agent-transcripts', labels: true, labelBar: 0.5, bar: 0.0146 }`.
 The reader's `since`, `paths` and `exclude` sit beside these.
 
-`levers.rare` is `false` or `{ share, bar }`, and `levers.everyScored` appears only when the call set it.
-`levers.stopWhenCold` holds `{ floor, share }`, or `false` when off, whenever `everyRanked` is unset; `levers.everyRanked` appears only when the call set it, and the two never appear together.
+`levers.everyScored` appears only when the call set it.
+`levers.stopWhenCold` holds `{ floor, share, parts }`, or `false` when off, whenever `everyRanked` is unset. `parts` is `'request'` when the read judged each request alone. `levers.everyRanked` appears only when the call set it, and the two never appear together.
 When `meaning.wholeLanes` differs from the read's `wholeLanes`, the record holds `levers.wholeLanes: { keyword, meaning }`.
 
 ### What each setting did
@@ -424,20 +467,19 @@ When `meaning.wholeLanes` differs from the read's `wholeLanes`, the record holds
 Each entry names one setting that was on and the source it acted on, counts the parts it looked at and the kept parts it brought in or kept out, and says in a sentence why when it changed nothing.
 A setting that was off has no entry, and every count comes from the one pick that ran.
 
-A part reaches the decision step one or more ways: the task's own keyword lane, an extra lane (a search line, a phrase, a name or a meaning query), the label lane, a whole-lane read past the lane cut, the task's period, the rare-word round, or a commit's link to a note.
-A setting counts a kept part as `added` only when that was the part's only way in and neither the link nor the rare-word round kept it, so a part two ways brought in counts for neither.
+A part reaches the decision step one or more ways: the task's own keyword lane, an extra lane (a search line, a phrase, a name or a meaning query), the label lane, a whole-lane read past the lane cut, the task's period, or a commit's link to a note.
+A setting counts a kept part as `added` only when that was the part's only way in and the link didn't keep it, so a part two ways brought in counts for neither.
 A lane is a way in only for the parts inside its `maxCandidates`, and a search line that repeats the task opens no lane, which its entry says.
 
 | Setting | Has an entry when | `actedOn` | `added` | `dropped` |
 | --- | --- | --- | --- | --- |
 | `labels` | The source carries label kinds; the summary names its label bar | Its parts labelled this pick, asked or reused | Kept parts whose only way in was the label lane | 0: labels never remove a part a lane holds. `null` when something ended the feed early |
-| `rare` | The round ran on the source | Parts the round pulled in | Pulled parts that joined the selection | 0 |
 | `searchLines`, `searchPhrases`, `meaning` | The read request set that option | Parts those lanes held | Kept parts whose only way in was those lanes | 0, or `null` when something ended the feed early |
 | `names` | The source's `names` is on | Parts the name lanes held | Kept parts whose only way in was a name lane | 0, or `null` when something ended the feed early |
 | `wholeLanes` | `read.wholeLanes` is on | Parts read past the lane cut | Kept parts whose only way in was the whole-lane read | 0, or `null` when something ended the feed early |
 | `taskPeriod` | `taskPeriod` is on, the default | Reference parts dated inside the period; 0 when the task names none | Kept parts whose only way in was the period | 0, or `null` when the task named a period and something ended the feed early. When it added none, the summary says why: no period, none of its parts kept, every one already in a search lane, or each with another way in |
 | `linkedPathBar` | The pick holds a reference part with a `path` and a `repository` | Reference parts below their bar but at or above the link bar, with a `path` and a `repository` | Parts kept through the link | 0 |
-| `bar` | Always, for a source with reference parts | Its rated reference parts | 0 | Rated parts below the bar that nothing later kept. The link, the rare-word round and a typed question's `keepAt` can still keep a part below the bar |
+| `bar` | Always, for a source with reference parts | Its rated reference parts | 0 | Rated parts below the bar that nothing later kept. The link and a typed question's `keepAt` can still keep a part below the bar |
 | `ruleBar` | The source has rules and a bar above 0; the summary says how many were asked, picked and dropped | Its rules asked | 0 | Rules below the bar |
 | `decay` | The source has `decay` on | The dated parts its read ranked | Parts its lanes, taken together, kept only because decay ranked others lower | Parts every lane left out only because decay ranked them lower. Both are counted in the read, before the decision step, from one set of scores |
 | `alwaysOnSkipped` | The read skipped files the agent's harness loads every session; the summary names each file and why | The files skipped | 0 | `null`: a skipped file is never split into parts |
@@ -492,15 +534,17 @@ A part that was never rated records `unassessed` with a reason:
 
 | Reason | Why |
 | --- | --- |
-| `'stopWhenCold'` | It sat past the rating stop. It also records its `place` in the fused order, counted from 0. The rare-word round can still pull it in |
+| `'stopWhenCold'` | It sat past the rating stop. It also records its `place` in the fused order, counted from 0 |
+| `'chatRead'` | A [chat read](https://github.com/jonny981/curate/blob/main/docs/library.md#the-chat-read) stopped before reaching it. It also records its `place` in that read's order |
 | `'feed'` | No lane placed it in the order, or it sat past a `feed` size |
 | `'pick'` | It sat below an `everyRanked: { c }` count |
 | `'gate'` | The keyword lanes never held it, and its stored or answered labels left it out. A part a lane limit cut or a stop left unlabelled keeps that reason instead |
 | `'limits'` | A lane's candidate limit cut it |
 
-`memory()` accepts `'gate'`, `'stopWhenCold'` and `'feed'`, and throws for the others.
+`memory()` accepts `'gate'`, `'stopWhenCold'`, `'chatRead'` and `'feed'`, and throws for the others.
 Parts that no lane kept sit in the record the same way, so an unordered part is unassessed rather than missing.
-When no rare-word round can pull one in, the source asks no label kinds and the task names no period, `pickFromSources()` only counts them: `unheld` holds, by source id, how many parts of each history no lane kept, and neither `candidates` nor a read's candidates in `reads` lists them. `pick.n` still counts every part, and a part only a meaning lane kept follows the keyword lanes' parts in those lists, in the order the meaning lanes reached it.
+A source whose mode has a read of its own, such as `conversationRead()`, keeps every part, since that read walks each part's whole transcript.
+When the source's mode reads with `rankedRead`, as a source with no mode does, the source asks no label kinds and the task names no period, `pickFromSources()` only counts them: `unheld` holds, by source id, how many parts of each history no lane kept, and neither `candidates` nor a read's candidates in `reads` lists them. `pick.n` still counts every part, and a part only a meaning lane kept follows the keyword lanes' parts in those lists, in the order the meaning lanes reached it.
 
 ### The rating stop's record
 
@@ -509,24 +553,35 @@ With the stop on, `pick.stopWhenCold` adds:
 
 | Field | What it holds |
 | --- | --- |
-| `floor`, `share` | The two levels used |
+| `floor`, `share`, `parts` | The two levels used, and the window: a count of rated parts, or `'request'` |
 | `waves` | The rounds of requests sent |
-| `batches`, `rated` | The batches and parts of the order it rated |
+| `windows`, `rated` | The windows it judged, and the parts of the order it rated |
 | `unread` | The parts of the order it never rated |
 | `kept` | Rated parts at or above their keep bar |
 | `atFloor` | Rated parts at or above the floor |
 | `ended` | `'order'` when it reached the order's end; `'cold'` when the ratings went cold; or the limit that ended it first: `'limits'`, `'time'`, `'cancelled'` or `'error'` |
-| `cold` | When it went cold: the `batch` that did, counted from 1, its `best` rating, the best rating before it (`bestBefore`) and the test it failed (`under`) |
+| `cold` | When it went cold: the `window` that did, counted from 1, its `best` rating, the best rating before it (`bestBefore`) and the test it failed (`under`) |
 
 A read that reached the order's end records `kept: 0` when nothing reached the keep bar, and `atFloor: 0` when nothing reached the floor.
-Under `everyRanked: { c }`, the `pick` field keeps `n`, `sent`, `questions`, `c`, `kept` and `ranking`, and a rare-word round adds `rare`.
+Under `everyRanked: { c }`, the `pick` field keeps `n`, `sent`, `questions`, `c`, `kept` and `ranking`.
 
 ```ts
 const picked = await pick(candidates, { task, decide, stopWhenCold: { share: 0.1 } });
 picked.record.pick?.stopWhenCold;
-// { floor: 0.1, share: 0.1, waves: 2, batches: 4, rated: 520, unread: 1480, kept: 37, atFloor: 21, ended: 'cold',
-//   cold: { batch: 3, best: 0.04, bestBefore: 0.92, under: 'floor' } }
+// { floor: 0.1, share: 0.1, parts: 150, waves: 2, windows: 3, rated: 520, unread: 1480, kept: 37, atFloor: 21, ended: 'cold',
+//   cold: { window: 3, best: 0.04, bestBefore: 0.92, under: 'floor' } }
 ```
+
+A chat read keeps its own numbers under `pick.chatRead`, one entry for each such read of the call, under the name of the mode it read (`agent-transcripts` for `chat()`'s):
+
+| Field | What it holds |
+| --- | --- |
+| `requests` | The requests read before the stop |
+| `segments`, `units` | The topic segments and the units of agent work it opened |
+| `rated` | The parts its own requests rated |
+| `reused` | The parts whose decision came from the decision cache. They count toward its stop with their stored ratings, so a run whose decisions are stored reads as the run that stored them did |
+| `unread` | The chat parts of the order it left unread |
+| `ended` | `'fall'` when new well-rated parts fell off, `'order'` when the order ran out first, or the stopping dial that ended it |
 
 ### Record fields
 
@@ -534,7 +589,9 @@ picked.record.pick?.stopWhenCold;
 | --- | --- |
 | `PickRecord.effects` | A `PickSettingEffect[]`: one entry per setting that was on, per source it applied to |
 | `PickSettingEffect` | `setting`, the setting's name as you write it; `source`; `actedOn`; `added`; `dropped`, or `null` when one pick can't tell; and `summary`, one plain sentence |
-| `PickRecord.pick` | On every pick. `n`, the history's size in reference parts; `sent`, the reference parts the decision model was asked at least one task question about (a cached answer doesn't count); `questions`, the task questions actually sent (label questions count on `labels`); `stopWhenCold`, `feed` (order, size and unjudged count), `c`, `kept` (the reference parts the feed sent to the decision step), `ranking`, and `rare` (the round's share and bar, each source's N and rare words under `sources`, the parts pulled in, and how many were asked and added) |
+| `PickRecord.pick` | On every pick. `n`, the history's size in reference parts; `sent`, the reference parts the decision model was asked at least one task question about (a cached answer doesn't count); `questions`, the task questions actually sent (label questions count on `labels`); `stopWhenCold`, `chatRead`, `feed` (order, size and unjudged count), `c`, `kept` (the reference parts the feed sent to the decision step) and `ranking` |
+| `PickRecord.keep` | When a mode has a second stage: the items asked, the stage's requests, the questions left unanswered, and per source the parts kept and left out, the bar, and the parts kept as part of an exchange (`byExchange`) |
+| `PickRecord.choicePerFact` | When a mode compared its kept parts for each needed fact: the candidates a fact; per fact its picks in order (the item's id, the round, the Choice's probability), every candidate ranked, and why its loop ended (`'empty'` or `'enough'`); the rounds and requests; the sufficiency bar and answers; `skipped` when no Choice was asked, and `error` when a request failed |
 | `PickRecord.labels` | The label questions' version, the `deciderId`, how many parts the model was asked about, how many were reused, `waited` (parts whose labels came from another pick's request in flight, left out when 0), the gate's size, and `failedWrites` |
 | `PickRecord.labelKindsBySource` | The full kind definitions applied to each source, or `[]` when it has none |
 | `PickRecord.cache` | The question set's version, the `deciderId`, how many decision and tag questions were asked and reused, and `failedWrites` |
@@ -550,6 +607,10 @@ picked.record.pick?.stopWhenCold;
 | `PickRecordEntry.link` | On a note kept through a commit's link, that commit |
 | `PickRecordEntry.reused` | When every decision behind the entry came from the decision cache; also on each cached answer. Never on an `applies: 'always'` rule |
 | `PickRecordEntry.tags` | Each tag answer, with its status |
+| `PickRecordEntry.readProbability` | On a part a second stage judged: the read's own score. `probability` is then the stage's |
+| `PickRecordEntry.keptAs`, `exchange` | On a part a second stage kept: `'rating'` or `'exchange'`, and whose exchanges it belongs to |
+| `PickRecordEntry.chosen` | On a part a Choice per needed fact picked: the fact, the round and the probability of each pick |
+| `PickRecordEntry.doing`, `approvedBy` | With `roles` on: the option chosen and every option's probability, and an agent's proposal the person's next message approved |
 | `pastLaneCut` | On a part and its entry: true when a `wholeLanes` read returned it although the lane cut would have dropped it |
 | `dateWindow` | On a part and its entry: `'task-period'` when the task's period brought it in |
 
@@ -567,6 +628,7 @@ A labels or cache write that fails adds a `warning` to `labels` or `cache`.
 | `answerTokens` | The budget, when one was set |
 | `collapsed` | How many copies were taken once |
 | `partsNotKept` | When the text shows an item in parts: how many of its parts were not kept, added up |
+| `underShare` | When a source's mode sets a text share: how many kept parts it left out. They aren't counted in `leftOut` |
 | `leftOut` | How many kept parts the budget stopped before, the strongest weight among them, and how many weigh 0.5 or more |
 | `nothingKept` | `true` when the pick kept no reference part |
 | `sentences` | When sentences were rated: the `cutoff`, the sentences `kept` of how many (`of`), how many were `unanswered`, the parts that lost a sentence (`itemsTrimmed`) or every sentence (`itemsLeftOut`), `estimatedTokensBefore`, and `failed` when the request failed |

@@ -1,5 +1,6 @@
 // Picks on a task that names people and things, compared with named-tasks-baseline.json:
-// what the build before name lanes made with every source's name lanes off and no `named` question.
+// what the build before name lanes made with every source's name lanes off and no `named` question, with git's
+// and Markdown's parts kept to those their keyword lanes held.
 import { chatSettings } from '@curatejs/chat';
 import { gitSettings } from '@curatejs/git';
 import { markdownSettings } from '@curatejs/markdown';
@@ -22,26 +23,28 @@ export function namedParts(sourceId: string, rareWord: string): MemoryCandidate[
 
 /** The three presets with name lanes off. */
 export const offSources = (): CandidateSource[] => [
-  historySource({ reader: fixtureSource('chat', namedParts('chat', 'chatword'), { rare: false }), ...chatSettings, names: false }),
-  historySource({ reader: fixtureSource('git', namedParts('git', 'gitword'), { rare: true }), ...gitSettings, names: false }),
-  historySource({ reader: fixtureSource('markdown', namedParts('markdown', 'noteword'), { rare: false }),
+  historySource({ reader: fixtureSource('chat', namedParts('chat', 'chatword')), ...chatSettings, names: false }),
+  historySource({ reader: fixtureSource('git', namedParts('git', 'gitword')), ...gitSettings, names: false }),
+  historySource({ reader: fixtureSource('markdown', namedParts('markdown', 'noteword')),
     ...markdownSettings, names: false }),
 ];
 
 /** The record as the baseline build wrote it: without the moment, the time zone and the task-period
  *  entries, which the task date added, without `pick`'s decide-call counts, which the fused-order
  *  accounting added (the old build wrote `pick` only under a dial, so a `pick` holding counts alone
- *  goes too), and without lane-0 ranks, which the fused order's need for positions added to
- *  single-search reads. */
+ *  goes too), without lane-0 ranks, which the fused order's need for positions added to
+ *  single-search reads, and without a source's text share, which the per-mode text rule added. */
 const asBaseline = (record: PickRecord): PickRecord => {
   const slim: Partial<Record<keyof PickRecord, unknown>> = { ...record,
     candidates: record.candidates.map(({ searchRanks: _ranks, ...candidate }) => candidate),
+    levers: { ...record.levers, sources: Object.fromEntries(Object.entries(record.levers.sources)
+      .map(([id, { textShare: _textShare, ...settings }]) => [id, settings])) },
     effects: record.effects.filter((entry) => entry.setting !== 'taskPeriod') };
   delete slim.asOf;
   delete slim.timeZone;
   if (record.pick !== undefined) {
     const { sent: _sent, questions: _questions, ...pick } = record.pick;
-    if (pick.rare === undefined && pick.c === undefined) delete slim.pick;
+    if (pick.c === undefined) delete slim.pick;
     else slim.pick = pick;
   }
   return slim as PickRecord;

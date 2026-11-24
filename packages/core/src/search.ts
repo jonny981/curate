@@ -100,7 +100,7 @@ export function phraseCount(text: string, phrase: string): number {
 }
 
 /** Internal to this package and not part of its public surface: whether
- *  the fused order with no rare-word round sizes the history from
- *  counts ('size') rather than merge every part of it into the read. A
+ *  the fused order sizes the history from counts ('size') rather than
+ *  merge every part of it into the read. A
  *  test turns it off to get the merging path as its oracle. */
 export const poolSizing = { on: true };

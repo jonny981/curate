@@ -47,7 +47,7 @@ vi.mock('node:fs/promises', async (importOriginal) => {
   };
 });
 
-const uncutPick = { everyRanked: true, everyScored: true, rare: false } as const;
+const uncutPick = { everyRanked: true, everyScored: true } as const;
 
 const directories: string[] = [];
 // Chat asks label questions by default; keep their saved answers out of the real cache.
@@ -162,9 +162,43 @@ describe.each(['claude-code', 'codex'] as const)('chat %s', (provider) => {
         expect(new Set(ids).size, name).toBe(2);
         for (const id of ids) {
           expect(id.includes(name), name).toBe(false);
-          expect(id, name).toMatch(new RegExp(`/\\[redacted\\]:${provider === 'codex' ? '2026/10/02' : 'project'}/session-one\\.jsonl:\\d+:\\d+:\\d+$`));
+          expect(id, name).toMatch(new RegExp(`/\\[redacted\\]:${provider === 'codex' ? '2026/10/02' : 'project'}/session-one\\.jsonl#[0-9a-f]{16}:\\d+:\\d+:\\d+$`));
         }
       }
+    }
+  });
+
+  it('keeps apart two transcripts whose masked names are the same, and sends and records neither real name', async () => {
+    // Two files in one folder, each named by 32 hex characters, which the scrubber masks alike.
+    const root = await folder();
+    const directory = join(root, provider === 'codex' ? '2026/10/02' : 'project');
+    await mkdir(directory, { recursive: true });
+    const names = ['0123456789abcdef0123456789abcdef', 'fedcba9876543210fedcba9876543210'];
+    for (const [n, name] of names.entries()) {
+      const metadata = provider === 'codex' ? [{ type: 'session_meta', timestamp: OLD, payload: { id: `session-${n}` } }] : [];
+      const records = [message(provider, 'user', `orchard question ${n}`), message(provider, 'assistant', `orchard answer ${n}`)];
+      await writeFile(join(directory, `${name}.jsonl`), [...metadata, ...records].map((record) => JSON.stringify(record)).join('\n') + '\n');
+    }
+    for (const options of [{}, { index: false as const }]) {
+      const result = await read(provider, root, options);
+      expect(result.candidates).toHaveLength(4);
+      expect(result.candidates.every((part) => part.id.includes('[redacted].jsonl'))).toBe(true);
+      expect(new Set(result.candidates.map((part) => part.id)).size).toBe(4);
+      // One transcript a file: each file's two parts share a container, and the two files do not.
+      const containers = new Map(result.candidates.map((part) => [part.text, part.place?.container]));
+      expect(containers.get('orchard question 0')).toBe(containers.get('orchard answer 0'));
+      expect(containers.get('orchard question 1')).toBe(containers.get('orchard answer 1'));
+      expect(containers.get('orchard question 0')).not.toBe(containers.get('orchard question 1'));
+      // Nothing the call sends or records holds a real name.
+      const sent: unknown[] = [];
+      const decide: PickDecide = async (batch) => {
+        sent.push(batch);
+        return Object.fromEntries(batch.questions.map((q) => [q.key, { status: 'answered', probability: 0.9 }]));
+      };
+      const picked = await pickFromSources([chat({ providers: [provider], paths: [root], ...options })], { task: 'orchard', wholeLanes: true },
+        { task: 'orchard', decide, ...uncutPick });
+      const outside = JSON.stringify([result.candidates, sent, picked.record, picked.selected]);
+      for (const name of names) expect(outside.includes(name), name).toBe(false);
     }
   });
 
@@ -1291,6 +1325,41 @@ describe('stored index', () => {
     const again = new sqlite.DatabaseSync(older, { readOnly: true });
     expect(again.prepare(count).get()).toEqual(before);
     again.close();
+  });
+
+  it('reads two transcripts masked alike apart over an index of the format that gave them one id', async () => {
+    // Two files named by 32 hex characters, whose names the scrubber masks alike.
+    const root = await folder();
+    const directory = join(root, 'project');
+    await mkdir(directory, { recursive: true });
+    for (const [n, name] of ['0123456789abcdef0123456789abcdef', 'fedcba9876543210fedcba9876543210'].entries()) {
+      await writeFile(join(directory, `${name}.jsonl`), [
+        { type: 'user', timestamp: NEW, sessionId: `s${n}`, message: { content: [{ type: 'text', text: `orchard question ${n}` }] } },
+        { type: 'assistant', timestamp: NEW, sessionId: `s${n}`, message: { content: [{ type: 'text', text: `orchard answer ${n}` }] } },
+      ].map((record) => JSON.stringify(record)).join('\n') + '\n');
+    }
+    const cache = await folder();
+    const read = async (index: boolean) => {
+      const result = await chat({ providers: ['claude-code'], paths: [root], ...(index ? { index: { directory: cache } } : { index: false as const }) })
+        .read({ task: 'orchard', wholeLanes: true });
+      if (result.status !== 'read') throw new Error('Expected a read');
+      return { ids: new Set(result.candidates.map((part) => part.id)).size, containers: new Set(result.candidates.map((part) => part.place?.container)).size };
+    };
+    await read(true);
+    // What format 7 kept for them: the masked path with no hash, one id for
+    // both files' first lines, in a file of that format's name.
+    const sqlite = process.getBuiltinModule('node:sqlite') as unknown as {
+      DatabaseSync: new (path: string) => { exec(sql: string): void; close(): void } };
+    const now = `.v${STORED_INDEX_FORMAT}.`;
+    for (const name of await readdir(cache)) {
+      if (!name.endsWith(`${now}sqlite`)) continue;
+      const file = new sqlite.DatabaseSync(join(cache, name));
+      file.exec("UPDATE parts SET pid = substr(pid, 1, instr(pid, '#') - 1) || substr(pid, instr(pid, '#') + 17) WHERE instr(pid, '#') > 0");
+      file.close();
+      await rename(join(cache, name), join(cache, name.replace(now, '.v7.')));
+    }
+    expect(await read(true)).toEqual(await read(false));
+    expect(await read(false)).toEqual({ ids: 4, containers: 2 });
   });
 
   it('rebuilds over an index of an earlier format and embeds no part again', { timeout: 60_000 }, async () => {

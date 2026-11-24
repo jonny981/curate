@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
 import { historySource, pickFromSources, type CandidateSource, type PickQuestion } from '@curatejs/core';
-import { chat, chatSettings, CHAT_CASCADE } from '../src/index.js';
+import {
+  AGENT_CHAT_CASCADE, chat, chatSettings, CHAT_CASCADE, JUDGMENT_CHAT_CASCADE, PERSONAL_CHAT_CASCADE, PERSONAL_CHAT_WRITTEN_CASCADE,
+} from '../src/index.js';
 
 describe('source decision questions', () => {
   it('asks agent transcripts no own question while preserving the personal provider questions', async () => {
@@ -18,7 +20,7 @@ describe('source decision questions', () => {
     ];
     const asked: PickQuestion[] = [];
     const result = await pickFromSources(sources, { task: 'Recall evidence' }, {
-      task: 'Recall evidence', everyScored: true, rare: false,
+      task: 'Recall evidence', everyScored: true,
       decide: async ({ questions }) => {
         asked.push(...questions);
         return Object.fromEntries(questions.map((question) => [question.key,
@@ -32,6 +34,12 @@ describe('source decision questions', () => {
     expect(result.record.levers.sources.agent?.questions?.questions.map((question) => question.key))
       .toEqual(['relevant', 'needed']);
     expect(result.record.levers.sources.personal?.questions).toEqual(CHAT_CASCADE);
-    expect(chatSettings.questions).toBe(CHAT_CASCADE);
+    expect(chatSettings.mode?.questions).toBe(CHAT_CASCADE);
+  });
+
+  it('weighs no set by who wrote a part', () => {
+    for (const set of [AGENT_CHAT_CASCADE, CHAT_CASCADE, PERSONAL_CHAT_CASCADE, PERSONAL_CHAT_WRITTEN_CASCADE, JUDGMENT_CHAT_CASCADE]) {
+      expect(set).not.toHaveProperty('person');
+    }
   });
 });

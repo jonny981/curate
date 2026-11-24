@@ -11,7 +11,7 @@ import { git as gitSource } from '@curatejs/git';
 import { knowledgeBase, rules } from '@curatejs/markdown';
 import { DEFAULT_MAX_QUESTION_TEXT } from '@curatejs/core';
 
-const uncutPick = { everyRanked: true, everyScored: true, rare: false } as const;
+const uncutPick = { everyRanked: true, everyScored: true } as const;
 
 const directories: string[] = [];
 afterEach(async () => {

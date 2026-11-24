@@ -140,12 +140,11 @@ The file also keeps each long commit's parts and their word counts. Each part si
 
 ## Defaults and overrides
 
-`git()` reads with `gitSettings`, `{ rare: true, labels: false, names: true, bar: 0.0146 }`:
+`git()` reads with `gitSettings`, `{ labels: false, names: true, mode: commits }`:
 
-- **Rare-word round on:** it finds unselected commits that share rare words with selected ones, counting words over this history only.
 - **No labels.**
 - **Name lanes:** one for each name the task names.
-- **A bar of 0.0146:** commits scoring 0.0146 or more are kept, ordered and weighted by decision probability.
+- **The `commits` mode:** each commit is asked `GIT_HISTORY_CASCADE`, and commits scoring 0.0146 or more are kept, ordered and weighted by decision probability.
 
 Set `everyScored: true` on the pick to keep every scored reference candidate from every source.
 Core's `curate()` lays out the kept candidates by their exact scores, strongest first.
@@ -154,9 +153,9 @@ To change a setting, build the source with core's `historySource()`:
 
 ```ts
 import { historySource } from '@curatejs/core';
-import { git, gitSettings } from '@curatejs/git';
+import { commits, git, gitSettings } from '@curatejs/git';
 
-const source = historySource({ reader: git('.'), ...gitSettings, rare: false });
+const source = historySource({ reader: git('.'), ...gitSettings, mode: { ...commits, bar: 0.05 } });
 ```
 
 Core's [Defaults and evidence](https://github.com/jonny981/curate/blob/main/docs/measurements.md#defaults-and-evidence) explains the 0.0146 bar: in its saved-decision sweep, higher bars dropped whole answer turns.
@@ -180,8 +179,8 @@ const source = git('.', {
 
 ### Question set
 
-`gitSettings` carries `GIT_HISTORY_CASCADE`, the fitted question set `git()` asks of each commit.
-Change it with `historySource({ reader: git('.'), ...gitSettings, questions: mySet })`.
+`gitSettings` carries the `commits` mode, and with it `GIT_HISTORY_CASCADE`, the fitted question set `git()` asks of each commit.
+Change it with `historySource({ reader: git('.'), ...gitSettings, mode: { ...commits, questions: mySet } })`.
 
 The git and Markdown sets were fitted on saved answers about commits and notes.
 No end-to-end score has measured them.

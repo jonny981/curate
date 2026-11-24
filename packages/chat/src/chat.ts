@@ -19,10 +19,10 @@ import { scrubChat } from './chat-scrub.js';
 import { DEFAULT_MAX_QUESTION_TEXT, type MemoryCandidate } from '@curatejs/core';
 import {
   historySource, SourceReadError, type CandidateReadContext, type CandidateReadRequest, type CandidateSource,
-  type PickCascade,
+  type Mode,
 } from '@curatejs/core';
 import { chatSettings } from './defaults.js';
-import { AGENT_CHAT_CASCADE } from './questions.js';
+import { agentTranscripts } from './mode.js';
 
 export type ChatProvider = 'claude-code' | 'codex';
 
@@ -51,21 +51,19 @@ export interface ChatOptions {
    *  lane then reads the file instead of the transcripts. `false` reads
    *  the transcripts directly on every read. */
   readonly index?: StoredIndexOptions | false;
-  /** The question set the decision step asks of this source's parts.
-   *  Defaults to AGENT_CHAT_CASCADE. A model-scored set such as
+  /** How the decision step judges and reads this source's parts: its
+   *  question set, its bar and its read. Defaults to `agentTranscripts`.
+   *  A mode whose questions are a model-scored set such as
    *  JUDGMENT_CHAT_CASCADE throws while its weights file is unfitted. */
-  readonly questions?: PickCascade;
-  /** The decision-score bar for this source's parts: a part keeps when
-   *  its combined score reaches it. Defaults to the selected set's
-   *  fitted bar when it carries one, else 0.0146. */
-  readonly bar?: number;
+  readonly mode?: Mode;
 }
 
 type Json = Record<string, unknown>;
 type MessageRole = NonNullable<MemoryCandidate['chat']>['role'];
-type Author = NonNullable<NonNullable<MemoryCandidate['chat']>['author']>;
+type Author = NonNullable<MemoryCandidate['author']>;
+type Unit = NonNullable<NonNullable<MemoryCandidate['chat']>['unit']>;
 interface Written { author: Author; authorName?: string }
-interface Part extends Written { role: MessageRole; text: string }
+interface Part extends Written { role: MessageRole; text: string; unit?: 'summary' }
 interface Decoded { sessionId?: string; date?: string; parts: Part[] }
 interface ProviderReader {
   readonly folder: string;
@@ -87,6 +85,8 @@ interface RawPart {
   readonly role: MessageRole;
   readonly author: Author;
   readonly authorName?: string;
+  /** What part of an agent's work it is, when it is one: see `withUnit`. */
+  readonly unit?: Unit;
   readonly date: number;
   readonly text: string;
 }
@@ -405,8 +405,9 @@ const READERS: Record<ChatProvider, ProviderReader> = {
       const parts: Part[] = [];
       if (role === 'user' || role === 'assistant') {
         const origin = object(queued ? attachment.origin : record.origin);
-        const said = (text: string) =>
-          parts.push({ role, text, ...(role === 'user' ? claudeAuthor(record, origin, text) : { author: 'agent' as const }) });
+        const said = (text: string) => parts.push({ role, text,
+          ...(role === 'user' ? claudeAuthor(record, origin, text) : { author: 'agent' as const }),
+          ...(role === 'user' && record.isCompactSummary === true ? { unit: 'summary' as const } : {}) });
         const content = !queued ? object(record.message).content : Array.isArray(attachment.prompt)
           ? attachment.prompt.map(object).filter((block) => block.type === 'text' && typeof block.text === 'string')
             .map((block) => block.text).join('\n')
@@ -489,9 +490,18 @@ const partIdOf = (part: RawPart) =>
   `${part.provider}:${part.root}:${relative(part.root, transcriptPath(part.file))}:${part.line}:${part.block}:${part.piece}`;
 // The folder read and the file's path in it are each scrubbed whole, then
 // joined: a value that looks like a secret is masked, and masking it never
-// reaches the id's other fields or the part's place, which keep it its own.
-const partId = (part: RawPart) =>
-  `${part.provider}:${scrubChat(part.root)}:${scrubChat(relative(part.root, transcriptPath(part.file)))}:${part.line}:${part.block}:${part.piece}`;
+// reaches the id's line, block and piece. Two names masked alike, such as
+// two files named by 32 hex characters, would give two transcripts one id
+// and one place, so a masked path carries a short hash of the real one:
+// the transcripts stay apart, and the real name is never shown. A session
+// Codex compressed keeps the id it had before.
+const partId = (part: RawPart) => {
+  const path = relative(part.root, transcriptPath(part.file));
+  const root = scrubChat(part.root), shown = scrubChat(path);
+  const apart = root === part.root && shown === path ? ''
+    : `#${createHash('sha256').update(`${part.root}\0${path}`).digest('hex').slice(0, 16)}`;
+  return `${part.provider}:${root}:${shown}${apart}:${part.line}:${part.block}:${part.piece}`;
+};
 const partTitle = (part: RawPart, zone: string) =>
   `${part.provider} ${part.sessionId} ${part.role} ${zonedIso(part.date, zone)}`;
 const AUTHOR_TITLES: Record<Author, string> = { person: ' (the person)', agent: ' (agent)', tool: ' (tool)', system: ' (system)', unmarked: '' };
@@ -500,9 +510,15 @@ const AUTHOR_TITLES: Record<Author, string> = { person: ' (the person)', agent: 
 const shownTitle = (part: RawPart, zone: string) =>
   `${part.provider} ${part.sessionId} ${part.role}${part.authorName === undefined ? AUTHOR_TITLES[part.author]
     : ` (${part.author} ${part.authorName})`} ${zonedIso(part.date, zone)}`;
-const chatOf = (part: RawPart): NonNullable<MemoryCandidate['chat']> => ({
-  provider: part.provider, sessionId: part.sessionId, role: part.role, author: part.author,
-  ...(part.authorName === undefined ? {} : { authorName: part.authorName }),
+/** A part's transcript fields: its chat metadata, its author, and its
+ *  place: the transcript its id names (the id less its line, block and
+ *  piece) and its line, block and piece there. */
+const chatOf = (part: RawPart, id: string): Pick<MemoryCandidate, 'chat' | 'author' | 'place'> => ({
+  chat: { provider: part.provider, sessionId: part.sessionId, role: part.role,
+    ...(part.authorName === undefined ? {} : { authorName: part.authorName }),
+    ...(part.unit === undefined ? {} : { unit: part.unit }) },
+  author: part.author,
+  place: { container: id.split(':').slice(0, -3).join(':'), at: [part.line, part.block, part.piece] },
 });
 
 /** What decoding carries from one transcript line to the next: the
@@ -548,12 +564,35 @@ function* decodeLines(
           line: firstLine + offset + 1, block: block + 1, piece: piece + 1,
           sessionId: state.sessionId, role: part.role, author: part.author,
           ...(part.authorName === undefined ? {} : { authorName: scrubChat(part.authorName) }),
+          ...(part.unit === undefined ? {} : { unit: part.unit }),
           date, text: textPart,
         };
       }
     }
   }
 }
+
+/** A Claude Code subagent's id, from its transcript's path
+ *  (`<session>/subagents/agent-<id>.jsonl`); undefined for any other
+ *  transcript. */
+const subagentOf = (provider: ChatProvider, file: string) => provider === 'claude-code'
+  ? /[\\/]subagents[\\/]agent-([^\\/]+)\.jsonl$/.exec(file)?.[1] : undefined;
+
+/** A part of a Claude Code subagent's transcript marked as what part of
+ *  the agent's work it is: the transcript's first line, the brief the
+ *  agent was given, is its `prompt`; the last line holding assistant text
+ *  (`report`, the transcript's highest such line) is its `report`, named
+ *  by the agent's id. Any other part keeps the mark it decoded with: a
+ *  compaction summary's `summary`, or none. */
+const withUnit = <P extends LinePart>(part: P, agent: string | undefined, report: number | undefined): P =>
+  agent === undefined ? part
+    : part.line === 1 && part.role === 'user' ? { ...part, unit: 'prompt' }
+      : part.line === report && part.role === 'assistant' ? { ...part, unit: 'report', authorName: scrubChat(agent) }
+        : part;
+
+/** The highest line holding an assistant part. */
+const lastAssistantLine = (parts: readonly LinePart[]) =>
+  parts.reduce<number | undefined>((last, part) => part.role === 'assistant' && (last === undefined || part.line > last) ? part.line : last, undefined);
 
 /** The parts of one transcript, decoded and split but never kept. Each
  *  pass over the history reads the file again rather than holding the
@@ -575,9 +614,13 @@ async function* fileParts(
       file = `${file}.zst`;
     }
     if (raw !== undefined) {
-      for (const part of decodeLines(provider, raw.split(/\r?\n/), 0, state, walk.includeTools, walk.size, walk.signal, undated)) {
+      const parts = [...decodeLines(provider, raw.split(/\r?\n/), 0, state, walk.includeTools, walk.size, walk.signal, undated)];
+      // Only Claude Code writes subagent transcripts, and it never compresses them.
+      const agent = subagentOf(provider, file);
+      const report = agent === undefined ? undefined : lastAssistantLine(parts);
+      for (const part of parts) {
         if (part.date < walk.since || part.date > walk.until) continue;
-        yield { provider, root, file, ...part };
+        yield { provider, root, file, ...withUnit(part, agent, report) };
       }
       return;
     }
@@ -844,7 +887,7 @@ const CHAT_TABLES = `CREATE TABLE IF NOT EXISTS transcripts (id INTEGER PRIMARY 
     parts INTEGER NOT NULL, UNIQUE (provider, root, path));
   CREATE TABLE IF NOT EXISTS parts (transcript INTEGER NOT NULL, ordinal INTEGER NOT NULL, line INTEGER NOT NULL,
     block INTEGER NOT NULL, piece INTEGER NOT NULL, session TEXT NOT NULL, role TEXT NOT NULL, author TEXT NOT NULL,
-    author_name TEXT, date INTEGER NOT NULL, text TEXT NOT NULL, long INTEGER NOT NULL, stems TEXT NOT NULL,
+    author_name TEXT, unit TEXT, date INTEGER NOT NULL, text TEXT NOT NULL, long INTEGER NOT NULL, stems TEXT NOT NULL,
     short TEXT NOT NULL, vec TEXT, pid TEXT NOT NULL, PRIMARY KEY (transcript, ordinal)) WITHOUT ROWID;
   CREATE TABLE IF NOT EXISTS postings (term TEXT NOT NULL, transcript INTEGER NOT NULL,
     ordinal INTEGER NOT NULL, count INTEGER NOT NULL, PRIMARY KEY (term, transcript, ordinal)) WITHOUT ROWID;
@@ -888,8 +931,8 @@ async function syncChatIndex(
       const insertPhrase = database.prepare('INSERT INTO phrases (rowid, words) VALUES (?, ?)');
       const deletePostings = database.prepare('DELETE FROM postings WHERE transcript = ?');
       const insertPart = database.prepare(`INSERT INTO parts (transcript, ordinal, line, block, piece, session, role,
-        author, author_name, date, text, long, stems, short, vec, pid)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+        author, author_name, unit, date, text, long, stems, short, vec, pid)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
       const textAt = database.prepare('SELECT text FROM parts WHERE transcript = ? AND ordinal = ?');
       const insertPosting = database.prepare('INSERT OR IGNORE INTO postings (term, transcript, ordinal, count) VALUES (?, ?, ?, ?)');
       // A part's posting list is its stored words with their counts:
@@ -927,7 +970,7 @@ async function syncChatIndex(
           const insertOne = (id: number, ordinal: number, part: LinePart, before: string | undefined) => {
             const words = storedChatWords(part.text, keyword);
             insertPart.run(id, ordinal, part.line, part.block, part.piece, part.sessionId, part.role, part.author,
-              part.authorName ?? null, part.date, part.text, words.long, words.stems, words.short,
+              part.authorName ?? null, part.unit ?? null, part.date, part.text, words.long, words.stems, words.short,
               vectorKey(part.text, before, ordinal), partId({ provider, root, file, ...part }));
             insertPostings(id, ordinal, words.stems, words.short);
             insertPhrase.run(id * PHRASE_ROW + ordinal, phraseWords(part.text));
@@ -1115,11 +1158,14 @@ function* storedParts(
   light = false,
 ): Generator<StoredPart> {
   const rows = database.prepare(`SELECT ordinal, line, block, piece, session, role,
-    ${light ? "'unmarked' AS author, NULL AS author_name" : 'author, author_name'}, date,
+    ${light ? "'unmarked' AS author, NULL AS author_name, NULL AS unit" : 'author, author_name, unit'}, date,
     ${withText ? 'text' : "'' AS text"}, long,
     ${light ? "'' AS stems, '' AS short, NULL AS vec" : 'stems, short, vec'}, pid FROM parts WHERE transcript = ? ORDER BY ordinal`)
     .all(transcript.id) as Record<string, unknown>[];
-  for (const row of rows) yield storedPart(provider, root, transcript, row);
+  const agent = light ? undefined : subagentOf(provider, transcript.file);
+  const report = agent === undefined ? undefined : rows.reduce<number | undefined>((last, row) =>
+    row.role === 'assistant' && (last === undefined || (row.line as number) > last) ? row.line as number : last, undefined);
+  for (const row of rows) yield withUnit(storedPart(provider, root, transcript, row), agent, report);
 }
 
 function storedPart(provider: ChatProvider, root: string, transcript: StoredTranscript, row: Record<string, unknown>): StoredPart {
@@ -1131,6 +1177,7 @@ function storedPart(provider: ChatProvider, root: string, transcript: StoredTran
     line: row.line as number, block: row.block as number, piece: row.piece as number,
     sessionId: row.session as string, role: row.role as MessageRole, author: row.author as Author,
     ...(row.author_name === null ? {} : { authorName: row.author_name as string }),
+    ...(row.unit === null || row.unit === undefined ? {} : { unit: row.unit as Unit }),
     date: row.date as number, text: row.text as string,
     words: { long: row.long as number, stems: row.stems as string, short: row.short as string },
   };
@@ -1142,10 +1189,13 @@ function storedPart(provider: ChatProvider, root: string, transcript: StoredTran
 function storedRows(
   database: IndexDatabase, provider: ChatProvider, root: string, transcript: StoredTranscript, ordinals: readonly number[],
 ): StoredPart[] {
-  const rows = database.prepare(`SELECT ordinal, line, block, piece, session, role, author, author_name, date, text,
+  const rows = database.prepare(`SELECT ordinal, line, block, piece, session, role, author, author_name, unit, date, text,
     long, stems, short, vec, pid FROM parts WHERE transcript = ? AND ordinal IN (SELECT value FROM json_each(?)) ORDER BY ordinal`)
     .all(transcript.id, JSON.stringify(ordinals)) as Record<string, unknown>[];
-  return rows.map((row) => storedPart(provider, root, transcript, row));
+  const agent = subagentOf(provider, transcript.file);
+  const report = agent === undefined ? undefined : (database.prepare(
+    "SELECT MAX(line) AS line FROM parts WHERE transcript = ? AND role = 'assistant'").get(transcript.id) as { line: number | null }).line ?? undefined;
+  return rows.map((row) => withUnit(storedPart(provider, root, transcript, row), agent, report));
 }
 
 /** Local JSONL transcripts. Each provider decodes its own message format;
@@ -1483,7 +1533,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
               : ` (${part.author} ${part.authorName})`} ${corpus!.iso[index]!}`,
             text: part.text,
             contentRef: `${part.provider}:${part.sessionId}:${part.line}:${part.block}:${part.piece}`,
-            chat: chatOf(part),
+            ...chatOf(part, corpus!.ids[index]!),
             date: { value: corpus!.iso[index]!, meaning: 'recorded' as const },
             ...extra,
           };
@@ -1622,7 +1672,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
               sourceId: id, role: 'reference',
               id: ids[index]!, title: shownTitle(part, zone), text: part.text,
               contentRef: `${part.provider}:${part.sessionId}:${part.line}:${part.block}:${part.piece}`,
-              chat: chatOf(part),
+              ...chatOf(part, ids[index]!),
               date: dated(part),
               signals: { similarity: similarities[index]! }, laneScore: similarities[index]!,
               ...(mark && !passes(index) ? { pastLaneCut: true as const } : {}),
@@ -1745,7 +1795,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
               sourceId: id, role: 'reference',
               id: ids[index]!, title: shownTitle(part, zone), text: part.text,
               contentRef: `${part.provider}:${part.sessionId}:${part.line}:${part.block}:${part.piece}`,
-              chat: chatOf(part),
+              ...chatOf(part, ids[index]!),
               date: dated(part),
               signals: { keyword: scores[position]!, phrase: matchOf.get(index)! },
               laneScore: base[position]!,
@@ -1793,7 +1843,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
                 sourceId: id, role: 'reference',
                 id: idOf(part), title: shownTitle(part, zone), text: part.text,
                 contentRef: `${part.provider}:${part.sessionId}:${part.line}:${part.block}:${part.piece}`,
-                chat: chatOf(part),
+                ...chatOf(part, idOf(part)),
                 date: dated(part),
                 signals: { phrase: count }, laneScore: count,
               });
@@ -1985,7 +2035,7 @@ export function chat(options: ChatOptions = {}): CandidateSource {
             sourceId: id, role: 'reference',
             id: ids[index]!, title: shownTitle(part, zone), text: part.text,
             contentRef: `${part.provider}:${part.sessionId}:${part.line}:${part.block}:${part.piece}`,
-            chat: chatOf(part),
+            ...chatOf(part, ids[index]!),
             date: dated(part),
             signals: { keyword: scores[index]! }, laneScore: base[index]!,
             ...(mark && !passes(index) ? { pastLaneCut: true as const } : {}),
@@ -2021,11 +2071,5 @@ export function chat(options: ChatOptions = {}): CandidateSource {
       }
     },
   };
-  if (options.bar !== undefined
-    && (typeof options.bar !== 'number' || !Number.isFinite(options.bar) || options.bar < 0 || options.bar > 1)) {
-    throw new TypeError('bar must be a number between 0 and 1.');
-  }
-  const questions = options.questions ?? AGENT_CHAT_CASCADE;
-  const bar = options.bar ?? questions.model?.bar ?? chatSettings.bar;
-  return historySource({ reader, ...chatSettings, questions, bar });
+  return historySource({ reader, ...chatSettings, mode: options.mode ?? agentTranscripts });
 }

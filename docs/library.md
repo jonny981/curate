@@ -34,7 +34,7 @@ To set the date the question is asked on, see [Time](#time).
 
 `recall()` throws if collection didn't finish: a source that was absent or only partly read, a part with no answer, or decisions a limit left undone.
 The error says `Context collection did not finish; inspect the source and decision records.`, and its `cause` holds `picked`, where each unfinished item stays visible.
-Parts left out on purpose don't count: those the label gate left out, those past [the rating stop](#the-rating-stop) and those past a `feed` size.
+Parts left out on purpose don't count: those the label gate left out, those past [the rating stop](#the-rating-stop) or [a chat read's](#the-chat-read) own stop, and those past a `feed` size.
 
 Read errors and model errors reach you as they are. To accept a partial selection, [call the steps yourself](#separate-selection-and-curation).
 
@@ -43,22 +43,21 @@ Read errors and model errors reach you as they are. To accept a partial selectio
 Each source carries its own settings, tuned for that kind of history.
 The readers start from these:
 
-| Source | Rare-word round | Labels | Label bar | Name lanes | Keep bar | Rule bar | Questions |
+| Source | Mode | Labels | Label bar | Name lanes | Keep bar | Rule bar | Questions |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `chat()` | Off | On, the seven kinds | 0.5 | On | 0.0146 | | `AGENT_CHAT_CASCADE` |
-| `git()` | On | Off | | On | 0.0146 | | `GIT_HISTORY_CASCADE` |
-| `markdown()`, `knowledgeBase()` | On | Off | | On | 0.0146 | | `MARKDOWN_CASCADE` |
-| `rules()` | On | Off | | Off | 0.0146 | 0.5, not yet tuned | `MARKDOWN_CASCADE` |
+| `chat()` | `agentTranscripts` | On, the seven kinds | 0.5 | On | 0.0146 | | `AGENT_CHAT_CASCADE` |
+| `git()` | `commits` | Off | | On | 0.0146 | | `GIT_HISTORY_CASCADE` |
+| `markdown()`, `knowledgeBase()` | `notes` | Off | | On | 0.0146 | | `MARKDOWN_CASCADE` |
+| `rules()` | `notes` | Off | | Off | 0.0146 | 0.5, not yet tuned | `MARKDOWN_CASCADE` |
+| `whatsapp()` | `directMessages` | Off | | On | 0.0146 | | `MARKDOWN_CASCADE` |
 
 | Setting | What it does |
 | --- | --- |
-| `rare` | Runs the [rare-word round](#rare-word-round) on this source. |
+| `mode` | How the source's parts are judged and read: its questions, its keep bar and its read ([Modes](#modes)). Absent means one built-in question for the part's kind, a bar of 0.0146 and the ranked read. |
 | `labels` | The [label](#labels) kinds asked of each part: `true` for the seven in `LABEL_KINDS`, a list for your own, `false` for none. |
 | `labelBar` | From 0 to 1. A kind the task needs at this bar or more brings in this source's parts labelled at this bar or more. Absent means 0.5. |
 | `names` | Searches once more for each person or thing the task names ([Names](#names)). |
-| `bar` | The keep bar: keep a reference part rated at or above this. |
 | `ruleBar` | Keep a rule rated at or above this. Absent means 0. Only sources whose parts are rules use it: `rules()`, and `markdown()` with kind `rules` or `instructions`. |
-| `questions` | The yes/no questions asked of each reference part, with fitted weights that combine the answers into its rating ([Question sets](#question-sets)). Absent means one built-in question for the part's kind. |
 | `decay` | Ranks older notes lower by their age at the task date, as `{ halfLife: '365 days' }`. Absent or `false` is off, as in every reader. Markdown only; see the [Markdown reader](../packages/markdown/README.md#decay). |
 
 Name lanes are off for rules because rules are chosen by where they apply, not by search.
@@ -68,9 +67,9 @@ Each reader exports its settings as one object, so you can spread it and change 
 
 | Object | Value | Used by |
 | --- | --- | --- |
-| `chatSettings` (`@curatejs/chat`) | `{ rare: false, labels: true, names: true, bar: 0.0146, questions: CHAT_CASCADE }` | `chat()`, which swaps in `AGENT_CHAT_CASCADE` |
-| `gitSettings` (`@curatejs/git`) | `{ rare: true, labels: false, names: true, bar: 0.0146, questions: GIT_HISTORY_CASCADE }` | `git()` |
-| `markdownSettings` (`@curatejs/markdown`) | `{ rare: true, labels: false, names: true, bar: 0.0146, questions: MARKDOWN_CASCADE }` | `markdown()`, `knowledgeBase()` |
+| `chatSettings` (`@curatejs/chat`) | `{ labels: true, names: true, mode: assistantChatHistory }` | `chat()`, which swaps in the `agentTranscripts` mode |
+| `gitSettings` (`@curatejs/git`) | `{ labels: false, names: true, mode: commits }` | `git()` |
+| `markdownSettings` (`@curatejs/markdown`) | `{ labels: false, names: true, mode: notes }` | `markdown()`, `knowledgeBase()` |
 | `rulesSettings` (`@curatejs/markdown`) | `{ ...markdownSettings, names: false, ruleBar: 0.5 }` | `rules()` |
 
 Sources can still affect each other in three ways.
@@ -78,7 +77,7 @@ A selected commit brings in a note it changed ([Linked notes](#linked-notes)).
 By default, and under `everyRanked: { c }`, every source's parts are ranked in one list before the decision step reads or cuts it.
 And a stopping limit in `pick.limits` is shared by every source, so only `everyRanked: true` with no stopping limit keeps each source's settings to its own pick, apart from linked notes.
 
-The pick record lists the settings each source ran with under `levers.sources`, such as `{ kind: 'chat', labels: true, labelBar: 0.5, rare: false, bar: 0.0146 }`, with `questions` holding the question set its parts were asked.
+The pick record lists the settings each source ran with under `levers.sources`, such as `{ kind: 'chat', mode: 'agent-transcripts', labels: true, labelBar: 0.5, bar: 0.0146 }`, with `questions` holding the question set its parts were asked.
 Its `effects` list says what each setting changed: the parts it brought in or kept out, and why when it changed nothing ([What each setting did](../packages/core/README.md#what-each-setting-did)).
 
 ## Labels
@@ -135,8 +134,8 @@ Each decision model stores its labels under its own ID, so two models never read
 
 | Decision model | ID |
 | --- | --- |
-| `jev()` at TypeSafe | `typesafe:${model}:items-once` |
-| `jev()` at another address | `jev:<host><path>:<model>:items-once` |
+| `jev()` at TypeSafe | `typesafe:${model}:item-records` |
+| `jev()` at another address | `jev:<host><path>:<model>:item-records` |
 | `openAIDecisions()` | `openai:${model}` |
 | `localDecisions()` | `local:<host><path>:<model>` |
 | Your own `decide` | Its `deciderId` property, or `'custom'` without one |
@@ -146,7 +145,7 @@ Give each handwritten decision function its own `deciderId`, or they'll share sa
 The IDs built from a server's address leave out its scheme and query, so set `pick.labels.deciderId` yourself for two servers that differ only there.
 A decision cache keeps the `deciderId` you give it, so give each server its own.
 
-Labels stored by an older `jev()` are under its earlier ID, `typesafe:${model}`, so `jev()` asks for them once more.
+Labels and decisions stored by an older `jev()` are under its earlier IDs, `typesafe:${model}` and `typesafe:${model}:items-once`, so `jev()` asks for them once more.
 A pick that sets `labels.deciderId`, or a decision cache with its own `deciderId`, keeps its stored entries.
 
 ## Whole-call options
@@ -177,8 +176,10 @@ Every option below is off or unset unless you set it, except where the default s
 | `stopWhenCold` | Off: every part of the fused order is rated | Stop rating once the ratings go cold ([The rating stop](#the-rating-stop)) |
 | `feed` | Unset: the whole fused order | Change the order the decision step reads, and how far ([Feed](#feed)) |
 | `everyRanked` | Unset: the fused order | `true` decides every ranked part; `{ c }` only the top `round(c × N^0.8)` ([Every ranked part](#every-ranked-part)) |
-| `everyScored` | Unset: each source's `bar` | One keep bar for every source ([Keep bars](#keep-bars)) |
-| `rare` | Unset: each source's `rare` | The [rare-word round](#rare-word-round) on or off for every source |
+| `everyScored` | Unset: each source's mode's `bar` | One keep bar for every source ([Keep bars](#keep-bars)) |
+| `needed` | None | The separate facts a complete answer needs, as your writer split the task ([The facts the answer needs](#the-facts-the-answer-needs)) |
+| `person` | None | The person's name as tasks word it, for modes that write [hard facts](#hard-facts) |
+| `wanted` | None | `'one decision'` or `'everything said'`, as your writer judged the task: picks a mode's bar for each kind of task ([Modes](#modes)) |
 | `labels` | The default folder and the model's ID | `{ directory, deciderId }` for stored [labels](#where-labels-are-stored) |
 | `route` | Off | Ask the task what kind of answer it needs, and switch options on to match ([Routing](#routing)) |
 | `answerTypes` | Off | Ask the task what kind of answer it needs, for typed questions ([Answer types](#answer-types)) |
@@ -330,12 +331,18 @@ Each part's place is the best of its keyword-lane places (a keyword lane being o
 Curate keeps the parts whose rating reaches their source's keep bar (0.0146 for every reader), strongest first, with the ranked order breaking ties.
 Rules are rated separately, against whether they apply.
 
+A source's mode says how its parts are read ([Modes](#modes)).
+Every mode that reads with `rankedRead` shares one read down the fused order, with every rule part.
+A mode that reads with a `conversationRead()`, such as `chat()`'s `agentTranscripts`, gets a read of its own ([The chat read](#the-chat-read)).
+The reads of one call run at once.
+
 Parts with the same text share their answers within a pick, including copies in one request. A part with no text shares on its title instead, so two title-only commits with different subjects get their own answers.
 Each copy keeps its source, and that source's question weights and keep bar.
 
 ### Keep bars
 
-A source's `bar` sets its keep bar, and `pick.everyScored` sets one for every source in their place.
+A source's mode's `bar` sets its keep bar, and `pick.everyScored` sets one for every source in their place.
+A mode's `bar` can also be one bar for each kind of task, `{ 'one decision': x, 'everything said': y }`: the pick's `wanted` picks one, and the lower of the two applies when it gives none.
 `everyScored: true` keeps every part with a valid rating, including zero, and `everyScored: { bar: 0.05 }` keeps those at 0.05 or more:
 
 ```ts
@@ -373,7 +380,7 @@ A keyword lane's place is the part's share of that lane across every source, a m
 
 `size` is the most reference parts the decision step reads; without it, it reads the whole order.
 A part past the size is never rated and records `unassessed` with reason `'feed'`, so a shorter feed can miss a part the default would have kept.
-A rating stop still works inside the size, and the rare-word round asks the parts it pulls only while the size has room. Rules are never cut.
+A rating stop still works inside the size. A chat read isn't capped by it: it reads the person's parts whatever their place, and its rings and segments reach past it. Rules are never cut.
 
 ```js
 const picked = await pick(candidates, {
@@ -392,7 +399,7 @@ Rules pass through uncounted and uncut, and a part below the count records `unas
 It's a dial, never the default, because no fixed count is safe everywhere ([measured](measurements.md#scaled-top-k)).
 
 The ranking is the label lane fused into the keyword order when labels ran, and the keyword order otherwise.
-Lane cuts and read limits don't shrink N, but a pool member that no lane kept reaches the decision step only through labels or the rare-word round.
+Lane cuts and read limits don't shrink N, but a pool member that no lane kept reaches the decision step only through labels.
 `c` must be a positive finite number. `everyRanked` with `stopWhenCold` or `feed` throws a `TypeError` before any request.
 
 ### The rating stop
@@ -402,43 +409,68 @@ It's off by default, so the decision model rates every part, at about $0.00002 a
 The `curate` command turns it on at the default levels.
 
 1. `pick.stopWhenCold: {}` reads the order two batches at a time, in the request-sized batches `limits` forms.
-2. When both replies land, it checks the two batches in order.
-3. It stops at the first batch whose best rating is under `floor` (0.1), or under `share` (0.2) times the best rating of every batch before it.
+2. As the replies land, it judges the rated parts in windows of `parts` (150), in order.
+3. It stops at the first window whose best rating is under `floor` (0.1), or under `share` (0.2) times the best rating of every window before it.
 4. It never stops before the read has kept a part at its keep bar and rated one at or above `floor`.
 
 So a question the history holds nothing for, and a history whose every part rates under `floor`, reads the whole order, at the cost of the stop being off.
-The rating is the part's full score after all its questions. A part that repeats an earlier part's text takes that answer and doesn't count toward its batch's best, and a rule kept at its own bar doesn't count as a kept part.
+The rating is the part's full score after all its questions. A part that repeats an earlier part's text takes that answer and doesn't count toward a window, and a rule kept at its own bar doesn't count as a kept part.
 
-The other batch of a pair that went cold is rated and kept as usual, so the read passes the cold batch by at most one batch.
+A window is a count of parts, not a request: a request holds fewer parts when they're long, about ten of a coding agent's.
+150 is the most parts one request carried when the floor and share were measured, so a window passes wherever every request inside it would have passed.
+Parts left over at the end of the order, too few to fill a window, aren't judged.
+
+A mode whose requests hold many short parts can judge each request alone instead, with `stopWindow: 'request'`: the read then checks each request's rated parts in the order the wave sent them.
+It does so only when every source of the ranked read is in such a mode and the call names no `parts`, and the record's `parts` then says `'request'`.
+The `notes` mode does ([measured](measurements.md#the-rating-stop)).
+
+The rest of the wave that held a cold window is rated and kept as usual.
 The stop never drops a part it rated: every rated part at or above its keep bar is kept.
 
-`{ floor, share }` changes the two numbers for one call.
+`{ floor, share, parts }` changes the numbers for one call.
 A higher `share` stops sooner and costs less; a lower one reads further and finds more.
 A higher `floor` can make a read longer, since it goes on until some part rates at or above it: on 20 parts, two a batch, the first rating 0.2 and the rest 0.05, a floor of 0.1 rates 4 parts and stops, and a floor of 0.3 rates all 20.
 The stop only applies when `everyRanked` is unset.
 
-A part past the stop is never rated and records `unassessed` with reason `'stopWhenCold'`, though the rare-word round can still pull it in.
+A part past the stop is never rated and records `unassessed` with reason `'stopWhenCold'`.
 A part no lane placed in the order records `'feed'`.
+The stop doesn't act on a source in a `conversationRead()` mode: [the chat read](#the-chat-read)'s own stop decides how far that goes, set or not.
 The record says what the stop read and what ended it ([The rating stop's record](../packages/core/README.md#the-rating-stops-record)), and the [measurements](measurements.md#the-rating-stop) show what it saves and costs.
 
-### Rare-word round
+### The chat read
 
-A second, narrow round after selection, run inside each source on its own.
-Git and Markdown turn it on through their `rare` setting; chat leaves it off.
-`pick.rare: true` runs it on every source, `pick.rare: false` turns it off everywhere, and `pick.rare: { share, bar }` runs it everywhere with your numbers.
-To turn it off for one source, build that source with `rare: false`.
+On the fused order (`everyRanked` unset), a source whose mode reads with a `conversationRead()` is read its own way. That's `chat()`'s default `agentTranscripts` mode, for Claude Code and Codex transcripts.
+Every source in a `rankedRead` mode keeps the read above, including a chat source on `assistantChatHistory`, a personal set or the judgment set: replayed on long chats with an assistant and on two-person chats, this read lost evidence.
+A part is warm when it's rated at least 0.1 times the best rating this read has seen.
 
-1. The source's parts that cleared its keep bar give the seed words.
-2. A seed word is rare when it appears in at most `share × N` of the source's reference parts, N counting the parts the search lanes left out too. `share` defaults to `5/850`, a count of 5 fitted on an 850-part LongMemEval history.
-3. Every unselected reference part of the source that shares a rare word is pulled in. One that was never rated goes to the decision step; one already rated keeps its rating.
-4. A pulled part joins the selection at or above `bar`, which defaults to 0.0146. The seeds keep their source's own bar.
+1. **The person's own parts first.** The read takes the parts the transcript marks as the person's (`author: 'person'`) in the keyword lanes' ranking, 112 a request. A person part no keyword lane holds comes after them, newest first.
+2. **Rings of neighbours.** Around each warm person part it reads the reply, then one more part on each side while the last ring held a warm part.
+3. **The stop.** After each request it counts the new warm parts. It stops after a request that adds at most 0.3 times the most any earlier request added, and never before the first warm part. When the person's parts run out first, it reads the order's other chat parts the same way. With no stop firing, every chat part the ranked read would reach is read.
+4. **Topic segments.** A part's `place` names its transcript and its position there. The read splits each transcript where its words change (TextTiling over word counts, no model; a transcript under 40 parts stays whole) and opens the segments that hold a warm person part or one of each search lane's top 10 parts. A lane's top parts lead the read to answers the agents wrote, which no person part sits near. Each lane's top 10 are counted among the parts of the sources this read reads, so notes or commits in the same call never take them.
+5. **Walks inside.** In each opened segment it rates the 3 parts the fused order ranks first, then reads one part further on each side of every warm part while that ring holds a warm part. The walks of every opened segment advance together, a ring a round.
+6. **Units of agent work.** Last, it reads the work subagents did, which is where the answers agents wrote sit. A unit is the parts a reader marks as one subagent's prompt or its report (`chat.unit`).
 
-Each source's round reads only that source, so one source's setting never changes another's pick.
-This N can differ from `pick.n`, which counts reference parts across every source.
-On a source with fewer than 340 reference parts, the default share can pull nothing: a shared word appears in at least 2 parts, and `5/850 × N` stays below 2.
+Each unit gets a description made by code: its first 600 characters, its Markdown headings, its 12 rarest words (those the fewest units hold) and, for a report, the first 600 characters of its prompt.
+Reports are ranked among reports and prompts among prompts, by keyword (BM25 of the descriptions against the call's search texts, the task first) and by meaning (each description's best cosine against them, with the call's embedder).
+Each list is cut at its own bend, and every unit above either cut opens.
+A list that says nothing about which unit holds the answer opens none: a keyword list with no query word in any description, or a meaning list with one score for descriptions that differ.
+Equal scores of units that match the queries, or whose descriptions are the same, open as the bend says, so one matching report opens.
+In the word counts a summary counts as a unit too: each line an agent wrote in the user's turn of a transcript with no prompt or report, of three parts or more.
+The opened units are read as the segments are. With no search texts no unit opens, and with no embedder they're ranked by keyword alone.
 
-With the rating stop on, the round reads the parts it asks in fused order, two batches at a time, under a stop with a best rating of its own, so a round whose answers go cold ends.
-No part is asked twice, the round only adds reference parts, and `share` must be a positive finite number and `bar` from 0 to 1, both checked before any request.
+Selection keeps a rated part at its source's bar, as for any source.
+A chat part of the order that the read never reached records `unassessed` with reason `'chatRead'`, which `recall()` accepts.
+The read keeps every part of its sources' history, since it walks each part's whole transcript.
+The call's limits hold: with `maxCandidates` set it reaches only the parts some lane's slice admitted, and a batch limit, time limit or cancellation that ends a request leaves that request's unrated parts unread, with that dial's reason.
+`stopWhenCold` doesn't act on these parts, and a `feed` size caps only the rest of the order, read after the person's parts.
+
+The stop never fires before the read has kept a part, so a question the history holds nothing for reads on to the end.
+A decision from the decision cache counts toward the stop with its stored rating, so a run whose decisions are stored reads as the run that stored them did.
+The record's `pick.chatRead` holds each read's numbers under its mode's name ([The rating stop's record](../packages/core/README.md#the-rating-stops-record)).
+
+`conversationRead({ walksOn, opens, stops })` takes your own rules in place of the measured ones; `walksOn`, `opens` and `stops` are those rules, exported to start from.
+Each call of `conversationRead()` makes a read of its own, so make it once per mode, and share it between modes that should be read together.
+The [measurements](measurements.md#the-chat-read) give the numbers behind each rule.
 
 ### Tags
 
@@ -521,7 +553,7 @@ If a stopping limit leaves parts unrated, `recall()` throws; to accept that, [ca
 | --- | --- | --- |
 | `maxPerBatch` | 150 questions | The most questions in one request. Every request still runs |
 | `maxBatchChars` | Off | Sizes each request by characters: as many whole parts as fit in N, counting the task, each part's id, title, date and text once, and each question's wording and criteria. A larger part goes alone; nothing is cut. With `maxPerBatch` set too, a request closes at whichever it reaches first |
-| `maxInFlight` | Off: every request of a round goes out together | The most requests of one round open at once; the rest go out in order as replies land |
+| `maxInFlight` | Off: every request of a round goes out together | The most requests of the call open at once, across every read running at the same time; the rest go out in order as replies land |
 | `maxCandidates` | Off | Stops each search lane at N parts ([measured](measurements.md#evidence-limits)) |
 | `maxBatches` | Off | Stops after N requests. With 151 one-question parts and one 150-question request, one part stays unrated. A question set can take several requests a part |
 | `maxElapsedMs` | Off | Stops asking at this many milliseconds. What it loses depends on response time |
@@ -535,7 +567,7 @@ Removing a limit can mean more requests and more model context, and reader failu
 
 `curate()` lays out the kept reference parts in their own words. No model writes the text.
 
-- **Strongest first.** The two parts with the highest rating sit under `### Most likely answer`, each under its own `#### <source> (said <date>)` heading; equal ratings keep the fused order.
+- **Strongest first.** The two parts with the highest rating sit under `### Most likely answer`, each under its own `#### <source> (said <date>)` heading; equal ratings keep the fused order. When [a Choice per needed fact](#a-choice-per-needed-fact) picked parts, the picks sit there instead, in the order picked.
 - **Then by date.** Every other part is grouped by the date it was said and its source, under `### <source> (said <date>)`, oldest group first and strongest first inside a group.
 - **Dates.** The date is the first `YYYY-MM-DD` or `YYYY/MM/DD` in the part's date, so date labels, ISO dates and timestamps all read the same. A part with no date sits under `(said unknown)`, last, and a date that's only a file's last change reads `(file changed <date>)`.
 - **Headings.** A heading names the part's file when it has one and its source otherwise, so two files of one source stay apart. A commit with no body shows its title.
@@ -561,9 +593,20 @@ A part whose trimmed text is the same as a stronger kept part's is left out, and
 The kept part's heading then names where and when the copy was said, if that differs: `<heading>, also <source> (said <date>)`.
 A text that only sits inside a longer part stays, since it may be a quote, a rejected plan or a later restatement. `record.collapsed` counts the copies.
 
+### Whole messages in the text
+
+When every part a text takes is a whole message (a source whose mode judges [whole messages](#whole-messages)), `curate()` lays them out one by one, strongest first, with no grouping by date.
+Each sits under its own heading naming its session (or a turn's note), its time to the minute and who said it: the person, by `curate({ person })` when given, an agent, tool output, or a turn's speaker.
+The two strongest sit under `### Most likely answer`, and the rest under `### More messages, strongest first`.
+
+The messages a [second stage](#a-second-stage) kept as one exchange are one passage, in conversation order, placed by its strongest message, under a heading such as `#### session 1a2b3c4d, an exchange (said 2026-03-02 10:14 to 2026-03-02 10:21)`.
+Each line names who said the message and when.
+With `keep.exchange: { nearest: 'paragraph' }`, an agent message kept only for an exchange shows only its paragraph nearest the person's message, and a line such as `[earlier paragraphs left out; the whole message is <id>]` names the rest. `record.items` holds every message whole.
+
 ### Budget
 
 There's no budget by default: every kept part is laid out, and the record's `estimatedTokens` gives the text's size.
+A mode's `textShare`, which no shipped mode sets, gives the text only its source's kept parts whose weight is at least that share of the source's best kept part's; `record.underShare` counts the others ([measured](measurements.md#text-share)).
 `curate.answerTokens` keeps the text within that many estimated tokens. Parts go in by rating, and the first part that would go over stops the rest, but the strongest part is always kept whole, even over the budget.
 
 The estimate needs no tokenizer: it counts words, digits in threes, runs of one punctuation mark, line ends and characters outside ASCII, fitted to a real tokenizer and set about a tenth high.
@@ -577,7 +620,7 @@ Each sentence is asked "Does this sentence supply evidence, a constraint or a de
 A sentence runs to a full stop, question mark or exclamation mark followed by a space, or to the line's end; blank lines go.
 
 Kept sentences stay in their own words and order under the same headings, and `…` marks where text was left out.
-A line that opens `user: ` or `assistant: ` names its speaker, and the first kept sentence of that turn carries the name.
+A line that opens `user: `, `assistant: ` or `<name>: ` for a name in the part's `speakers` names its speaker, and the first kept sentence of that turn carries the name.
 A part with no sentence kept is left out, the strongest included, so the text can be empty. A sentence `decide` gives no rating stays, and a kept sentence can lose the one that says what it refers to.
 
 If the request fails, the whole text comes back as if no sentence were rated and the record says why; a cancelled request throws. An `answerTokens` budget limits the text that's rated, not the text returned, which is usually far smaller.
@@ -588,13 +631,13 @@ The [layout record](../packages/core/README.md#the-layout-record) lists everythi
 ## Your own source settings
 
 Build a source with any settings through `historySource()`.
-`reader` is any source, a reader's or your own, and `rare`, `labels`, `names` and `bar` are required, so spread a reader's settings object and change what you need:
+`reader` is any source, a reader's or your own, and `labels` and `names` are required, so spread a reader's settings object and change what you need:
 
 ```js
 import { historySource } from '@curatejs/core';
-import { chat, chatSettings, AGENT_CHAT_CASCADE } from '@curatejs/chat';
+import { agentTranscripts, chat, chatSettings } from '@curatejs/chat';
 
-const source = historySource({ reader: chat({ paths: ['transcripts'] }), ...chatSettings, labels: false, questions: AGENT_CHAT_CASCADE });
+const source = historySource({ reader: chat({ paths: ['transcripts'] }), ...chatSettings, labels: false, mode: agentTranscripts });
 ```
 
 This turns labels off for one chat source, as the DolphinBench run did.
@@ -603,12 +646,12 @@ To write a reader of your own, see [Write your own source](../packages/core/READ
 
 ### Question sets
 
-A source's `questions` is a question set (a `PickCascade`): a `bias` and a list of `questions`, each with a `key`, `instructions`, a `true` and a `false` criterion, and a fitted `weight`.
+A mode's `questions` is a question set (a `PickCascade`): a `bias` and a list of `questions`, each with a `key`, `instructions`, a `true` and a `false` criterion, and a fitted `weight`.
 Curate combines the answers through those weights into the part's rating.
 `historySource()` checks the set when it builds the source, and the record keeps it under `levers.sources[sourceId].questions`, with each answer on the part's entry.
 
 ```js
-import { git, gitSettings } from '@curatejs/git';
+import { commits, git, gitSettings } from '@curatejs/git';
 
 const mySet = {
   bias: 0,
@@ -620,7 +663,7 @@ const mySet = {
     weight: 1,
   }],
 };
-const commits = historySource({ reader: git('.'), ...gitSettings, questions: mySet });
+const history = historySource({ reader: git('.'), ...gitSettings, mode: { ...commits, questions: mySet } });
 ```
 
 Each source asks its own set, so two sources of the same kind can ask different ones:
@@ -628,16 +671,17 @@ Each source asks its own set, so two sources of the same kind can ask different 
 ```ts
 import { historySource, pickFromSources } from '@curatejs/core';
 import { chat } from '@curatejs/chat';
-import { git, gitSettings } from '@curatejs/git';
+import { commits, git, gitSettings } from '@curatejs/git';
 import { knowledgeBase } from '@curatejs/markdown';
 
 const picked = await pickFromSources(
-  [chat({ paths: ['transcripts'] }), historySource({ reader: git('.'), ...gitSettings, questions: mySet }), knowledgeBase('docs')],
+  [chat({ paths: ['transcripts'] }), historySource({ reader: git('.'), ...gitSettings, mode: { ...commits, questions: mySet } }), knowledgeBase('docs')],
   { task },
   { task, decide },
 );
 ```
 
+A set with `combine: 'highest'` scores each part by the highest of its answers instead of their weighted sum ([The narrow question in two](#the-narrow-question-in-two)).
 A set can ask one question first: `first` names it, and outside `band: [low, high]` its answer alone gives the rating, through `firstOnly: { bias, weight }`; inside the band, every question counts.
 A missing answer adds nothing to the sum, and a part with every answer missing stays unanswered. If a limit stops a part's questions before they're asked, it stays unassessed.
 Ratings order evidence; they don't measure the chance of a right final answer.
@@ -649,9 +693,11 @@ Ratings order evidence; they don't measure the chance of a right final answer.
 | `PERSONAL_CHAT_CASCADE` | `@curatejs/chat` | For histories of a person's own life |
 | `GIT_HISTORY_CASCADE` | `@curatejs/git` | Four questions: `current` (relevance), `needed`, `when` (timing) and `offtopic`, whose negative weight lowers a part about something else. Never `own` or `preference` |
 | `MARKDOWN_CASCADE` | `@curatejs/markdown` | The same four questions, for notes |
+| `ANSWER_CASCADE` | `@curatejs/core` | [The narrow question in two](#the-narrow-question-in-two), scored by the "answers" probability |
+| `MESSAGE_ANSWER_CASCADE` | `@curatejs/chat` | Whether a whole message states the answer, or one needed fact, scored by the highest answer. For a [second stage](#a-second-stage) |
 
 A source with no set asks one built-in question, chosen by the part's kind.
-Markdown parts carry a kind (`knowledge`, `docs`, `rules` or `instructions`) from `markdown({ paths, kind })`, separate from the source's `questions`.
+Markdown parts carry a kind (`knowledge`, `docs`, `rules` or `instructions`) from `markdown({ paths, kind })`, separate from the mode's `questions`.
 A rule keeps its own question, about whether it applies, and an instruction its own; both keep their kind in the questions and the record.
 `pick.ranking: { docs: { bm25: 2 } }` weights ranking signals by Markdown kind when parts have no search ranks; unnamed weights are 1, weights must be finite and may be negative, and the record keeps them.
 
@@ -669,14 +715,14 @@ In a set with `first` and `band`, written questions are asked only when the othe
 ```js
 import { historySource, memory, taskQuestionWriter } from '@curatejs/core';
 import { jev } from '@curatejs/core/models';
-import { chat, chatSettings, PERSONAL_CHAT_WRITTEN_CASCADE } from '@curatejs/chat';
+import { assistantChatHistory, chat, chatSettings, PERSONAL_CHAT_WRITTEN_CASCADE } from '@curatejs/chat';
 
 const decide = jev({ apiKey: process.env.TYPESAFE_API_KEY });
 // Any model call: it gets { instructions, body } and returns the reply text.
 const write = async ({ instructions, body }, signal) => askYourModel(instructions, body, signal);
 
 const mem = memory({
-  sources: [historySource({ reader: chat(), ...chatSettings, questions: PERSONAL_CHAT_WRITTEN_CASCADE })],
+  sources: [historySource({ reader: chat(), ...chatSettings, mode: { ...assistantChatHistory, questions: PERSONAL_CHAT_WRITTEN_CASCADE } })],
   decide,
   pick: { writeQuestions: taskQuestionWriter(write) },
 });
@@ -699,6 +745,208 @@ The names come from [`taskNames()`, or `findNames` when you give one](#names).
 A name answer is a weighted term, never a rule: other parts of the same history mention the same name and score just as high, so a rule that raised a part to its name answer ranked the answer parts worse in tuning.
 `PERSONAL_CHAT_WRITTEN_CASCADE` carries `named`, asking "Does this part mention {name}?", with `highest` 0.1655479793453193 and `hasNames` -0.1646894012324575, fitted with the rest of that set.
 No other shipped set carries `named`, because no weight was fitted for one.
+
+## Modes
+
+A mode says how a source's parts are judged and read. A source carries its mode, set through `historySource()`, and each reader package exports its own; core holds none.
+A direct `pick()` takes the modes by source id as `modesBySource`.
+
+| Field | What it does |
+| --- | --- |
+| `name` | The mode's name, which the record names each source's mode by |
+| `questions` | The decision questions asked of each reference part ([Question sets](#question-sets)). Absent: the built-in question for the part's kind |
+| `bar` | Keep a reference part rated at or above this. A number, or one bar for each kind of task, `{ 'one decision': x, 'everything said': y }`, read for the pick's `wanted` and the lower of the two when it gives none. Absent: the set's fitted bar, or 0.0146 |
+| `read` | `rankedRead`, down the fused order, or a `conversationRead()` ([The chat read](#the-chat-read)) |
+| `needed` | `true` puts the facts the answer needs in each request's state ([The facts the answer needs](#the-facts-the-answer-needs)) |
+| `request` | `'text'` asks in plain text where nothing needs the JSON state ([The request's form](#the-requests-form)) |
+| `stopWindow` | `'request'` lets the rating stop judge each request alone ([The rating stop](#the-rating-stop)) |
+| `textShare` | Keep in the text only parts weighing at least this share of the source's best ([Budget](#budget)) |
+| `searchAgain` | `false` keeps a caller's second search off the mode's sources. Core doesn't search again itself; the `curate` command does |
+
+These levers are off by default, and each costs more when on:
+
+| Lever | What it does |
+| --- | --- |
+| `wholeMessages` | Judges each ranked piece's whole message ([Whole messages](#whole-messages)) |
+| `hardFacts` | Writes the fields code knows into each item's record ([Hard facts](#hard-facts)) |
+| `itemsPerRequest` | How many items one decision request holds ([Items per request](#items-per-request)) |
+| `roles` | Asks what each kept part is doing ([What each kept part is doing](#what-each-kept-part-is-doing)) |
+| `choicePerFact` | A Choice per needed fact over the kept parts, whose picks lead the text ([A Choice per needed fact](#a-choice-per-needed-fact)) |
+| `keep` | A second stage over the read's kept parts ([A second stage](#a-second-stage)) |
+
+The shipped modes:
+
+| Mode | Package | Questions | Bar | Read | Request |
+| --- | --- | --- | --- | --- | --- |
+| `agentTranscripts` | `@curatejs/chat` | `AGENT_CHAT_CASCADE`, with the needed facts | 0.0146 | `conversationRead()` | JSON |
+| `assistantChatHistory`, `longAssistantChats` | `@curatejs/chat` | `CHAT_CASCADE` | 0.0146 | `assistantChatRead()`: the ranked read, the person's own messages first | JSON |
+| `commits` | `@curatejs/git` | `GIT_HISTORY_CASCADE` | 0.0146 | `rankedRead` | JSON |
+| `notes` | `@curatejs/markdown` | `MARKDOWN_CASCADE` | 0.0146 | `rankedRead`, its stop judging each request alone | Plain text |
+| `directMessages` | `@curatejs/markdown` | `MARKDOWN_CASCADE` | 0.0146 | `rankedRead` | JSON |
+
+Parts of modes that share a read are read together: every `rankedRead` mode's parts and every rule part in one read of the fused order, and the parts of every mode on one `conversationRead()` in one chat read.
+`pick.levers.sources` names each source's mode and the levers it ran with.
+
+### The facts the answer needs
+
+`pick.needed` is a list of the separate facts a complete answer needs, as your writer split the task.
+A request of parts whose mode sets `needed: true` carries the list in its decision state beside the task, `{ task, needed, items }`.
+Parts of every other mode go in requests of their own and never see it.
+`agentTranscripts` sets it ([measured](measurements.md#the-facts-the-answer-needs)).
+
+### The person's own words
+
+No question set weighs a part by who wrote it.
+A part's `author` goes into its record in the decision state, so a question can read it, and the chat read starts from the person's own parts; neither changes a part's score.
+A weight on the person's parts, fitted on tasks whose answers were the person's own, didn't hold on tasks held out from the fit ([measured](measurements.md#the-persons-own-words)).
+
+### Whole messages
+
+A transcript message is cut into pieces for the search lanes.
+A mode with `wholeMessages: true` asks its decision questions about each ranked piece's whole message, once: every piece of it the pick holds, joined in order, with the blocks of one message apart by a blank line.
+
+- **A subagent's report** goes with the request that produced it, as `asked` in its record.
+- **A message too large for one request** (`limits.maxBatchChars`) goes as consecutive parts, each marked `part: 'k of n'`, and after the first, each carries the message's first piece as `opening`. The message takes its best part's rating.
+- **Every piece carries its message's rating,** so a message is kept or left out whole, and `curate()` lays it out once, whole ([Whole messages in the text](#whole-messages-in-the-text)).
+
+Only parts a transcript reader placed (`chat` and `place`) are joined, and the turns of a note written as a conversation, which the Markdown reader marks with `turn` when asked (`turns: true`). Such a turn goes whole from its reader's text, including pieces the pick doesn't hold.
+Notes have no messages, so a plain Markdown note isn't joined.
+On one person's coding-agent history the requests carried 2.47 times the text ([measured](measurements.md#whole-messages-hard-facts-and-items-per-request)).
+
+### Hard facts
+
+A mode with `hardFacts: true` writes into each item's record in the decision state the fields code knows for certain, never prose in its text.
+
+| Item | Fields |
+| --- | --- |
+| A transcript part | `kind` (`'<person> message'`, `'agent step'`, `'tool output'`, `'compaction summary'`, `'subagent prompt'`, `'subagent final report'` or `'system message'`), `session`, and how many `pieces` its message was cut into, with its own `piece` number when it's one of several. The person's messages carry the pick's `person` as their `author` |
+| A transcript part, when the read walks whole transcripts | Also its message's `position` in the session; `replies_to`, the nearest earlier message by the other side; and, for a message not the person's, `answered_by`, the person's next message. Each is `{ id, text }`: that message's first piece's id and its first 1,000 characters |
+| A turn of a note written as a conversation | Its speaker as `author`, its note as `session`, its `position` and `pieces`, and the turns before and after it as `replies_to` and `answered_by`, from its reader, whatever the read |
+| A commit | `kind: 'commit'` only |
+| Any other note | `kind: 'note'` only |
+
+The request's state also carries the pick's `person`, the person's name as tasks word it, and `wanted`, as your writer judged the task, when the pick gives them: `{ task, needed, person, wanted, items }`.
+Requests of other modes never carry these fields, and an answer asked with them is stored apart from one asked without.
+
+With `wholeMessages`, `hardFacts` and `itemsPerRequest: 1` together, each message is judged whole and alone, its record the state's `item`, in every request the read sends.
+That's the one form measured to sharpen the decision model's ranking; batched about 25 to a request, the same fields didn't help ([measured](measurements.md#whole-messages-hard-facts-and-items-per-request)).
+
+### Items per request
+
+Unset, a decision request holds as many items as the request limits allow, each item once with all its questions.
+A mode with `itemsPerRequest: 1` sends each item in a request of its own, with all of its questions; `itemsPerRequest: n` holds at most n.
+The task and the fields beside it (the needed facts, the person, the kind of task) repeat in every request.
+
+The requests of a round go out at once, inside `limits.maxInFlight` and the decider's own rate. `jev()` queues every request inside your organization's request and token rates ([Decision models](../packages/core/README.md#rate-limits)).
+A rating stop still plans its waves in parts.
+
+### The narrow question in two
+
+No shipped question set of a reader asks these.
+`ANSWER_QUESTION` and `FACT_QUESTION` split one narrow question, "does this item itself state the answer to the task, or one of the needed facts, rather than only being about the same subject or a step on the way to it?", into one judgment each:
+
+- **`ANSWER_QUESTION`:** "Does this item answer the task?" Its `false` criterion names the confusing case: "It describes work toward the answer, a plan, or a question about it, without stating the result".
+- **`FACT_QUESTION`:** "Does this item state this needed fact: {fact}". A set takes it as its `facts` question and asks it once per fact in `needed`, in the same request, keyed `fact1`, `fact2` and so on. `highest × logit(the highest fact answer)` joins the score, as a `named` question's does.
+
+Each follows the decision model's maker's advice against an "or" in one question, in the wording a reranking study found best calibrated with this model ("answers" rather than "relevant").
+
+`ANSWER_CASCADE` is the two as a set a mode can keep by: its score is the "answers" probability itself (weight 1, no bias), and the needed-fact question is asked beside it at weight 0, so its answers are recorded without moving the score.
+A calibrated probability is something a keep bar can rest on, and the bar is measured per mode, on labelled answers ([measured](measurements.md#the-narrow-question-in-two)).
+
+A set with `combine: 'highest'` scores each part by the highest of its answers: the "answers" probability and each needed fact's. So a part that states one fact the answer needs counts as much as one that states the whole answer.
+No weight is fitted. A set that weighs the fact answers in names its own:
+
+```ts
+const weighed: PickCascade = { bias: 0, questions: [{ ...ANSWER_QUESTION, weight: 1 }],
+  facts: { question: FACT_QUESTION, highest: 1 } };
+```
+
+### What each kept part is doing
+
+A mode with `roles: true` asks, after selection, one Choice per kept part (per message under `wholeMessages`): "What does this item do with the subject of the task?" (`ROLE_QUESTION`).
+It has eight options, each a concrete situation: it states a decision, result or fact as settled; proposes or plans; reports a step of the work; asks; agrees to or approves what came before; repeats or quotes something said earlier; is tool or command output; only mentions the subject.
+
+The answer goes in the part's record entry as `doing`, the option chosen and every option's probability, and in its record in the state of a later step, a Choice per needed fact.
+Where the mode's read walks whole transcripts, code also marks an agent's proposal that the person's next message approves: `approvedBy`, that message's part id, in the entry, and `approved_by` in the later step's state.
+No weight is put on any role, so the selection and the text are unchanged.
+
+The request asks a per-item Choice: a question's `options`, each a key and what it means, sent as the Choice's criteria.
+`openAIDecisions()` and `localDecisions()` have no Choice form and leave such a question unanswered.
+
+### A Choice per needed fact
+
+A mode with `choicePerFact: true`, or `{ candidates, enough }`, compares its kept parts for each fact in `needed`, after selection, with the decision model's maker's large-choice recipe: "Put the top twenty in one `Choice` question, with their long plots as the options".
+
+1. For each fact, the `candidates` kept parts (20 unless set) that the rating already ranks best for that fact go into one Choice, "Which of these items states this needed fact: {fact}". Each is written into its own option as who said it, when, and its text, with the task and the call's fields in the state.
+2. The pick is removed and the Choice asked again.
+3. After each round, "Do these items together state everything the task asks?" is asked of the picks so far, in their own request. At or over its bar (`enough: { bar }`, 0.7 unless set; `enough: false` turns it off) every fact's loop ends.
+4. Otherwise a loop ends when no candidate is left. No round count caps it.
+
+A part's rank for a fact is the set's own question for the fact when it asks one, and the part's score otherwise; equal ratings keep the search's order.
+Under `wholeMessages` a candidate is a whole message, and identical and near-identical texts (the same words in the same order, whatever their case, punctuation, Markdown and spacing) are one candidate, every copy carrying its pick.
+Candidates too long for one request are cut into windows inside the smaller of `limits.maxBatchChars` and the decider's own limit, at most 255 options. Each window is asked on its own, with one more Choice among the windows' picks, and a window the service refuses as too large is asked again in halves.
+
+The picks lead the text, under `### Most likely answer`, in the order picked; every other kept part follows, so nothing is dropped.
+Each picked part's record entry carries `chosen`, and the record's `choicePerFact` holds, per fact, the picks, every candidate ranked and why its loop ended.
+A call with no needed facts asks nothing and the record says so; a failed request leaves the text in its order with the error in the record.
+
+It needs a decider with a `list` function, as `jev()` has.
+`choosePerFact()` runs the same loop on any candidates, and its `reverseOptions` sends each Choice's options in reverse order, the maker's check for a lean toward the first option.
+It's likely a lever for tasks that want one answer: the recipe fits one right candidate among many, and when many parts state the same fact a Choice splits its probability among them ([measured](measurements.md#a-choice-per-needed-fact)).
+
+### A second stage
+
+A mode with `keep: { questions, bar, wholeMessages, hardFacts, itemsPerRequest }` reads as it always does, on its own questions and bar.
+After the read ends, the parts it kept are judged again with the stage's questions, and kept only at or above the stage's bar: a number, or one per kind of task read for the pick's `wanted`.
+
+- **The stage's own levers.** `wholeMessages` and `hardFacts` act on this stage's requests alone, so the read's walk and stop keep the score they were tuned on. The stage batches unless it sets `itemsPerRequest`.
+- **Its requests** carry the needed facts, and the person and `wanted` when the stage writes hard facts. Each carries `stage: 'keep'`, which `jev()` copies into the call it reports, so you can price each stage apart.
+- **A kept message** keeps every piece the pick holds at its message's score, which becomes the entry's `probability`; the read's score is `readProbability`. So the text orders by the stage's score.
+- **A message under the bar** is left out whole. A part the stage got no answer for keeps the read's verdict.
+- **The record.** `record.keep` holds the items asked, the stage's requests, and per source the parts kept and left out and the bar. `record.levers.sources` names the stage's settings.
+
+`keep.barByKind` keeps each kind of message at a bar of its own: the kinds the hard facts name (`KEEP_KINDS`: the person's message, an agent step, tool output, a subagent's prompt or final report, a compaction summary, a system message), each a number or one per kind of task.
+A kind with none, or a message its reader marked no kind for, keeps at the stage's `bar`, and a bar of 1 keeps a kind only within an exchange.
+
+`keep.exchange` keeps the exchange around what the person said:
+
+- For each message of the person the stage keeps: the agent message it replies to, and the agent's reply (the last agent message before the person's next), whatever they rate.
+- For each kept final report: the request that asked for it.
+- Tool output joins no exchange.
+
+Each kept entry says why it was kept (`keptAs`: `'rating'` or `'exchange'`) and whose exchanges it belongs to (`exchange`), and `record.keep` counts the parts kept by an exchange.
+`keep.exchangeBar` is the bar a kept message of the person must reach for its exchange to be kept with it, a number or one per kind of task. A message of the person kept at its kind's bar but under this one is kept alone. Unset, every kept message of the person brings its exchange; a kept report always brings its request.
+
+`keep.exchange: { nearest: 'paragraph' }` lays each agent message kept only for an exchange out as the paragraph nearest the person's message: the closing paragraph of the message the person answers, the opening paragraph of the agent's reply, or both, for a message that's each.
+The cut falls at a paragraph boundary, never at a count, and a line names the message's id in place of what's left out. A message kept on its own rating is never cut ([measured](measurements.md#a-second-stage)).
+
+### The request's form
+
+A request goes to the decision model in one of two forms:
+
+- **The JSON state** (`jevRequest`, the default) holds the task, the needed facts, the person, the kind of task, and each item as a record with the fields code knows.
+- **Plain text** (`jevTextRequest`) is the task, then each item as `Item N: <id> (<date meaning> <date>)`, its title, a blank line and its text, the items apart by a blank line. Each question's instructions are its wording, a blank line and `Item N`.
+
+A mode with `request: 'text'` asks in plain text whenever its request carries nothing only the JSON state holds.
+A mode with any lever on (whole messages, hard facts, items per request, roles, a Choice, a second stage), or a request with needed facts, the person or the kind of task, sends the JSON state.
+A request is split by form, so parts of a text mode and a JSON mode never share one, and the record names the form under `levers.sources[id].request`.
+
+`notes` asks in plain text, and the other shipped modes in the JSON state.
+A mode's bar is measured for the form it uses: a change to what the decision model is shown moves its scale ([measured](measurements.md#the-requests-form)).
+
+### A keep bar set by measurement
+
+`scripts/keep-bar.mjs`, in the repository, sets a source's `bar` from saved decision scores and marked answers rather than by hand, by conformal risk control (Angelopoulos and others, 2022).
+A task loses when any of its marked answers scores under the bar. Over n tasks, the bar is the highest at which (losing tasks + 1) / (n + 1) stays at or under a chosen risk, so a new task like them loses an answer with at most that chance.
+It needs at least 1 / risk − 1 tasks: 19 for 0.05, 99 for 0.01.
+
+```sh
+node scripts/keep-bar.mjs ratings.json --risk 0.05
+```
+
+It reports the bar, the bound, the calibration tasks that lose (with the exact 95% range of that rate), the tasks that lose when each is judged by the bar the others set, and the share of parts (and tokens, when given) the bar keeps.
+`--relative` reads each score as a share of its task's best.
+No default comes from it ([measured](measurements.md#a-keep-bar-set-by-measurement)).
 
 ## Answer types
 
@@ -727,7 +975,7 @@ Its answer adds `weight × logit(p)` to the part's score like the others, and an
 
 ```js
 import { historySource, memory } from '@curatejs/core';
-import { git, gitSettings, GIT_HISTORY_CASCADE } from '@curatejs/git';
+import { commits, git, gitSettings, GIT_HISTORY_CASCADE } from '@curatejs/git';
 
 const DATED = {
   ...GIT_HISTORY_CASCADE,
@@ -740,8 +988,8 @@ const DATED = {
     weight: 1,
   }],
 };
-const commits = historySource({ reader: git('.'), ...gitSettings, questions: DATED });
-const mem = memory({ sources: [commits], decide, pick: { answerTypes: true } });
+const history = historySource({ reader: git('.'), ...gitSettings, mode: { ...commits, questions: DATED } });
+const mem = memory({ sources: [history], decide, pick: { answerTypes: true } });
 ```
 
 No preset carries a typed question.
@@ -759,12 +1007,12 @@ Its answer type is `list`, its `weight` is 0 and its `keepAt` is 0.5, so it neve
 ```js
 import { COUNT_MARKER, historySource, memory } from '@curatejs/core';
 import { jev } from '@curatejs/core/models';
-import { chat, chatSettings, AGENT_CHAT_CASCADE } from '@curatejs/chat';
+import { agentTranscripts, chat, chatSettings, AGENT_CHAT_CASCADE } from '@curatejs/chat';
 
 const decide = jev({ apiKey: process.env.TYPESAFE_API_KEY });
 
 const mem = memory({
-  sources: [historySource({ reader: chat(), ...chatSettings, questions: { ...AGENT_CHAT_CASCADE, typed: [COUNT_MARKER] } })],
+  sources: [historySource({ reader: chat(), ...chatSettings, mode: { ...agentTranscripts, questions: { ...AGENT_CHAT_CASCADE, typed: [COUNT_MARKER] } } })],
   decide,
   pick: { answerTypes: true },
 });

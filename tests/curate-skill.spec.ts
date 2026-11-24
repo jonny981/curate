@@ -14,9 +14,9 @@ import { indexFilePath, STORED_INDEX_FORMAT } from '@curatejs/core/internal';
 import { chat, CHAT_CASCADE, chatSettings } from '@curatejs/chat';
 import { git as gitSource } from '@curatejs/git';
 // @ts-expect-error The standalone JavaScript command has no type declarations.
-import { acceptScope, allowedSession, citable, decisionAnswers, haikuCall, instructionsProfile, lunaCall, main, NODE_FLOOR, pickFullSources, rankMatches, parseArgs, parseSearches, parseSources, run, PROCESSOR_WARNING, sandboxAvailable, scopedEntries, sourcesFor, searchLinesPrompt, searchRoute, searchSource, sessionHeader, SETUP, SetupError, setupGuide, snapshotCodex, writeLog } from '../skills/curate/run.mjs';
+import { acceptScope, allowedSession, citable, decisionAnswers, haikuCall, instructionsProfile, lunaCall, main, NODE_FLOOR, pickFullSources, rankMatches, parseArgs, parseSearches, parseSources, run, DECISION_EXIT, PROCESSOR_WARNING, sandboxAvailable, scopedEntries, sourcesFor, searchLinesPrompt, searchRoute, searchSource, sessionHeader, SETUP, SETUP_EXIT, SetupError, setupGuide, snapshotCodex, writeLog } from '../skills/curate/run.mjs';
 
-const uncutPick = { everyRanked: true, everyScored: true, rare: false } as const;
+const uncutPick = { everyRanked: true, everyScored: true } as const;
 
 vi.mock('@curatejs/core/local-embeddings', () => ({
   createLocalEmbedder: vi.fn(async () => ({
@@ -117,6 +117,7 @@ describe('curate command input', () => {
       expect(() => parseSources({ sources: [{ type, path: 'here', always: 'yes' }] })).toThrow('always must be a boolean.');
     }
     expect(parseSources({ sources: [{ type: 'codex', path: 'here', allowedCwd: 'there', always: false }] }).sources[0].always).toBe(false);
+    expect(parseSources({ sources: [{ type: 'whatsapp', path: 'chat.txt', dates: 'month-first' }] }).sources[0].dates).toBe('month-first');
   });
 
   it.each([
@@ -131,6 +132,9 @@ describe('curate command input', () => {
     { sources: [{ type: 'codex', path: 'sessions', allowedCwd: [1] }] },
     { sources: [{ type: 'git' }] },
     { sources: [{ type: 'markdown' }] },
+    { sources: [{ type: 'whatsapp' }] },
+    { sources: [{ type: 'whatsapp', path: 'chat.txt', exclude: ['x'] }] },
+    { sources: [{ type: 'whatsapp', path: 'chat.txt', dates: 'year-first' }] },
     { sources: [{ type: 'claude-code', always: true }] },
     { sources: [{ type: 'codex', allowedCwd: 'projects' }] },
   ])('rejects invalid source settings %j', (value) => {
@@ -145,7 +149,12 @@ describe('curate command input', () => {
     expect(() => parseSources({ sources: [{ type: 'markdown', path: 'documents' }], [key]: 150 })).toThrow('no count limit');
   });
 
-  it.each(['userFirst', 'recentFirst'])('requires a boolean for %s', (key) => {
+  it('rejects the removed userFirst', () => {
+    expect(() => parseSources({ sources: [{ type: 'markdown', path: 'documents' }], userFirst: false }))
+      .toThrow("a chat source's read starts from the person's own parts itself");
+  });
+
+  it.each(['recentFirst'])('requires a boolean for %s', (key) => {
     expect(() => parseSources({ sources: [{ type: 'markdown', path: 'documents' }], [key]: 'true' })).toThrow();
     expect(parseSources({ sources: [{ type: 'markdown', path: 'documents' }], [key]: false })[key]).toBe(false);
   });
@@ -166,13 +175,20 @@ describe('curate command input', () => {
     expect(parseSources({ sources }).maxInFlight).toBeUndefined();
   });
 
-  it.each([[false], [{}], [{ floor: 0.2 }], [{ floor: 0, share: 0.5 }]])('keeps stopWhenCold %j', (value) => {
+  it('takes the organization\'s request and token rates as positive numbers only', () => {
+    const sources = [{ type: 'markdown', path: 'documents' }];
+    expect(() => parseSources({ sources, requestsPerSecond: 0 })).toThrow('requestsPerSecond must be a positive number');
+    expect(() => parseSources({ sources, tokensPerSecond: '100000' })).toThrow('tokensPerSecond must be a positive number');
+    expect(parseSources({ sources, requestsPerSecond: 200, tokensPerSecond: 400_000 })).toMatchObject({ requestsPerSecond: 200, tokensPerSecond: 400_000 });
+  });
+
+  it.each([[false], [{}], [{ floor: 0.2 }], [{ floor: 0, share: 0.5 }], [{ parts: 150 }]])('keeps stopWhenCold %j', (value) => {
     expect(parseSources({ sources: [{ type: 'markdown', path: 'documents' }], stopWhenCold: value }).stopWhenCold).toEqual(value);
   });
 
-  it.each([[true], [0.2], [{ floor: 2 }], [{ share: -1 }], [{ cutoff: 0.1 }], [null]])('rejects stopWhenCold %j', (value) => {
+  it.each([[true], [0.2], [{ floor: 2 }], [{ share: -1 }], [{ cutoff: 0.1 }], [null], [{ parts: 0 }], [{ parts: 1.5 }], [{ parts: '150' }]])('rejects stopWhenCold %j', (value) => {
     expect(() => parseSources({ sources: [{ type: 'markdown', path: 'documents' }], stopWhenCold: value }))
-      .toThrow('stopWhenCold must be false or { floor, share }, each a number between 0 and 1.');
+      .toThrow('stopWhenCold must be false or { floor, share, parts }: floor and share each a number between 0 and 1, parts a whole number, 1 or more.');
   });
 
   it.each(['quick', 'normal', 'deep'])('rejects the removed thoroughness setting %s, naming stopWhenCold', (level) => {
@@ -643,8 +659,6 @@ it('sends every part when whole lanes are requested, including short-word correc
   expect(asked).toHaveLength(302 * CHAT_CASCADE.questions.length);
   expect(picked.record.levers.sources[source.id].questions).toEqual(CHAT_CASCADE);
   expect(asked).toContain('We need to keep everything.');
-  expect((await searchSource(source, searches, [], directory).read({ task: 'We need orchard evidence', wholeLanes: true })).candidates[0].text)
-    .toBe('We need to keep everything.');
   expect(asked).toContain('Breakfast pancakes.');
   expect(new Set(asked).size).toBe(302);
   expect(picked.selected).toHaveLength(302);
@@ -716,13 +730,14 @@ it('sends each item’s evidence in the Jev state once and names the item in eac
   // the batch's counted size.
   expect(serialized.match(/FIRST BODY/g)).toHaveLength(1);
   expect(serialized.match(/SECOND BODY/g)).toHaveLength(1);
-  expect(payload.state).toContain('task text');
-  expect(payload.state).toContain('Item 1: commit one (recorded 2026-01-01)');
-  expect(payload.state).toContain('Item 2: commit two (recorded 2026-01-01)');
+  expect(payload.state).toEqual({ task: 'task text', items: {
+    1: { id: 'commit one', date: 'recorded 2026-01-01', title: 'title of commit one', text: 'FIRST BODY' },
+    2: { id: 'commit two', date: 'recorded 2026-01-01', title: 'title of commit two', text: 'SECOND BODY' },
+  } });
   expect(payload.questions).toEqual({
-    q0: { type: 'noul', instructions: 'Is it useful?\n\nItem 1', criteria: { true: 'yes', false: 'no' } },
-    q1: { type: 'noul', instructions: 'Does it say when?\n\nItem 1', criteria: { true: 'yes', false: 'no' } },
-    q2: { type: 'noul', instructions: 'Is it useful?\n\nItem 2', criteria: { true: 'yes', false: 'no' } },
+    q0: { type: 'noul', instructions: { question: 'Is it useful?', item: 'items.1' }, criteria: { true: 'yes', false: 'no' } },
+    q1: { type: 'noul', instructions: { question: 'Does it say when?', item: 'items.1' }, criteria: { true: 'yes', false: 'no' } },
+    q2: { type: 'noul', instructions: { question: 'Is it useful?', item: 'items.2' }, criteria: { true: 'yes', false: 'no' } },
   });
 });
 
@@ -825,7 +840,7 @@ it('recovers a part outside cut reads through the source label kinds', async () 
   expect(asked).toContain(parts[1]!.text);
   expect(reads).toContain(false);
   expect(reads).toContain(true);
-  expect(picked.record.levers.sources.notes).toEqual({ kind: 'markdown', labels: true, labelBar: 0.5, rare: false, bar: 0.0146 });
+  expect(picked.record.levers.sources.notes).toEqual({ kind: 'markdown', labels: true, labelBar: 0.5, bar: 0.0146 });
   expect(picked.record.labels.gate).toBe(2);
 });
 
@@ -874,7 +889,7 @@ it('does not admit unrelated items just because recency or inbound links are pos
   expect((await searchSource(source, searches, [], directory).read({ task: 'orchard' })).candidates).toEqual([]);
 });
 
-it('orders user messages first, then keyword score, then newer matching sessions at equal scores', () => {
+it('orders by keyword score, then newer matching sessions at equal scores, whoever wrote the part', () => {
   const candidate = (id: string, role: 'user' | 'assistant', sessionId: string, date: string, score: number): MemoryCandidate => ({
     sourceId: 'chat', id, role: 'reference', title: '', text: '',
     chat: { provider: 'claude-code', role, sessionId }, date: { value: date, meaning: 'recorded' }, signals: { keyword: score },
@@ -886,21 +901,18 @@ it('orders user messages first, then keyword score, then newer matching sessions
     candidate('strong-user', 'user', 'old', '2026-01-01', 1),
   ];
   expect(rankMatches(items).map((item: MemoryCandidate) => item.id)).toEqual([
-    'strong-user', 'z-new-user', 'a-old-user', 'assistant',
+    'assistant', 'strong-user', 'z-new-user', 'a-old-user',
   ]);
   expect(rankMatches(items, { recentFirst: false }).map((item: MemoryCandidate) => item.id)).toEqual([
-    'strong-user', 'a-old-user', 'z-new-user', 'assistant',
-  ]);
-  expect(rankMatches(items, { userFirst: false }).map((item: MemoryCandidate) => item.id)).toEqual([
-    'assistant', 'strong-user', 'z-new-user', 'a-old-user',
+    'assistant', 'strong-user', 'a-old-user', 'z-new-user',
   ]);
   expect(items.every((item) => !('rankOrder' in item.signals))).toBe(true);
 });
 
-it('orders the person\'s parts before other user-role parts', () => {
+it('keeps the person\'s parts in score order', () => {
   const candidate = (id: string, role: 'user' | 'assistant', author: 'person' | 'agent' | 'unmarked', score: number): MemoryCandidate => ({
     sourceId: 'chat', id, role: 'reference', title: '', text: '',
-    chat: { provider: 'claude-code', role, sessionId: 'one', author }, date: { value: '2026-01-01', meaning: 'recorded' }, signals: { keyword: score },
+    author, chat: { provider: 'claude-code', role, sessionId: 'one' }, date: { value: '2026-01-01', meaning: 'recorded' }, signals: { keyword: score },
   });
   const items = [
     candidate('assistant', 'assistant', 'agent', 10),
@@ -908,8 +920,7 @@ it('orders the person\'s parts before other user-role parts', () => {
     candidate('unmarked', 'user', 'unmarked', 4),
     candidate('person', 'user', 'person', 0),
   ];
-  expect(rankMatches(items).map((item: MemoryCandidate) => item.id)).toEqual(['person', 'agent-brief', 'unmarked', 'assistant']);
-  expect(rankMatches(items, { userFirst: false }).map((item: MemoryCandidate) => item.id)).toEqual(['assistant', 'agent-brief', 'unmarked', 'person']);
+  expect(rankMatches(items).map((item: MemoryCandidate) => item.id)).toEqual(['assistant', 'agent-brief', 'unmarked', 'person']);
 });
 
 describe('decision answers', () => {
@@ -1004,6 +1015,21 @@ describe('the sentence cutoff, and what the skill tells the caller', () => {
     expect(lines).toEqual(['No sentence was rated at sentenceCutoff 0.5 or more; the text is empty.']);
   });
 
+  it('returns an empty text, writes the empty text and kept list, and says so, when no part was kept', async () => {
+    const directory = join(await folder(), 'run');
+    await mkdir(directory);
+    const record: { curate?: Record<string, unknown>; status?: string; timings: Record<string, number> } = { timings: {} };
+    const printed = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const result = await writeLog('orchard evidence', pickOf([]), directory, record, {});
+    expect(result.log).toBe('');
+    expect(printed.mock.calls).toEqual([['']]);
+    expect(errors.mock.calls.map((call) => String(call[0]))).toEqual(["No part was kept: none reached its source's keep bar, so the text is empty."]);
+    expect(record).toMatchObject({ status: 'complete', curate: { items: [], nothingKept: true } });
+    expect(await readFile(join(directory, 'log.md'), 'utf8')).toBe('');
+    expect(JSON.parse(await readFile(join(directory, 'kept.json'), 'utf8'))).toEqual([]);
+  });
+
   it('says on standard error how many parts at weight 0.5 or more the budget left out, and how to ask for more', async () => {
     const wide = (id: string) => reference(id, `${'the pear tree by the pond '.repeat(40)}${id}`);
     const { lines } = await told([[ORCHARD, 0.9], [wide('one'), 0.8], [wide('two'), 0.5], [wide('three'), 0.3]], { answerTokens: 60 });
@@ -1083,38 +1109,173 @@ process.stdin.resume().on('end', () => process.stdout.write(${JSON.stringify(rep
   });
 });
 
-it('saves the pick record naming the rejected batch when the decision service fails', async () => {
+/** A call on a notes folder whose decision requests get `reply`; the
+ *  search-line and label requests are answered. Resolves to the call's
+ *  result or failure, and the home folder its records go under. */
+/** The item a question asks about, and its wording, in either request form: the plain-text state (`Item N`) or
+ *  the JSON one (`items.N`). */
+function itemAsked(body: { state: unknown }, instructions: string | { question: string; item: string }) {
+  if (typeof instructions === 'string') {
+    const n = Number(/\n\nItem (\d+)$/.exec(instructions)![1]);
+    const state = body.state as string;
+    const start = state.indexOf(`\n\nItem ${n}: `);
+    const next = state.indexOf(`\n\nItem ${n + 1}: `, start + 1);
+    return { text: state.slice(start, next < 0 ? undefined : next), wording: instructions.replace(/\n\nItem \d+$/, '') };
+  }
+  const items = (body.state as { items: Record<string, { text: string }> }).items;
+  return { text: items[instructions.item.slice('items.'.length)]?.text ?? '', wording: instructions.question };
+}
+
+async function decisionCall(reply: (payload: { questions: Record<string, unknown> }) => Response | Promise<Response>, records = false,
+  key = 'test-key', count = 6) {
   const directory = await folder();
   const home = join(directory, 'home');
   const notes = join(directory, 'notes');
   await mkdir(home);
   await mkdir(notes);
-  await writeFile(join(notes, 'orchard.md'), '# Orchard\n\nThe orchard has trees. Fruit trees grow here.\n');
+  for (let at = 0; at < count; at += 1) {
+    await writeFile(join(notes, `orchard-${at}.md`), `# Orchard ${at}\n\nThe orchard has trees. Fruit trees grow here, row ${at}.\n`);
+  }
   const sourcesFile = join(directory, 'sources.json');
-  await writeFile(sourcesFile, JSON.stringify({ records: true, sources: [{ type: 'markdown', path: notes }] }));
+  await writeFile(sourcesFile, JSON.stringify({ records, sources: [{ type: 'markdown', path: notes }] }));
   vi.stubEnv('HOME', home);
   vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
-  vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
+  vi.stubEnv('TYPESAFE_API_KEY', key);
   vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => {
     const payload = JSON.parse(String(init.body));
-    if (payload.state.startsWith('Label short excerpts') || payload.state.startsWith('QUESTION the user asked:')) {
+    // A notes request is plain text: its task is the state's first paragraph.
+    const task: string = typeof payload.state === 'string' ? payload.state.split('\n\n')[0] : payload.state.task;
+    if (task.startsWith('Label short excerpts') || task.startsWith('QUESTION the user asked:')) {
       return Response.json({ answers: Object.fromEntries(
         Object.keys(payload.questions).map((key) => [key, { noul: 0.8 }]),
       ) });
     }
-    return new Response('rejected', { status: 400 });
+    return reply(payload);
   }));
   const { call } = subscriptionReply(searches());
-  await expect(run(['--sources', sourcesFile, 'orchard'], call)).rejects.toThrow('The decide call failed');
-  const folders = await readdir(join(home, '.curate', 'runs'));
-  expect(folders).toHaveLength(1);
-  const saved = JSON.parse(await readFile(join(home, '.curate', 'runs', folders[0]!, 'record.json'), 'utf8'));
-  expect(saved.status).toBe('failed');
-  expect(saved.error).toContain('Model request failed: HTTP 400. rejected');
-  expect(saved.pick?.decideError?.message).toBe('Model request failed: HTTP 400. rejected');
-  expect(saved.pick?.decideError?.candidates?.length).toBeGreaterThan(0);
-  const ids = new Set<string>((saved.pick?.candidates ?? []).map((entry: { id: string }) => entry.id));
-  expect(saved.pick?.decideError?.candidates?.every((id: string) => ids.has(id))).toBe(true);
+  const outcome = await run(['--sources', sourcesFile, 'orchard'], call).then(
+    (value: Awaited<ReturnType<typeof run>>) => ({ value, error: undefined }),
+    (error: Error & { exitCode?: number }) => ({ value: undefined, error }));
+  return { ...outcome, home };
+}
+const answered = (payload: { questions: Record<string, unknown> }) =>
+  Response.json({ answers: Object.fromEntries(Object.keys(payload.questions).map((key) => [key, { noul: 0.8 }])) });
+const BILLING = JSON.stringify({ detail: { error_type: 'billing_error', message: 'Your organization has no available TypeSafe API credits. Please add more credits and/or set up auto-reload at https://console.typesafe.ai/settings/billing' } });
+
+describe('a call the decision service refuses', () => {
+  it('leads with no credit, the service\'s own message and what to do, counts the parts, and exits with its own code', async () => {
+    const { error } = await decisionCall(() => new Response(BILLING, { status: 402 }));
+    expect(error?.exitCode).toBe(DECISION_EXIT);
+    expect(DECISION_EXIT).not.toBe(SETUP_EXIT);
+    const [first, second, ...rest] = error!.message.split('\n');
+    expect(first).toBe('The decision service has no credit, so Curate stopped before deciding which parts answer the question. '
+      + 'Add credit to the TypeSafe account, then ask again. The service said: Your organization has no available TypeSafe API credits. '
+      + 'Please add more credits and/or set up auto-reload at https://console.typesafe.ai/settings/billing');
+    expect(second).toMatch(/^\d+ parts were left undecided; set `records` to true to keep their ids\.$/);
+    expect(rest).toEqual([]);
+    expect(error!.message).not.toContain('orchard-');
+  });
+
+  it('keeps the undecided parts\' ids in the run record when records are on, and names it', async () => {
+    const { error, home } = await decisionCall(() => new Response(BILLING, { status: 402 }), true);
+    const folders = await readdir(join(home, '.curate', 'runs'));
+    expect(folders).toHaveLength(1);
+    const recordFile = join(home, '.curate', 'runs', folders[0]!, 'record.json');
+    const saved = JSON.parse(await readFile(recordFile, 'utf8'));
+    expect(saved.status).toBe('failed');
+    expect(saved.error).toBe(error!.message);
+    const count = saved.pick?.decideError?.candidates?.length;
+    expect(count).toBeGreaterThan(0);
+    expect(error!.message.split('\n')[1]).toBe(`${count} parts were left undecided; ${recordFile} lists them under pick.decideError.`);
+    const ids = new Set<string>((saved.pick?.candidates ?? []).map((entry: { id: string }) => entry.id));
+    expect(saved.pick?.decideError?.candidates?.every((id: string) => ids.has(id))).toBe(true);
+  });
+
+  it('names the key setting when the service refuses the key', async () => {
+    const { error } = await decisionCall(() => Response.json({ detail: 'Invalid API key' }, { status: 401 }));
+    expect(error?.exitCode).toBe(DECISION_EXIT);
+    expect(error!.message.split('\n')[0]).toBe('The decision service refused the key in `TYPESAFE_API_KEY` (HTTP 401), so Curate stopped before '
+      + 'deciding which parts answer the question. Set a current key from TypeSafe (https://typesafe.ai), then ask again. The service said: Invalid API key');
+  });
+
+  it('says the service could not be reached when a request gets no reply', async () => {
+    const { error } = await decisionCall(() => { throw new TypeError('fetch failed', { cause: new Error('getaddrinfo ENOTFOUND api.typesafe.ai') }); });
+    expect(error?.exitCode).toBe(DECISION_EXIT);
+    expect(error!.message.split('\n')[0]).toBe('Curate could not reach the decision service (fetch failed (getaddrinfo ENOTFOUND api.typesafe.ai)), '
+      + 'so it stopped before deciding which parts answer the question. Check the network connection, then ask again.');
+  });
+
+  it('says the service is still rate-limiting when a 429 outlasts the wait, and exits with the decision code', async () => {
+    const { error } = await decisionCall(() => new Response('quota spent', { status: 429, headers: { 'retry-after': '120' } }));
+    expect(error?.exitCode).toBe(DECISION_EXIT);
+    const [first, second] = error!.message.split('\n');
+    expect(first).toBe('The decision service is still asking Curate to wait (HTTP 429), so Curate stopped before deciding which parts '
+      + 'answer the question. Ask again in a few minutes. The service said: quota spent');
+    expect(second).toMatch(/^\d+ parts? (was|were) left undecided; set `records` to true to keep their ids\.$/);
+  });
+
+  it('names any other refusal with its status and the service\'s reply', async () => {
+    const { error } = await decisionCall(() => new Response('upstream overloaded', { status: 503 }));
+    expect(error?.exitCode).toBe(DECISION_EXIT);
+    expect(error!.message.split('\n')[0]).toBe('The decision service refused a request (HTTP 503), so Curate stopped before '
+      + 'deciding which parts answer the question. The service said: upstream overloaded');
+  });
+
+  // A reply can echo the key the call sent or other credentials; what the
+  // command prints and records keeps the cause and masks them.
+  const KEY = 'fake-review-secret-937';
+  const secrets = [['the configured key', `Invalid key: ${KEY}`, KEY],
+    ['a bearer token', 'Authorization: Bearer sk-fakeReviewOnlyABCDEFGHIJKLMNOPQRSTUVWXYZ', 'sk-fakeReviewOnly'],
+    ['a password', 'password=tinyFakePassword', 'tinyFakePassword']] as const;
+  const paths = [
+    ['no credit', (said: string) => new Response(JSON.stringify({ detail: { error_type: 'billing_error',
+      message: `${said}. Please add more credits at https://console.typesafe.ai/settings/billing` } }), { status: 402 }),
+    ['The decision service has no credit', 'https://console.typesafe.ai/settings/billing']],
+    ['a refused key', (said: string) => Response.json({ detail: said }, { status: 401 }), ['(HTTP 401)', 'TYPESAFE_API_KEY']],
+    ['no reply', (said: string) => { throw new TypeError('fetch failed', { cause: new Error(said) }); }, ['could not reach the decision service']],
+    ['another refusal', (said: string) => new Response(said, { status: 503 }), ['(HTTP 503)']],
+  ] as const;
+  it.each(paths.flatMap(([path, reply, kept]) => secrets.map(([what, said, secret]) => [path, what, reply, kept, said, secret] as const)))(
+    'on %s, masks %s in what it prints and records, and keeps the cause', async (_path, _what, reply, kept, said, secret) => {
+      const { error, home } = await decisionCall(() => reply(said), true, KEY);
+      expect(error?.exitCode).toBe(DECISION_EXIT);
+      expect(error!.message).not.toContain(secret);
+      for (const words of kept) expect(error!.message.split('\n')[0]).toContain(words);
+      const folders = await readdir(join(home, '.curate', 'runs'));
+      const saved = await readFile(join(home, '.curate', 'runs', folders[0]!, 'record.json'), 'utf8');
+      expect(saved).not.toContain(secret);
+      expect(saved).not.toContain(KEY);
+    });
+
+  it('masks the key in every error the record keeps when requests in flight fail with different words', async () => {
+    // Enough notes for several requests at once, each refused with its own text.
+    let request = 0;
+    const { error, home } = await decisionCall(() => {
+      request += 1;
+      return Response.json({ detail: `Invalid key: ${KEY}; request ${request}` }, { status: 401 });
+    }, true, KEY, 80);
+    expect(request).toBeGreaterThan(1);
+    expect(error!.message).not.toContain(KEY);
+    const folders = await readdir(join(home, '.curate', 'runs'));
+    const saved = await readFile(join(home, '.curate', 'runs', folders[0]!, 'record.json'), 'utf8');
+    expect(saved).not.toContain(KEY);
+    // The record keeps what it held: every candidate, with its id, and the refused parts' ids.
+    const record = JSON.parse(saved);
+    expect(record.pick.candidates.length).toBeGreaterThanOrEqual(80);
+    expect(record.pick.candidates.every((entry: { id: string }) => entry.id.includes('orchard-'))).toBe(true);
+    expect(record.pick.decideError.candidates.length).toBeGreaterThan(0);
+  });
+
+  it('waits out a 429 and answers as usual', async () => {
+    let calls = 0;
+    const { value, error } = await decisionCall((payload) => {
+      calls += 1;
+      return calls === 1 ? new Response('rate limited', { status: 429, headers: { 'retry-after': '0' } }) : answered(payload);
+    });
+    expect(error).toBeUndefined();
+    expect(value?.memory).toContain('Orchard');
+    expect(calls).toBeGreaterThan(1);
+  });
 });
 
 // The injected call stands in for Haiku as the helper would: it answers the
@@ -1161,7 +1322,7 @@ describe('a run through core decision calls', () => {
       const raw = String(init.body);
       const sent = JSON.parse(raw);
       bodies.push(raw);
-      if (sent.state.length > 20_000) return new Response('request too large', { status: 400 });
+      if (JSON.stringify(sent.state).length > 20_000) return new Response('request too large', { status: 400 });
       return new Response(JSON.stringify({
         usage: { input_tokens: 1, output_tokens: 1 },
         answers: Object.fromEntries(Object.keys(sent.questions).map((key) => [key, { noul: 0.8 }])),
@@ -1226,6 +1387,355 @@ describe('a run through core decision calls', () => {
     expect(await readFile(join(runFolder, 'log.md'), 'utf8')).toContain('2026-01-01');
   });
 
+  it('sends the person and how many answers are wanted, and each part\'s hard facts, when a chat source turns the lever on', async () => {
+    const directory = await folder();
+    const home = join(directory, 'home');
+    const transcripts = join(directory, 'transcripts');
+    await mkdir(home);
+    await mkdir(transcripts);
+    await writeFile(join(transcripts, 'session.jsonl'), [
+      JSON.stringify({ type: 'user', sessionId: 's1', timestamp: '2026-01-01T12:00:00Z', origin: { kind: 'human' },
+        message: { content: 'Should we keep the orchard cache layered?' } }),
+      JSON.stringify({ type: 'assistant', sessionId: 's1', timestamp: '2026-01-01T12:01:00Z',
+        message: { content: [{ type: 'text', text: 'I propose keeping the orchard cache layered.' }] } }),
+      JSON.stringify({ type: 'user', sessionId: 's1', timestamp: '2026-01-01T12:02:00Z', origin: { kind: 'human' },
+        message: { content: 'Yes, do that.' } }),
+    ].join('\n'));
+    const sourcesFile = join(directory, 'sources.json');
+    await writeFile(sourcesFile, JSON.stringify({ records: true, person: 'Ada',
+      sources: [{ type: 'claude-code', path: transcripts, levers: { hardFacts: true } }] }));
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
+    vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
+    const bodies: { state: Record<string, unknown> & { items: Record<string, Record<string, unknown>> } }[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => {
+      const body = JSON.parse(String(init.body));
+      bodies.push(body);
+      return new Response(JSON.stringify({ usage: null,
+        answers: Object.fromEntries(Object.keys(body.questions).map((key) => [key, { noul: 0.8 }])) }));
+    }));
+    const { call, calls } = subscriptionReply({ ...searches(), needed: ['Whether the cache stays layered'], wanted: 'one decision' });
+    const { record } = await run(['--sources', sourcesFile, 'What did Ada decide about the orchard cache?'], call);
+    expect(calls[0]!.prompt).toContain('"wanted"');
+    // Which messages count is not asked: beside facts worded as what the person said, asked or requested, it moved no rating.
+    expect(calls[0]!.prompt).not.toContain('"counts"');
+    expect(record.wanted).toEqual({ value: 'one decision' });
+    expect(record).not.toHaveProperty('counts');
+    expect(bodies.length).toBeGreaterThan(0);
+    for (const body of bodies) {
+      expect(body.state).toMatchObject({ person: 'Ada', wanted: 'one decision', needed: ['Whether the cache stays layered'] });
+      expect(body.state).not.toHaveProperty('counts');
+      for (const item of Object.values(body.state.items)) expect(item).toMatchObject({ session: 's1', pieces: 1 });
+    }
+    const items = bodies.flatMap((body) => Object.values(body.state.items));
+    expect(items.find((item) => item.text === 'Yes, do that.')).toMatchObject({ author: 'Ada', kind: 'Ada message',
+      replies_to: { text: 'I propose keeping the orchard cache layered.' } });
+  });
+
+  it('asks a chat source that names the narrow question in two with the facts the answer needs', async () => {
+    const directory = await folder();
+    const home = join(directory, 'home');
+    const transcripts = join(directory, 'transcripts');
+    await mkdir(home);
+    await mkdir(transcripts);
+    await writeFile(join(transcripts, 'session.jsonl'), [
+      JSON.stringify({ type: 'user', sessionId: 's1', timestamp: '2026-01-01T12:00:00Z', origin: { kind: 'human' },
+        message: { content: 'Should we keep the orchard cache layered?' } }),
+      JSON.stringify({ type: 'assistant', sessionId: 's1', timestamp: '2026-01-01T12:01:00Z',
+        message: { content: [{ type: 'text', text: 'We keep the orchard cache layered.' }] } }),
+    ].join('\n'));
+    const sourcesFile = join(directory, 'sources.json');
+    await writeFile(sourcesFile, JSON.stringify({ records: true, sources: [{ type: 'claude-code', path: transcripts, questions: 'answers' }] }));
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
+    vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
+    const bodies: { state: Record<string, unknown>; questions: Record<string, { instructions: { question: string } }> }[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => {
+      const body = JSON.parse(String(init.body));
+      bodies.push(body);
+      return new Response(JSON.stringify({ usage: null,
+        answers: Object.fromEntries(Object.keys(body.questions).map((key) => [key, { noul: 0.8 }])) }));
+    }));
+    const { call, calls } = subscriptionReply({ ...searches(), needed: ['Whether the cache stays layered'], wanted: 'one decision' });
+    const { record } = await run(['--sources', sourcesFile, 'Is the orchard cache layered?'], call);
+    // The second stage keeps at the bar for the kind of task the search-line call names.
+    expect(calls[0]!.prompt).toContain('"wanted"');
+    // A transcript mode lists the facts: a fact about what someone said covers their questions and requests.
+    expect(calls[0]!.prompt).toContain('word each fact as what they said, asked or requested about it');
+    expect(Object.values(record.pick.levers.sources as Record<string, { keep?: { bar: number } }>).map((source) => source.keep?.bar)).toContain(0.59);
+    const kept = bodies.filter((body) => Object.values(body.questions).some((question) => question.instructions.question === 'Does this message state the answer to the task?'));
+    expect(kept.length).toBeGreaterThan(0);
+    for (const body of kept) {
+      expect(body.state).toMatchObject({ needed: ['Whether the cache stays layered'] });
+      expect(Object.values(body.questions).map((question) => question.instructions.question))
+        .toContain('Does this message state this: Whether the cache stays layered?');
+    }
+  });
+
+  it('keeps notes by the narrow question in two, one note a request, with the facts the answer needs, when a Markdown entry names it', async () => {
+    const directory = await folder();
+    const home = join(directory, 'home');
+    const notesFolder = join(directory, 'notes');
+    await mkdir(home);
+    await mkdir(notesFolder);
+    await writeFile(join(notesFolder, 'orchard.md'), '# Orchard cache\n\nWe keep the orchard cache layered.\n');
+    await writeFile(join(notesFolder, 'garden.md'), '# Garden\n\nThe garden gate is painted green.\n');
+    const sourcesFile = join(directory, 'sources.json');
+    await writeFile(sourcesFile, JSON.stringify({ records: true,
+      sources: [{ type: 'markdown', path: notesFolder, questions: 'answers', levers: { itemsPerRequest: 1 } }] }));
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
+    vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
+    const bodies: { state: Record<string, unknown>; questions: Record<string, { instructions: { question: string } }> }[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => {
+      const body = JSON.parse(String(init.body));
+      bodies.push(body);
+      return new Response(JSON.stringify({ usage: null,
+        answers: Object.fromEntries(Object.keys(body.questions).map((key) => [key, { noul: 0.8 }])) }));
+    }));
+    const { call, calls } = subscriptionReply({ ...searches(), needed: ['Whether the cache stays layered'] });
+    const { record } = await run(['--sources', sourcesFile, 'Is the orchard cache layered?'], call);
+    expect(calls[0]!.prompt).toContain('"needed"');
+    // Notes alone: no fact is worded as what someone asked or requested (on LongMemEval it named the question itself).
+    expect(calls[0]!.prompt).not.toContain('asked or requested');
+    const rated = bodies.filter((body) => Object.values(body.questions).some((question) => question.instructions.question === 'Does this item answer the task?'));
+    expect(rated.length).toBeGreaterThan(0);
+    for (const body of rated) {
+      expect(body.state).toMatchObject({ needed: ['Whether the cache stays layered'] });
+      expect(body.state.item).toBeDefined();
+      expect(Object.values(body.questions).map((question) => question.instructions.question)).toEqual(['Does this item answer the task?',
+        'Does this item state this needed fact: Whether the cache stays layered']);
+    }
+    expect(Object.values(record.pick.levers.sources as Record<string, { questions: unknown; itemsPerRequest: number }>))
+      .toContainEqual(expect.objectContaining({ itemsPerRequest: 1 }));
+  });
+
+  it('judges each turn of a note written as a conversation whole, with its speaker and the turns either side', async () => {
+    const directory = await folder();
+    const home = join(directory, 'home');
+    const notesFolder = join(directory, 'notes');
+    await mkdir(home);
+    await mkdir(notesFolder);
+    await writeFile(join(notesFolder, 'session-001.md'), ['---', 'date: 2026-03-02', '---', '# session one', '', 'Date: 2026-03-02', '',
+      'user: Should the orchard cache stay layered?', '', 'assistant: Keeping it layered keeps reads fast.', '',
+      'user: Yes, keep the orchard cache layered.', ''].join('\n'));
+    const sourcesFile = join(directory, 'sources.json');
+    await writeFile(sourcesFile, JSON.stringify({ records: true,
+      sources: [{ type: 'markdown', path: notesFolder, levers: { wholeMessages: true, hardFacts: true, itemsPerRequest: 1 } }] }));
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
+    vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
+    const items: Record<string, unknown>[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => {
+      const body = JSON.parse(String(init.body));
+      if (body.state.item !== undefined) items.push(body.state.item);
+      return new Response(JSON.stringify({ usage: null,
+        answers: Object.fromEntries(Object.keys(body.questions).map((key) => [key, { noul: 0.8 }])) }));
+    }));
+    const { call } = subscriptionReply(searches());
+    await run(['--sources', sourcesFile, 'Is the orchard cache layered?'], call);
+    expect(items.find((item) => item.text === 'user: Yes, keep the orchard cache layered.')).toMatchObject({
+      author: 'user', session: 'session-001.md', position: 3, pieces: 1,
+      replies_to: { text: 'assistant: Keeping it layered keeps reads fast.' } });
+    expect(items.find((item) => item.text === 'assistant: Keeping it layered keeps reads fast.')).toMatchObject({
+      // The first turn opens with the note's heading and date line, never sent alone.
+      author: 'assistant', position: 2, replies_to: { text: '# session one\n\nDate: 2026-03-02\n\nuser: Should the orchard cache stay layered?' },
+      answered_by: { text: 'user: Yes, keep the orchard cache layered.' } });
+  });
+
+  it('paces the decision requests at the organization\'s request rate when the settings give it', async () => {
+    const directory = await folder();
+    const home = join(directory, 'home');
+    const notesFolder = join(directory, 'notes');
+    await mkdir(home);
+    await mkdir(notesFolder);
+    await writeFile(join(notesFolder, 'orchard.md'), '# Orchard cache\n\nWe keep the orchard cache layered.\n');
+    await writeFile(join(notesFolder, 'garden.md'), '# Orchard plan\n\nThe orchard cache might be flattened one day.\n');
+    const sourcesFile = join(directory, 'sources.json');
+    await writeFile(sourcesFile, JSON.stringify({ requestsPerSecond: 1,
+      sources: [{ type: 'markdown', path: notesFolder, levers: { itemsPerRequest: 1 } }] }));
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
+    vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
+    const sent: number[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => {
+      sent.push(Date.now());
+      const body = JSON.parse(String(init.body));
+      return new Response(JSON.stringify({ usage: null,
+        answers: Object.fromEntries(Object.keys(body.questions).map((key) => [key, { noul: 0.8 }])) }));
+    }));
+    const { call } = subscriptionReply(searches());
+    await run(['--sources', sourcesFile, 'Is the orchard cache layered?'], call);
+    expect(sent.length).toBeGreaterThanOrEqual(2);
+    expect(sent[1]! - sent[0]!).toBeGreaterThanOrEqual(900);
+  });
+
+  it('asks a Choice per needed fact over a Markdown source\'s kept notes when its entry turns the lever on', async () => {
+    const directory = await folder();
+    const home = join(directory, 'home');
+    const notesFolder = join(directory, 'notes');
+    await mkdir(home);
+    await mkdir(notesFolder);
+    await writeFile(join(notesFolder, 'orchard.md'), '# Orchard cache\n\nWe keep the orchard cache layered.\n');
+    await writeFile(join(notesFolder, 'garden.md'), '# Orchard plan\n\nThe orchard cache might be flattened one day.\n');
+    const sourcesFile = join(directory, 'sources.json');
+    await writeFile(sourcesFile, JSON.stringify({ records: true,
+      sources: [{ type: 'markdown', path: notesFolder, levers: { choicePerFact: true } }] }));
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
+    vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
+    const choices: string[][] = [];
+    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as { questions: Record<string, { type: string; criteria?: Record<string, unknown> }> };
+      return new Response(JSON.stringify({ usage: null, answers: Object.fromEntries(Object.entries(body.questions).map(([key, question]) => {
+        if (question.type !== 'choice') return [key, { noul: 0.8 }];
+        const options = Object.keys(question.criteria!);
+        choices.push(options);
+        return [key, { type: 'choice', choice: options[0], confidence: 0.9,
+          probabilities: Object.fromEntries(options.map((option, index) => [option, index === 0 ? 0.9 : 0.1 / (options.length - 1)])) }];
+      })) }));
+    }));
+    const { call, calls } = subscriptionReply({ ...searches(), needed: ['Whether the cache stays layered'] });
+    const { record, memory } = await run(['--sources', sourcesFile, 'Is the orchard cache layered?'], call);
+    expect(calls[0]!.prompt).toContain('"needed"');
+    expect(choices.length).toBeGreaterThan(0);
+    expect(record.pick.choicePerFact).toMatchObject({ facts: [{ fact: 'Whether the cache stays layered' }] });
+    expect(record.pick.choicePerFact.facts[0].picks.length).toBeGreaterThan(0);
+    expect(memory).toContain('### Most likely answer');
+  });
+
+  it.each([
+    ['gives it on the second ask', { wanted: 'one decision' }],
+    ['gives it on neither ask', {}],
+  ] as const)('asks once more for the kind of task when the reply leaves it out, and %s', async (_name, second) => {
+    const directory = await folder();
+    const home = join(directory, 'home');
+    const transcripts = join(directory, 'transcripts');
+    await mkdir(home);
+    await mkdir(transcripts);
+    await writeFile(join(transcripts, 'session.jsonl'), [
+      JSON.stringify({ type: 'user', sessionId: 's1', timestamp: '2026-01-01T12:00:00Z', origin: { kind: 'human' },
+        message: { content: 'Should we keep the orchard cache layered?' } }),
+      JSON.stringify({ type: 'assistant', sessionId: 's1', timestamp: '2026-01-01T12:01:00Z',
+        message: { content: [{ type: 'text', text: 'We keep the orchard cache layered.' }] } }),
+    ].join('\n'));
+    const sourcesFile = join(directory, 'sources.json');
+    await writeFile(sourcesFile, JSON.stringify({ records: true, person: 'Ada', sources: [{ type: 'claude-code', path: transcripts, questions: 'exchange' }] }));
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
+    vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
+    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => {
+      const body = JSON.parse(String(init.body));
+      return new Response(JSON.stringify({ usage: null, answers: Object.fromEntries(Object.keys(body.questions).map((key) => [key, { noul: 0.8 }])) }));
+    }));
+    const labels: string[] = [];
+    const prompts: string[] = [];
+    const call = async (prompt: string, callFolder: string, label: string, record: { subscription: { label: string; attempt: number; code: number }[] },
+      save: () => Promise<void>) => {
+      labels.push(label);
+      prompts.push(prompt);
+      record.subscription.push({ label, attempt: 1, code: 0 });
+      const reply = JSON.stringify(label === 'searches' ? { ...searches(), needed: ['Whether the cache stays layered'] } : second);
+      writeFileSync(join(callFolder, `${label}-1.txt`), reply);
+      await save();
+      return reply;
+    };
+    const errors: string[] = [];
+    const spy = vi.spyOn(console, 'error').mockImplementation((...line: unknown[]) => { errors.push(line.join(' ')); });
+    const { record } = await run(['--sources', sourcesFile, 'Is the orchard cache layered?'], call).finally(() => spy.mockRestore());
+    expect(labels).toEqual(['searches', 'fields']);
+    expect(prompts[1]).toContain('"wanted": exactly "one decision" or "everything said"');
+    expect(prompts[1]).toContain('Return only JSON with the key "wanted".');
+    if ('wanted' in second) {
+      expect(record.wanted).toEqual({ value: 'one decision', askedAgain: true });
+      expect(errors.filter((line) => line.includes('search-line call'))).toEqual([]);
+    } else {
+      expect(record.wanted).toMatchObject({ missing: 'the reply gave no answer', askedAgain: true, bars: "the lower of each kind of task's bars" });
+      expect(errors).toContain("The search-line call gave no kind of task (the reply gave no answer), asked twice; the call keeps at the lower of each kind of task's bars.");
+    }
+  });
+
+  it('leaves the search-line call and every request without them when no source turns the lever on', async () => {
+    const asked = searchLinesPrompt('the task', ['chat'], undefined, true);
+    expect(asked).not.toContain('"wanted"');
+    expect(searchLinesPrompt('the task', ['chat'], undefined, false, true))
+      .toContain('"wanted": exactly "one decision" or "everything said"');
+  });
+
+  it('reads a WhatsApp export in the direct-messages mode and keeps the sender on a kept sentence', async () => {
+    const directory = await folder();
+    const home = join(directory, 'home');
+    await mkdir(home);
+    const file = join(directory, '_chat.txt');
+    await writeFile(file, [
+      '[08/05/2023, 13:56:00] Caroline: Hey Mel! I went to the LGBTQ support group yesterday.',
+      '[08/05/2023, 13:57:00] Melanie: That sounds great. How was the support group?',
+      '[25/05/2023, 10:00:00] Caroline: I painted a sunrise.',
+      '',
+    ].join('\n'));
+    const sourcesFile = join(directory, 'sources.json');
+    await writeFile(sourcesFile, JSON.stringify({ records: true, sentenceCutoff: 0.1, sources: [{ type: 'whatsapp', path: file, always: true }] }));
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
+    vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
+    // The decision model rates the two greeting sentences low.
+    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as { state: { items: Record<string, { text: string }> };
+        questions: Record<string, { instructions: { question: string; item: string } }> };
+      const low = ({ question, item }: { question: string; item: string }) => /this sentence/.test(question)
+        && /Hey Mel!|That sounds great/.test(body.state.items[item.slice('items.'.length)]?.text ?? '');
+      return new Response(JSON.stringify({ usage: null, answers: Object.fromEntries(Object.entries(body.questions)
+        .map(([key, question]) => [key, { noul: low(question.instructions) ? 0.01 : 0.8 }])) }));
+    }));
+    const { call } = subscriptionReply(searches());
+    const { folder: runFolder } = await run(['--sources', sourcesFile, 'When did Caroline go to the LGBTQ support group?'], call);
+    const record = JSON.parse(await readFile(join(runFolder, 'record.json'), 'utf8'));
+    expect(record.status).toBe('complete');
+    expect(record.pick.levers.sources[`whatsapp:${file}`].mode).toBe('direct-messages');
+    const log = await readFile(join(runFolder, 'log.md'), 'utf8');
+    expect(log).toContain('… Caroline: I went to the LGBTQ support group yesterday.');
+    expect(log).toContain('… Melanie: How was the support group?');
+  });
+
+  it('ranks the subagents\' reports and prompts against the source\'s own search lines', async () => {
+    // Only agent a2 speaks of the orchard the search lines name, and the
+    // task names nothing. The keyword ranking opens a2's prompt and report;
+    // the meaning ranking scores every unit the same (a2's through the
+    // lines, the others through the task), so it opens none.
+    const directory = await folder();
+    const home = join(directory, 'home');
+    const transcripts = join(directory, 'transcripts');
+    await mkdir(home);
+    await mkdir(join(transcripts, 'main', 'subagents'), { recursive: true });
+    const lines = (records: readonly unknown[]) => records.map((record) => JSON.stringify(record)).join('\n') + '\n';
+    await writeFile(join(transcripts, 'main.jsonl'), lines([
+      { type: 'user', sessionId: 'main', timestamp: '2026-01-01T12:00:00Z', origin: { kind: 'human' }, message: { content: 'What happened?' } },
+    ]));
+    for (const n of [1, 2, 3]) {
+      const side = { isSidechain: true, agentId: `a${n}` };
+      await writeFile(join(transcripts, 'main', 'subagents', `agent-a${n}.jsonl`), lines([
+        { type: 'user', sessionId: 'main', timestamp: `2026-01-01T12:0${n}:00Z`, ...side,
+          message: { content: n === 2 ? 'Look at orchard row 2.' : `Look at pear row ${n}.` } },
+        { type: 'assistant', sessionId: 'main', timestamp: `2026-01-01T12:0${n}:30Z`, ...side,
+          message: { content: [{ type: 'text', text: n === 2 ? 'Orchard row 2 has fruit trees.' : `Pear row ${n} is fine.` }] } },
+      ]));
+    }
+    const sourcesFile = join(directory, 'sources.json');
+    await writeFile(sourcesFile, JSON.stringify({ records: true, sources: [{ type: 'claude-code', path: transcripts }] }));
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
+    vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
+    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => new Response(JSON.stringify({
+      usage: null,
+      answers: Object.fromEntries(Object.keys(JSON.parse(String(init.body)).questions).map((key) => [key, { noul: 0.8 }])),
+    }))));
+    const { call } = subscriptionReply(searches());
+    const { folder: runFolder } = await run(['--sources', sourcesFile, 'What happened?'], call);
+    const record = JSON.parse(await readFile(join(runFolder, 'record.json'), 'utf8'));
+    expect(record.status).toBe('complete');
+    expect(record.pick?.pick?.chatRead?.['agent-transcripts']?.units).toBe(2);
+  });
+
   it('runs the pick with the rating stop the sources file names', async () => {
     const directory = await folder();
     const home = join(directory, 'home');
@@ -1255,11 +1765,12 @@ describe('a run through core decision calls', () => {
     // the stop may not fire, and the read reaches the end of the order.
     expect(record.pick?.pick?.stopWhenCold).toMatchObject({ floor: 0.9, share: 0.2, waves: 1,
       atFloor: 0, ended: 'order', unread: 0 });
-    expect(record.pick?.levers?.stopWhenCold).toEqual({ floor: 0.9, share: 0.2 });
+    // The notes mode judges each request alone.
+    expect(record.pick?.levers?.stopWhenCold).toEqual({ floor: 0.9, share: 0.2, parts: 'request' });
     expect(record.pick?.levers).not.toHaveProperty('everyRanked');
   });
 
-  it.each([[{}, { floor: 0.1, share: 0.2 }], [{ stopWhenCold: false }, false]] as const)(
+  it.each([[{}, { floor: 0.1, share: 0.2, parts: 'request' }], [{ stopWhenCold: false }, false]] as const)(
     'stops where the ratings go cold at the library\'s own levels unless the settings say false: %j', async (setting, levers) => {
       const directory = await folder();
       const home = join(directory, 'home');
@@ -1288,6 +1799,64 @@ describe('a run through core decision calls', () => {
       expect(warned.mock.calls.map(([line]) => String(line)).filter((line) => line.includes('stopWhenCold'))).toEqual([]);
     });
 
+  it('stops the ranked read of notes by default, while transcripts keep the chat read\'s own stop', async () => {
+    const directory = await folder();
+    const home = join(directory, 'home');
+    const notes = join(directory, 'notes');
+    const transcripts = join(directory, 'transcripts');
+    await mkdir(home);
+    await mkdir(notes);
+    await mkdir(transcripts);
+    await writeFile(join(notes, 'orchard.md'), Array.from({ length: 400 }, (_, index) =>
+      `## Orchard row ${index}\n\nRow ${index} of the orchard has fruit trees. ${'The trees grow here. '.repeat(30)}\n`).join('\n'));
+    await writeFile(join(transcripts, 'session.jsonl'), Array.from({ length: 30 }, (_, index) => JSON.stringify({
+      type: index % 2 === 0 ? 'user' : 'assistant', sessionId: 's1', timestamp: `2026-01-01T12:${String(index).padStart(2, '0')}:00Z`,
+      ...(index % 2 === 0 ? { origin: { kind: 'human' }, message: { content: `Orchard row ${index}: should we prune the fruit trees?` } }
+        : { message: { content: [{ type: 'text', text: `Prune orchard row ${index} in winter.` }] } }),
+    })).join('\n') + '\n');
+    const sourcesFile = join(directory, 'sources.json');
+    await writeFile(sourcesFile, JSON.stringify({ records: true, sentenceCutoff: false,
+      sources: [{ type: 'markdown', path: notes }, { type: 'claude-code', path: transcripts }] }));
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
+    vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
+    // Row 0 of the notes and every transcript part rate warm; every answer about the rest of the notes is
+    // near 0, so their decision scores go cold under any question set's weights.
+    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as { state: string | { items: Record<string, { text: string }> };
+        questions: Record<string, { type: string; criteria: unknown; instructions: string | { question: string; item: string } }> };
+      return new Response(JSON.stringify({ usage: null, answers: Object.fromEntries(Object.entries(body.questions)
+        .map(([key, question]) => {
+          const { text, wording } = itemAsked(body, question.instructions);
+          const hot = /Row 0 of|prune/i.test(text);
+          // A scored question gets all its weight on its top level or its bottom one.
+          // The question whether a part is off the subject counts against it, so it is answered the other way.
+          const against = /different subject/.test(wording);
+          if (question.type !== 'score') return [key, { noul: hot !== against ? 0.8 : 0.000001 }];
+          const levels = (question.criteria as unknown[]).length;
+          return [key, { probabilities: Object.fromEntries(Array.from({ length: levels }, (_, level) =>
+            [String(level), level === (hot ? levels - 1 : 0) ? 1 : 0])) }];
+        })) }));
+    }));
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { call } = subscriptionReply(searches());
+    const { record } = await run(['--sources', sourcesFile, 'orchard'], call);
+
+    expect(record.status).toBe('complete');
+    // The notes mode judges each request alone; the transcripts' chat read has its own stop.
+    expect(record.pick.levers.stopWhenCold).toEqual({ floor: 0.1, share: 0.2, parts: 'request' });
+    // The run record keeps a part the stop left unread in `pick.unread`, by id and place.
+    const unread = (sourceId: (id: string) => boolean) => record.pick.candidates.filter((entry: { sourceId: string; status: string; reason?: string }) =>
+      sourceId(entry.sourceId) && entry.status === 'unassessed' && entry.reason === 'stopWhenCold').length
+      + Object.entries((record.pick.unread ?? {}) as Record<string, { count: number }>)
+        .filter(([source]) => sourceId(source)).reduce((sum, [, entry]) => sum + entry.count, 0);
+    // The notes' ranked read went cold and left parts unread; no transcript part is left unread by that stop.
+    expect(record.pick.pick.stopWhenCold).toMatchObject({ ended: 'cold' });
+    expect(unread((id) => id.startsWith('knowledge-base:'))).toBeGreaterThan(0);
+    expect(unread((id) => id.startsWith('chat:'))).toBe(0);
+    expect(['fall', 'order']).toContain(record.pick.pick.chatRead['agent-transcripts'].ended);
+  });
+
   it('says on standard error how many ranked parts the stop left unread, and which file turns it off', async () => {
     const directory = await folder();
     const home = join(directory, 'home');
@@ -1300,7 +1869,8 @@ describe('a run through core decision calls', () => {
     const sourcesFile = join(directory, 'sources.json');
     await writeFile(sourcesFile, JSON.stringify({
       records: true, sentenceCutoff: false,
-      sources: [{ type: 'markdown', path: notes }], stopWhenCold: { floor: 0.9 },
+      // One rated part a window, so the stop can fire inside the first wave.
+      sources: [{ type: 'markdown', path: notes }], stopWhenCold: { floor: 0.9, parts: 1 },
     }));
     vi.stubEnv('HOME', home);
     vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
@@ -1310,11 +1880,11 @@ describe('a run through core decision calls', () => {
     let requests = 0;
     vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => {
       const warm = requests++ === 0;
-      const questions = JSON.parse(String(init.body)).questions as Record<string, { instructions: string }>;
+      const questions = JSON.parse(String(init.body)).questions as Record<string, { instructions: string | { question: string } }>;
       return new Response(JSON.stringify({
         usage: null,
         answers: Object.fromEntries(Object.entries(questions).map(([key, question]) => [key, {
-          noul: !warm ? 0.8 : question.instructions.startsWith('Is this item about a different subject') ? 0.01 : 0.99,
+          noul: !warm ? 0.8 : (typeof question.instructions === 'string' ? question.instructions : question.instructions.question).startsWith('Is this item about a different subject') ? 0.01 : 0.99,
         }])),
       }));
     }));
@@ -1323,10 +1893,10 @@ describe('a run through core decision calls', () => {
     const { call } = subscriptionReply(searches());
     const { record } = await run(['--sources', sourcesFile, 'orchard'], call);
 
-    // The first batch is warm; the second scores under the floor of 0.9,
-    // and the read stops after its first wave.
+    // The first request's parts are warm; the first part of the second
+    // scores under the floor of 0.9, and the read stops after its first wave.
     const stop = record.pick.pick.stopWhenCold;
-    expect(stop).toMatchObject({ ended: 'cold', waves: 1, cold: { batch: 2, under: 'floor' } });
+    expect(stop).toMatchObject({ ended: 'cold', waves: 1, parts: 1, cold: { under: 'floor' } });
     expect(stop.unread).toBeGreaterThan(0);
     expect(warned.mock.calls.map(([line]) => String(line)).filter((line) => line.includes('stopWhenCold'))).toEqual([
       `The rating stop ended the read where the ratings went cold, with ${stop.unread} of ${stop.rated + stop.unread} ranked parts unread; set "stopWhenCold": false in ${sourcesFile} to read them all.`,
@@ -1350,11 +1920,11 @@ describe('a run through core decision calls', () => {
     // A part counted as off the subject: every part scores over the keep
     // bar and under the default floor of 0.1.
     vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => {
-      const questions = JSON.parse(String(init.body)).questions as Record<string, { instructions: string }>;
+      const questions = JSON.parse(String(init.body)).questions as Record<string, { instructions: string | { question: string } }>;
       return new Response(JSON.stringify({
         usage: null,
         answers: Object.fromEntries(Object.entries(questions).map(([key, question]) => [key, {
-          noul: question.instructions.startsWith('Is this item about a different subject') ? 0.9 : 0.5,
+          noul: (typeof question.instructions === 'string' ? question.instructions : question.instructions.question).startsWith('Is this item about a different subject') ? 0.9 : 0.5,
         }])),
       }));
     }));
@@ -1364,7 +1934,8 @@ describe('a run through core decision calls', () => {
     const { record } = await run(['--sources', sourcesFile, 'orchard'], call);
 
     expect(record.status).toBe('complete');
-    expect(record.pick.levers.stopWhenCold).toEqual({ floor: 0.1, share: 0.2 });
+    // The notes mode judges each request alone.
+    expect(record.pick.levers.stopWhenCold).toEqual({ floor: 0.1, share: 0.2, parts: 'request' });
     const stop = record.pick.pick.stopWhenCold;
     expect(stop).toMatchObject({ ended: 'order', unread: 0, atFloor: 0 });
     expect(stop.waves).toBeGreaterThan(1);
@@ -2263,6 +2834,13 @@ describe('the question sets the search scope', () => {
     expect(accept('Which commit added the cache?', { kinds: ['git-history'], since: 'none' }).kinds).toEqual(['git-history']);
     expect(accept('What is in our notes about the cache?', { kinds: ['markdown'], since: 'none' }).kinds).toEqual(['markdown']);
     expect(accept('Should every commit carry a note?', { kinds: ['git-history'], since: 'none' }).kinds).toEqual(['all']);
+  });
+
+  it('reads a WhatsApp export for a question that says to look in a chat', () => {
+    const scope = accept('What did Mel say in our chats about the trip?', { kinds: ['chat'], since: 'none' });
+    expect(scope.kinds).toEqual(['chat']);
+    const entries = [{ type: 'claude-code', path: 'a' }, { type: 'whatsapp', path: 'b' }, { type: 'markdown', path: 'c' }];
+    expect(scopedEntries(entries, scope, NOW).map((entry: { type: string }) => entry.type)).toEqual(['claude-code', 'whatsapp']);
   });
 
   it("uses the later of the window and a source's own look-back", () => {

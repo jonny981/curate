@@ -49,7 +49,7 @@ It also deletes the index and vector files an earlier version of Curate kept for
 
 ### Exit codes
 
-0 when the command finished, 3 when setup isn't complete, and 1 for anything else.
+0 when the command finished, 3 when setup isn't complete, 4 when the decision service refused the question or couldn't be reached ([Refusals](#refusals)), and 1 for anything else.
 
 ### Node.js version
 
@@ -132,18 +132,20 @@ Set `TYPESAFE_API_KEY` in the environment, or in a `KEY=VALUE` file that `envFil
 
 ### Source settings
 
-The source types are `claude-code`, `codex`, `git` and `markdown`. A key a source type doesn't take is rejected, with the type and the keys it does take.
+The source types are `claude-code`, `codex`, `git`, `markdown` and `whatsapp`. A key a source type doesn't take is rejected, with the type and the keys it does take.
 
 | Setting | Sources that take it | What it does |
 | --- | --- | --- |
 | `path` | All; optional for `claude-code` and `codex` | Where the source is ([Chat entries with no path](#chat-entries-with-no-path)) |
 | `since` | All | How far back to read: an ISO date or a duration such as `"14 days"`, counted back from the task date. Only that source drops older parts |
-| `exclude` | All | Paths to skip in that source, relative to its `path`; absolute entries are used as they are. For Codex, these are folders inside `path`, since sessions are read through a fixed snapshot of `path`'s layout |
+| `exclude` | All but `whatsapp` | Paths to skip in that source, relative to its `path`; absolute entries are used as they are. For Codex, these are folders inside `path`, since sessions are read through a fixed snapshot of `path`'s layout |
 | `always` | All with a `path` | `true` or `false`: whether the source is read from inside any project ([Sources you list](#sources-you-list)) |
 | `include` | `git` | Only commits that changed one of these paths |
-| `questions` | `claude-code`, `codex` | The decision question set ([Question sets](#question-sets)) |
+| `questions` | `claude-code`, `codex`, `markdown` | The decision question set, by name ([Question sets](#question-sets)) |
 | `bar` | `claude-code`, `codex` | That source's own keep bar ([Keep bar](#keep-bar)) |
+| `levers` | `claude-code`, `codex`, `markdown` | Decision levers to switch on, each off by default ([Decision levers](#decision-levers)) |
 | `allowedCwd` | `codex` with a `path`, required | One folder or a list: the folders whose sessions may be read |
+| `dates` | `whatsapp` | `"day-first"` or `"month-first"` ([WhatsApp exports](#whatsapp-exports)) |
 
 ### Codex sessions
 
@@ -153,20 +155,27 @@ A compressed session whose header doesn't decompress, or that ends before its fi
 
 The reader works from a fixed copy of the admitted files, so sessions written later can't enter the run. Missing metadata, sibling folders and symbolic links outside every allowed folder are refused.
 
+### WhatsApp exports
+
+A `whatsapp` source's `path` is the `_chat.txt` file of WhatsApp's "Export chat". Its messages are read in the direct-messages mode, with each sender named.
+
+An export's dates don't always show whether the day or the month comes first. Curate settles it when a number is over 12, or when one reading keeps the messages in order clearly better than the other: at least three fewer steps back, more than one pasted line can make. When neither settles it, the read is reported as only partly read, with that reason. Set `"dates": "day-first"` or `"month-first"` to settle it yourself.
+
 ### Settings for every question
 
 | Setting | Default | What it does |
 | --- | --- | --- |
-| `stopWhenCold` | On: a `floor` of 0.1 and a `share` of 0.2 | Where rating stops. `{ floor, share }` sets the levels, and `false` rates everything ([The rating stop](#the-rating-stop)) |
+| `stopWhenCold` | On: a `floor` of 0.1 and a `share` of 0.2 | Where rating stops. `{ floor, share, parts }` sets the levels and the window, and `false` rates everything ([The rating stop](#the-rating-stop)) |
 | `answerTokens` | No budget | A budget for the output, in estimated tokens ([Budget](#budget)) |
 | `sentenceCutoff` | Off | Rates each sentence and keeps those at or above this number, from 0 to 1 ([Sentence cutoff](#sentence-cutoff)) |
 | `searchModel` | Haiku if the Claude login works, else Luna | `haiku` or `luna`: which model writes the search lines ([Which model](#which-model)) |
 | `scope` | On | `false` reads every source, whatever the question names ([Search scope](#search-scope)) |
 | `threshold` | Each source's own bar | One keep bar for every source, from 0 to 1 ([Keep bar](#keep-bar)) |
 | `feed` | Off | `{ "order": "combsum" }`, with an optional `size`: changes the order and length of what's rated ([Feed](#feed)) |
-| `userFirst` | `true` | `false` drops role priority from chat order ([Chat order](#chat-order)) |
 | `recentFirst` | `true` | `false` breaks equal scores by item ID instead ([Chat order](#chat-order)) |
-| `maxInFlight` | No cap | A positive integer that caps how many decision requests of one round are open at once ([Rating](#rating)) |
+| `maxInFlight` | No cap | A positive integer that caps how many decision requests of the question are open at once ([Rating](#rating)) |
+| `requestsPerSecond`, `tokensPerSecond` | 320 and 400,000 | Your organization's decision rates ([Decision rates](#decision-rates)) |
+| `person` | None | Your name as your questions word it ([Decision levers](#decision-levers)) |
 | `records` | Off | `true` saves a run record ([Records](#records)) |
 | `readAudit` | `true` | `false` keeps only per-read summaries in the run record ([Records](#records)) |
 | `related` | None | Groups of related projects ([Related projects](#related-projects)) |
@@ -180,6 +189,20 @@ The reader works from a fixed copy of the admitted files, so sessions written la
 The search lines are the queries Curate searches with. One call to Claude Haiku 5.5 or GPT-6 Luna, on your subscription, writes keyword searches and sample answers, worded the way each kind of source is written, both with and without the subject.
 
 The prompt asks for exactly two keyword lines and four answer lines per kind of source. Code keeps the first two and the first four, and the run record's `droppedSearchLines` counts the rest.
+
+#### The facts the answer needs
+
+When a source's mode lists the facts the answer needs, the same call also splits the task into one to five of them (`needed`). A `claude-code` or `codex` source on its default questions does, and so does a source on the `answers` set. The decision requests of those sources' parts carry the list beside the task. Requests of other sources never do.
+
+Each fact is asked for as one thing a single message could say: an age rather than a birth date, a time as a message would say it rather than a date worked out, or one item of a list rather than a count. When the task asks for suggestions, the facts are what you've said about your own situation that they should fit. When the task asks what someone said, a transcript source words each fact as what they said, asked or requested, so their questions and requests count as well as their statements. Notes never get that wording: on notes it turned 12 of 64 LongMemEval facts into what the user asked, which no message states.
+
+The list is kept when it holds one to five strings. Otherwise the requests go without it, and the run record's `needed` says why. The call can still return a worked-out answer as its one fact, such as "The total amount I was paid for selling eggs in May 2023". A wording that asked for the answer's inputs instead split some such answers on 64 LongMemEval questions, but it also added facts about the question itself, and the facts differ from one question to the next, so it isn't used.
+
+The list was measured from a separate call with the same wording, on eight tasks of one history: it cut the parts that hold no answer but rate 0.1 or more from 10.8% to 3.8%. Asking for it in the search-line call isn't measured, and the gain isn't confirmed on tasks held out from that measurement.
+
+#### The kind of task
+
+When a source writes hard facts, keeps at a bar for each kind of task, or has a second stage, the same call also says whether the task wants one decision or fact, or everything said on a subject (`wanted`). The run record keeps it. If the reply leaves it out, Curate asks once more on its own, and the record's `wanted` says `askedAgain`. If that reply gives none either, the record says why, one line on standard error says so, and each such source keeps at the lower of its two bars.
 
 #### Which model
 
@@ -215,7 +238,7 @@ Measured with Codex 0.167.0 and no ChatGPT login: a first call in an empty home 
 
 The same call also returns a scope: if a question names where or how far back to look, Curate reads less. Set `scope` to `false` to read every source.
 
-Code accepts a kind of source only when the question says to look there, such as "in a chat session", "in my notes" or "what does the git history say". A source that's only the question's subject doesn't count, and every kind the question names is read. Sources of other kinds aren't searched and add no parts.
+Code accepts a kind of source only when the question says to look there, such as "in a chat session", "in my notes" or "what does the git history say". A source that's only the question's subject doesn't count, and every kind the question names is read. Sources of other kinds aren't searched and add no parts. A `whatsapp` source is searched with the note search lines, as its sessions were measured, and is read when the question says to look in notes or in a chat.
 
 Code accepts a time window only when the question's words date the saying itself. The time opens the question, comes straight after a word of saying or the place to look, or is a window back from now, such as "last month", "in mid-October" or "over the last three weeks". A date that could belong to the thing talked about, as in "what did we agree to ship on October 15" or "last month's plan", leaves the search open.
 
@@ -229,7 +252,7 @@ While the search lines are being written, Curate loads the embedding model and b
 
 Each source runs keyword and local meaning searches, called lanes, for the task and the search lines. Each lane keeps the parts above the bend in its own score curve. Curate combines their matches into one ranked list across sources, the fused order. A part can get in through either route, and rank zero counts as a match.
 
-Parts no lane kept are counted by source in the record's `unheld` rather than listed, unless the task names a period. The command turns off label admission and the rare-word round for every source. Labels stay available as memory metadata through the library.
+Parts no lane kept are counted by source in the record's `unheld` rather than listed, unless the task names a period or the source is read its own way ([Chat order](#chat-order)). The command turns off label admission for every source. Labels stay available as memory metadata through the library.
 
 ### Embeddings
 
@@ -258,11 +281,35 @@ The earlier per-text files are read once as a fallback. When the key file is fir
 
 ### Chat order
 
-`userFirst` defaults to `true`: in each source search, your own parts come first, then other user-role parts, then assistant and tool parts. Set it to `false` to drop role priority. A user-role part can be a compacted summary or an agent task, so its role doesn't prove who wrote it. The chat reader marks each part's author from what the transcript records, and only a part marked `person` comes first.
+A `claude-code` or `codex` source's parts are read from your own messages outward ([the chat read](https://github.com/jonny981/curate/blob/main/docs/library.md#the-chat-read)):
+
+1. **Your own parts first,** in the keyword searches' order, 112 a request.
+2. **The neighbours of those rated well,** a ring at a time.
+3. **A stop** when a request adds few new well-rated parts.
+4. **The topic segments** that hold one of those parts, or one of a search's top 10 parts.
+5. **Last, the Claude Code subagents' reports and prompts** that rank above the bend of either of two rankings among their own kind: by keyword, or by meaning, of each one's description against the task and the source's search lines. A ranking that says nothing opens none: no search word in any description, or one meaning score for descriptions that differ. Equal scores of units that match, or that are alike, do open.
+
+Opening a unit above either bend, not only above both, reached 15 of 16 answers agents wrote, against 10, on saved ratings only, for about 200 more parts a question.
+
+The read's own stop decides how far it goes, never before it has kept a part, whether or not `stopWhenCold` is set, and a `feed` size doesn't cap it. With `questions: "judgments"` a source keeps the plain read of the ranked list. Each search keeps its match order, so its top parts can lead the read to answers the agents wrote.
+
+A user-role part can be a compacted summary or an agent task, so its role doesn't prove who wrote it. The chat reader marks each part's author from what the transcript records, and only a part marked `person` starts the read. The command rejects `userFirst` from older settings files, so remove it.
 
 `recentFirst` defaults to `true`: among equal scores, newer matching sessions come first, then newer messages. Set it to `false` to break equal scores by item ID.
 
-These settings change order. Unless `stopWhenCold` is `false`, order also decides how much is read: a lane's order feeds the fused order, which the decision model reads from the top until its ratings go cold.
+### Second search
+
+A `claude-code` or `codex` source on its default questions is searched a second time once the first pick ends:
+
+1. The rarest names, numbers and words of the first pick's three best-rated parts of those sources become the second search's two keyword and four answer lines, eight words a part. The task fills any line left over.
+2. A word counts when at least 2, and at most 0.5%, of those sources' parts hold it and the task doesn't use it. A word shaped like a credential never counts, and neither does the `[redacted]` mark the scrubber leaves where it masked one.
+3. A second pick reads that search's order the same way ([Chat order](#chat-order)), reusing the first pick's decisions, so only parts the first never rated are rated. The parts it keeps join the first pick's.
+
+The second pick's chat read starts again on its own order, so the first read's stop doesn't end it. It walks over parts the first pick rated at no cost, and a reused decision counts toward its stop with its stored rating, as it did in the first pick. Its record's `pick.chatRead['agent-transcripts']` counts the parts it rated anew (`rated`) apart from those whose decision the first pick made (`reused`). The run record's `secondSearch` holds the seeds, the lines, the parts it added and the second pick's record.
+
+It was measured with the plain read of the ranked list, never with the chat read. On long chats with an assistant read as Markdown (BEAM, 40 questions), its new parts held 99 evidence units where reading on through the first search by as many parts held 96. On coding-agent transcripts (one DolphinBench test) it reached all 4 messages no line of the first search held.
+
+The `exchange` question set turns the second search off ([Question sets](#question-sets)).
 
 ### Rating
 
@@ -276,17 +323,36 @@ Batches change request size without dropping parts. They're sized to Jev's docum
 
 If the service rejects a request as too large, Curate sends it again in halves, each item keeping its questions, and splits a rejected half again. A single item too large on its own is resent with its evidence halved and its answers marked `truncated`. After a rejection, later batches are sized inside the largest request the service accepted.
 
-A rejection that size can't explain (no larger than an accepted body, or a single item's text cut to nothing) fails the run with the service's reply and names its candidate ids. Every request goes in the run record's `jev` list, and `splits` counts the extra requests a rejection needed.
+Every request goes in the run record's `jev` list, and `splits` counts the extra requests a rejection needed. A second stage's requests are marked `stage: 'keep'`, and `pick.keep` counts what that stage asked, sent, kept and left out.
 
-By default every independent batch of a round goes out together. Set `maxInFlight` to a positive integer to cap how many decision requests of one round are open at once; the rest of the round's batches go out in order as earlier replies land.
+By default every independent batch of a round goes out together. Set `maxInFlight` to a positive integer to cap how many decision requests of the question are open at once, across every read running at the same time; the rest go out in order as earlier replies land.
+
+#### Refusals
+
+A request answered 429 (over a rate limit) or 529 (the service overloaded) is sent again after the wait the reply asks for, for at most 60 seconds. The question fails, and the command exits with code 4, when:
+
+- the service has no credit (HTTP 402) or refuses the key (401 or 403);
+- a request is still answered 429 or 529 after 60 seconds of waiting;
+- a request gets no reply;
+- a rejection that size can't explain (no larger than an accepted body, or a single item's text cut to nothing).
+
+The message's first line says why in plain words, with the service's own message and what to do. The next line says how many parts went undecided, and the run record's `pick.decideError` lists their ids. The key and anything shaped like a credential are masked in what the command prints and records.
+
+#### Decision rates
+
+TypeSafe sets request and token rates per organization and shows them in its developer console. Set yours with `requestsPerSecond` and `tokensPerSecond`, each a positive number, such as `"requestsPerSecond": 80, "tokensPerSecond": 100000`. Every decision request of the question is queued inside both.
+
+Unset, Curate keeps to 320 requests and 400,000 estimated tokens a second, stand-ins until you set your own. On one question of 141 requests no rate limit was met at any pace, and the decisions were quickest at 400,000 tokens a second: 11.9 seconds, against 22.1 at 100,000 and 19.2 unpaced, the service slowing past it. At 80 requests a second, a read of 1,000 parts sent one a request takes at least 12.5 seconds.
 
 ### The rating stop
 
-The decision model reads the fused order from the top until its ratings go cold, and `stopWhenCold` sets where. Unset, Curate uses the library's own levels, as `{}` does: a `floor` of 0.1 and a `share` of 0.2. `{ floor, share }` sets them. The library's `pick()` and `memory()` leave the stop off unless the caller sets it.
+The decision model reads the fused order from the top until its ratings go cold, and `stopWhenCold` sets where. Unset, Curate uses the library's own levels, as `{}` does: a `floor` of 0.1 and a `share` of 0.2, judged over windows of 150 rated parts. `{ floor, share, parts }` sets them. The library's `pick()` and `memory()` leave the stop off unless the caller sets it. A `claude-code` or `codex` source on its default questions is read its own way and stops on its own ([Chat order](#chat-order)).
 
 #### How it stops
 
-With the stop on, the decision model reads the order two batches at a time. When both replies land, Curate checks the two batches in order and stops at the first whose best rating is under `floor`, or under `share` times the best rating of every batch before it. A part's rating is its decision score after every question of its set. The other batch of the pair is still rated and kept, and every rated part at or above the keep bar is kept.
+With the stop on, the decision model reads the order two batches at a time. As the replies land, Curate judges the rated parts in windows of 150 (`parts` sets another count). It stops at the first window whose best rating is under `floor`, or under `share` times the best rating of every window before it. A window is counted in parts, not requests, because a request holds only about ten of a coding agent's long parts. A part's rating is its decision score after every question of its set. The rest of the wave is still rated and kept, and every rated part at or above the keep bar is kept.
+
+When the only sources read this way are Markdown notes, Curate judges each request's rated parts alone, the rule their questions and bar were measured with. On 149 LongMemEval questions, judged per request it rated 110 parts a question and answered 145.33 right, where windows of 150 rated 290 for no more right. A `parts` you set still sets a window.
 
 It never stops before it has kept a part and rated one at or above `floor`. So a question the history holds nothing for, and a history whose every part rates under `floor`, read the whole order even with the stop on, at the cost of the stop off.
 
@@ -294,9 +360,9 @@ The stop's weak point is a lone well-rated part below a long run of low-rated on
 
 #### Tuning it
 
-`{ floor, share }` changes the two numbers, for example `{ "floor": 0.2, "share": 0.1 }`. A higher `share` stops sooner and costs less. A lower one reads further and finds more.
+`{ floor, share }` changes the two numbers, for example `{ "floor": 0.2, "share": 0.1 }`. A higher `share` stops sooner and costs less. A lower one reads further and finds more. `parts`, a whole number of 1 or more, sets the window.
 
-`floor` is both the level a batch's best rating must reach to keep reading and the level some part must reach before the stop can fire. So a higher `floor` can also make a read longer: it reads on until some part rates at or above it, to the end of the order if none does.
+`floor` is both the level a window's best rating must reach to keep reading and the level some part must reach before the stop can fire. So a higher `floor` can also make a read longer: it reads on until some part rates at or above it, to the end of the order if none does.
 
 `false` turns the stop off. The decision model then rates every part of the order, so the cost grows with the parts the lanes keep, at about $0.00002 a part: $0.0033 for a 170-part LoCoMo conversation and $0.053 for the 2,361 parts a DolphinBench test rated on average. Price the full feed before you turn it off, since it can be much higher on large histories.
 
@@ -304,10 +370,10 @@ The stop's weak point is a lone well-rated part below a long run of low-rated on
 
 Parts below the stop stay in the record as `unassessed`, with reason `stopWhenCold`. The run record's `pick.stopWhenCold` holds:
 
-- the waves sent, the batches and parts rated, and the parts left unread;
+- the waves sent, the windows judged and the parts rated, and the parts left unread;
 - the rated parts at or above the keep bar, and at or above the floor;
 - what ended the read: the order's end, the ratings going cold, or a limit, time-out or cancellation;
-- under `cold`, which batch went cold, its best rating, the best before it and the test it failed.
+- under `cold`, which window went cold, its best rating, the best before it and the test it failed.
 
 When the ratings going cold ended the read with ranked parts unread, one line on standard error says how many, of how many, with `records` on or off. It names the settings file to set `"stopWhenCold": false` in: the file `--sources` named, else the nearest `curate.json`, else `~/.curate/sources.json`.
 
@@ -333,7 +399,64 @@ Reference parts (every part that isn't a rule) rated at least 0.0146, or the sel
 
 Agent-session sources use the `AGENT_CHAT_CASCADE` set, which leaves out the `own` question. Personal sources a host provides keep their own set.
 
-On a chat source only, `questions: "judgments"` picks the judgment set. It asks two narrow questions per part, a yes/no subject match and a five-level score of how well the part answers, and combines them with facts the code works out, through fitted constants. Its items show only a date and text, with no id, title or session. The set ships unfitted, and refuses the run until its weights file holds real constants.
+A source's `questions` picks another set by name:
+
+| Name | Sources | What it does |
+| --- | --- | --- |
+| `answers` | `claude-code`, `codex` | Reads as the default set does, on its own questions and bar. Then a [second stage](https://github.com/jonny981/curate/blob/main/docs/library.md#a-second-stage) judges each kept message again, whole, with its [hard facts](https://github.com/jonny981/curate/blob/main/docs/library.md#hard-facts), batched, and keeps it by the highest of its answers: it states the answer, or one needed fact. It keeps at 0.59 when the task wants one decision and 0.04 when it wants everything said, and at the lower when the search-line call names neither. The kept messages are laid out whole, strongest first, each with its session, its time and who said it |
+| `exchange` | `claude-code`, `codex` | Reads and judges as `answers` does, keeps each kind of message at its own bar, and keeps the exchange around each of your messages it keeps ([below](#the-exchange-set)). It runs no [second search](#second-search) |
+| `answers` | `markdown` | Keeps each note by [the narrow question in two](https://github.com/jonny981/curate/blob/main/docs/library.md#the-narrow-question-in-two): "Does this item answer the task?", and once per needed fact whether it states it. A note's score is the highest of its answers, kept at 0.07 |
+| `judgments` | `claude-code`, `codex` | Two narrow questions per part, a yes/no subject match and a five-level score of how well the part answers, combined with facts the code works out, through fitted constants. Its items show only a date and text, with no id, title or session. The set ships unfitted, and refuses the run until its weights file holds real constants |
+
+The chat `answers` set asks "Does this message state the answer to the task?" and "Does this message state this: {fact}?", the wording its bars were measured in. Its bars are measured on labelled answers from 22 coding-agent tasks, each whole message judged with its hard facts in that wording: each is the highest bar that lost no labelled answer. With each task's bar set by the other tasks of its kind, one task in each kind loses an answer. The second stage costs about 2.7 cents a task batched on those tasks, and about 5.3 cents with the read, at the median. The bars await answers marked right.
+
+The Markdown `answers` set's 0.07 is the highest "answers" probability that kept every labelled answer turn of 24 LongMemEval questions, rated one part a request. It keeps a median of 2 parts and about 300 tokens a question, where the notes set's 0.0146 kept 47 parts and 6,403 tokens. With the bar set from the other 23 questions instead, only the question that sets it loses its turn. Scored by the highest of its answers, it rated 70% of LongMemEval's labelled answer turns 0.5 or more, against 30% for the "answers" probability alone. It awaits answers marked right. On LongMemEval's notes, at 333 parts a question, it costs 0.90 times the dollars of the notes set's four questions: USD 0.0070 against 0.0077.
+
+#### The exchange set
+
+The `exchange` set keeps each kind of message at the bar measured within its kind: your message, a subagent's report or prompt, a compaction summary and tool output. An agent's own steps are kept only within an exchange.
+
+| Kind of message | One decision | Everything said |
+| --- | --- | --- |
+| Your message | 0.28 | 0.04 |
+| Subagent's final report | 0.59 | 0.95 |
+| Subagent's prompt | Only in an exchange | 0.05 |
+| Compaction summary | Only in an exchange | 0.37 |
+| Tool output | 0.81 | 0.13 |
+| An agent's step, a system message | Only in an exchange | Only in an exchange |
+
+For each of your messages it keeps, it keeps the exchange around it: the agent message it replies to and the agent's reply. For each kept report it keeps the request that asked for it. The messages of an exchange are laid out together as one passage. An agent message kept only for an exchange is cut to its paragraph nearest yours, and a line names the message's id in place of the rest; `kept.json` holds the whole message ([Output](#output)).
+
+On one-decision tasks your message is kept from 0.28, below the 0.76 its labelled answers earned. A message's rating moves between two questions of one task, mostly with the needed facts the search-line call writes: of 537 messages rated 0.5 or more in one run, a tenth fell by more than 2.07 in logit in another. 0.28 is 0.76 moved down by that fall. The exchange around it is kept only from 0.76 (`exchangeBar`); under it, your message is kept alone.
+
+Measured on 20 coding-agent tasks of one history, five answer sets each:
+
+| Text | Right answers, of 20 |
+| --- | --- |
+| The default set, every part the read kept | 13.8 |
+| The exchange set, bars learned on all 20 tasks | 18.4 |
+| The exchange set, each task's bars learned without it | 17.0 |
+| The exchange set as shipped, your message kept from 0.28 | 18.2 |
+
+17.0 is the figure a new history can expect. The 0.2 between 18.2 and 18.4 is one task's answer noise: its answer was in every text. As shipped, the one-decision text is a median of 5,213 tokens against 2,087 at the learned bars, 99% of the added text your own words. Moving the exchange's bar down too gave 14,125 tokens. The second search added 11 to 21 seconds and most of the text on one history, so this set runs none.
+
+### Decision levers
+
+A `claude-code`, `codex` or `markdown` source's `levers` switches levers of its mode on, each off by default. Name each with `true`, such as `"levers": { "hardFacts": true }`; give `itemsPerRequest` a whole number, and `choicePerFact` can also be `{ "candidates": 20, "enough": true }`. An unknown name, or a value of the wrong type, stops the question.
+
+| Lever | What it does | Cost |
+| --- | --- | --- |
+| `wholeMessages` | Asks the decision questions about each ranked part's whole message, and a subagent's report with the request that produced it ([whole messages](https://github.com/jonny981/curate/blob/main/docs/library.md#whole-messages)) | 2.47 times the dollars on one coding-agent history |
+| `hardFacts` | Writes into each part's record what code knows for certain: its kind, session and place, the message it answers and your reply to it ([hard facts](https://github.com/jonny981/curate/blob/main/docs/library.md#hard-facts)). The search-line call then also gives [the kind of task](#the-kind-of-task), and the requests carry it and `person` | 1.48 times the dollars |
+| `itemsPerRequest` | `1` sends each part (each message under `wholeMessages`) in a decision request of its own, with all its questions; the requests go out at once ([items per request](https://github.com/jonny981/curate/blob/main/docs/library.md#items-per-request)) | On LongMemEval's notes, 333 requests a question in place of 8, 1.09 times the dollars and at least 4.2 seconds |
+| `roles` | Asks what each kept part is doing: states a settled decision, proposes, reports a work step, asks, approves, repeats, is tool output, or only mentions the subject. It's recorded on each part and given to `choicePerFact`'s requests, and an agent's proposal that your next message approves is marked. It changes no selection ([what each kept part is doing](https://github.com/jonny981/curate/blob/main/docs/library.md#what-each-kept-part-is-doing)) | About one request and USD 0.0005 more a LongMemEval question |
+| `choicePerFact` | After the kept parts are chosen, asks one Choice per needed fact over the 20 kept parts rated best for it, each written into its own option. It removes each pick and asks again until a question over the picks so far says they state everything the task asks, or no candidate is left. The picks lead the text, and every other kept part follows ([a Choice per needed fact](https://github.com/jonny981/curate/blob/main/docs/library.md#a-choice-per-needed-fact)) | Its rounds run one after another, each about 3 requests, USD 0.0002 and 0.3 seconds a LongMemEval question with two needed facts; at most 44 requests and USD 0.0035 |
+
+`wholeMessages`, `hardFacts` and `itemsPerRequest: 1` together are the one form measured to sharpen the decision model's ranking. None of these levers has yet shown a gain in answers marked right beyond the noise of the tasks they were measured on.
+
+On a `markdown` source, `wholeMessages` and `hardFacts` act on notes written as a conversation, each paragraph opened by a speaker's name and a colon (`user: ...`). Those notes are then cut at each turn, each turn is judged whole, and its record carries the speaker as `author`, the note, its place, and the turns before and after it. Any other note is read as if the levers were off.
+
+Set `person` to your name as your questions word it, such as `"person": "Ada"`, once in the settings file. The requests of a source with `hardFacts` on carry it, so the decision model can tell your messages are the ones a question names you in.
 
 ### Feed
 
@@ -355,13 +478,21 @@ The two parts with the highest decision score sit under `### Most likely answer`
 
 A heading names what a reader cites. A commit's is `commit <hash>`, plus ` in <repository folder>` when the commit isn't from the project. A Markdown document's is its file: from the project's top folder when it's inside the project, and an absolute path otherwise. A chat part's is its chat source.
 
+When `choicePerFact` picked parts, the picks sit under `### Most likely answer` in place of the two strongest, in the order picked.
+
+#### Messages
+
+When every kept part is a whole message, as under the `answers` and `exchange` sets, the text is laid out message by message, strongest first, with no grouping by date. Each message sits under its own heading naming its session, its time to the minute and who said it: you, by `person` when it's set, an agent, tool output, or a turn's speaker. The two strongest sit under `### Most likely answer`, and the rest under `### More messages, strongest first`.
+
+The messages of one exchange are one passage, placed by its strongest message, under a heading such as `#### session 1a2b3c4d, an exchange (said 2026-03-02 10:14 to 2026-03-02 10:21)`. Each message in it opens with its time and who said it, in conversation order. An agent message cut to its paragraph nearest yours marks what was left out, such as `[earlier paragraphs left out; the whole message is <id>]`.
+
 #### Copies
 
 A part whose text is the same as a stronger kept part's is left out, and its room goes to the next part. A text that only sits inside a longer part stays, since it may be a quote or a later restatement. When the copy was said somewhere else or on another date, the kept part's heading says so: `<heading>, also <source> (said <YYYY-MM-DD>)`.
 
 #### Budget
 
-By default every kept part is laid out, with no budget, and the run record's `curate.estimatedTokens` gives the text's size. `answerTokens` sets a budget in estimated tokens. Parts are taken strongest first, and the first part that would take the text over the budget stops the taking. The strongest part is always kept whole, even over the budget.
+By default every kept part is laid out, with no budget, and the run record's `curate.estimatedTokens` gives the text's size. A source whose mode sets a text share gives only its parts rated at least that share of its best part; no mode sets one. `answerTokens` sets a budget in estimated tokens. Parts are taken strongest first, and the first part that would take the text over the budget stops the taking. The strongest part is always kept whole, even over the budget.
 
 The estimate uses no tokenizer. It counts words, digits in threes, runs of one punctuation mark, line ends and characters outside ASCII, and is set about a tenth high. So it's a rough budget, not a ceiling: text full of rare names, such as products or medicines, can cost more real tokens than it counts.
 
@@ -373,13 +504,13 @@ If no part was kept, the text is empty, the run record's `curate.nothingKept` is
 
 ### Sentence cutoff
 
-It's off unless `sentenceCutoff` is set: every taken part comes back whole, with no Jev request after the decisions. `false` is the same as unset.
+It's off unless `sentenceCutoff` is set: every taken part comes back whole, with no Jev request after the decisions. `false` is the same as unset. Measured at 0.1 on 150 LongMemEval questions, it removed 9.2% of the sentences and 7.2% of the tokens, and cut 12 labelled answer turns that were whole in the text to partial or absent.
 
 Set it to a number from 0 to 1 and, after the layout, Jev rates every sentence of the taken parts in one more request. A sentence stays if its rating is the cutoff or more; 0.5 is even odds, and a lower cutoff keeps more. A sentence Jev gives no rating stays.
 
-Kept sentences stay in their own words and order, under the same headings, and `…` marks each place where text was left out. A line that opens with `user: ` or `assistant: ` names its speaker, and the first kept sentence of that turn carries the name. A part with no sentence kept is left out, the strongest part included, so the text can be empty; standard error says so.
+Kept sentences stay in their own words and order, under the same headings, and `…` marks each place where text was left out. A line that opens with `user: ` or `assistant: `, or in a WhatsApp export with a sender's name and a colon, names its speaker, and the first kept sentence of that turn carries the name. A part with no sentence kept is left out, the strongest part included, so the text can be empty; standard error says so.
 
-An `answerTokens` budget, if set, limits the text Jev rates, not the text returned, which is usually far smaller. The cost is one decision request for the taken parts. Every sentence goes with the question's wording, which measured about five times the taken text in request tokens.
+An `answerTokens` budget, if set, limits the text Jev rates, not the text returned, which is usually far smaller. The cost is one decision request for the taken parts, split into more when they pass the service's request limit. Every sentence goes with the question's wording, which measured about five times the taken text in request tokens.
 
 The catch: a kept sentence can lose the sentence that says what it refers to, so "I paid $500 to attend" can stay while the sentence naming the event goes.
 
@@ -391,6 +522,8 @@ If the request fails, the whole text comes back as if `sentenceCutoff` were `fal
 
 Curate prints the laid-out parts. Dates come from the evidence; a part with no date shows `(said unknown)`.
 
+Every question that lays out a text also writes it whole to `log.md`, and every kept part, strongest first, to `kept.json`: its rank, rating, id, source, path, date and whole text. Both are mode 0600, in the question's own folder under `~/.curate/runs/<timestamp>/`, with `records` on or off, so you can go back to them afterwards. An id the text names where it left paragraphs out is in `kept.json`, with the whole message.
+
 Standard error names each missing source and each source only partly read, once per source with each reason once, and each listed source skipped as outside the project. It says how many ranked parts the rating stop left unread, when it ended the read before the end of the order.
 
 ### Reporting to the person
@@ -399,7 +532,7 @@ With `records` on, give the person the log's path, and report decision calls, to
 
 ### Caches
 
-With `records` off, a question writes nothing of its own outside its caches: the index, the embedding vectors and the label store under `$XDG_CACHE_HOME/curate`, or `~/.cache/curate`. Library label stores live in `$XDG_CACHE_HOME/curate/labels`, or `~/.cache/curate/labels`. The result exists only in the command's output.
+With `records` off, a question writes nothing of its own outside its caches, apart from `log.md` and `kept.json` ([Output](#output)): the index, the embedding vectors and the label store under `$XDG_CACHE_HOME/curate`, or `~/.cache/curate`. Library label stores live in `$XDG_CACHE_HOME/curate/labels`, or `~/.cache/curate/labels`.
 
 A question's working files sit in a temporary folder that's removed before it returns: on success, on failure, and when the command is interrupted or terminated. A forced kill (`kill -9`) can leave that folder behind.
 
@@ -411,13 +544,13 @@ Within one question, every read shares one read context, so a reader reuses its 
 
 Records are off by default. Set `records` to `true` in the settings file to keep a record for debugging or benchmarks. Every mention of the run record on this page applies only then.
 
-Each question then saves its source reads, ranked parts, decision answers, model token usage and timings beside the log, under `~/.curate/runs/<timestamp>/`. A failed step fails the run, writes no log, and records the step and the calls made. Failed runs keep their records too.
+Each question then saves its source reads, ranked parts, decision answers, model token usage and timings beside `log.md`, under `~/.curate/runs/<timestamp>/`. A failed step fails the run, writes no log, and records the step and the calls made. Failed runs keep their records too.
 
 A record holds what explains the question, not a copy of your history, so it stays small: about 5 MB for a question that ranks 60,000 parts.
 
 - **`read-N.json`** is one read's report: its status, its index update, and how many parts it returned (`returned`), a meaning lane scored (`meaningScored`) or a pool read named (`pooled`). It never holds the parts. The read's record entry names the file in `file`.
 - **`pick.candidates`** lists each part the decision model rated, and every other part the pick ranked, once: id, source, ranks, scores and status.
-- **`pick.unread`** lists the parts the rating stop left unread, per source, in ranked order: a count, the start their ids share, the rest of each id, and each part's place.
+- **`pick.unread`** lists the parts the rating stop or a chat read left unread, per source, in the order that read read: a count, the start their ids share, the rest of each id, and each part's place. A source a chat read left parts of carries `reason: 'chatRead'`.
 - **`selection.json`** holds the kept parts with their text. No text of a part that wasn't kept is saved anywhere.
 
 Set `readAudit` to `false` to drop the read files: the entries then carry no `file` name. `readAudit` defaults to `true` and does nothing while `records` is off.

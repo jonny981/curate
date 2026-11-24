@@ -1,16 +1,17 @@
 import type { HistorySettings } from '@curatejs/core';
-import { CHAT_CASCADE } from './questions.js';
+import { assistantChatHistory } from './mode.js';
 
 export { CHAT_KEYWORD_SETTINGS } from './chat-rank.js';
 
-/** Chat settings: no rare-word round, the seven label
- *  kinds, which find parts the keyword search missed, a name lane for
- *  each name the task names, the 0.0146 decision-score bar and the
- *  `CHAT_CASCADE` decision questions. `chat()` uses `AGENT_CHAT_CASCADE`
- *  instead, which omits the personal `own` question.
- *  Change one with `historySource({ reader: chat(), ...chatSettings, labels: false, questions: AGENT_CHAT_CASCADE })`. */
+/** Chat settings: the seven label kinds, which find parts the keyword
+ *  search missed, a name lane for each name the task names, and the
+ *  `assistantChatHistory` mode (the `CHAT_CASCADE` decision questions,
+ *  the 0.0146 bar and the ranked read). `chat()` uses the
+ *  `agentTranscripts` mode instead, whose `AGENT_CHAT_CASCADE` omits the
+ *  personal `own` question.
+ *  Change one with `historySource({ reader: chat(), ...chatSettings, labels: false, mode: agentTranscripts })`. */
 export const chatSettings: HistorySettings = {
-  rare: false, labels: true, names: true, bar: 0.0146, questions: CHAT_CASCADE,
+  labels: true, names: true, mode: assistantChatHistory,
 };
 
 /** Wording guidance for host-written extra searches; Curate generates no lines. */

@@ -1,6 +1,7 @@
 import type { MemoryCandidate, PickBatch, PickDecide, PickResult } from './pick.js';
 import type { LeverStates } from './levers.js';
 import { checkCurateOptions } from './options.js';
+import { messageKey, messagePieces, messageText } from './chat-read.js';
 
 /** The estimate curate states its text's size with, and holds an
  *  `answerTokens` budget with when one is set. Characters
@@ -30,7 +31,9 @@ function estimateAnswerTokens(text: string): number {
  *  selected reference items, strongest first, for the answering model to
  *  read. The two items with the highest decision weight (ties broken by
  *  the fused order) sit under `### Most likely answer`, each under its own
- *  `#### <source> (said <date>)` heading. Every other item is grouped by
+ *  `#### <source> (said <date>)` heading; when a Choice per needed fact
+ *  picked items (the record entries' `chosen`), the picks sit there
+ *  instead, in the order picked: each round's picks, fact by fact. Every other item is grouped by
  *  said date and source, under `### <source> (said <date>)`, groups
  *  oldest first and items in weight order inside a group. An item with
  *  no date shows `(said unknown)` and its group comes last. A date that
@@ -54,17 +57,22 @@ export interface CurateOptions {
    *  rare names. Items are taken in weight order,
    *  and the first item that would take the text over this stops the
    *  taking. The strongest item is always kept whole, even over the
-   *  budget. Omitted, there is no budget: every kept item is laid out. */
+   *  budget. Omitted, there is no budget: every kept item its source's
+   *  text share admits is laid out. */
   readonly answerTokens?: number;
-  /** Keep only the sentences that bear on the task. After the items are
+  /** Keep only the sentences that bear on the task. Measured at 0.1 on
+   *  150 LongMemEval questions, it removed 9.2% of the sentences and 7.2%
+   *  of the tokens, and cut 12 labelled answer turns that were whole in
+   *  the text to partial or absent. After the items are
    *  taken, `decide` rates every sentence of them in one request, and a
    *  sentence stays when its rating is this number or more, from 0 to 1.
    *  Kept sentences stay in their own words and order under the same
    *  headings, and `…` marks each place text was left out. An item with
    *  no sentence kept is left out. A sentence is the text up to a full
    *  stop, question mark or exclamation mark followed by a space, or to
-   *  the line's end; blank lines go. A line that opens `user: ` or
-   *  `assistant: ` names its speaker, and the first kept sentence of
+   *  the line's end; blank lines go. A line that opens `user: `,
+   *  `assistant: ` or `<name>: ` for a name in the item's `speakers`
+   *  names its speaker, and the first kept sentence of
    *  that speaker's turn carries the name. A sentence `decide` gives no
    *  rating stays. When the request fails, the whole text is returned as
    *  if no sentence were rated, and `record.sentences.failed` says why.
@@ -77,6 +85,9 @@ export interface CurateOptions {
   /** Rates each sentence for `sentenceCutoff`. */
   readonly decide?: PickDecide;
   readonly signal?: AbortSignal;
+  /** The person's name, for a text laid out message by message: their
+   *  messages are headed with it. Absent: "the person". */
+  readonly person?: string;
 }
 
 export interface CurateRecord {
@@ -91,7 +102,8 @@ export interface CurateRecord {
     readonly candidate: MemoryCandidate;
     readonly weight: number;
   }[];
-  /** The returned text's estimated tokens. */
+  /** The returned text's estimated tokens: its size, a result of the
+   *  ratings unless an `answerTokens` budget was set. */
   readonly estimatedTokens: number;
   /** Present when an `answerTokens` budget was set: the budget the items
    *  were taken within. */
@@ -113,6 +125,10 @@ export interface CurateRecord {
     readonly strongestWeight?: number;
     readonly atHalfOrMore: number;
   };
+  /** Present when a source's mode sets `textShare`: how many selected
+   *  items were left out for weighing under that share of their
+   *  source's best item. They are not counted in `leftOut`. */
+  readonly underShare?: number;
   /** Present when sentences were rated: what the sentence pass did. */
   readonly sentences?: {
     readonly cutoff: number;
@@ -152,6 +168,13 @@ function dayOf(value: unknown): string {
 
 // A commit with no body carries its evidence in its title.
 const body = (item: Item) => item.candidate.text.trim() ? item.candidate.text : item.candidate.title;
+
+/** Who said a message laid out on its own: a turn's speaker, the person,
+ *  an agent, tool output or the system; undefined when its reader marked
+ *  no one. */
+const speakerOf = (candidate: MemoryCandidate, person: string | undefined) => candidate.turn?.speaker
+  ?? (candidate.author === 'person' ? person ?? 'the person' : candidate.author === 'agent' ? 'agent'
+    : candidate.author === 'tool' ? 'tool output' : candidate.author === 'system' ? 'system' : undefined);
 
 /** The taken items as the layout shows them: each on its own, except
  *  the parts of one item cut into parts (`part` and `documentId` set),
@@ -205,8 +228,20 @@ function partsNotKept(taken: readonly Item[]): { partsNotKept?: number } {
 }
 
 /** The memory text for the items taken, strongest first. A taken item's
- *  heading also names each other place and date its copies were said. */
-function layOutItems(taken: readonly Item[], copies: ReadonlyMap<Item, readonly Item[]>): string {
+ *  heading also names each other place and date its copies were said.
+ *  `picked`, when a Choice per needed fact picked items: those lead,
+ *  under `Most likely answer`, in place of the two strongest.
+ *  `byMessage`, for a text whose every item is a whole message: each
+ *  item under its own heading, strongest first, naming its session, its
+ *  time to the minute and who said it, with no grouping by date. */
+function layOutItems(taken: readonly Item[], copies: ReadonlyMap<Item, readonly Item[]>, picked?: (item: Item) => boolean,
+  byMessage?: {
+    readonly person?: string;
+    readonly exchangeOf?: (item: Item) => readonly { readonly sourceId: string; readonly id: string }[];
+    /** Whether an item was kept only for an exchange whose source lays
+     *  such messages out as their paragraph nearest the person's. */
+    readonly cutForExchange?: (item: Item) => boolean;
+  }): string {
   const source = (item: Item) => {
     const said = dayOf(item.candidate.date?.value);
     // A file's last-changed date is not when anything in it was said.
@@ -221,10 +256,88 @@ function layOutItems(taken: readonly Item[], copies: ReadonlyMap<Item, readonly 
     if (!elsewhere.length) return own;
     return `${own}, also ${elsewhere.length === 1 ? elsewhere[0] : `${elsewhere.slice(0, -1).join(', ')} and ${elsewhere[elsewhere.length - 1]}`}`;
   };
+  if (byMessage !== undefined) {
+    const lead = picked === undefined ? 2 : taken.filter(picked).length;
+    // A message's session, or a turn's note, in place of the source, and
+    // its time to the minute, as its record wrote it.
+    const placeOf = (item: Item) => {
+      const { label } = source(item);
+      const candidate = item.candidate;
+      const minute = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})/.exec(candidate.date?.value ?? '');
+      const said = minute === null ? source(item).said : `${minute[1]} ${minute[2]}`;
+      const where = candidate.chat !== undefined ? `session ${candidate.chat.sessionId.slice(0, 8)}` : candidate.turn?.session ?? source(item).where;
+      return `${where} (${label} ${said || 'unknown'})`;
+    };
+    const named = (item: Item) => {
+      const own = placeOf(item);
+      const elsewhere = [...new Set((copies.get(item) ?? []).map(placeOf))].filter((other) => other !== own);
+      const who = speakerOf(item.candidate, byMessage.person);
+      return `#### ${own}${who === undefined ? '' : `, ${who}`}${elsewhere.length === 0 ? '' : `, also ${elsewhere.join(', ')}`}\n\n${body(item)}`;
+    };
+    // Messages kept as one exchange are one passage: in conversation
+    // order, placed by their strongest message, each line naming who
+    // said it and when, under one heading for the passage.
+    const at = new Map(taken.map((item, index) => [JSON.stringify([item.candidate.sourceId, item.candidate.id]), index]));
+    const parent = taken.map((_, index) => index);
+    const root = (index: number): number => parent[index] === index ? index : (parent[index] = root(parent[index]!));
+    taken.forEach((item, index) => {
+      for (const anchor of byMessage.exchangeOf?.(item) ?? []) {
+        const other = at.get(JSON.stringify([anchor.sourceId, anchor.id]));
+        if (other !== undefined) parent[root(index)] = root(other);
+      }
+    });
+    const passages = new Map<number, Item[]>();
+    taken.forEach((item, index) => { passages.set(root(index), [...(passages.get(root(index)) ?? []), item]); });
+    const order = (item: Item) => [Date.parse(item.candidate.date?.value ?? '') || 0, ...(item.candidate.place?.at ?? [])];
+    const earlier = (left: Item, right: Item) => {
+      const [a, b] = [order(left), order(right)];
+      for (let index = 0; index < Math.max(a.length, b.length); index += 1) if ((a[index] ?? 0) !== (b[index] ?? 0)) return (a[index] ?? 0) - (b[index] ?? 0);
+      return 0;
+    };
+    const laid = [...passages.values()].sort((left, right) => taken.indexOf(left[0]!) - taken.indexOf(right[0]!)).map((members) => {
+      if (members.length === 1) return named(members[0]!);
+      const inOrder = [...members].sort(earlier);
+      // An agent message kept only for the exchange, cut to the paragraph
+      // nearest the person's message: the closing paragraph of one the
+      // person answers, the opening paragraph of one that replies; what
+      // is left out is marked with the message's id.
+      const keyOf = (item: Item) => JSON.stringify([item.candidate.sourceId, item.candidate.id]);
+      const position = new Map(inOrder.map((item, index) => [keyOf(item), index]));
+      const shown = (item: Item, index: number) => {
+        if (byMessage.cutForExchange?.(item) !== true) return body(item);
+        const anchors = (byMessage.exchangeOf?.(item) ?? []).flatMap((anchor) => {
+          const at = position.get(JSON.stringify([anchor.sourceId, anchor.id]));
+          return at === undefined ? [] : [at];
+        });
+        const paragraphs = body(item).split(/\n[ \t]*\n/).filter((paragraph) => paragraph.trim() !== '');
+        if (paragraphs.length <= 1 || anchors.length === 0) return body(item);
+        // A message the person answers keeps its closing paragraph; a reply
+        // to the person keeps its opening one; a message that is both keeps both.
+        const opening = anchors.some((at) => at < index);
+        const closing = anchors.some((at) => at > index);
+        const left = (where: string) => `[${where} paragraphs left out; the whole message is ${item.candidate.id}]`;
+        return [
+          ...(opening ? [paragraphs[0]!] : [left('earlier')]),
+          ...(opening && closing && paragraphs.length > 2 ? [left('middle')] : []),
+          ...(closing ? [paragraphs.at(-1)!] : [left('later')]),
+        ].join('\n\n');
+      };
+      const times = inOrder.map((item) => /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})/.exec(item.candidate.date?.value ?? ''));
+      const when = (match: RegExpExecArray | null) => match === null ? 'unknown' : `${match[1]} ${match[2]}`;
+      const where = placeOf(inOrder[0]!).replace(/ \(.*$/, '');
+      return [`#### ${where}, an exchange (said ${when(times[0]!)} to ${when(times.at(-1)!)})`,
+        ...inOrder.map((item, index) => `[${when(times[index]!)}] ${speakerOf(item.candidate, byMessage.person) ?? 'unmarked'}:\n${shown(item, index)}`)].join('\n\n');
+    });
+    const rest = laid.slice(lead);
+    return [`### Most likely answer\n\n${laid.slice(0, lead).join('\n\n')}\n`,
+      ...(rest.length === 0 ? [] : [`### More messages, strongest first\n\n${rest.join('\n\n')}`])].join('\n\n');
+  }
   const blocks = blocksOf(taken);
-  const top = blocks.slice(0, 2).map((block) => `#### ${heading(block[0]!)}\n\n${blockText(block)}`);
+  // The parts of one item sit in one block, so the lead counts blocks.
+  const lead = picked === undefined ? 2 : blocks.filter((block) => picked(block[0]!)).length;
+  const top = blocks.slice(0, lead).map((block) => `#### ${heading(block[0]!)}\n\n${blockText(block)}`);
   const groups = new Map<string, Item[][]>();
-  for (const block of blocks.slice(2)) {
+  for (const block of blocks.slice(lead)) {
     const item = block[0]!;
     // The heading closes the key, so an item whose copies were said elsewhere never shares a heading with one whose were not.
     const key = `${source(item).said}|${item.candidate.sourceId}|${source(item).where}|${source(item).label}|${heading(item)}`;
@@ -248,12 +361,15 @@ interface Sentence {
   readonly speaker?: string;
 }
 
-/** A text as sentences, in order. Blank lines hold none. */
-function sentencesOf(text: string): Sentence[] {
+const escaped = (name: string) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/** A text as sentences, in order. Blank lines hold none. A line opening
+ *  `user: `, `assistant: ` or one of `speakers` and a colon names who said it. */
+function sentencesOf(text: string, speakers: readonly string[] = []): Sentence[] {
   const sentences: Sentence[] = [];
   let turn = 0;
+  const opener = new RegExp(`^(${['user', 'assistant', ...speakers.filter((name) => name.trim() !== '')].map(escaped).join('|')}): `);
   text.split('\n').forEach((line, index) => {
-    const named = /^(user|assistant): /.exec(line);
+    const named = opener.exec(line);
     if (named) turn += 1;
     let speaker = named?.[1];
     for (const sentence of (named ? line.slice(named[0].length) : line).split(/(?<=[.!?])\s+/)) {
@@ -305,7 +421,7 @@ export async function curate(task: string, picked: PickResult, options: CurateOp
     if (first === undefined) firstOf.set(candidate.id, candidate);
     else if (first !== candidate) shared.add(candidate.id);
   }
-  const items = references.map((candidate) => {
+  const pieceItems = references.map((candidate) => {
     const entry = entries.get(JSON.stringify([candidate.sourceId, candidate.id]));
     if (entry?.status !== 'selected' || entry.probability === undefined
       || !Number.isFinite(entry.probability) || entry.probability < 0 || entry.probability > 1) {
@@ -314,6 +430,29 @@ export async function curate(task: string, picked: PickResult, options: CurateOp
     const id = shared.has(candidate.id) ? JSON.stringify([candidate.sourceId, candidate.id]) : candidate.id;
     return { id, candidate, weight: entry.probability };
   });
+  // A source whose mode judged whole messages lays each message out once,
+  // whole: its kept pieces joined in order, at its first piece's place,
+  // with the message's weight.
+  const whole = (candidate: MemoryCandidate) => (picked.record.levers.sources?.[candidate.sourceId]?.wholeMessages === true
+    || picked.record.levers.sources?.[candidate.sourceId]?.keep?.wholeMessages === true)
+    && (candidate.turn !== undefined || (candidate.chat !== undefined && (candidate.place?.at.length ?? 0) >= 3));
+  const pieces = messagePieces(references.filter(whole));
+  const itemOf = new Map(pieceItems.map((item) => [item.candidate, item]));
+  const laid = new Set<string>();
+  const items = pieceItems.flatMap((item) => {
+    if (!whole(item.candidate)) return [item];
+    const key = messageKey(item.candidate);
+    if (laid.has(key)) return [];
+    laid.add(key);
+    const message = pieces.get(key)!;
+    // A turn of a note written as a conversation is laid out whole, as its
+    // reader read it.
+    const turn = message[0]!.turn?.text;
+    if (message.length === 1 && turn === undefined) return [item];
+    const first = itemOf.get(message[0]!)!;
+    return [{ ...first, candidate: { ...first.candidate, text: turn ?? messageText(message) },
+      weight: Math.max(...message.map((piece) => itemOf.get(piece)!.weight)) }];
+  });
   const answerTokens = options.answerTokens;
   // A pick that kept nothing gives an empty text: a question the history
   // holds nothing for still gets an answer.
@@ -321,8 +460,38 @@ export async function curate(task: string, picked: PickResult, options: CurateOp
     return { log: '', record: { levers: picked.record.levers, items: [], estimatedTokens: 0,
       ...(answerTokens === undefined ? {} : { answerTokens }), collapsed: 0, leftOut: { count: 0, atHalfOrMore: 0 }, nothingKept: true } };
   }
+  // A source whose mode sizes its text by the ratings gives only the
+  // parts within its share of its best part's weight.
+  const best = new Map<string, number>();
+  for (const { candidate, weight } of items) best.set(candidate.sourceId, Math.max(best.get(candidate.sourceId) ?? 0, weight));
+  const shareOf = (sourceId: string) => picked.record.levers.sources?.[sourceId]?.textShare;
+  const sized = items.filter(({ candidate, weight }) => weight >= (shareOf(candidate.sourceId) ?? 0) * best.get(candidate.sourceId)!);
+  // The parts a Choice per needed fact picked lead, in the order they were
+  // picked: each round's picks, fact by fact. Every other part follows.
+  const pickOf = (item: Item) => entries.get(JSON.stringify([item.candidate.sourceId, item.candidate.id]))?.chosen
+    ?.reduce((first, pick) => pick.round < first.round || (pick.round === first.round && pick.fact < first.fact) ? pick : first);
+  const leading = (left: Item, right: Item) => {
+    const [a, b] = [pickOf(left), pickOf(right)];
+    return a === undefined || b === undefined ? Number(a === undefined) - Number(b === undefined) : a.round - b.round || a.fact - b.fact;
+  };
   // `items` follows `picked.selected`, so a stable sort leaves equal weights in the fused order.
-  const ordered = [...items].sort((left, right) => right.weight - left.weight);
+  const ordered = [...sized].sort((left, right) => leading(left, right) || right.weight - left.weight);
+  // With picks, they make the `Most likely answer` section; without, the two strongest parts do.
+  const picks = sized.some((item) => pickOf(item) !== undefined) ? (item: Item) => pickOf(item) !== undefined : undefined;
+  // A text whose every item is a whole message is laid out message by
+  // message, strongest first, each naming who said it.
+  const exchangeOf = (item: Item) => {
+    const entry = entries.get(JSON.stringify([item.candidate.sourceId, item.candidate.id]));
+    return entry !== undefined && entry.status === 'selected' ? entry.exchange ?? [] : [];
+  };
+  const cutForExchange = (item: Item) => {
+    const exchange = picked.record.levers.sources?.[item.candidate.sourceId]?.keep?.exchange;
+    const entry = entries.get(JSON.stringify([item.candidate.sourceId, item.candidate.id]));
+    return typeof exchange === 'object' && exchange.nearest === 'paragraph'
+      && entry !== undefined && entry.status === 'selected' && entry.keptAs === 'exchange';
+  };
+  const byMessage = sized.length > 0 && sized.every((item) => whole(item.candidate))
+    ? { ...(options.person === undefined ? {} : { person: options.person }), exchangeOf, cutForExchange } : undefined;
   let taken: Item[] = [];
   let copies = new Map<Item, readonly Item[]>();
   let log = '';
@@ -337,7 +506,7 @@ export async function curate(task: string, picked: PickResult, options: CurateOp
       if (original === undefined) { firstWith.set(shown, item); taken.push(item); }
       else copies.set(original, [...(copies.get(original) ?? []), item]);
     }
-    log = layOutItems(taken, copies);
+    log = layOutItems(taken, copies, picks, byMessage);
   } else {
     for (const [index, item] of ordered.entries()) {
       // A copy of an item already taken adds only a place and date to that item's heading.
@@ -345,7 +514,7 @@ export async function curate(task: string, picked: PickResult, options: CurateOp
       const original = taken.find((kept) => body(kept).trim() === shown);
       const nextTaken = original === undefined ? [...taken, item] : taken;
       const nextCopies = original === undefined ? copies : new Map(copies).set(original, [...(copies.get(original) ?? []), item]);
-      const text = layOutItems(nextTaken, nextCopies);
+      const text = layOutItems(nextTaken, nextCopies, picks, byMessage);
       if (taken.length > 0 && estimateAnswerTokens(text) > answerTokens) { stopped = index; break; }
       [taken, copies, log] = [nextTaken, nextCopies, text];
     }
@@ -360,11 +529,12 @@ export async function curate(task: string, picked: PickResult, options: CurateOp
       count: leftOut.length, ...(leftOut.length ? { strongestWeight: leftOut[0]!.weight } : {}),
       atHalfOrMore: leftOut.filter((item) => item.weight >= 0.5).length,
     },
+    ...(items.some(({ candidate }) => shareOf(candidate.sourceId) !== undefined) ? { underShare: items.length - sized.length } : {}),
   };
   const cutoff = options.sentenceCutoff ?? false;
   if (cutoff === false) return { log, record };
 
-  const split = taken.map((item) => sentencesOf(body(item)));
+  const split = taken.map((item) => sentencesOf(body(item), item.candidate.speakers));
   const batch: PickBatch = { task, questions: split.flatMap((sentences, part) => sentences.map((sentence, index) => ({
     key: `p${part}u${index}`, sourceId: `p${part}`, id: `u${index}`, role: 'reference' as const, title: '', anonymous: true,
     text: sentence.speaker === undefined ? sentence.text : `${sentence.speaker}: ${sentence.text}`,
@@ -402,7 +572,7 @@ export async function curate(task: string, picked: PickResult, options: CurateOp
   });
   const left = [...shown.values()];
   const trimmed = left.length === 0 ? '' : layOutItems(left,
-    new Map([...copies].flatMap(([item, list]) => shown.has(item) ? [[shown.get(item)!, list] as const] : [])));
+    new Map([...copies].flatMap(([item, list]) => shown.has(item) ? [[shown.get(item)!, list] as const] : [])), picks, byMessage);
   const { partsNotKept: _before, ...rest } = record;
   return { log: trimmed, record: {
     ...rest, ...partsNotKept(left), items: left, estimatedTokens: estimateAnswerTokens(trimmed),

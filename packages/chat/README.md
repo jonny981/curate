@@ -32,8 +32,7 @@ Pass it to core's `memory()` or `pickFromSources()`.
 | `includeTools` | `false` | `true` adds tool calls and tool results, with message roles `'tool-call'` and `'tool-result'`. |
 | `maxQuestionText` | 700 | The most characters in a part. A value above 700 has no effect. |
 | `keyword` | `CHAT_KEYWORD_SETTINGS` | Your changes to the keyword ranking. See [Keyword settings](#keyword-settings). |
-| `questions` | `AGENT_CHAT_CASCADE` | The questions the decision model asks of each part. See [Question sets](#question-sets). |
-| `bar` | the question set's fitted bar if it has one, else 0.0146 | The score a part needs to be kept. |
+| `mode` | `agentTranscripts` | How the decision step judges and reads the parts: the questions it asks, the score a part needs to be kept, and the read. See [Modes](#modes). |
 | `index` | on | `{ directory }` picks where the index file goes, and `false` turns it off. See [Stored index](#stored-index). |
 | `id` | `chat:` plus the providers and folders | The source's id. |
 
@@ -55,7 +54,8 @@ Each user or assistant text block is split at line ends into parts of at most 70
 Joining a block's parts gives back the block exactly, after [scrubbing](#secret-scrubbing).
 
 Every part has role `'reference'`.
-`candidate.chat` carries the `provider`, the `sessionId`, the message `role`, the part's `author` and, when the transcript names an agent, `authorName`.
+`candidate.chat` carries the `provider`, the `sessionId`, the message `role`, `authorName` when the transcript names an agent, and `unit` for a part of an agent's work ([below](#the-parts-of-an-agents-work)).
+`candidate.author` holds who wrote the part, and `candidate.place` its transcript and its line, block and piece there.
 `contentRef` names the provider, session, JSONL line, block and part.
 
 The title names the author after the role, for example `claude-code <session> user (the person) <date>` or `user (agent team-lead)`.
@@ -125,7 +125,18 @@ For a Codex user message:
 In a `cli` session, a user message can be the person's or text another tool typed into the terminal.
 The transcript can't tell them apart, so it stays `unmarked`.
 
-The author mark doesn't change ranking: keyword scores and phrase matches read the title without it.
+The author mark doesn't change the search ranking: keyword scores and phrase matches read the title without it.
+The chat read starts from the person's own parts, and the decision model can read the author in a part's record.
+
+### The parts of an agent's work
+
+Three kinds of part carry `chat.unit`:
+
+- **`prompt`:** the first line of a Claude Code subagent's transcript (`<session>/subagents/agent-<id>.jsonl`), the brief it was given.
+- **`report`:** the last line of that transcript holding assistant text, the agent's last message. Its `authorName` is the agent's id, from the file name, so its title reads `assistant (agent <id>)`.
+- **`summary`:** a Claude Code compaction summary (`isCompactSummary: true`).
+
+Codex sessions carry no `unit`. The marks add no part and change no search rank.
 
 ## Secret scrubbing
 
@@ -136,7 +147,9 @@ Pattern matching can't promise to catch every secret.
 
 Part ids are scrubbed too.
 An id is built from the folder read, the transcript's path in it, and the part's line, block and piece.
-The folder and the path are scrubbed separately before they're joined, so a name that looks like a secret is masked and every id stays distinct.
+The folder and the path are scrubbed separately before they're joined, so a name that looks like a secret is masked.
+A masked folder or path is followed by `#` and the first 16 hex characters of a SHA-256 of the real folder and path.
+So two transcripts whose names mask alike, such as two files named by 32 hex characters, keep their own ids and their own place, and the real name is never shown.
 
 `scrubChat(text)` exports the same scrubber.
 
@@ -176,12 +189,11 @@ Core's [Stored index](https://github.com/jonny981/curate/blob/main/packages/core
 
 ## Defaults and overrides
 
-`chat()` reads with `chatSettings` and the `AGENT_CHAT_CASCADE` question set:
+`chat()` reads with `chatSettings` and the `agentTranscripts` mode:
 
-- **No rare-word round.**
 - **Labels on:** core's seven label kinds. They find parts the keyword search missed, which recall needs.
 - **Name lanes:** one for each name the task names.
-- **A bar of 0.0146:** parts scoring 0.0146 or more are kept, ordered and weighted by decision probability.
+- **The `agentTranscripts` mode:** parts scoring 0.0146 or more on `AGENT_CHAT_CASCADE` are kept, ordered and weighted by decision probability, and the parts are read with [core's chat read](https://github.com/jonny981/curate/blob/main/docs/library.md#the-chat-read) ([Modes](#modes)).
 
 Set `everyScored: true` on the pick to keep every scored reference part from every source.
 Core's `curate()` lays out the kept parts by their exact scores, strongest first.
@@ -191,9 +203,9 @@ This turns labels off for one chat source:
 
 ```ts
 import { historySource } from '@curatejs/core';
-import { chat, chatSettings, AGENT_CHAT_CASCADE } from '@curatejs/chat';
+import { agentTranscripts, chat, chatSettings } from '@curatejs/chat';
 
-const source = historySource({ reader: chat({ paths: ['transcripts'] }), ...chatSettings, labels: false, questions: AGENT_CHAT_CASCADE });
+const source = historySource({ reader: chat({ paths: ['transcripts'] }), ...chatSettings, labels: false, mode: agentTranscripts });
 ```
 
 Core's [Defaults and evidence](https://github.com/jonny981/curate/blob/main/docs/measurements.md#defaults-and-evidence) explains the 0.0146 bar: in its saved-decision sweep, higher bars dropped whole answer turns.
@@ -213,22 +225,43 @@ const source = chat({ paths: ['transcripts'], keyword: { k1: 1.2 } });
 `rrf: false` keeps the full-query keyword score instead of merging it with the content-word and name rankings; the default is `true`.
 For ordinary keyword settings, pass `{ k1: 1.2, b: 0.75, stem: false, short: false, stop: 'baseline', nouns: false, rrf: false }`.
 
+### Modes
+
+A mode says how the decision step judges and reads a source's parts: its questions, the bar a part is kept at, and its read.
+The package exports three.
+
+| Mode | Questions | Bar | Read | Use it for |
+| --- | --- | --- | --- | --- |
+| `agentTranscripts`, `chat()`'s default | `AGENT_CHAT_CASCADE` | 0.0146 | `conversationRead()` | Coding-agent transcripts |
+| `assistantChatHistory`, `chatSettings`' mode | `CHAT_CASCADE` | 0.0146 | `assistantChatRead()` | Many short chats with an assistant |
+| `longAssistantChats` | `CHAT_CASCADE` | 0.0146 | `assistantChatRead()` | Chats long enough that their topic changes inside them |
+
+`agentTranscripts` also puts the facts the answer needs in each request's decision state, when the call gives them (`needed`).
+Its `conversationRead()` means a pick on the fused order reads its parts with [core's chat read](https://github.com/jonny981/curate/blob/main/docs/library.md#the-chat-read): the person's own messages first, rings of neighbours around those rated well, then the topic segments that hold one of them or a search lane's top 10 parts, until new well-rated parts fall off.
+A source in a mode that reads with `rankedRead` keeps the plain read, and so does a pick with `everyRanked`, which decides every ranked part.
+
+The two assistant-chat modes share one set of defaults, each under its own name so each can be tuned on its own.
+`assistantChatRead()` reads the fused order with the person's own messages first, two batches at a time, and stops where the ratings go cold: at the call's `stopWhenCold` levels or, with none set, a floor of 0.1 and a share of 0.2, judged over windows of 150 rated parts.
+Replayed on saved ratings, this one set found as much evidence as each mode's own measured rules on both benchmarks: the same 97 of 104 evidence units on BEAM's long chats, and 856 of 886 against 851 on LongMemEval.
+Their text takes every kept part: a text share of 0.2 was measured only under a 2,000-token budget, and with no budget it leaves out kept parts, so `textShare` is a dial you set.
+An author weight, the facts the answer needs and a second search are left out: the weight wasn't fitted for this set, and the other two weren't measured with it.
+
 ### Question sets
 
 `AGENT_CHAT_CASCADE` is the default.
 It asks `relevant` first, then `needed` inside the question band, and it leaves out `own`.
 The band, `AGENT_CHAT_CASCADE.band`, is `[0.1, 0.9]`: a part whose answer to `relevant` falls outside it is scored on that answer alone.
-Set your own band through `questions`:
+Set your own band through the mode's `questions`:
 
 ```ts
 import { historySource } from '@curatejs/core';
-import { chat, AGENT_CHAT_CASCADE, chatSettings } from '@curatejs/chat';
+import { agentTranscripts, chat, AGENT_CHAT_CASCADE, chatSettings } from '@curatejs/chat';
 
-const source = historySource({ reader: chat(), ...chatSettings, questions: { ...AGENT_CHAT_CASCADE, band: [0.05, 0.95] } });
+const source = historySource({ reader: chat(), ...chatSettings, mode: { ...agentTranscripts, questions: { ...AGENT_CHAT_CASCADE, band: [0.05, 0.95] } } });
 ```
 
-`chatSettings` itself carries `CHAT_CASCADE`, which includes `own`, for personal histories a host provides.
-Spreading `chatSettings` into `historySource()` picks that set, so add `questions: AGENT_CHAT_CASCADE` to keep the agent questions when you change other settings.
+`chatSettings` itself carries the `assistantChatHistory` mode, whose `CHAT_CASCADE` includes `own`, for personal histories a host provides.
+Spreading `chatSettings` into `historySource()` picks that mode, so add `mode: agentTranscripts` to keep the agent questions and read when you change other settings.
 
 #### Personal questions
 
@@ -242,9 +275,9 @@ Use it through `historySource`:
 
 ```ts
 import { historySource } from '@curatejs/core';
-import { chat, chatSettings, PERSONAL_CHAT_CASCADE } from '@curatejs/chat';
+import { assistantChatHistory, chat, chatSettings, PERSONAL_CHAT_CASCADE } from '@curatejs/chat';
 
-const source = historySource({ reader: chat(), ...chatSettings, questions: PERSONAL_CHAT_CASCADE });
+const source = historySource({ reader: chat(), ...chatSettings, mode: { ...assistantChatHistory, questions: PERSONAL_CHAT_CASCADE } });
 ```
 
 #### Personal questions with written ones
@@ -258,14 +291,14 @@ See [core's written questions](https://github.com/jonny981/curate/blob/main/docs
 ```ts
 import { historySource, memory, taskQuestionWriter, type CurateWrite } from '@curatejs/core';
 import { jev } from '@curatejs/core/models';
-import { chat, chatSettings, PERSONAL_CHAT_WRITTEN_CASCADE } from '@curatejs/chat';
+import { assistantChatHistory, chat, chatSettings, PERSONAL_CHAT_WRITTEN_CASCADE } from '@curatejs/chat';
 
 const decide = jev({ apiKey: process.env.TYPESAFE_API_KEY });
 // Any model call: it gets { instructions, body } and returns the reply text.
 const write: CurateWrite = async ({ instructions, body }, signal) => askYourModel(instructions, body, signal);
 
 const mem = memory({
-  sources: [historySource({ reader: chat(), ...chatSettings, questions: PERSONAL_CHAT_WRITTEN_CASCADE })],
+  sources: [historySource({ reader: chat(), ...chatSettings, mode: { ...assistantChatHistory, questions: PERSONAL_CHAT_WRITTEN_CASCADE } })],
   decide,
   pick: { writeQuestions: taskQuestionWriter(write) },
 });
@@ -276,10 +309,10 @@ const mem = memory({
 `JUDGMENT_CHAT_CASCADE` asks every part two narrow questions: `topic_match`, a yes/no subject match, and `answerhood`, a five-level score for "could this excerpt itself be the answer".
 It combines the answers with facts the code works out for each part (position, keyword rank, task kind and the rest), using the fitted constants in `judgment-chat-weights.json`, which ships beside the bundle.
 The model sees each part without names: a date and its text, with no id, title or session.
-Pick it with `questions`, and change its fitted bar with `bar`:
+Pick it with a mode that carries it, and change its fitted bar with the mode's `bar`:
 
 ```ts
-const source = chat({ paths: ['transcripts'], questions: JUDGMENT_CHAT_CASCADE, bar: 0.3 });
+const source = chat({ paths: ['transcripts'], mode: { name: 'judgments', questions: JUDGMENT_CHAT_CASCADE, bar: 0.3, read: rankedRead } });
 ```
 
 The weights file ships empty, so the set throws until a fitted run writes `keys`, `mu`, `sd`, `w`, `b` and `bar` beside the bundle, plus a `provenance` block naming the population the fit measured.
@@ -289,10 +322,17 @@ That population is the saved benchmark's: 700-character transcript chunks, sessi
 A pass checks the set on that population only; it isn't calibration for ordinary `/curate` sources.
 The `curate` skill picks `JUDGMENT_CHAT_CASCADE` for a chat source when `sources.json` sets `questions: "judgments"` on it.
 
+#### Message answers
+
+`MESSAGE_ANSWER_CASCADE` asks of a whole message whether it states the answer to the task, and once per needed fact whether it states that fact. A message's score is the highest of its answers.
+It's the question set of a mode's second stage (`keep`), which the `curate` skill's `answers` and `exchange` sets use.
+In this wording, on 22 coding-agent tasks of one history, each whole message judged with its hard facts, the highest bar that lost no labelled answer was 0.59 on tasks that want one decision and 0.04 on tasks that want everything said.
+A bar measured in this wording doesn't carry to another.
+
 ### Labels
 
 `labelBar` sets how sure a label must be, 0.5 if you don't set it.
-A higher bar lets fewer parts in through the label lane: `historySource({ reader: chat(), ...chatSettings, labelBar: 0.7, questions: AGENT_CHAT_CASCADE })`.
+A higher bar lets fewer parts in through the label lane: `historySource({ reader: chat(), ...chatSettings, labelBar: 0.7, mode: agentTranscripts })`.
 
 `labels: true` asks for core's seven `LABEL_KINDS`, and a list of kinds asks for your own set instead.
 See [core's label options](https://github.com/jonny981/curate/blob/main/docs/library.md#labels).

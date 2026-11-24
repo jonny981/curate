@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { addMeaningRanks, pick, pickFromSources, type EmbeddingFunction, type MemoryCandidate } from '../src/index.js';
 
-const uncutPick = { everyRanked: true, everyScored: true, rare: false } as const;
+const uncutPick = { everyRanked: true, everyScored: true } as const;
 
 const item = (id: string, text: string, score = 0): MemoryCandidate => ({
   id, sourceId: 'notes', role: 'reference', title: id, text, signals: { keyword: score },

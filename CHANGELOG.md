@@ -65,6 +65,14 @@ What each part does:
   keeps those rated `sentenceCutoff` or more. `…` marks where text was left
   out. Unset or `false`, no sentence is rated and no request is made. When
   the request fails, the whole text comes back and the record says why.
+- **A text sized by the ratings, as a dial.** A mode's `textShare` lets its
+  source's parts into the text only at that share of the source's best
+  weight or more. No mode sets one. `record.underShare` counts the parts it
+  left out.
+- **Two modes for a person's chats with an assistant, one set of
+  defaults.** `assistantChatHistory`, for many short chats, and
+  `longAssistantChats`, for long ones, read the person's own messages
+  first and stop where the ratings go cold.
 - **A stored index per source.** The chat, git and Markdown readers keep one
   SQLite file per source, through Node's built-in `node:sqlite`, under
   `$XDG_CACHE_HOME/curate/index` or `~/.cache/curate/index`. Each call brings
@@ -94,20 +102,44 @@ What each part does:
   waves, and what ended the read and why. `pick.feed: { order: 'combsum' }`
   orders the feed by summed lane places, with an optional `size` that bounds
   the read.
+- **Coding-agent transcripts are read from the person's own messages
+  outward.** A source in the `agentTranscripts` mode, `chat()`'s default,
+  gets its own read: the person's parts in the keyword lanes'
+  ranking, 112 a request, with rings of neighbours around those rated
+  warm; a stop when a request adds at most 0.3 times the most new warm
+  parts an earlier request added, never before the read has kept a part;
+  then the topic segments that hold a warm person part or one of each
+  search lane's top 10 parts, walked out from their warm parts, every
+  walk a ring a round together. `stopWhenCold` acts on every other source.
+  Live on one person's ~116,000-part history it found 51 of 56 known
+  answers in 5,900 rated parts, 1.84% of the history. The record's
+  `pick.chatRead` says, under each mode's name, how far each read went and
+  what ended it, and the skill's
+  chat searches keep their match order, so `userFirst` is gone. The skill
+  then searches those transcripts a second time: the rarest names, numbers
+  and words of the three best-rated parts become new search lines, a second
+  pick rates only the parts the first never rated, and the parts it keeps
+  join the first pick's.
+- **The facts the answer needs, in the decision state.** The `/curate`
+  skill's search-line call also splits the task into the facts a
+  complete answer needs, and the decision requests of coding-agent
+  transcripts carry that list beside the task (`needed`; a mode opts in
+  with `needed: true`). Requests of other sources never carry it.
 - **Settings by source.** Each source carries its own settings, so a setting
   chosen for one kind of history never changes what Curate picks from
-  another: `rare` (follow strong parts by their rare words to parts the first
-  pass missed, within that source), `labels` (the label kinds asked of each
-  part), `labelBar` (its label bar, 0.5 by default), `bar` (the
-  decision-score bar for its references), `ruleBar` (the bar for its rules)
-  and `questions` (the decision questions asked of its references; the
-  presets carry `CHAT_CASCADE`, `GIT_HISTORY_CASCADE` and
-  `MARKDOWN_CASCADE`). The presets `chat()`, `git()`, `markdown()`,
+  another: `labels` (the label kinds asked of each part), `labelBar` (its
+  label bar, 0.5 by default), `ruleBar` (the bar for its rules) and `mode`.
+  A mode holds the decision questions asked of its references, the
+  decision-score bar they are kept at and how the decide step reads them:
+  `rankedRead` down the fused order, or `conversationRead()`, the chat read,
+  whose walk, open and stop decisions a mode can replace.
+  Each reader package exports its modes (`agentTranscripts` and
+  `assistantChatHistory`, `commits`, `notes`), and core holds none. The presets `chat()`, `git()`, `markdown()`,
   `knowledgeBase()` and `rules()` carry their package's tuned settings
   objects, `chatSettings`, `gitSettings`, `markdownSettings` and
   `rulesSettings`. `historySource({ reader, ...settings })` builds a source
   with any settings, for example a chat source with labels off:
-  `historySource({ reader: chat(), ...chatSettings, labels: false, questions: AGENT_CHAT_CASCADE })`.
+  `historySource({ reader: chat(), ...chatSettings, labels: false, mode: agentTranscripts })`.
   Pick records name each source's settings under `levers.sources`.
 - **A rule library.** `rules(dir)` reads `.md`, Cursor `.mdc` and Copilot
   `*.instructions.md` rule files, one candidate per rule, with `globs` and
@@ -121,8 +153,7 @@ What each part does:
   (decide every ranked part, or only the top round(c × N^0.8)) and
   `route: 'jev'` (the decision model says what kind of answer the task
   needs).
-  `everyScored` and `rare` set one value for every source in place of their
-  own. The core README lists each lever's purpose and measured impact.
+  `everyScored` sets one value for every source in place of their own. The core README lists each lever's purpose and measured impact.
 - **Records say what each setting did.** Each pick record carries `effects`:
   one entry per setting that was on, per source, with the parts it looked
   at, the kept parts it brought in or kept out, and one plain sentence that
@@ -185,7 +216,7 @@ What each part does:
   offset of `timeZone`, the system's zone by default, so a message sent
   just after midnight is dated that day.
 - **Chat parts say who wrote them.** The chat reader reads messages typed
-  while an agent works, and marks each part's `chat.author` as the person,
+  while an agent works, and marks each part's `author` as the person,
   an agent, a tool, the system or unmarked, from what the transcript records.
 - **Every Markdown file gets a date.** A file with no commit yet or with
   uncommitted changes, and an undeclared `knowledgeBase()` or `rules()`
@@ -209,6 +240,11 @@ What each part does:
   in each part title, counts `/` links from the bundle root, skips `index.md`,
   dates each `log.md` entry by its heading, and ranks a page past its
   `stale_after` lower. A retire proposal's edit is `status: deprecated`.
+- **WhatsApp exports.** `whatsapp(path)` reads WhatsApp's "Export chat" text,
+  iOS and Android lines alike, as one session a day, each kept as a Markdown
+  note and read through `knowledgeBase()`, in the `directMessages` mode the
+  LoCoMo runs measured. The sentence pass keeps a sender's name on what they
+  said. The `/curate` skill takes it as `"type": "whatsapp"`.
 - **An optional decision cache** stores each answered decision per part, so
   a resumed run, a rerun or a repeated question asks only for what changed.
 - **Git reads have no time or size limit.** Each `git` call the git and

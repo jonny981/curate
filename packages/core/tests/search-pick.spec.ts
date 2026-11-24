@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { curate, pick, type MemoryCandidate, type PickAnswer, type PickCascade, type PickCriterion, type PickDecide, type PickError, type PickQuestion } from '../src/index.js';
+import { modesOf } from './fixtures/modes.js';
 
-const uncutPick = { everyRanked: true, everyScored: true, rare: false } as const;
+const uncutPick = { everyRanked: true, everyScored: true } as const;
 
 const item = (id: string, overrides: Partial<MemoryCandidate> = {}): MemoryCandidate => ({
   sourceId: 'notes', id, role: 'reference', title: id, text: `Evidence ${id}`,
@@ -305,8 +306,8 @@ describe('best document part first', () => {
       (reason: unknown) => reason as PickError,
     );
     expect(asked).toEqual(['representative']);
-    expect(failure.message).toContain('decision failed');
-    expect(failure.message).toContain('representative');
+    expect(failure.message).toBe('The decide call failed. decision failed\n'
+      + 'One part of the refused request was not decided; record.decideError lists the ids.');
     expect(failure.record.decideError).toEqual({ candidates: ['representative'], message: 'decision failed' });
     expect(failure.record.candidates).toMatchObject([
       { status: 'unassessed', reason: 'error' },
@@ -330,7 +331,7 @@ describe('best document part first', () => {
       questions: [{ ...criterion('relevant'), weight: 1 }, { ...criterion('needed'), weight: 0 }],
     };
     const stub = decisions((question) => answer(0.5));
-    await pick(parts(), { ...uncutPick, task: 'battery charge schedule', decide: stub.decide, bestPartFirst: true, questionsBySource: { notes: fitted } });
+    await pick(parts(), { ...uncutPick, task: 'battery charge schedule', decide: stub.decide, bestPartFirst: true, modesBySource: modesOf({ notes: fitted }) });
     expect(stub.calls.map((batch) => batch.map((question) => `${question.id}:${question.questionKey}`))).toEqual([
       ['representative:relevant'], ['representative:needed'],
       ['tail:relevant'], ['tail:needed'],
@@ -348,7 +349,7 @@ describe('best document part first', () => {
       return answer(question.id === 'representative' ? 0.1 : 0.9);
     });
     const result = await pick(parts(), { ...uncutPick,
-      task: 'battery charge schedule', decide: stub.decide, bestPartFirst: true, questionsBySource: { notes: fitted }, everyScored: { bar: 0.6 },
+      task: 'battery charge schedule', decide: stub.decide, bestPartFirst: true, modesBySource: modesOf({ notes: fitted }), everyScored: { bar: 0.6 },
     });
     expect(stub.ids()).toEqual(['representative', 'representative', 'tail', 'tail']);
     expect(result.record.candidates[0]).toMatchObject({ status: 'selected' });
@@ -362,7 +363,7 @@ describe('best document part first', () => {
     };
     const stub = decisions((question) => answer(question.id === 'representative' ? 0.1 : 0.9));
     const result = await pick(parts(), { ...uncutPick,
-      task: 'battery charge schedule', decide: stub.decide, bestPartFirst: true, questionsBySource: { notes: fitted }, everyScored: { bar: 0.6 },
+      task: 'battery charge schedule', decide: stub.decide, bestPartFirst: true, modesBySource: modesOf({ notes: fitted }), everyScored: { bar: 0.6 },
     });
     expect(stub.calls.map((batch) => batch.map((question) => `${question.id}:${question.questionKey}`)))
       .toEqual([['representative:relevant'], ['tail:relevant']]);
@@ -377,10 +378,10 @@ describe('best document part first', () => {
       item('chat-representative', { sourceId: 'chat', documentId: 'session', text: 'battery charge schedule' }),
     ], { ...uncutPick,
       task: 'battery charge schedule', decide: stub.decide, bestPartFirst: true,
-      questionsBySource: {
+      modesBySource: modesOf({
         notes: { bias: 0, questions: [{ ...criterion('note'), weight: 1 }] },
         chat: { bias: 0, questions: [{ ...criterion('chat'), weight: 1 }] },
-      },
+      }),
     });
     expect(stub.calls.map((batch) => batch.map((question) => `${question.id}:${question.questionKey}`).sort())).toEqual([
       ['chat-representative:chat', 'representative:note'], ['chat-tail:chat', 'tail:note'],
@@ -446,7 +447,7 @@ describe('stopping document assessment', () => {
   it('retains the stop reason when the representative’s fitted assessment cannot finish', async () => {
     const stub = decisions(() => answer(0.5));
     const result = await pick(parts(), { ...uncutPick,
-      task: 'battery charge', decide: stub.decide, bestPartFirst: true, questionsBySource: { notes: { bias: 0, first: 'one', band: [0.1, 0.9], firstOnly: { bias: 0, weight: 1 }, questions: [{ ...criterion('one'), weight: 1 }, { ...criterion('two'), weight: 1 }] } }, limits: { maxBatches: 1 },
+      task: 'battery charge', decide: stub.decide, bestPartFirst: true, modesBySource: modesOf({ notes: { bias: 0, first: 'one', band: [0.1, 0.9], firstOnly: { bias: 0, weight: 1 }, questions: [{ ...criterion('one'), weight: 1 }, { ...criterion('two'), weight: 1 }] } }), limits: { maxBatches: 1 },
     });
     expect(stub.ids()).toEqual(['representative']);
     expect(result.record.candidates.map((entry) => [entry.status, 'reason' in entry ? entry.reason : undefined]))

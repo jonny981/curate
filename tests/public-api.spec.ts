@@ -1,15 +1,15 @@
 import { asSourceReadError } from '@curatejs/core/internal';
 import { describe, expect, it } from 'vitest';
 
-import { curate, decisionFileStore, DEFAULT_MAX_QUESTION_TEXT, historySource, LABEL_KINDS, LABEL_LANE_BAR, LABEL_QUESTION_VERSION, pick, PICK_QUESTION_VERSION, pickFromSources, SourceReadError, type CandidateSource, type CurateOptions, type CurateRecord, type CurateResult, type DecisionStore, type HistorySettings, type LeverStates, type MemoryCandidate, type PickCache, type PickLabels, type PickOptions, type PickThresholds, type SourceSettings } from '@curatejs/core';
+import { conversationRead, curate, decisionFileStore, DEFAULT_MAX_QUESTION_TEXT, historySource, LABEL_KINDS, LABEL_LANE_BAR, LABEL_QUESTION_VERSION, pick, PICK_QUESTION_VERSION, pickFromSources, rankedRead, SourceReadError, type CandidateSource, type CurateOptions, type CurateRecord, type CurateResult, type DecisionStore, type HistorySettings, type LeverStates, type MemoryCandidate, type PickCache, type PickLabels, type PickOptions, type PickThresholds, type SourceSettings } from '@curatejs/core';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { chat, AGENT_CHAT_CASCADE, CHAT_CASCADE, chatSettings, firstSessionLine, type ChatOptions, type ChatProvider } from '@curatejs/chat';
-import { git, GIT_HISTORY_CASCADE, gitSettings, type GitOptions } from '@curatejs/git';
-import { markdown, MARKDOWN_CASCADE, markdownSettings, knowledgeBase, rules, rulesSettings, type MarkdownOptions, type KnowledgeBaseOptions } from '@curatejs/markdown';
+import { agentTranscripts, assistantChatHistory, chat, longAssistantChats, AGENT_CHAT_CASCADE, CHAT_CASCADE, chatSettings, firstSessionLine, type ChatOptions, type ChatProvider } from '@curatejs/chat';
+import { commits, git, GIT_HISTORY_CASCADE, gitSettings, type GitOptions } from '@curatejs/git';
+import { directMessages, markdown, MARKDOWN_CASCADE, markdownSettings, notes, knowledgeBase, rules, rulesSettings, type MarkdownOptions, type KnowledgeBaseOptions } from '@curatejs/markdown';
 
-const uncutPick = { everyRanked: true, everyScored: true, rare: false } as const;
+const uncutPick = { everyRanked: true, everyScored: true } as const;
 
 describe('package exports', () => {
   it('exports the curate step and its option, record and result types', async () => {
@@ -55,7 +55,6 @@ describe('package exports', () => {
     const thresholds: PickThresholds = { linkedPathBar: 0.4 };
     const pickOptions: PickOptions = {
       task: 'Recall', everyRanked: { c: 0.68 }, everyScored: { bar: 0.05 },
-      rare: { share: 0.5, bar: 0.0146 },
       decide: async (batch) => Object.fromEntries(
         batch.questions.map((q) => [q.key, { status: 'answered' as const, probability: 0.9 }])),
     };
@@ -96,8 +95,8 @@ describe('package exports', () => {
 
   it('exports the lever and source settings types', () => {
     const levers: LeverStates = {
-      everyRanked: true, everyScored: true, route: false, rare: false,
-      sources: { chat: { kind: 'chat', labels: true, rare: false, bar: 0.0146 } },
+      everyRanked: true, everyScored: true, route: false,
+      sources: { chat: { kind: 'chat', labels: true, bar: 0.0146 } },
     };
     const settings: SourceSettings = levers.sources['chat']!;
     expect(settings.labels).toBe(true);
@@ -107,19 +106,30 @@ describe('package exports', () => {
   it('exports each reader\'s settings and historySource to change them', () => {
     const settings: readonly HistorySettings[] = [chatSettings, gitSettings, markdownSettings, rulesSettings];
     expect(settings).toEqual([
-      { rare: false, labels: true, names: true, bar: 0.0146, questions: CHAT_CASCADE },
-      { rare: true, labels: false, names: true, bar: 0.0146, questions: GIT_HISTORY_CASCADE },
-      { rare: true, labels: false, names: true, bar: 0.0146, questions: MARKDOWN_CASCADE },
-      { rare: true, labels: false, names: false, bar: 0.0146, questions: MARKDOWN_CASCADE, ruleBar: 0.5 },
+      { labels: true, names: true, mode: assistantChatHistory },
+      { labels: false, names: true, mode: commits },
+      { labels: false, names: true, mode: notes },
+      { labels: false, names: false, mode: notes, ruleBar: 0.5 },
     ]);
+    expect([agentTranscripts, assistantChatHistory, longAssistantChats, commits, notes, directMessages]).toEqual([
+      { name: 'agent-transcripts', questions: AGENT_CHAT_CASCADE, bar: 0.0146, read: expect.any(Function), needed: true },
+      { name: 'assistant-chat-history', questions: CHAT_CASCADE, bar: 0.0146, read: expect.any(Function) },
+      { name: 'long-assistant-chats', questions: CHAT_CASCADE, bar: 0.0146, read: expect.any(Function) },
+      { name: 'commits', questions: GIT_HISTORY_CASCADE, bar: 0.0146, read: rankedRead },
+      { name: 'notes', questions: MARKDOWN_CASCADE, bar: 0.0146, read: rankedRead, request: 'text', stopWindow: 'request' },
+      { name: 'direct-messages', questions: MARKDOWN_CASCADE, bar: 0.0146, read: rankedRead },
+    ]);
+    // Each call makes a conversation read of its own, with any of its rules replaced.
+    expect(conversationRead()).not.toBe(conversationRead());
+    expect(typeof conversationRead({ stops: () => true })).toBe('function');
     const reader = chat({ providers: ['codex'], paths: ['/nonexistent'] });
-    expect(reader).toMatchObject({ kind: 'chat', rare: false, bar: 0.0146, labelKinds: LABEL_KINDS, questions: AGENT_CHAT_CASCADE });
-    expect(historySource({ reader, rare: false, labels: false, names: false, bar: 0.0146 }).questions).toBeUndefined();
+    expect(reader).toMatchObject({ kind: 'chat', labelKinds: LABEL_KINDS, mode: agentTranscripts });
+    expect(historySource({ reader, labels: false, names: false }).mode).toBeUndefined();
     const unlabelled = historySource({ reader, ...chatSettings, labels: false });
-    expect(unlabelled).toMatchObject({ id: reader.id, kind: 'chat', rare: false, bar: 0.0146 });
+    expect(unlabelled).toMatchObject({ id: reader.id, kind: 'chat', mode: chatSettings.mode });
     expect(unlabelled.labelKinds).toBeUndefined();
     expect(historySource({ reader: unlabelled, ...chatSettings }).labelKinds).toEqual(LABEL_KINDS);
-    expect(rules('/nonexistent')).toMatchObject({ rare: true, names: false, bar: 0.0146, ruleBar: 0.5 });
+    expect(rules('/nonexistent')).toMatchObject({ names: false, mode: notes, ruleBar: 0.5 });
     expect(historySource({ reader: rules('/nonexistent'), ...markdownSettings }).ruleBar).toBeUndefined();
   });
 
@@ -161,7 +171,7 @@ describe('package exports', () => {
 
   it('exports the one Jev request builder, which the skill imports instead of keeping its own', async () => {
     const { jevRequest } = await import('@curatejs/core');
-    expect(jevRequest({ task: 'task', questions: [] })).toEqual({ model: 'jev-latest', state: 'task', questions: {} });
+    expect(jevRequest({ task: 'task', questions: [] })).toEqual({ model: 'jev-latest', state: { task: 'task', items: {} }, questions: {} });
     const skill = readFileSync(join(__dirname, '../skills/curate/run.mjs'), 'utf8');
     expect(skill).not.toContain('function jevRequest');
     expect(skill.split('\n').find((line) => line.includes("from '@curatejs/core/models'"))).toContain('jev');

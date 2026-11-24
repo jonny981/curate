@@ -132,7 +132,7 @@ Mix any of these readers in `sources`.
 ```js
 import { chat } from '@curatejs/chat';
 import { git } from '@curatejs/git';
-import { knowledgeBase, markdown, rules } from '@curatejs/markdown';
+import { knowledgeBase, markdown, rules, whatsapp } from '@curatejs/markdown';
 
 chat();                                                       // Claude Code and Codex transcripts
 chat({ paths: ['transcripts'], providers: ['claude-code'] }); // your own transcript folders
@@ -140,6 +140,7 @@ git('.');                                                     // this repository
 markdown({ paths: ['docs'], kind: 'docs' });                  // any Markdown folder, file or glob
 knowledgeBase('docs');                                        // a notes folder, in one argument
 rules('.cursor/rules');                                       // a rule library
+whatsapp('exports/mel/_chat.txt');                            // a WhatsApp chat export
 
 const mem = memory({ sources: [chat(), git('.'), markdown({ paths: ['docs'], kind: 'docs' })], decide });
 ```
@@ -150,6 +151,10 @@ const mem = memory({ sources: [chat(), git('.'), markdown({ paths: ['docs'], kin
 - **Rules (`rules()`).** Reads a rule library and keeps only the rules that apply to the task. Always-on files like `CLAUDE.md` and `AGENTS.md` stay with your agent.
 - **Knowledge bases (`knowledgeBase()`).** Reads an [Open Knowledge Format](packages/markdown/README.md#open-knowledge-format) bundle: its page dates, titles, root links, index and log.
 - **Keeping notes fresh.** [Decay](packages/markdown/README.md#decay) (off by default) ranks older notes lower, and [`reviewNotes()`](packages/markdown/README.md#reviewing-notes) suggests notes to retire and passages to promote.
+- **WhatsApp exports (`whatsapp()`).** Reads a [WhatsApp chat export](packages/markdown/README.md#whatsapp-exports) as one dated session a day, each read as a note.
+
+Each reader brings its own mode: the questions the decision model asks of its passages, the rating a passage needs to be kept, and how they're read ([Settings for each source](docs/library.md#settings-for-each-source)).
+Transcripts are read from your own messages outward, and the other readers down the ranked list.
 
 ## Results
 
@@ -297,14 +302,15 @@ An example `~/.curate/sources.json`:
 | `envFile` | A private file that holds `TYPESAFE_API_KEY` (item 4) |
 | `searchModel` | `haiku` or `luna`: which model writes the search lines (item 5). By default Curate uses Haiku if you're logged in to Claude, and Luna if not |
 | `answerTokens`, `sentenceCutoff` | Optional limits on the size of the result ([Curate](docs/library.md#curate)). Unset by default |
-| `stopWhenCold` | Stops rating once the ratings go cold, which keeps a question cheap. On by default, with a `floor` of 0.1 and a `share` of 0.2. Change them with, say, `{ "share": 0.1 }`, or set `false` to rate everything ([The rating stop](docs/library.md#the-rating-stop)). Curate tells you on standard error how many passages it left unread |
+| `stopWhenCold` | Stops rating once the ratings go cold, which keeps a question cheap. On by default, with a `floor` of 0.1 and a `share` of 0.2. Change them with, say, `{ "share": 0.1 }`, or set `false` to rate everything ([The rating stop](docs/library.md#the-rating-stop)). Curate tells you on standard error how many passages it left unread. Transcripts stop on their own read's rule instead |
 | `records` | `true` saves a log of each question ([Logs](#logs)) |
 
 ### Search
 
 The command searches by keyword and by meaning.
-Two extra search steps the library offers, label admission and the rare-word round, are off.
+Label admission, an extra search step the library offers, is off.
 Identical text is only rated once.
+Claude Code and Codex transcripts are searched a second time, with lines made from the rarest words of the first search's best-rated passages ([Second search](skills/curate/references/settings.md#second-search)).
 
 ### Caches
 
@@ -315,7 +321,8 @@ Building a source's index from scratch, or embedding more than 2,000 passages, p
 
 ### Logs
 
-Off by default. Set `"records": true` and each question saves its result, what it read, model usage and timings under `~/.curate/runs/`.
+Every question keeps its result in `log.md`, and the passages it kept, with their ratings and whole text, in `kept.json`, under `~/.curate/runs/<timestamp>/`.
+The full record is off by default. Set `"records": true` and each question also saves what it read, model usage and timings there.
 The timings include how long the question waited on indexing and embedding, and `prepared` says per source whether its index was built from scratch and how many passages were embedded.
 A record keeps the text of the passages a question kept, and only ids, ranks and scores for the rest.
 

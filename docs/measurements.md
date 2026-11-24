@@ -136,12 +136,174 @@ The stop sends two batches at a time to save round trips without reading far pas
 On the replay's saved scores, two at a time rated 3, 1 and 1 points more of LoCoMo's, DolphinBench's and BEAM's parts than one at a time, for an estimated 45%, 16% and 48% less decision time, from the service's measured round trip and token allowance.
 Three at a time rated 14, 3 and 2 points more for little more speed.
 
-## Rare-word round
+### Windows of parts, or each request alone
 
-Measured on the tuning half's saved decisions (249 questions).
-Holding the keep bar at 0.05 loses 15 answer messages.
-The round at its defaults recovers 6 of them while adding 12.9 parts a question, which matches the fixed-count study's 6 of 15 at about 15.
-Its effect on scores isn't measured.
+A request holds as many parts as fit the decision service's request limit, so its size follows how long the parts are: up to 150 short parts on the benchmarks where the floor and share were measured, and about ten of a coding agent's long parts.
+Judged per request, one cold request of ten parts near the top of a mixed order ended the read: on one project's coding-agent history it stopped after 20 of 38,758 ranked parts.
+That's why the stop judges windows of rated parts by default.
+
+On the saved ratings of 23 coding-agent tasks (103 known answer parts the ratings keep), with the order restricted to rated parts:
+
+| Window | Answers found, of 103 | Parts rated |
+| --- | --- | --- |
+| Each request alone, about ten parts | 36 | 3,280 |
+| 100 parts | 97 | 41,370 |
+| 150 parts | 100 | 48,399 |
+| 200 parts | 103 | 52,765 |
+
+Notes are the other way round. On 149 LongMemEval questions read in the `notes` mode, judged per request the read rated 110 parts a question and answered 145.33 right, over three answer sets. Windows of 150 rated 290 parts a question, at three times the decision cost, for no more right answers.
+Every one of those 149 texts, made again through the `curate` command from the saved requests and replies, is byte for byte the measured run's, with each request byte for byte one the run had sent.
+
+## The chat read
+
+Every number in [the chat read](library.md#the-chat-read) is the measured one.
+On about 116,000 parts of one person's history (Claude Code and Codex transcripts, notes and commits; eight tasks with 56 known answer parts), rated live with `AGENT_CHAT_CASCADE`, the read found 51 answers and kept 54 in 5,900 rated parts, 1.84% of the history.
+A read of the ranked list in requests of 112, stopping on each request's best rating, replayed on saved ratings, rated 15,792 parts for 42.
+
+The 0.3 stop was fitted on three of the eight tasks. On the other five it read 3,744 parts, where a stop on no new warm part read 6,155, with the same answers.
+Each round waits for the one before it, so the rounds in a row are the crawl's requests and rings, one round of starts, and the longest single walk: the replay of those eight tasks made 14 to 37 rating rounds a task, where walking one segment at a time made 55 to 301, with the same parts rated.
+
+The units of agent work were measured only on saved ratings, on 22 tasks of that history.
+Without them the read found 39 of the person's 41 answers and 10 of the 16 answers agents wrote; with them, 39 and 15, for 4,386 more parts read, 3,620 of them with no saved rating, so they were counted cold.
+Every agent-written answer's unit ranks in the top 13 of its kind by keyword or by meaning, where its best place in the fused order was 547 to 2,768.
+Opening only the units above both cuts found 12 of the 16 for about a fifth of the added parts; opening above either cut reached 15 of 16, against 10 without the units.
+
+## The facts the answer needs
+
+Measured on eight tasks of one person's coding-agent history with the JSON state, with lists a separate model call wrote: parts that hold no answer but rate 0.1 or more fell from 10.8% to 3.8%, and the share of the history let through to keep 98% of the answers from 14.3% to 3.8%.
+It isn't confirmed on tasks held out from that measurement.
+
+With the agent's message beside them, a person's own questions and requests rated lower while the facts read `<name>'s statements about ...`.
+Worded `What <name> said, asked or requested about ...`, 11 such messages that had fallen rose from a median of 0.21 to 0.39 of the read's best rating, while 15 of the person's messages that hold no answer stayed at 0.02.
+A field saying which messages count as an answer, sent beside facts worded that way, moved no rating: on 39 labelled answer messages, each asked with and without it the same minute, the difference was a median of 0.000, with 4 apart by more than 0.05 against 7 for the same request sent twice. So no request carries one.
+
+## The person's own words
+
+A weight on the person's parts, fitted on tasks whose answers were the person's own, didn't hold on tasks held out from the fit: the ranking fell from 0.960 to 0.829, and for answers an agent wrote from 0.975 to 0.650.
+So no question set weighs a part by who wrote it.
+
+## Whole messages, hard facts and items per request
+
+On 22 tasks of one person's coding-agent history (1,489 ranked pieces in 1,028 messages):
+
+| Form | Request text, against pieces batched |
+| --- | --- |
+| Whole messages, batched | 2.47 times: the messages held 4.47 times the ranked pieces' text, and 32 reports carried their request |
+| Whole messages with hard facts, batched | 2.84 times |
+| Pieces, one a request | 1.38 times, in 1,489 requests in place of 27 |
+| Whole messages, one a request | 2.72 times |
+| Whole messages with hard facts, one a request | 3.11 times |
+
+The decision model bills by the text, so the dollars follow these ratios.
+At 80 requests and 100,000 tokens a second, a read of 1,000 items needs at least: pieces, 3.8 seconds batched and 12.5 one a request (bound by the requests); whole messages, 13.8 and 15.2 seconds; whole messages with hard facts, 15.8 and 17.3 seconds (bound by the tokens either way).
+The service's own time comes on top: 182 whole messages with hard facts, one a request and four at a time, came back in 7.3 seconds with none refused, about 0.15 seconds a request.
+
+With all three together, the form put 19 labelled answers in each needed fact's top five on held tasks, against 12 for pieces batched about 25 a request, and 14 without the `replies_to` and `answered_by` text.
+Batched about 25 a request, the same fields didn't help.
+
+Laid out one message at a time, strongest first, the text scored best on the 22 tasks when laid out by a test script: 16.4 of 22 answered right over five answer sets, against 13.8 for the uncut text.
+
+On LongMemEval's histories read as notes, at 333 rated parts a question, where the notes mode's four questions batched cost 8 requests, USD 0.0077 and 1.4 seconds a question, one part a request sends 333 requests, 1.09 times the text (USD 0.0084), and needs at least 4.2 seconds at the client's default pace.
+Those costs are worked from the requests a complete rating of 149 questions sent, at its measured 0.2842 billed tokens a character and USD 0.042 a million.
+A note's `kind` alone adds about 20 characters a part, so a notes mode gains nothing from hard facts.
+
+Turns of notes written as a conversation, judged whole, one a request, with hard facts and the "answers" set, scored LongMemEval's 149 questions under the notes mode's own pieces: 139.33 right at its bar, against 145.33.
+
+## The narrow question in two
+
+On the short lists of two tasks of one person's coding-agent history, the "answers" probabilities summed to 16.4 and 20.1 against 15 and 12 parts that state or restate the answer, where the single narrow question summed to 23.3 and 47.5.
+That's a calibrated probability, which a keep bar can rest on.
+
+Each bar below is a candidate until answers marked right confirm it:
+
+- **Notes, rated one part a request:** 0.07 is the highest "answers" probability that keeps every labelled answer turn of 24 LongMemEval questions. It keeps a median of 2 parts and about 300 tokens a question.
+- **Coding-agent transcripts, each whole message judged alone with its hard facts,** in the wording "Does this message state the answer to the task?" and "Does this message state this: {fact}?", scored by the highest answer: the highest bar that lost no labelled answer was 0.59 on the 12 one-decision tasks (a median of 27.5 messages and 5,738 tokens a task) and 0.04 on the 9 everything-said tasks (186 messages, 43,399 tokens), against 0.24 and 0.01 for the "answers" probability alone. Each task given the bar the others of its kind set loses one task in each kind.
+
+A message's rating also moves from one call of a task to the next, mostly with the needed facts the search-line call writes.
+Of 537 messages rated 0.5 or more in one run, rated again in another with other search lines or other facts, a quarter fell by more than 1.09 in logit (0.23 in rating) and a tenth by more than 2.07 (0.44), against 0.04 and 0.17 with the same lines.
+
+The search-line call writes the needed facts at no cost to the decision model.
+On LongMemEval's notes, at 333 rated parts a question, `ANSWER_CASCADE` with two needed facts in place of the four questions sends 7 requests and 0.90 times the text (USD 0.0070), in about the same time; one part a request, 333 requests and 1.06 times the text (USD 0.0082), at least 4.2 seconds.
+
+## What each kept part is doing
+
+Added after selection, on the kept parts only, batched: on LongMemEval's notes, at the median 19 kept parts a question, about one request, USD 0.0005 and 0.4 seconds more a question.
+
+## A Choice per needed fact
+
+On one task of one person's coding-agent history, 12 of its 20 options held an answer, and the top one took a probability of 0.20.
+In that measurement it held its order across option orders (40 to 44 of 57 facts agreed), but didn't move answers marked right.
+
+Its rounds run one after another: each asks one Choice per fact and, with `enough` on, the sufficiency question, about 0.33 seconds a round as measured (two option orders of 20 rounds each, 118 requests in 13.0 seconds).
+On LongMemEval's notes with two needed facts, one round costs 3 requests, about USD 0.0002 and 0.3 seconds a question; five rounds, 14 requests, USD 0.0010 and 1.6 seconds; a loop that picks every candidate (at most 20 rounds, about 15 where a question keeps fewer parts), 44 requests, USD 0.0035 and 4.8 seconds.
+The 20 candidates and the 0.7 sufficiency bar are the recipe's starting values, not measured bests.
+
+## A second stage
+
+On 20 tasks of one person's coding-agent history, five answer sets, each kind of message kept at the bar its labelled answers earned within its kind:
+
+| Kind of message | One decision | Everything said |
+| --- | --- | --- |
+| The person's message | 0.76 | 0.04 |
+| Subagent's final report | 0.59 | 0.95 |
+| Subagent's prompt | | 0.05 |
+| Compaction summary | | 0.37 |
+| Tool output, at the bar its widened answers earned | 0.81 | 0.13 |
+
+| Text | Right answers, of 20 |
+| --- | --- |
+| No second stage | 13.8 |
+| The exchange form at those bars | 17.6 |
+| The exchange form, each task's bars learned on the other tasks | 17.0 (+3.2, range −0.2 to +7.0) |
+| The exchange form, cut to the paragraph nearest the person's message | 18.4 |
+
+At those bars, 10.6 of 11 one-decision tasks were answered right, at 4,565 tokens against 59,125.
+17.0 is the figure a new history can expect.
+
+The paragraph cut kept the score and took one-decision texts from 4,171 to 2,087 tokens, and everything-said texts from 77,749 to 65,860, where tool output and compaction summaries, which it doesn't touch, are 43% of the text.
+
+The person's answer message of one task, rated 0.76 where the bars were learned, rated 0.57 and 0.62 in two later calls with other needed facts.
+The `curate` command's `exchange` set therefore keeps the person's message on one-decision tasks from 0.28, the learned 0.76 moved down by the tenth's fall of 2.07 in logit, and attaches the exchange only from 0.76.
+It answered 18.2 right against 18.4 at the learned bars, the 0.2 being one task's answer noise (its answer was in every text), with one-decision text a median of 5,213 tokens against 2,087, 99% of the added text the person's own words.
+Moving every one-decision bar down by that fall, the exchange's included, also answered 18.4, at 14,125 tokens.
+
+Cost, on 22 tasks: judging the read's kept list (13,982 whole messages, 636 a task) one message a request cost USD 0.808, 3.7 cents a task on average (median 3.1), in a median of 4.0 seconds a task at 16 requests at a time.
+On the 11 held tasks, batching about 17 messages a request cost USD 0.280 against 0.379 alone (26% less), in a median of 0.7 seconds a task, and ranked the answers as well; hence batching is the default.
+The read itself rated a median of 961 parts a task (mean 1,160), about 3.0 cents (mean 3.6) at a live run's USD 0.000031 a part, 112 parts a request.
+So the whole call's decisions come to about 5.3 cents a task at the median (6.3 at the mean), and the second stage adds about a second to the call.
+
+## The request's form
+
+On the same 149 LongMemEval questions, search lines and layout, the JSON state rated the same notes lower than plain text did (46,092 of 49,024 parts).
+At the notes bar, it answered 142.33 right against 145.33, over three answer sets. Lowering its bar to 0.005 reached 144.33, with 35% more text.
+One part a request, rated alone, lowered every score the same way and needed 0.005 for the same parts, and the narrow question in two set its own bar.
+So a form, a question set or a batching that changes what the model reads carries its own measured bar.
+
+All 1,384 decision requests of a 149-question LongMemEval run in plain text, turned back into their batches and sent through `jev()` in the plain-text form, came out identical.
+
+The JSON state, asked of the same parts with each history's own question set:
+
+- **Coding-agent transcripts,** eight tasks with 56 known answer messages, the general relevance question: the share of the history let through to keep 98% of the answers fell from 40% to 13%. Random non-answers rated 0.1 or more fell from 85% to 46%, and ranking against the top of each task's list rose from 0.870 to 0.922.
+- **LongMemEval,** 20 questions, the chat set: ranking from 0.951 to 0.990, parts kept at the 0.0146 bar from 62% to 29%, all 40 evidence units kept in both.
+- **LoCoMo,** 24 questions, the Markdown set: ranking from 0.984 to 0.990, parts kept from 42% to 34%, and no evidence part under the bar that the plain text kept. Non-evidence rated 0.1 or more rose from 7% to 9%.
+- **BEAM,** 40 questions: ranking level, 0.909 to 0.908.
+
+The JSON state costs more input tokens: the service reported 14% more on LongMemEval and 16% more on LoCoMo, with the same output tokens.
+
+## A keep bar set by measurement
+
+On 22 tasks of one person's coding-agent history, three labelled answers had no score, so any bar above 0 loses them.
+At a risk of 0.05 or 0.1 the bar is 0, which keeps every rated part; at 0.2 it's 0.050, which keeps a median 31% of the parts, with 3 tasks losing an answer.
+
+## Text share
+
+On LoCoMo, a share of 0.1 on `directMessages` cut the median text from 5,858 to 1,504 tokens, with 384 against 387 of 400 questions answered right.
+On 150 LongMemEval questions read as notes, with no budget, a share of 0.1 kept 268 of the 271 labelled answer turns the whole selection held, and 0.2 kept 257.
+A change that leaves out a kept part needs answers that show no loss, so no mode sets one.
+
+## Sentence cutoff
+
+Measured at 0.1 on 150 LongMemEval questions, the sentence step removed 9.2% of the sentences and 7.2% of the tokens, and cut 12 labelled answer turns that were whole in the text to partial or absent.
 
 ## Evidence limits
 

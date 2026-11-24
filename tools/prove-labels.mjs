@@ -143,7 +143,6 @@ for (const q of questions) {
       task: input.task,
       everyRanked: true,
       everyScored: true,
-      rare: false,
       labels: { directory, deciderId: 'saved-labels' },
       labelKindsBySource: { [`questions:${q.question_id}`]: LABEL_KINDS },
       decide: async (batch) => Object.fromEntries(batch.questions.map((question) => {

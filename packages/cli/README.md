@@ -38,7 +38,7 @@ The full list, with the fix for each, is in the root README's [Requirements](htt
 
 `check`, `setup` and `prepare` count as commands only when they're the whole command line, so `curate "check the retry decision"` is a question.
 
-Exit codes are 0 on success, 3 when a requirement is missing, and 1 for anything else.
+Exit codes are 0 on success, 3 when a requirement is missing, 4 when the decision service refused the call or couldn't be reached, and 1 for anything else. On exit 4 the message's first line says why and what to do.
 
 ### `curate setup`
 

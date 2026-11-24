@@ -6,10 +6,9 @@ import type { CandidateSourceKind, PickCascade } from './pick.js';
  *  `everyRanked: { c }` turns the read-every-part lever off at the
  *  scaled top-k coefficient c, and `everyScored: { bar }` turns the
  *  keep-every-part lever off below that decision bar. `route` is on by
- *  its option's presence; `rare` takes `true` or its own share and bar.
- *  Labels, the rare-word round's on state and the decision-score bars
- *  belong to each source and are recorded per source in `sources`;
- *  `everyScored` and `rare`, when given, override every source. The decision cache
+ *  its option's presence. Labels and the decision-score bars belong to
+ *  each source and are recorded per source in `sources`; `everyScored`,
+ *  when given, overrides every source. The decision cache
  *  is not a lever: it loses no quality, so it is always available
  *  whenever the caller passes `cache`. */
 export interface LeverStates {
@@ -46,14 +45,6 @@ export interface LeverStates {
   /** The route questions: `route: 'jev'` asks the task's four route
    *  questions once per pick. */
   readonly route: boolean;
-  /** The rare-word round, with the share and bar it ran with: a second
-   *  pass that pulls unselected parts sharing a rare word with a selected
-   *  one, from the sources `sources` marks `rare`. False when no source
-   *  ran it. */
-  readonly rare: false | {
-    readonly share: number;
-    readonly bar: number;
-  };
   /** The settings each source ran with, by source id. */
   readonly sources: Readonly<Record<string, SourceSettings>>;
 }
@@ -62,13 +53,13 @@ export interface LeverStates {
 export interface SourceSettings {
   /** The source's kind, when it declares one. */
   readonly kind?: CandidateSourceKind;
+  /** The name of the source's mode, when it carries one. */
+  readonly mode?: string;
   /** The label gate ran on this source's parts with its label kinds. */
   readonly labels: boolean;
   /** The label bar this source's needs and label lane used, present
    *  when the source carries label kinds. */
   readonly labelBar?: number;
-  /** The rare-word round was on for this source's parts. */
-  readonly rare: boolean;
   /** The decision-score bar this source's references were cut at: 0
    *  when every scored part was kept. */
   readonly bar: number;
@@ -79,6 +70,35 @@ export interface SourceSettings {
    *  present when the source carries a set; absent, they were asked the
    *  built-in question for their kind. */
   readonly questions?: PickCascade;
+  /** The share of its best kept part's weight a kept part of this
+   *  source needs to enter the text, present when its mode sets one. */
+  readonly textShare?: number;
+  /** Present and true when its mode judges whole messages: each kept
+   *  piece carries its message's rating, and the text lays the message
+   *  out once, whole. */
+  readonly wholeMessages?: true;
+  /** Present and true when its mode writes hard facts into each item's
+   *  record in the decision state. */
+  readonly hardFacts?: true;
+  /** Present and true when its mode asked what each kept part is doing. */
+  readonly roles?: true;
+  /** Present when its mode sets how many items one decision request holds. */
+  readonly itemsPerRequest?: number;
+  /** Present when its mode asks in the plain-text form. */
+  readonly request?: 'text';
+  /** The mode's second stage, when it has one: its questions, the bar it
+   *  kept at for this pick, and its own settings. */
+  readonly keep?: {
+    readonly questions: PickCascade;
+    readonly bar: number;
+    readonly wholeMessages?: boolean;
+    readonly hardFacts?: boolean;
+    readonly itemsPerRequest?: number;
+    readonly exchange?: true | { readonly nearest?: 'paragraph' };
+  };
+  /** Present when its mode compares its kept parts for each needed fact:
+   *  the candidates a fact, and the sufficiency question's bar when on. */
+  readonly choicePerFact?: { readonly candidates: number; readonly enough?: number };
   /** The decay half-life this source's Markdown parts ranked with,
    *  present when the source has `decay` on. Only a record
    *  pickFromSources produced carries it. */

@@ -3,6 +3,36 @@ import { describe, expect, it } from 'vitest';
 import { pick, type MemoryCandidate, type PickQuestion } from '../src/index.js';
 
 describe('identical decision text', () => {
+  const said = (id: string, author: 'person' | 'agent', score: number): MemoryCandidate => ({
+    sourceId: 'chat', id, title: id, text: 'Use Postgres.', role: 'reference', signals: { score },
+    author, chat: { provider: 'claude-code', sessionId: 's', role: author === 'person' ? 'user' : 'assistant' },
+  });
+  /** A decider that answers by the author it is shown, and the questions it was asked. */
+  const byAuthor = (asked: PickQuestion[]) => async ({ questions }: { questions: readonly PickQuestion[] }) => {
+    asked.push(...questions);
+    return Object.fromEntries(questions.map((question) => [question.key,
+      { status: 'answered' as const, probability: question.author === 'person' ? 0.9 : 0.001 }]));
+  };
+
+  it('asks identical text from two authors once each, so neither takes the other\'s answer', async () => {
+    const asked: PickQuestion[] = [];
+    const result = await pick([said('agent-said', 'agent', 2), said('person-said', 'person', 1)], {
+      task: 'What did the person choose?', everyRanked: true, everyScored: { bar: 0.0146 }, decide: byAuthor(asked),
+    });
+    expect(asked.map((question) => question.id)).toEqual(['agent-said', 'person-said']);
+    expect(result.record.candidates.map((entry) => [entry.id, entry.status, 'probability' in entry && entry.probability]))
+      .toEqual([['agent-said', 'rejected', 0.001], ['person-said', 'selected', 0.9]]);
+  });
+
+  it('still asks identical text from one author once', async () => {
+    const asked: PickQuestion[] = [];
+    const result = await pick([said('first', 'person', 2), said('second', 'person', 1)], {
+      task: 'What did the person choose?', everyRanked: true, everyScored: { bar: 0.0146 }, decide: byAuthor(asked),
+    });
+    expect(asked.map((question) => question.id)).toEqual(['first']);
+    expect(result.selected.map((part) => part.id)).toEqual(['first', 'second']);
+  });
+
   it.each([
     { maxPerBatch: 150, bestPartFirst: false },
     { maxPerBatch: 1, bestPartFirst: false },
@@ -15,7 +45,7 @@ describe('identical decision text', () => {
       })));
     const asked: PickQuestion[] = [];
     const result = await pick(parts, {
-      task: 'Recall evidence', everyRanked: true, everyScored: { bar: 0.6 }, rare: false,
+      task: 'Recall evidence', everyRanked: true, everyScored: { bar: 0.6 },
       bestPartFirst: settings.bestPartFirst, limits: { maxPerBatch: settings.maxPerBatch },
       decide: async ({ questions }) => {
         asked.push(...questions);
@@ -40,7 +70,7 @@ describe('identical decision text', () => {
         : [commit('b', 'drop the typo fix'), commit('a', 'keep the billing fix')];
       const asked: PickQuestion[] = [];
       const result = await pick(parts, {
-        task: 'Recall evidence', everyRanked: true, everyScored: { bar: 0.6 }, rare: false,
+        task: 'Recall evidence', everyRanked: true, everyScored: { bar: 0.6 },
         decide: async ({ questions }) => {
           asked.push(...questions);
           return Object.fromEntries(questions.map((question) => [question.key,

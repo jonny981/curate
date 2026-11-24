@@ -20,14 +20,12 @@
         "chat#37",
         "chat#19"
       ],
-      "sha256": "12799ac95ae24d3b6fcbee029819cbeccbd00cd6412b64e520204312f0f91673"
+      "sha256": "8738032e4b14d69698e3c035d45e72f459c2448567c85397a987fd315f2f4e07"
     },
     "defaults git": {
       "selected": [
         "git#26",
         "git#33",
-        "git#240",
-        "git#200",
         "git#1",
         "git#16",
         "git#6",
@@ -35,10 +33,7 @@
         "git#46",
         "git#11",
         "git#0",
-        "git#220",
-        "git#250",
         "git#57",
-        "git#210",
         "git#42",
         "git#19",
         "git#58",
@@ -72,7 +67,7 @@
         "git#5",
         "git#3"
       ],
-      "sha256": "edffd00b9883efd7d6faf60c6f3356782deeaeed8975b18bd9df8e19f64d915e"
+      "sha256": "c2b33783f538d1b04e0a6ed86de39431786b1e5a85a3ad7e0648d71a7eb05e41"
     },
     "defaults markdown": {
       "selected": [
@@ -108,32 +103,26 @@
         "markdown#40",
         "markdown#48",
         "markdown#9",
-        "markdown#240",
         "markdown#23",
         "markdown#26",
-        "markdown#220",
         "markdown#3",
         "markdown#32",
         "markdown#31",
         "markdown#37",
-        "markdown#210",
         "markdown#52",
         "markdown#54",
         "markdown#47",
         "markdown#4",
-        "markdown#250",
         "markdown#20"
       ],
-      "sha256": "48cc932574c28e21a68a0c49d856424160f8850cc8cb161c3a6a55d6eeb387bb"
+      "sha256": "4a8dedbbec7b0abd4b2f49143b4c0dde4069efb6e90f7e8329dbb07f53da1a60"
     },
     "defaults all": {
       "selected": [
         "git#26",
         "git#33",
         "markdown#49",
-        "git#240",
         "markdown#22",
-        "git#200",
         "markdown#29",
         "markdown#58",
         "markdown#25",
@@ -156,11 +145,8 @@
         "markdown#7",
         "git#0",
         "markdown#21",
-        "git#220",
-        "git#250",
         "markdown#15",
         "git#57",
-        "git#210",
         "git#42",
         "markdown#2",
         "markdown#11",
@@ -202,14 +188,12 @@
         "markdown#48",
         "markdown#9",
         "git#37",
-        "markdown#240",
         "markdown#23",
         "git#2",
         "git#13",
         "git#25",
         "chat#18",
         "markdown#26",
-        "markdown#220",
         "chat#28",
         "git#7",
         "markdown#3",
@@ -220,7 +204,6 @@
         "git#23",
         "git#40",
         "markdown#37",
-        "markdown#210",
         "markdown#52",
         "chat#49",
         "markdown#54",
@@ -233,14 +216,13 @@
         "markdown#4",
         "chat#51",
         "chat#44",
-        "markdown#250",
         "chat#31",
         "chat#37",
         "markdown#20",
         "git#3",
         "chat#19"
       ],
-      "sha256": "2c1486cdfbd05cf4514ce0f9960d09ca6a8cbdbc937accaf84d52bc09aad655f"
+      "sha256": "9ba89beb79ed91b546451f50641584a9fdfff4e6a787514c7cff1e897b54cf53"
     },
     "chat labels": {
       "selected": [
@@ -276,16 +258,14 @@
         "chat#137",
         "chat#19"
       ],
-      "sha256": "e61a20d6dd9f1b962eed1e570254dbdf237c0ffddfcbed92fff618a05ce5c201"
+      "sha256": "cd446db672fa5a805aff220abf5960cf46595d85fd858dca5973dd6030e32155"
     },
     "chat labels all": {
       "selected": [
         "git#26",
         "git#33",
         "markdown#49",
-        "git#240",
         "markdown#22",
-        "git#200",
         "markdown#29",
         "markdown#58",
         "markdown#25",
@@ -310,11 +290,8 @@
         "markdown#7",
         "git#0",
         "markdown#21",
-        "git#220",
-        "git#250",
         "markdown#15",
         "git#57",
-        "git#210",
         "git#42",
         "markdown#2",
         "chat#327",
@@ -361,14 +338,12 @@
         "markdown#48",
         "markdown#9",
         "git#37",
-        "markdown#240",
         "markdown#23",
         "git#2",
         "git#13",
         "git#25",
         "chat#18",
         "markdown#26",
-        "markdown#220",
         "chat#28",
         "git#7",
         "markdown#3",
@@ -379,7 +354,6 @@
         "git#23",
         "git#40",
         "markdown#37",
-        "markdown#210",
         "markdown#52",
         "chat#49",
         "chat#206",
@@ -398,7 +372,6 @@
         "chat#267",
         "chat#51",
         "chat#44",
-        "markdown#250",
         "chat#31",
         "chat#37",
         "markdown#20",
@@ -406,7 +379,7 @@
         "git#3",
         "chat#19"
       ],
-      "sha256": "d7eedc73b851be2d2f5ad15d246eda80850adf78b491452d475c916f3cd49570"
+      "sha256": "d3d41589d9ec97fd578747faa0498def0cac6b14fdbf86dae3f6a65ac784e101"
     }
   }
 }

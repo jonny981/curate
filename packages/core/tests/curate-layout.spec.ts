@@ -17,7 +17,7 @@ function picked(items: readonly (readonly [MemoryCandidate, number, number])[]):
     record: {
       questionVersion: 'test', limits: {},
       thresholds: { linkedPathBar: 0 }, rulesCoverage: 'complete',
-      levers: { everyRanked: true, everyScored: true, route: false, rare: false, sources: {} },
+      levers: { everyRanked: true, everyScored: true, route: false, sources: {} },
       effects: [],
       candidates: items.map(([item, probability, priority]) => ({
         sourceId: item.sourceId, id: item.id, role: item.role, priority,
@@ -106,6 +106,17 @@ describe('curate', () => {
     expect(log).toContain('plum');
     expect(record.estimatedTokens).toBeGreaterThan(2_000);
     expect(record.leftOut).toEqual({ count: 0, atHalfOrMore: 0 });
+  });
+
+  it('keeps the text within answerTokens when it is set, and counts what the budget left out', async () => {
+    const big = part('orchard', 'big', '2024-03-01', 'pear '.repeat(1_900));
+    const after = part('orchard', 'after', '2024-03-01', 'plum '.repeat(200));
+    const { record } = await curate(TASK, picked([[big, 0.9, 0], [after, 0.8, 1]]), { answerTokens: 2_000 });
+    expect(record.answerTokens).toBe(2_000);
+    expect(record.items.map((item) => item.candidate.id)).toEqual(['big']);
+    expect(record.estimatedTokens).toBeLessThanOrEqual(2_000);
+    expect(record.estimatedTokens).toBeGreaterThan(1_900);
+    expect(record.leftOut).toEqual({ count: 1, strongestWeight: 0.8, atHalfOrMore: 1 });
   });
 
   it('gives with no budget exactly the text and record a budget too large to stop anything gives, copies included', async () => {
@@ -433,6 +444,31 @@ describe('what the budget left out', () => {
   });
 });
 
+describe('a text share', () => {
+  /** `picked` with each source's text share in the levers, as pickFromSources records a mode's. */
+  const shared = (items: readonly (readonly [MemoryCandidate, number, number])[], shares: Record<string, number>): PickResult => {
+    const base = picked(items);
+    return { ...base, record: { ...base.record, levers: { ...base.record.levers,
+      sources: Object.fromEntries(Object.entries(shares).map(([id, textShare]) => [id, { labels: false, bar: 0.0146, textShare }])) } } };
+  };
+
+  it('leaves out the parts of a source under its share of that source\'s best part, and counts them', async () => {
+    // The orchard's best weighs 0.8, so its share of 0.1 needs 0.08: MEDLAR stays, FIG goes.
+    // The pond sets no share, so LILY stays at 0.01.
+    const { log, record } = await curate(TASK, shared([[QUINCE, 0.8, 0], [MEDLAR, 0.09, 1], [FIG, 0.07, 2], [LILY, 0.01, 3]], { orchard: 0.1 }));
+    expect(record.items.map((item) => item.id)).toEqual(['a', 'c', 'e']);
+    expect(record.underShare).toBe(1);
+    expect(record.leftOut.count).toBe(0);
+    expect(log).not.toContain('fig');
+  });
+
+  it('records no count when no source sets a share', async () => {
+    const { record } = await curate(TASK, picked([[QUINCE, 0.8, 0], [FIG, 0.01, 1]]));
+    expect(record.underShare).toBeUndefined();
+    expect(record.items).toHaveLength(2);
+  });
+});
+
 describe('sentenceCutoff', () => {
   const DIARY = part('orchard', 'h', '2024-03-12', 'Planted the quince row. The weather was grey.\n\nBought string at the market. Staked the young quinces.');
   const SHED = part('shed', 'j', '2024-03-14', 'Painted the shed door. Oiled the hinges.');
@@ -466,6 +502,16 @@ describe('sentenceCutoff', () => {
   it('keeps the speaker of a kept sentence when the line that named the speaker lost its first sentence', async () => {
     const { log } = await curate(TASK, picked([[TALK, 0.9, 0]]), { sentenceCutoff: 0.5, decide: judge(['fat', 'Nets']) });
     expect(log).toBe('### Most likely answer\n\n#### pond (said 2024-03-13)\n\n… user: Should I net the pond?\n… assistant: Herons took two fish last spring.\n');
+  });
+
+  it('keeps the name of a speaker the part names, as it keeps user and assistant', async () => {
+    const chat = { ...part('pond', 'm', '2024-03-13', 'Caroline: The koi are fat. Should I net the pond?\nMelanie: Nets help. Herons took two fish last spring.'),
+      speakers: ['Caroline', 'Melanie'] };
+    const { log } = await curate(TASK, picked([[chat, 0.9, 0]]), { sentenceCutoff: 0.5, decide: judge(['fat', 'Nets']) });
+    expect(log).toBe('### Most likely answer\n\n#### pond (said 2024-03-13)\n\n… Caroline: Should I net the pond?\n… Melanie: Herons took two fish last spring.\n');
+    // A name the part does not list opens no turn.
+    const plain = await curate(TASK, picked([[{ ...chat, speakers: [] }, 0.9, 0]]), { sentenceCutoff: 0.5, decide: judge(['fat', 'Nets']) });
+    expect(plain.log).toContain('… Should I net the pond?');
   });
 
   it('judges the strongest item like any other, and leaves out and counts an item with no sentence kept', async () => {

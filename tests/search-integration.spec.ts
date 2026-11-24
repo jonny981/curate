@@ -9,7 +9,7 @@ import { chat, chatSettings } from '@curatejs/chat';
 import { git as gitSource, gitSettings } from '@curatejs/git';
 import { knowledgeBase, markdownSettings, rules, rulesSettings } from '@curatejs/markdown';
 
-const uncutPick = { everyRanked: true, everyScored: true, rare: false } as const;
+const uncutPick = { everyRanked: true, everyScored: true } as const;
 
 it('combines search options and source questions across real readers', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'curate-search-integration-'));
@@ -34,10 +34,10 @@ it('combines search options and source questions across real readers', async () 
     const fitted = (key: string): PickCascade => ({ bias: 0, questions: [{
       key, instructions: `Check ${key}?`, true: 'It supplies evidence.', false: 'It supplies no evidence.', weight: 1,
     }] });
-    const readers = [historySource({ reader: chat({ paths: [join(directory, 'transcripts')], providers: ['codex'] }), ...chatSettings, labels: false, questions: fitted('chat') }),
-      historySource({ reader: gitSource(directory), ...gitSettings, questions: fitted('history') }),
-      historySource({ reader: knowledgeBase(join(directory, 'notes')), ...markdownSettings, questions: fitted('note') }),
-      historySource({ reader: rules(join(directory, 'policy')), ...rulesSettings, questions: fitted('note') })];
+    const readers = [historySource({ reader: chat({ paths: [join(directory, 'transcripts')], providers: ['codex'] }), ...chatSettings, labels: false, mode: { ...chatSettings.mode!, questions: fitted('chat') } }),
+      historySource({ reader: gitSource(directory), ...gitSettings, mode: { ...gitSettings.mode!, questions: fitted('history') } }),
+      historySource({ reader: knowledgeBase(join(directory, 'notes')), ...markdownSettings, mode: { ...markdownSettings.mode!, questions: fitted('note') } }),
+      historySource({ reader: rules(join(directory, 'policy')), ...rulesSettings, mode: { ...rulesSettings.mode!, questions: fitted('note') } })];
     const kinds = new Map(readers.map((reader) => [reader.id, reader.kind]));
     const task = 'Apple orchard. Answer in one line. Cite both.';
     const calls: string[][] = [];
@@ -54,8 +54,10 @@ it('combines search options and source questions across real readers', async () 
         }));
       },
     });
-    // The rule is asked too, in the first batch.
-    expect(calls.map((questions) => questions.length)).toEqual([4, 2]);
+    // The rule is asked too, in the first round. The notes and the rule ask in plain text and the chat and the
+    // commit in JSON, so each round's questions go in two requests: the rule and a note, then the chat part and the
+    // commit; then a chat part, then a note.
+    expect(calls.map((questions) => questions.length)).toEqual([2, 2, 1, 1]);
     expect(result.selected).toHaveLength(6);
     expect(result.record.rulesCoverage).toBe('complete');
     expect(result.record.candidates.filter((entry) => entry.role === 'reference').every((entry) =>

@@ -128,7 +128,7 @@ const JUDGMENT_CHAT_WEIGHTS: Partial<PickCascadeModel> = (() => {
  *  fitted weights in `judgment-chat-weights.json`. Items render as a
  *  date and their text only: the model never sees a part's id, title
  *  or session. Opt-in — `chat()` keeps `AGENT_CHAT_CASCADE` unless its
- *  `questions` option names this set — and unfitted until the weights
+ *  `mode` option carries this set — and unfitted until the weights
  *  file holds real constants, so selecting it before then throws. */
 export const JUDGMENT_CHAT_CASCADE: PickCascade = {
   anonymousItems: true,
@@ -152,4 +152,33 @@ export const JUDGMENT_CHAT_CASCADE: PickCascade = {
       ],
     },
   ],
+};
+
+/** The keep questions measured on coding-agent transcripts, each asked of
+ *  a whole message after the read (`Mode.keep`): whether the message
+ *  states the answer to the task, and once per needed fact whether it
+ *  states that fact, its score the highest of the answers. In this
+ *  wording, on 22 tasks of one person's coding-agent history, each whole
+ *  message judged with its hard facts, the highest bar that lost no
+ *  labelled answer was 0.59 on one-decision tasks and 0.04 on
+ *  everything-said tasks. A bar measured in this wording is not carried
+ *  to another. */
+export const MESSAGE_ANSWER_CASCADE: PickCascade = {
+  bias: 0,
+  combine: 'highest',
+  questions: [{
+    key: 'answers', weight: 1,
+    instructions: 'Does this message state the answer to the task?',
+    true: 'This message states the answer to the task',
+    false: 'It describes work toward the answer, a plan, or a question about it, without stating the result',
+  }],
+  facts: {
+    question: {
+      key: 'fact',
+      instructions: 'Does this message state this: {fact}?',
+      true: 'This message states it: {fact}',
+      false: 'It is about the subject without stating it',
+    },
+    highest: 0,
+  },
 };

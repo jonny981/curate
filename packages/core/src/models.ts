@@ -1,5 +1,7 @@
 import { levelDistribution } from './decisions.js';
-import type { PickAnswer, PickBatch, PickDecide, PickQuestion } from './pick.js';
+import type {
+  PickAnswer, PickBatch, PickDecide, PickItem, PickListAnswer, PickListDecide, PickListRequest, PickQuestion,
+} from './pick.js';
 
 function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === 'object' ? value as Record<string, unknown> : {};
@@ -28,8 +30,8 @@ async function post(url: string, apiKey: string | undefined, body: unknown, sign
 }
 
 /** Jev's reply to one request: its HTTP status and whole body, read so a
- *  rejected request's reason is never lost, and the Retry-After header a
- *  rate-limit reply waits by. */
+ *  rejected request's reason is never lost, and the wait a rate-limit
+ *  reply asks for: `retry-after-ms` when it sends one, else Retry-After. */
 async function jevPost(url: string, apiKey: string | undefined, text: string, signal: AbortSignal) {
   const response = await fetch(url, {
     method: 'POST',
@@ -38,12 +40,70 @@ async function jevPost(url: string, apiKey: string | undefined, text: string, si
     signal,
   });
   return { ok: response.ok, status: response.status,
-    retryAfter: response.headers.get('retry-after'), text: await response.text() };
+    retryAfter: response.headers.get('retry-after'), retryAfterMs: response.headers.get('retry-after-ms'), text: await response.text() };
 }
 
-/** The wait a reply's Retry-After header names, in milliseconds; an
- *  unreadable or absent header waits one second. */
-function retryAfterMs(header: string | null): number {
+/** Why the decision service gave no answers: it has no credit (HTTP
+ *  402), it refused the key (401 or 403), it could not be reached (no
+ *  reply), it still rate-limited the request when the retry budget ran
+ *  out (429), or it refused the request for another reason. */
+export type DecisionServiceFailure = 'credit' | 'key' | 'unreachable' | 'busy' | 'refused';
+
+/** A Jev request that failed for a reason no smaller request can fix.
+ *  `status` is the reply's HTTP status, or 0 when no reply came; `reply`
+ *  is its whole body; `said` is the message the service gave in it, or
+ *  the network error's. */
+export class DecisionServiceError extends Error {
+  readonly status: number;
+  readonly reason: DecisionServiceFailure;
+  readonly reply: string;
+  readonly said: string;
+  /** `waited`, for a 429, says how long the request waited and what the
+   *  last reply asked for. */
+  constructor(status: number, reply: string, said: string, options?: ErrorOptions & { readonly waited?: string }) {
+    const reason: DecisionServiceFailure = status === 0 ? 'unreachable' : status === 402 ? 'credit'
+      : status === 401 || status === 403 ? 'key' : status === 429 || status === 529 ? 'busy' : 'refused';
+    super(reason === 'unreachable' ? `The decision service could not be reached: ${said}`
+      : reason === 'busy' ? `The decision service is still ${status === 529 ? 'overloaded' : 'rate-limiting requests'} (HTTP ${status}) after ${options?.waited ?? 'its retries'}: ${said}`
+        : `The decision service ${reason === 'credit' ? 'has no credit' : reason === 'key' ? 'refused the API key'
+          : 'refused the request'} (HTTP ${status}): ${said}`, options);
+    this.name = 'DecisionServiceError';
+    this.status = status;
+    this.reason = reason;
+    this.reply = reply;
+    this.said = said;
+  }
+}
+
+/** The message a reply's body gives: a JSON body's `detail` text or its
+ *  `detail.message` or `message`, otherwise the body as sent. */
+function saidIn(body: string): string {
+  try {
+    const parsed = record(JSON.parse(body));
+    const detail = parsed.detail;
+    const said = typeof detail === 'string' ? detail : record(detail).message ?? parsed.message;
+    if (typeof said === 'string' && said.trim() !== '') return said.trim();
+  } catch {
+    // Not JSON: the body is the message.
+  }
+  return body.trim();
+}
+
+/** A network error's message, with its cause's when it has one, as
+ *  `fetch failed (getaddrinfo ENOTFOUND host)`. */
+function networkSaid(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const cause = error instanceof Error && error.cause instanceof Error ? error.cause.message : undefined;
+  return cause === undefined ? message : `${message} (${cause})`;
+}
+
+/** The wait a reply names, in milliseconds: its `retry-after-ms` header
+ *  (the service's own client reads it first), else its Retry-After header
+ *  in seconds or as a date; an unreadable or absent header waits one
+ *  second. */
+function retryAfterMs(header: string | null, milliseconds: string | null = null): number {
+  const ms = milliseconds === null ? Number.NaN : Number(milliseconds.trim());
+  if (Number.isFinite(ms)) return Math.max(ms, 0);
   if (header === null) return 1000;
   const seconds = Number(header.trim());
   if (Number.isFinite(seconds)) return Math.max(seconds * 1000, 0);
@@ -59,18 +119,29 @@ function wait(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
-/** TypeSafe's published starting allowance: 80 requests and 100,000
- *  tokens a second, a token estimated at three characters like the
- *  request-size bounds. The service publishes no simultaneous-request
- *  limit; these two rates bound every request the adapter sends. */
-const JEV_TOKENS_PER_SECOND = 100_000;
-const JEV_REQUESTS_PER_SECOND = 80;
+/** Stand-ins for the organization's own rate limits until the caller
+ *  sets them (`jev({ requestsPerSecond, tokensPerSecond })`): 320
+ *  requests and 400,000 tokens a second, a token estimated at three
+ *  characters like the request-size bounds. TypeSafe sets limits per
+ *  organization, shown in its developer console, in requests and tokens
+ *  a second, publishes no figures and sends no rate headers, and answers
+ *  a request over either 429. These two rates bound every request the
+ *  adapter sends: it queues against them and never sends faster. On one
+ *  call of 141 requests, raised in steps, no 429 or 529 came at any pace,
+ *  unpaced included; the decision step took 22.1 seconds at 100,000
+ *  tokens a second, 15.1 at 200,000, 11.9 at 400,000, 14.6 at 800,000
+ *  and 19.2 unpaced, the service answering each request more slowly past
+ *  400,000 (the slowest tenth over 0.37 seconds there, 1.0 at 800,000,
+ *  4.1 unpaced). A pace that slows itself when replies slow down, the
+ *  sign the service gave in place of a 429, is untried. */
+const JEV_TOKENS_PER_SECOND = 400_000;
+const JEV_REQUESTS_PER_SECOND = 320;
 
 /** The retry budget for HTTP 429 replies: the longest a request waits
  *  on them, from the first one. The allowance above is counted per
  *  one-second window, each window refills it whole, and one window holds
  *  the largest request this adapter sends (64,000 estimated tokens of
- *  100,000). This adapter's own sends keep inside the allowance, so a
+ *  400,000). This adapter's own sends keep inside the allowance, so a
  *  429 means other sends on the same key spent the window, and the
  *  request gets through in the first window they leave room in. Sixty
  *  windows is a chosen budget, not a proof of anything: sustained
@@ -164,13 +235,18 @@ function rateAllowance(tokensPerSecond: number, requestsPerSecond: number) {
   return { wait, stop };
 }
 
-/** An item as a decision model reads it: its id and date, its title,
- *  then its text. An anonymous item keeps only its date and its text,
- *  with the `# session` header lines bench chunks carry stripped —
- *  its identifying fields never reach the request body. */
+/** An anonymous item's text: the `# session` header lines bench chunks
+ *  carry are stripped. */
+function anonymousText(text: string): string {
+  return text.split('\n').filter((line) => !line.startsWith('# session')).join('\n');
+}
+
+/** An item as a local model reads it: its id and date, its title, then
+ *  its text. An anonymous item keeps only its date and its text, so its
+ *  identifying fields never reach the request. */
 function itemState(question: PickQuestion): string {
   if (question.anonymous === true) {
-    const text = question.text.split('\n').filter((line) => !line.startsWith('# session')).join('\n');
+    const text = anonymousText(question.text);
     return question.date === undefined ? text
       : `(${question.date.meaning} ${question.date.value})\n\n${text}`;
   }
@@ -178,10 +254,25 @@ function itemState(question: PickQuestion): string {
     : ` (${question.date.meaning} ${question.date.value})`}\n${question.title}\n\n${question.text}`;
 }
 
-/** Jev's request body for a batch. The state is the batch's task, then
- *  each distinct item once, numbered; each question's instructions are
- *  its wording, then the number of the item it asks about. */
-export function jevRequest(batch: PickBatch, model = 'jev-latest') {
+/** An item as a named record in a Jev request's state: its id, date,
+ *  title and text, its author where its reader marked one, and the
+ *  fields code knows about it (`facts`). A missing date is null. An
+ *  anonymous item keeps only its date and its text, so its identifying
+ *  fields, author and facts never reach the request. */
+function itemRecord(question: PickItem) {
+  const date = question.date === undefined ? null : `${question.date.meaning} ${question.date.value}`;
+  if (question.anonymous === true) return { date, text: anonymousText(question.text) };
+  return { id: question.id, date, title: question.title, text: question.text,
+    ...(question.author === undefined ? {} : { author: question.author }), ...question.facts };
+}
+
+/** Jev's request body for a batch in the plain-text form
+ *  (`PickBatch.form: 'text'`), byte for byte the form main sends: the
+ *  state is the batch's task, then each distinct item once, `Item N: `
+ *  and its id, its date in brackets, its title and its text, apart by a
+ *  blank line; each question's instructions are its wording, a blank
+ *  line, then `Item N`. */
+export function jevTextRequest(batch: PickBatch, model = 'jev-latest') {
   const items = new Map<string, PickQuestion>();
   for (const question of batch.questions) {
     const key = `${question.sourceId}\n${question.id}`;
@@ -209,18 +300,132 @@ export function jevRequest(batch: PickBatch, model = 'jev-latest') {
   };
 }
 
+/** The request body a batch is sent as: the plain-text form when the
+ *  batch asks for it, else the JSON state. */
+const bodyOf = (batch: PickBatch, model: string) => batch.form === 'text' ? jevTextRequest(batch, model) : jevRequest(batch, model);
+
+/** Jev's request body for a batch. The state is a JSON object: the
+ *  batch's task, the facts the answer needs, the person and how many
+ *  answers are wanted when the batch carries them, and each distinct
+ *  item once, as a record under its number in `items`. Each question's instructions are its wording and
+ *  the path of the record it asks about, such as `items.3`. */
+export function jevRequest(batch: PickBatch, model = 'jev-latest') {
+  const items = new Map<string, PickQuestion>();
+  for (const question of batch.questions) {
+    const key = `${question.sourceId}\n${question.id}`;
+    if (!items.has(key)) items.set(key, question);
+  }
+  const numbers = new Map([...items.keys()].map((key, index) => [key, index + 1]));
+  // An item judged on its own is the state's one `item`.
+  const alone = batch.alone === true && items.size === 1;
+  const instructions = (question: PickQuestion) =>
+    ({ question: question.question, item: alone ? 'item' : `items.${numbers.get(`${question.sourceId}\n${question.id}`)}` });
+  return {
+    model,
+    state: {
+      task: batch.task,
+      ...(batch.needed === undefined ? {} : { needed: batch.needed }),
+      ...(batch.person === undefined ? {} : { person: batch.person }),
+      ...(batch.wanted === undefined ? {} : { wanted: batch.wanted }),
+      ...(alone ? { item: itemRecord([...items.values()][0]!) }
+        : { items: Object.fromEntries([...items.values()].map((question, index) => [String(index + 1), itemRecord(question)])) }),
+    } as {
+      task: string; needed?: readonly string[]; person?: string; wanted?: PickBatch['wanted'];
+      /** Every item's record under its number; absent when the one item is judged alone. */
+      items?: Record<string, ReturnType<typeof itemRecord>>;
+      /** The one item's record, when it is judged alone. */
+      item?: ReturnType<typeof itemRecord>;
+    },
+    questions: Object.fromEntries(batch.questions.map((question, index) => [`q${index}`,
+      question.options !== undefined
+        ? {
+          type: 'choice',
+          instructions: instructions(question),
+          criteria: Object.fromEntries(question.options),
+        }
+        : question.levels === undefined
+        ? {
+          type: 'noul',
+          instructions: instructions(question),
+          criteria: { true: question.trueCriterion, false: question.falseCriterion },
+        }
+        : {
+          type: 'score',
+          instructions: instructions(question),
+          criteria: [...question.levels],
+        }])),
+  };
+}
+
+/** An item as one option of a Choice: who said it and when, then its
+ *  text, as the maker's large-choice recipe labels each candidate
+ *  ("label: text"); an item with fields code wrote is an object of the
+ *  same, with those fields. */
+function itemOption(item: PickItem, person: string | undefined) {
+  const who = item.anonymous === true ? undefined
+    : item.author === 'person' ? person ?? 'the person' : item.author === 'unmarked' ? undefined : item.author;
+  const said = [who, item.date?.value.slice(0, 10)].filter((part) => part !== undefined).join(', ');
+  const text = item.anonymous === true ? anonymousText(item.text) : item.text;
+  return item.facts === undefined || item.anonymous === true ? (said === '' ? text : `${said}: ${text}`)
+    : { said, text, ...item.facts };
+}
+
+/** Jev's request body for a list request: the state holds the task, the
+ *  fields the request carries beside it, and, when a question refers to
+ *  them there, each item as a record under its own key in `items`. A
+ *  Choice's options are the item keys it names, in its order: with no
+ *  descriptions, the records in the state hold each option's text; a
+ *  `described` Choice writes each item into its own option instead. */
+export function jevListRequest(request: PickListRequest, model = 'jev-latest') {
+  const byKey = new Map(request.items);
+  const inState = Object.values(request.questions).some((question) => question.type !== 'choice' || question.described !== true);
+  return {
+    model,
+    state: {
+      task: request.task,
+      ...(request.needed === undefined ? {} : { needed: request.needed }),
+      ...(request.person === undefined ? {} : { person: request.person }),
+      ...(request.wanted === undefined ? {} : { wanted: request.wanted }),
+      ...(inState ? { items: Object.fromEntries(request.items.map(([key, item]) => [key, itemRecord(item)])) } : {}),
+    },
+    questions: Object.fromEntries(Object.entries(request.questions).map(([name, question]) => [name,
+      question.type === 'choice'
+        ? question.described === true
+          ? {
+            type: 'choice',
+            instructions: question.question,
+            criteria: Object.fromEntries(question.options.map((key) => [key, itemOption(byKey.get(key)!, request.person)])),
+          }
+          : {
+            type: 'choice',
+            instructions: { question: question.question, items: 'items' },
+            criteria: Object.fromEntries(question.options.map((key) => [key, null])),
+          }
+        : {
+          type: 'noul',
+          instructions: { question: question.question, items: 'items' },
+          criteria: { true: question.trueCriterion, false: question.falseCriterion },
+        }])),
+  };
+}
+
 /** Jev's limits are 32,000 tokens for the state plus the longest
  *  question and 64,000 for the whole request, at an estimate of three
- *  characters a token. */
+ *  characters a token. The state and each question's instructions are
+ *  counted as sent, with their field names, quotes and escapes. */
 const JEV_STATE_CHARS = 32_000 * 3;
 const JEV_REQUEST_CHARS = 64_000 * 3;
 
-function fitsJev(body: ReturnType<typeof jevRequest>, maxChars = JEV_REQUEST_CHARS): boolean {
-  const longest = Math.max(0, ...Object.values(body.questions).map((question) =>
-    question.instructions.length + (Array.isArray(question.criteria)
-      ? question.criteria.join('').length
-      : (question.criteria.true ?? '').length + (question.criteria.false ?? '').length)));
-  return body.state.length + longest <= JEV_STATE_CHARS && JSON.stringify(body).length <= maxChars;
+function fitsJev(body: ReturnType<typeof jevRequest> | ReturnType<typeof jevTextRequest>, maxChars = JEV_REQUEST_CHARS): boolean {
+  // Text is measured as text, as the plain-text form always was; a JSON value as it is written.
+  const measured = (value: unknown) => typeof value === 'string' ? value.length : JSON.stringify(value).length;
+  const longest = Math.max(0, ...Object.values(body.questions).map((question: { type: string; instructions: unknown; criteria: unknown }) =>
+    measured(question.instructions) + (question.type === 'choice'
+      ? JSON.stringify(question.criteria).length
+      : Array.isArray(question.criteria)
+        ? question.criteria.join('').length
+        : ((question.criteria as { true?: string }).true ?? '').length + ((question.criteria as { false?: string }).false ?? '').length)));
+  return measured(body.state) + longest <= JEV_STATE_CHARS && JSON.stringify(body).length <= maxChars;
 }
 
 /** The batch split into requests inside Jev's limits. Whole items join a
@@ -234,16 +439,18 @@ function jevBatches(batch: PickBatch, model: string, maxChars = JEV_REQUEST_CHAR
     const key = `${question.sourceId}\n${question.id}`;
     items.set(key, [...(items.get(key) ?? []), question]);
   }
+  // Every request keeps the batch's own fields (the facts the answer
+  // needs), and is measured with them.
   const batches: PickBatch[] = [];
   let questions: PickQuestion[] = [];
   for (const own of items.values()) {
-    const next = { task: batch.task, questions: [...questions, ...own] };
-    if (questions.length > 0 && !fitsJev(jevRequest(next, model), maxChars)) {
-      batches.push({ task: batch.task, questions });
+    const next = { ...batch, questions: [...questions, ...own] };
+    if (questions.length > 0 && !fitsJev(bodyOf(next, model), maxChars)) {
+      batches.push({ ...batch, questions });
       questions = own;
     } else questions = next.questions;
   }
-  if (questions.length > 0) batches.push({ task: batch.task, questions });
+  if (questions.length > 0) batches.push({ ...batch, questions });
   return batches;
 }
 
@@ -280,20 +487,32 @@ export interface JevCall {
   readonly answers?: unknown;
   /** The extra requests this rejection spawned. */
   readonly splits: number;
+  /** `'keep'` when the request belongs to a mode's second stage
+   *  (`PickBatch.stage`), so a caller can price each stage apart. */
+  readonly stage?: 'keep';
 }
 
 /** Create a decision function using TypeSafe's yes/no probabilities, or
  *  those of another server that speaks Jev's format at `url`. */
-export function jev({ apiKey, model = 'jev-latest', url = JEV_URL, onCall }: {
+export function jev({ apiKey, model = 'jev-latest', url = JEV_URL, onCall,
+  requestsPerSecond = JEV_REQUESTS_PER_SECOND, tokensPerSecond = JEV_TOKENS_PER_SECOND }: {
   /** Required at TypeSafe's address; sent only when given. */
   readonly apiKey?: string | undefined;
   readonly model?: string;
   readonly url?: string;
+  /** The organization's rate limits, as its TypeSafe console shows
+   *  them: the client queues every request inside both. Default 320
+   *  requests and 400,000 tokens a second. */
+  readonly requestsPerSecond?: number;
+  readonly tokensPerSecond?: number;
   /** Called once per request, split and resent requests included. */
   readonly onCall?: ((call: JevCall) => void | Promise<void>) | undefined;
 }): PickDecide {
   if (!apiKey && url === JEV_URL) throw new Error('Jev requires an API key.');
-  const deciderId = url === JEV_URL ? `typesafe:${model}:items-once` : `jev:${hostAndPath(url)}:${model}:items-once`;
+  for (const [name, rate] of [['requestsPerSecond', requestsPerSecond], ['tokensPerSecond', tokensPerSecond]] as const) {
+    if (!(Number.isFinite(rate) && rate > 0)) throw new TypeError(`jev: ${name} must be a positive number.`);
+  }
+  const deciderId = url === JEV_URL ? `typesafe:${model}:item-records` : `jev:${hostAndPath(url)}:${model}:item-records`;
   // The largest whole body Jev has accepted in this pick. Once a
   // rejection has landed, later batches are planned inside it, and a
   // request rejected at no more than it did not fail for size: its
@@ -304,7 +523,7 @@ export function jev({ apiKey, model = 'jev-latest', url = JEV_URL, onCall }: {
   // planned subrequests, rejection splits and rate-limit resends each
   // reserve their allowance before dispatching. A request held for its
   // split children holds no allowance while it waits.
-  const allow = rateAllowance(JEV_TOKENS_PER_SECOND, JEV_REQUESTS_PER_SECOND);
+  const allow = rateAllowance(tokensPerSecond, requestsPerSecond);
   // A pick is its signal: every decide call of one pick — its batches,
   // splits and resends — arrives under the same signal object, so a
   // send's failure domain is looked up from it. A batch of that pick
@@ -317,8 +536,11 @@ export function jev({ apiKey, model = 'jev-latest', url = JEV_URL, onCall }: {
     if (domain === undefined) { domain = { stopped: false }; domains.set(signal, domain); }
     return domain;
   };
-  const send = async (part: PickBatch, signal: AbortSignal): Promise<[string, PickAnswer][]> => {
-    const text = JSON.stringify(jevRequest(part, model));
+  // One request sent until a reply other than a rate limit lands: its
+  // allowance, a reply that never came, and the rate-limit waits, each
+  // attempt reported. The caller reports the reply it returns.
+  const exchange = async (text: string, questions: number, signal: AbortSignal, stage?: 'keep') => {
+    const staged = stage === undefined ? {} : { stage };
     const domain = domainFor(signal);
     // When the service first answered this request 429.
     let limitedSince: number | undefined;
@@ -337,35 +559,39 @@ export function jev({ apiKey, model = 'jev-latest', url = JEV_URL, onCall }: {
           // then let that error fail the pick.
           allow.stop(domain, error);
           await onCall?.({
-            started: new Date(then).toISOString(), questions: part.questions.length,
+            started: new Date(then).toISOString(), questions,
             size: text.length, status: 0, ms: Date.now() - then,
             error: error instanceof Error ? error.message : String(error),
-            splits: 0,
+            splits: 0, ...staged,
           });
-          throw error;
+          // A cancellation stays as it is; a request that got no reply
+          // for any other reason could not reach the service.
+          throw signal.aborted ? error : new DecisionServiceError(0, '', networkSaid(error), { cause: error });
         }
         const raw = (() => { try { return record(JSON.parse(reply.text)); } catch { return {}; } })();
         const call = {
-          started: new Date(then).toISOString(), questions: part.questions.length,
+          started: new Date(then).toISOString(), questions,
           size: text.length, status: reply.status, ms: Date.now() - then,
           ...(raw.usage === undefined ? {} : { usage: raw.usage }),
           ...(raw.answers === undefined ? {} : { answers: raw.answers }),
-          splits: 0,
+          splits: 0, ...staged,
         };
-        // A rate-limited request waits as the reply directs, then sends the
-        // same request unchanged: it is never split, dropped or counted as
-        // a size rejection, and every attempt stays in the record. A wait
-        // that would end past JEV_RATE_LIMITED_MS from the first 429 fails
-        // the request with the last reply instead.
-        if (reply.status === 429) {
+        // A rate-limited request (429), or one the service was too
+        // overloaded to take (529), waits as the reply directs, then sends
+        // the same request unchanged: it is never split, dropped or counted
+        // as a size rejection, and every attempt stays in the record. A
+        // wait that would end past JEV_RATE_LIMITED_MS from the first such
+        // reply fails the request with the last reply instead.
+        if (reply.status === 429 || reply.status === 529) {
           const now = Date.now();
-          const pause = retryAfterMs(reply.retryAfter);
+          const pause = retryAfterMs(reply.retryAfter, reply.retryAfterMs);
           limitedSince ??= now;
           if (now - limitedSince + pause > JEV_RATE_LIMITED_MS) {
             const seconds = (ms: number) => Math.round(ms / 1000);
-            const error = new Error(`Model request failed: HTTP 429 for ${seconds(now - limitedSince)} s. `
-              + `A rate-limited request waits at most ${seconds(JEV_RATE_LIMITED_MS)} s, and the last reply asked for `
-              + `${seconds(pause)} s more (${reply.retryAfter === null ? 'no Retry-After' : `Retry-After: ${reply.retryAfter}`}). ${reply.text}`);
+            const error = new DecisionServiceError(reply.status, reply.text, saidIn(reply.text), { waited: `${seconds(now - limitedSince)} s; `
+              + `${reply.status === 529 ? 'an overloaded' : 'a rate-limited'} request waits at most ${seconds(JEV_RATE_LIMITED_MS)} s, and the last reply asked for `
+              + `${seconds(pause)} s more (${reply.retryAfterMs !== null ? `retry-after-ms: ${reply.retryAfterMs}`
+                : reply.retryAfter === null ? 'no Retry-After' : `Retry-After: ${reply.retryAfter}`})` });
             allow.stop(domain, error);
             await onCall?.(call);
             throw error;
@@ -374,26 +600,7 @@ export function jev({ apiKey, model = 'jev-latest', url = JEV_URL, onCall }: {
           await wait(pause, signal);
           continue;
         }
-        if (!reply.ok) return await fail(part, signal, call, reply.text, domain);
-        accepted = Math.max(accepted, call.size);
-        await onCall?.(call);
-        const answers = record(raw.answers);
-        return part.questions.map((q, index): [string, PickAnswer] => {
-          const answer = record(answers[`q${index}`]);
-          if (q.levels !== undefined) {
-            // A score answer's level probabilities arrive keyed "0"
-            // onward; the score field itself is never a substitute.
-            const raw = answer.probabilities;
-            const probabilities = Array.isArray(raw) ? raw
-              : typeof raw === 'object' && raw !== null
-                ? q.levels.map((_, level) => (raw as Record<string, unknown>)[String(level)])
-                : undefined;
-            return [q.key, probabilities !== undefined && levelDistribution(probabilities, q.levels.length)
-              ? { status: 'answered', probabilities: [...probabilities] }
-              : { status: 'missing' }];
-          }
-          return [q.key, probabilityAnswer(answer.noul)];
-        });
+        return { reply, raw, call, domain };
       } catch (error) {
         // A terminal failure ends the sends still waiting for allowance —
         // inside this batch's splits and inside other batches — with the
@@ -402,6 +609,73 @@ export function jev({ apiKey, model = 'jev-latest', url = JEV_URL, onCall }: {
         allow.stop(domain, error);
         throw error;
       }
+    }
+  };
+  const send = async (part: PickBatch, signal: AbortSignal): Promise<[string, PickAnswer][]> => {
+    const { reply, raw, call, domain } = await exchange(JSON.stringify(bodyOf(part, model)), part.questions.length, signal, part.stage);
+    try {
+      if (!reply.ok) return await fail(part, signal, call, reply.text, domain);
+      accepted = Math.max(accepted, call.size);
+      await onCall?.(call);
+      const answers = record(raw.answers);
+      return part.questions.map((q, index): [string, PickAnswer] => {
+        const answer = record(answers[`q${index}`]);
+        if (q.options !== undefined) {
+          // A Choice's probabilities arrive keyed by option; they are kept
+          // in the options' order.
+          const given = record(answer.probabilities);
+          const probabilities = q.options.map(([key]) => given[key]);
+          return [q.key, levelDistribution(probabilities, q.options.length)
+            ? { status: 'answered', probabilities: [...probabilities] } : { status: 'missing' }];
+        }
+        if (q.levels !== undefined) {
+          // A score answer's level probabilities arrive keyed "0"
+          // onward; the score field itself is never a substitute.
+          const raw = answer.probabilities;
+          const probabilities = Array.isArray(raw) ? raw
+            : typeof raw === 'object' && raw !== null
+              ? q.levels.map((_, level) => (raw as Record<string, unknown>)[String(level)])
+              : undefined;
+          return [q.key, probabilities !== undefined && levelDistribution(probabilities, q.levels.length)
+            ? { status: 'answered', probabilities: [...probabilities] }
+            : { status: 'missing' }];
+        }
+        return [q.key, probabilityAnswer(answer.noul)];
+      });
+    } catch (error) {
+      allow.stop(domain, error);
+      throw error;
+    }
+  };
+  // A list request: no size split here, since its caller sizes its
+  // windows inside `maxChars`. A request refused as too large (400 or
+  // 413) fails alone, so the caller can ask again in halves; any other
+  // rejection stops every send still waiting under the same signal.
+  const list: PickListDecide = async (request, signal) => {
+    const { reply, raw, call, domain } = await exchange(JSON.stringify(jevListRequest(request, model)),
+      Object.keys(request.questions).length, signal);
+    try {
+      if (!reply.ok) {
+        const error = new DecisionServiceError(call.status, reply.text, saidIn(reply.text));
+        if (call.status !== 400 && call.status !== 413) allow.stop(domain, error);
+        await onCall?.(call);
+        throw error;
+      }
+      await onCall?.(call);
+      const answers = record(raw.answers);
+      return Object.fromEntries(Object.entries(request.questions).map(([name, question]): [string, PickListAnswer] => {
+        const answer = record(answers[name]);
+        if (question.type === 'noul') return [name, probabilityAnswer(answer.noul) as PickListAnswer];
+        const given = record(answer.probabilities);
+        const probabilities = Object.fromEntries(question.options.map((key) => [key, given[key]]));
+        const values = Object.values(probabilities);
+        return [name, values.every((p) => typeof p === 'number' && Number.isFinite(p) && p >= 0 && p <= 1)
+          && Math.abs((values as number[]).reduce((sum, p) => sum + p, 0) - 1) <= 0.01
+          ? { status: 'answered', probabilities: probabilities as Record<string, number> } : { status: 'missing' }];
+      }));
+    } catch (error) {
+      if (!(error instanceof DecisionServiceError && (error.status === 400 || error.status === 413))) allow.stop(domain, error);
+      throw error;
     }
   };
   const fail = async (part: PickBatch, signal: AbortSignal, call: {
@@ -427,7 +701,7 @@ export function jev({ apiKey, model = 'jev-latest', url = JEV_URL, onCall }: {
         // half has settled and reported, so its request is never
         // missing from the record.
         for (const half of await Promise.allSettled([groups.slice(0, middle), groups.slice(middle)]
-          .map((half) => send({ task: part.task, questions: half.flat() }, signal)))) {
+          .map((half) => send({ ...part, questions: half.flat() }, signal)))) {
           if (half.status === 'rejected') throw half.reason;
           halves.push(...half.value);
         }
@@ -441,14 +715,14 @@ export function jev({ apiKey, model = 'jev-latest', url = JEV_URL, onCall }: {
         await onCall?.(call);
         const points = [...current];
         const half = points.slice(0, Math.floor(points.length / 2)).join('');
-        const answers = await send({ task: part.task,
+        const answers = await send({ ...part,
           questions: part.questions.map((q) => ({ ...q, text: half })) }, signal);
         return answers.map(([key, answer]): [string, PickAnswer] => [key, { ...answer, truncated: true }]);
       }
     }
     // A terminal reply stops the sends still queued before the record
     // write below can let one through; the failure thrown is its own.
-    const error = new Error(`Model request failed: HTTP ${call.status}. ${replyText}`);
+    const error = new DecisionServiceError(call.status, replyText, saidIn(replyText));
     allow.stop(domain, error);
     await onCall?.(call);
     throw error;
@@ -465,7 +739,7 @@ export function jev({ apiKey, model = 'jev-latest', url = JEV_URL, onCall }: {
     }
     return Object.fromEntries(answered);
   };
-  return Object.assign(decide, { deciderId });
+  return Object.assign(decide, { deciderId, list: Object.assign(list, { maxChars: JEV_STATE_CHARS }) });
 }
 
 /** Create a decision function using OpenAI's named predicate answers. */
@@ -478,11 +752,12 @@ export function openAIDecisions({ apiKey, model = 'gpt-6-luna' }: {
     const raw = await post('https://api.openai.com/v1/decisions', apiKey, {
       model,
       input: batch.task,
-      questions: batch.questions.map((q, index) => ({
+      // A Choice has no predicate form: it goes unasked and comes back missing.
+      questions: batch.questions.flatMap((q, index) => q.options !== undefined ? [] : [{
         type: 'predicate',
         name: `q${index}`,
         instructions: `${q.question}\nTrue: ${q.trueCriterion}\nFalse: ${q.falseCriterion}\nEvidence: ${itemText(q)}`,
-      })),
+      }]),
     }, signal);
     const rawAnswers = record(raw).answers;
     const answers = new Map((Array.isArray(rawAnswers) ? rawAnswers : []).map((value: unknown) => {
@@ -531,6 +806,8 @@ export function localDecisions({ url, model, apiKey }: {
   const decide: PickDecide = async (batch, signal) => {
     const answers: Record<string, PickAnswer> = {};
     for (const q of batch.questions) {
+      // A Choice has no yes/no form: it goes unasked and comes back missing.
+      if (q.options !== undefined) { answers[q.key] = { status: 'missing' }; continue; }
       answers[q.key] = yesProbability(await post(url, apiKey, {
         model,
         messages: [

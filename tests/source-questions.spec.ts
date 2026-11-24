@@ -3,12 +3,13 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { historySource, pick, pickFromSources, type CandidateSource, type CandidateSourceKind, type MemoryCandidate, type PickCascade, type PickCriterion, type PickDecide } from '@curatejs/core';
+import { historySource, pick, pickFromSources, rankedRead, type CandidateSource, type CandidateSourceKind, type MemoryCandidate, type PickCascade, type PickCriterion, type PickDecide } from '@curatejs/core';
 import { chat, chatSettings } from '@curatejs/chat';
 import { git as gitSource, gitSettings } from '@curatejs/git';
 import { knowledgeBase, markdownSettings, rules, rulesSettings } from '@curatejs/markdown';
+import { modesOf } from './fixtures/modes.js';
 
-const uncutPick = { everyRanked: true, everyScored: true, rare: false } as const;
+const uncutPick = { everyRanked: true, everyScored: true } as const;
 
 const criterion = (key: string): PickCriterion => ({
   key, instructions: `Check ${key}?`, true: `${key} applies.`, false: `${key} does not apply.`,
@@ -23,7 +24,8 @@ const answers = (probability: number): PickDecide => async ({ questions }) => Ob
   questions.map((q) => [q.key, { status: 'answered', probability }]),
 );
 const source = (id: string, kind?: CandidateSourceKind, questions?: PickCascade): CandidateSource => ({
-  id: `reader-${id}`, kind, role: 'reference', ...(questions === undefined ? {} : { questions }),
+  id: `reader-${id}`, kind, role: 'reference',
+  ...(questions === undefined ? {} : { mode: { name: id, questions, read: rankedRead } }),
   read: async () => ({ status: 'read', complete: true, candidates: [candidate('same', { sourceId: id })] }),
 });
 
@@ -45,7 +47,7 @@ describe('questions chosen by source', () => {
     ], { ...uncutPick,
       task: 'Choose evidence',
       sourceKinds: { conversation: 'chat', commits: 'git-history', notes: 'markdown' },
-      questionsBySource: { conversation: chat, commits: history, notes: fitted('note-evidence') },
+      modesBySource: modesOf({ conversation: chat, commits: history, notes: fitted('note-evidence') }),
       decide: async ({ questions }) => {
         calls.push(questions.map((q) => `${q.sourceId}:${q.questionKey}`));
         expect(new Set(questions.map((q) => q.key)).size).toBe(questions.length);
@@ -74,7 +76,7 @@ describe('questions chosen by source', () => {
       candidate('c', { sourceId: 'unknown' }),
     ], { ...uncutPick,
       task: 'Choose evidence',
-      questionsBySource: { conversation: fitted('chat'), notes: fitted('shared'), unknown: fitted('shared') },
+      modesBySource: modesOf({ conversation: fitted('chat'), notes: fitted('shared'), unknown: fitted('shared') }),
       sourceKinds: { conversation: 'chat', notes: 'markdown' },
       decide: async (batch, signal) => {
         calls.push(batch.questions.map((q) => `${q.sourceId}:${q.questionKey}`));
@@ -92,7 +94,7 @@ describe('questions chosen by source', () => {
   it('uses the ordinary question for a source without a set', async () => {
     const asked: (string | undefined)[] = [];
     const result = await pick([candidate('a', { sourceId: 'conversation' }), candidate('b')], { ...uncutPick,
-      task: 'Choose evidence', questionsBySource: { conversation: fitted('chat') },
+      task: 'Choose evidence', modesBySource: modesOf({ conversation: fitted('chat') }),
       sourceKinds: { conversation: 'chat', notes: 'markdown' },
       decide: async (batch, signal) => {
         asked.push(...batch.questions.map((q) => q.questionKey));
@@ -140,9 +142,9 @@ describe('questions chosen by source', () => {
 
   it('keeps shared questions and records each part\'s kind but no kind map without tag sets', async () => {
     const candidates = [candidate('a'), candidate('b')];
-    const original = await pick(candidates, { ...uncutPick, task: 'Choose evidence', questionsBySource: { notes: fitted('shared') }, decide: answers(0.9) });
+    const original = await pick(candidates, { ...uncutPick, task: 'Choose evidence', modesBySource: modesOf({ notes: fitted('shared') }), decide: answers(0.9) });
     const disabled = await pick(candidates, { ...uncutPick,
-      task: 'Choose evidence', questionsBySource: { notes: fitted('shared') }, decide: answers(0.9),
+      task: 'Choose evidence', modesBySource: modesOf({ notes: fitted('shared') }), decide: answers(0.9),
       sourceKinds: { notes: 'chat' },
     });
     expect(disabled.selected).toEqual(original.selected);
@@ -167,7 +169,7 @@ describe('rule questions', () => {
       candidate('applies', { role: 'rule' }), candidate('irrelevant', { role: 'rule' }), candidate('reference'),
     ], { ...uncutPick,
       task: 'Choose evidence',
-      questionsBySource: { notes: fitted('evidence') }, ruleBarBySource: { notes: 0.8 },
+      modesBySource: modesOf({ notes: fitted('evidence') }), ruleBarBySource: { notes: 0.8 },
       decide: async ({ questions }) => {
         asked.push(...questions.map((q) => `${q.id}:${q.questionKey ?? q.role}`));
         return Object.fromEntries(questions.map((q) => [q.key, {
@@ -214,10 +216,10 @@ describe('built-in source routing', () => {
       git('add', 'notes', 'policy');
       git('-c', 'commit.gpgsign=false', 'commit', '-m', 'Document input validation');
       const readers = [
-        historySource({ reader: chat({ paths: [join(directory, 'transcripts')], providers: ['codex'] }), ...chatSettings, labels: false, questions: fitted('chat') }),
-        historySource({ reader: gitSource(directory), ...gitSettings, questions: fitted('history') }),
-        historySource({ reader: knowledgeBase(join(directory, 'notes')), ...markdownSettings, questions: fitted('note') }),
-        historySource({ reader: rules(join(directory, 'policy')), ...rulesSettings, questions: fitted('note') }),
+        historySource({ reader: chat({ paths: [join(directory, 'transcripts')], providers: ['codex'] }), ...chatSettings, labels: false, mode: { ...chatSettings.mode!, questions: fitted('chat') } }),
+        historySource({ reader: gitSource(directory), ...gitSettings, mode: { ...gitSettings.mode!, questions: fitted('history') } }),
+        historySource({ reader: knowledgeBase(join(directory, 'notes')), ...markdownSettings, mode: { ...markdownSettings.mode!, questions: fitted('note') } }),
+        historySource({ reader: rules(join(directory, 'policy')), ...rulesSettings, mode: { ...rulesSettings.mode!, questions: fitted('note') } }),
       ];
       const kindFor = new Map(readers.map((reader) => [reader.id, reader.kind]));
       const asked: string[] = [];
@@ -251,7 +253,7 @@ describe('limits across source questions', () => {
   it('shares candidate and batch limits across fitted assessment calls', async () => {
     const calls: number[] = [];
     const result = await pick([candidate('a'), candidate('b'), candidate('c')], { ...uncutPick,
-      task: 'Choose evidence', questionsBySource: { notes: { bias: 0, questions: [{ ...criterion('one'), weight: 1 }, { ...criterion('two'), weight: 1 }] } }, limits: { maxCandidates: 2, maxPerBatch: 1, maxBatches: 3 },
+      task: 'Choose evidence', modesBySource: modesOf({ notes: { bias: 0, questions: [{ ...criterion('one'), weight: 1 }, { ...criterion('two'), weight: 1 }] } }), limits: { maxCandidates: 2, maxPerBatch: 1, maxBatches: 3 },
       decide: async (batch, signal) => { calls.push(batch.questions.length); return answers(0.5)(batch, signal); },
     });
     expect(calls).toEqual([1, 1, 1]);
@@ -264,9 +266,9 @@ describe('limits across source questions', () => {
     let calls = 0;
     const result = await pick([candidate('a')], { ...uncutPick,
       task: 'Choose evidence',
-      questionsBySource: {
+      modesBySource: modesOf({
         notes: { bias: 0, questions: [{ ...criterion('one'), weight: 1 }, { ...criterion('two'), weight: 1 }] },
-      },
+      }),
       limits: { maxPerBatch: 1, maxBatches: 1 },
       decide: async (batch, signal) => { calls++; return answers(0.5)(batch, signal); },
     });
@@ -278,7 +280,7 @@ describe('limits across source questions', () => {
     const controller = new AbortController();
     let calls = 0;
     const result = await pick([candidate('a')], { ...uncutPick,
-      task: 'Choose evidence', questionsBySource: { notes: { bias: 0, first: 'one', band: [0.1, 0.9], firstOnly: { bias: 0, weight: 1 }, questions: [{ ...criterion('one'), weight: 1 }, { ...criterion('two'), weight: 1 }] } }, signal: controller.signal,
+      task: 'Choose evidence', modesBySource: modesOf({ notes: { bias: 0, first: 'one', band: [0.1, 0.9], firstOnly: { bias: 0, weight: 1 }, questions: [{ ...criterion('one'), weight: 1 }, { ...criterion('two'), weight: 1 }] } }), signal: controller.signal,
       decide: async (batch, signal) => { calls++; controller.abort(); return answers(0.5)(batch, signal); },
     });
     expect(calls).toBe(1);
@@ -292,7 +294,7 @@ describe('limits across source questions', () => {
     try {
       let calls = 0;
       const result = await pick([candidate('a')], { ...uncutPick,
-        task: 'Choose evidence', questionsBySource: { notes: { bias: 0, first: 'one', band: [0.1, 0.9], firstOnly: { bias: 0, weight: 1 }, questions: [{ ...criterion('one'), weight: 1 }, { ...criterion('two'), weight: 1 }] } }, limits: { maxElapsedMs: 10 },
+        task: 'Choose evidence', modesBySource: modesOf({ notes: { bias: 0, first: 'one', band: [0.1, 0.9], firstOnly: { bias: 0, weight: 1 }, questions: [{ ...criterion('one'), weight: 1 }, { ...criterion('two'), weight: 1 }] } }), limits: { maxElapsedMs: 10 },
         decide: async (batch, signal) => { calls++; now += 10; return answers(0.5)(batch, signal); },
       });
       expect(calls).toBe(1);
@@ -302,7 +304,7 @@ describe('limits across source questions', () => {
 
   it('records a fitted question that never finishes before the time limit', async () => {
     const result = await pick([candidate('a')], { ...uncutPick,
-      task: 'Choose evidence', questionsBySource: { notes: { bias: 0, first: 'one', band: [0.1, 0.9], firstOnly: { bias: 0, weight: 1 }, questions: [{ ...criterion('one'), weight: 1 }, { ...criterion('two'), weight: 1 }] } }, limits: { maxElapsedMs: 20 },
+      task: 'Choose evidence', modesBySource: modesOf({ notes: { bias: 0, first: 'one', band: [0.1, 0.9], firstOnly: { bias: 0, weight: 1 }, questions: [{ ...criterion('one'), weight: 1 }, { ...criterion('two'), weight: 1 }] } }), limits: { maxElapsedMs: 20 },
       // The second question's call never answers on its own: the
       // elapsed limit's signal settles it.
       decide: async (batch, signal) => batch.questions[0]?.questionKey === 'two'
@@ -324,7 +326,7 @@ describe('configuration validation', () => {
   it('validates a source\'s set even when no candidate comes from that source', async () => {
     let calls = 0;
     await expect(pick([candidate('a')], { ...uncutPick,
-      task: 'Choose evidence', questionsBySource: { chat: { bias: 0, questions: [] } },
+      task: 'Choose evidence', modesBySource: modesOf({ chat: { bias: 0, questions: [] } }),
       decide: async () => { calls++; return {}; },
     })).rejects.toThrow('question set');
     expect(calls).toBe(0);

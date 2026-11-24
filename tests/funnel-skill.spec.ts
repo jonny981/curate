@@ -23,7 +23,7 @@ it('keeps a meaning-only match through the skill cache and embeds source search 
     return texts.map((text) => /retire|archive|message|backlog|correspondence/i.test(text) ? [1, 0] : [0, 1]);
   };
   const searches = { markdown: { keywords: ['archive message'], answers: ['discard old correspondence'] } };
-  const source = { ...knowledgeBase(folder), labelKinds: [], rare: false, names: false };
+  const source = { ...knowledgeBase(folder), labelKinds: [], names: false };
   const evaluate = async (meaning: boolean) => {
     const asked = new Set<string>();
     const calls: { task: string; meaningLane: boolean }[] = [];
@@ -62,7 +62,7 @@ it('keeps a meaning-only match through the skill cache and embeds source search 
 
 it('shows the complete text of a name match found after the cached reads', async () => {
   const text = `Ada decided to preserve the queue. ${'Detailed evidence. '.repeat(200)}`;
-  const source = { id: 'notes', kind: 'markdown', role: 'reference', names: true, rare: false, labelKinds: [],
+  const source = { id: 'notes', kind: 'markdown', role: 'reference', names: true, labelKinds: [],
     async read(request: { phraseLane?: boolean }) {
       return { status: 'read', complete: true, candidates: [{
         sourceId: 'notes', id: request.phraseLane ? 'name-match' : 'short-match', role: 'reference',

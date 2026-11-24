@@ -48,7 +48,8 @@ curate "What did we decide about retrying failed uploads, and why?"
 - **Expect to pay for each question.** The decision step is a paid service, at about $0.00002 for each part it rates. Curate rates parts from the top of its ranked list until the ratings go cold ([the rating stop](references/settings.md#the-rating-stop)). This cost is why you ask at most three questions.
 - **Run questions one after another.** Each one loads the local embedding model and updates the same index.
 - **Read standard error as well as the output.** It names sources that were missing, only partly read, or skipped as outside this project. It says when an `answerTokens` budget left out strong evidence, when no part was kept, and when the rating stopped with ranked parts unread. Report these to the person. It also says which model wrote the search lines; you needn't report that. If Curate has to build an index from scratch or embed a lot of history, it says so there with the time left: let it finish.
-- **Exit code 3 means setup, not an answer.** The message lists every requirement not met, with why Curate needs it and the fix. Run `curate check`, then walk the person through the missing lines as [Setup](#setup) describes. Report any other failure plainly, with its message.
+- **Exit code 3 means setup, not an answer.** The message lists every requirement not met, with why Curate needs it and the fix. Run `curate check`, then walk the person through the missing lines as [Setup](#setup) describes.
+- **Exit code 4 means the decision service refused the question, kept it waiting past a minute, or couldn't be reached.** Tell the person the message's first line: it says why and what to do. A question refused for no credit or for its key fails again until they act. Report any other failure plainly, with its message.
 
 ## Read the evidence
 
@@ -166,17 +167,20 @@ A question from `~/work/app` then reads the app's own history, with only its las
 
 ### Source settings
 
-The source types are `claude-code`, `codex`, `git` and `markdown`.
+The source types are `claude-code`, `codex`, `git`, `markdown` and `whatsapp`. A `whatsapp` source is the `_chat.txt` file of WhatsApp's "Export chat".
 
 | Setting | Sources that take it | What it does |
 | --- | --- | --- |
 | `path` | All; optional for `claude-code` and `codex` | Where the source is. A chat entry with no `path` sets how this project's own transcripts are read, in place of the defaults, and takes no `always` or `allowedCwd`. Outside a project it reads nothing |
 | `since` | All | How far back to read |
-| `exclude` | All | Paths to skip in that source |
+| `exclude` | All but `whatsapp` | Paths to skip in that source |
 | `always` | All with a `path` | `true` reads the source from inside any project |
 | `include` | `git` | Only commits that changed one of these paths |
-| `questions`, `bar` | `claude-code`, `codex` | The decision question set, and that source's own keep bar |
+| `questions` | `claude-code`, `codex`, `markdown` | The decision question set, by name |
+| `bar` | `claude-code`, `codex` | That source's own keep bar |
+| `levers` | `claude-code`, `codex`, `markdown` | Decision levers to switch on, each off by default |
 | `allowedCwd` | `codex` with a `path`, required | The folders whose sessions may be read |
+| `dates` | `whatsapp` | `"day-first"` or `"month-first"`, for an export whose dates don't show which comes first |
 
 `"related": [["~/work/app", "~/work/docs"]]` makes a question in either project also read the other's Claude Code transcripts and Codex sessions, never its commits or Markdown.
 
@@ -184,12 +188,13 @@ The source types are `claude-code`, `codex`, `git` and `markdown`.
 
 | Setting | Default | What it does |
 | --- | --- | --- |
-| `stopWhenCold` | On: a `floor` of 0.1 and a `share` of 0.2 | Stops rating once the ratings go cold, and only after a part has rated at or above the floor. `{ floor, share }` sets the levels, and `false` rates everything |
+| `stopWhenCold` | On: a `floor` of 0.1 and a `share` of 0.2, judged over windows of 150 rated parts, or each request alone when only Markdown notes are read that way | Stops rating once the ratings go cold, and only after a part has rated at or above the floor. `{ floor, share, parts }` sets the levels and the window, and `false` rates everything. A `claude-code` or `codex` source on its default questions stops on its own read's rule |
 | `answerTokens` | No budget | A budget for the output, in estimated tokens |
 | `sentenceCutoff` | Off | Rates each sentence and keeps those at or above this number |
 | `searchModel` | Haiku if the Claude login works, else Luna | `haiku` or `luna`: which model writes the search lines |
+| `person` | None | Your name as your questions word it, for sources whose levers mark your own messages |
 
-The others are `scope`, `threshold`, `feed`, `userFirst`, `recentFirst`, `records`, `readAudit` and `maxInFlight`.
+The others are `scope`, `threshold`, `feed`, `recentFirst`, `records`, `readAudit`, `maxInFlight`, `requestsPerSecond` and `tokensPerSecond`.
 
 The [settings reference](references/settings.md) explains every setting and what Curate does with it. Read it when you change a setting or need to explain a result.
 

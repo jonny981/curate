@@ -5,10 +5,10 @@ import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
 
 import {
-  curate, pickFromSources, type CandidateSource, type MemoryCandidate, type PickBatch, type PickOptions, type PickRecordEntry,
+  curate, pickFromSources, rankedRead, type CandidateSource, type MemoryCandidate, type PickBatch, type PickOptions, type PickRecordEntry,
 } from '@curatejs/core';
 import { poolSizing } from '@curatejs/core/internal';
-import { chat } from '@curatejs/chat';
+import { agentTranscripts, chat } from '@curatejs/chat';
 import { git } from '@curatejs/git';
 import { knowledgeBase } from '@curatejs/markdown';
 
@@ -85,15 +85,16 @@ const sparse = async (batch: PickBatch) => Object.fromEntries(Object.entries(awa
   .map(([key, answer]) => [key, { ...answer, probability: answer.probability > 0.97 ? 0.9 : 0.01 }]));
 
 async function call(paths: Awaited<ReturnType<typeof histories>>, cache: string, task: string, sizing: boolean, filtered = false,
-  options: Partial<PickOptions> = {}) {
+  options: Partial<PickOptions> = {}, chatMode = { ...agentTranscripts, read: rankedRead }) {
   poolSizing.on = sizing;
   const index = { directory: cache };
   const sources: CandidateSource[] = [
-    chat({ providers: ['codex'], paths: [paths.chats], index, ...(filtered ? { since: '2026-10-05' } : {}) }),
+    chat({ providers: ['codex'], paths: [paths.chats], index, mode: chatMode, ...(filtered ? { since: '2026-10-05' } : {}) }),
     knowledgeBase(paths.notes, { index, ...(filtered ? { since: '2026-01-01', exclude: ['n2.md'] } : {}) }),
     git(paths.repo, { index }), knowledgeBase(paths.apart, { index }),
   // The folder no lane keeps a part of has its own bar, which the record names.
-  ].map((source, at) => ({ ...source, labelKinds: [], rare: false, ...(at === 3 ? { bar: 0.42 } : {}) }));
+  ].map((source, at) => ({ ...source, labelKinds: [],
+    ...(at === 3 ? { mode: { ...(source.mode ?? { name: 'apart', read: rankedRead }), bar: 0.42 } } : {}) }));
   const picked = await pickFromSources(sources, {
     task, taskDate: '2026-10-28T12:00:00Z', searchLines: ['ledger sync lease', 'replica quorum'], meaning: { embed },
   }, { task, decide: options.stopWhenCold === undefined ? decide : sparse, cache: false, ...options });
@@ -105,7 +106,8 @@ it.each<[string, boolean, Partial<PickOptions>]>([
   ['', false, {}],
   [' with a look-back and an exclusion', true, {}],
   // The order decides where the stop falls and what a feed size keeps.
-  [' with the stop set', false, { stopWhenCold: {}, limits: { maxPerBatch: 8 } }],
+  // Windows of eight rated parts, one request's worth, so the stop fires inside this small history.
+  [' with the stop set', false, { stopWhenCold: { parts: 8 }, limits: { maxPerBatch: 8 } }],
   [' with a feed size', false, { feed: { order: 'combsum', size: 300 } }],
 ])('keeps the selected parts, their order, the text and every record entry a lane kept when the fused order only sizes the history%s', { timeout: 120_000 }, async (_name, filtered, options) => {
   const paths = await histories();
@@ -148,6 +150,24 @@ it.each<[string, boolean, Partial<PickOptions>]>([
   expect(sized.picked.record.candidates.length).toBeLessThan(merged.picked.record.candidates.length);
 });
 
+it('keeps every part of a history whose mode has a read of its own', { timeout: 120_000 }, async () => {
+  // The conversation read walks each part's whole transcript, so the chat
+  // history is merged as before while the other sources are sized.
+  const paths = await histories();
+  const cache = await folder();
+  await call(paths, cache, task, false, false, {}, agentTranscripts);
+  const merged = await call(paths, cache, task, false, false, {}, agentTranscripts);
+  const sized = await call(paths, cache, task, true, false, {}, agentTranscripts);
+  expect(sized.picked.selected).toEqual(merged.picked.selected);
+  expect(sized.log).toBe(merged.log);
+  const chatEntries = (record: typeof merged.picked.record) => record.candidates.filter((entry) => entry.sourceId.startsWith('chat'));
+  expect(chatEntries(sized.picked.record)).toEqual(chatEntries(merged.picked.record));
+  expect(chatEntries(sized.picked.record).some((entry) => entry.poolOnly === true)).toBe(true);
+  const unheld = Object.entries(sized.picked.record.unheld!).filter(([, count]) => count > 0).map(([id]) => id);
+  expect(unheld.some((id) => id.startsWith('chat'))).toBe(false);
+  expect(unheld.some((id) => id.includes('apart'))).toBe(true);
+});
+
 it('keeps every part of the history in the record when the task names a period', { timeout: 120_000 }, async () => {
   // A part the period brings in that no lane kept is ordered among the
   // parts no lane kept, so the history is merged as before.
@@ -176,7 +196,7 @@ it.each([['', false], [', and scores meaning over the whole history for a reader
     ...Array.from({ length: 2 }, (_, at) => part('stand-in/apart', `r${at}`, `apart filler ${at}`))];
   const laneOnly = [part('stand-in', 'lane-only', 'quorum lease kept by a lane only'), part('stand-in/linked', 'q-lane', 'quorum lease linked lane')];
   let reads = 0;
-  const source: CandidateSource = { id: 'stand-in', role: 'reference', labelKinds: [], rare: false, bar: 0.3,
+  const source: CandidateSource = { id: 'stand-in', role: 'reference', labelKinds: [], mode: { name: 'stand-in', bar: 0.3, read: rankedRead },
     read: async (request) => (reads += 1) && request.wholeLanes === true ? { status: 'read', complete: true, candidates: pool }
       : { status: 'read', complete: true, laneCutApplied: true,
         candidates: [...pool, ...laneOnly].filter((candidate) => /quorum/.test(candidate.text) && /quorum/.test(request.task))

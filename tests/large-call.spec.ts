@@ -91,10 +91,13 @@ async function history(messages: number, kinds: readonly string[] = ['claude-cod
   vi.stubEnv('TMPDIR', at('tmp'));
   vi.stubEnv('XDG_CACHE_HOME', at('cache'));
   vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
-  // The first decision request rates its parts high and every later one low, so the rating stop ends the read early.
-  let requests = 0;
+  // The first decision request of each read rates its parts high and every
+  // later one low, so the rating stop ends the ranked read early, and the chat
+  // read, which reads the transcripts at the same time, ends on its own stop.
+  const requests = { chat: 0, ranked: 0 };
   vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => {
-    const noul = requests++ === 0 ? 0.8 : 0.01;
+    const read = /(claude-code|codex):/.test(String(init.body)) ? 'chat' : 'ranked';
+    const noul = requests[read]++ === 0 ? 0.8 : 0.01;
     return new Response(JSON.stringify({ usage: null,
       answers: Object.fromEntries(Object.keys(JSON.parse(String(init.body)).questions).map((key) => [key, { noul }])) }));
   }));
@@ -352,7 +355,7 @@ describe('a saved record', { timeout: 60_000 }, () => {
     const { sourcesFile, at } = await history(320, KINDS, { records: true });
     const { folder, record } = await call(['--sources', sourcesFile, TASK]);
     const files = await filesUnder(folder);
-    expect([...files.keys()].filter((name) => !/^(read-\d+\.json|record\.json|selection\.json|log\.md|searches-1\.(txt|jsonl|stderr))$/.test(name))).toEqual([]);
+    expect([...files.keys()].filter((name) => !/^(read-\d+\.json|record\.json|selection\.json|log\.md|kept\.json|searches-1\.(txt|jsonl|stderr))$/.test(name))).toEqual([]);
     expect(await readdir(at('tmp'))).toEqual([]);
 
     const kept: { sourceId: string; id: string; text: string }[] = JSON.parse(files.get('selection.json')!).selected;
@@ -379,9 +382,12 @@ describe('a saved record', { timeout: 60_000 }, () => {
     // The parts the rating stop left unread keep only their id and their
     // place in the fused order: per source, in that order, with a count.
     expect(ranked.some((part) => part.status === 'unassessed' && (part as { reason?: string }).reason === 'stopWhenCold')).toBe(false);
+    // A chat read's unread parts are kept the same way.
+    expect(ranked.some((part) => part.status === 'unassessed' && (part as { reason?: string }).reason === 'chatRead')).toBe(false);
     const unread: Record<string, { count: number; prefix: string; ids: string[]; places: number[] }> = record.pick.unread;
     const unreadCount = Object.values(unread).reduce((sum, list) => sum + list.count, 0);
-    expect(unreadCount).toBe(record.pick.pick.stopWhenCold.unread);
+    expect(unreadCount).toBe(record.pick.pick.stopWhenCold.unread
+      + Object.values(record.pick.pick.chatRead ?? {}).reduce((sum: number, read) => sum + (read as { unread: number }).unread, 0));
     expect(unreadCount).toBeGreaterThan(2500);
     const places = Object.values(unread).flatMap((list) => {
       expect(list.ids).toHaveLength(list.count);
@@ -392,8 +398,8 @@ describe('a saved record', { timeout: 60_000 }, () => {
     const chats = `chat:claude-code:${at('claude')}`;
     expect(unread[chats]!.ids.every((id) => `${unread[chats]!.prefix}${id}`.startsWith('claude-code:'))).toBe(true);
 
-    // What that costs: the kept text three times (log.md, selection.json
-    // and the layout's record in record.json), at most 2 KB for each part
+    // What that costs: the kept text four times (log.md, kept.json,
+    // selection.json and the layout's record in record.json), at most 2 KB for each part
     // listed in full (its entry in record.json and, for a kept part, its
     // metadata in selection.json and the layout's record; the ids here
     // name long temporary folders), at most 40 bytes for each unread part
@@ -402,7 +408,7 @@ describe('a saved record', { timeout: 60_000 }, () => {
     // question sets, decision requests).
     const size = [...files.values()].reduce((sum, text) => sum + Buffer.byteLength(text), 0);
     process.stdout.write(`RECORD-SIZE ${size} bytes (record.json ${Buffer.byteLength(files.get('record.json')!)}): ${ranked.length} parts in full, ${unreadCount} unread, ${record.reads.length} reads, ${Buffer.byteLength(keptText)} bytes of kept text\n`);
-    expect(size).toBeLessThan(3 * Buffer.byteLength(keptText) + 2000 * ranked.length + 40 * unreadCount + 2000 * record.reads.length + 150_000);
+    expect(size).toBeLessThan(4 * Buffer.byteLength(keptText) + 2000 * ranked.length + 40 * unreadCount + 2000 * record.reads.length + 150_000);
   });
 
   it('removes its copy of the Codex sessions when a call that keeps its record fails', async () => {

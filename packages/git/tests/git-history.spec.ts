@@ -483,7 +483,6 @@ describe('git', () => {
         task: 'work',
         everyRanked: true,
         everyScored: true,
-        rare: false,
         decide: async (batch) => Object.fromEntries(
           batch.questions.map((question) => [question.key, { status: 'answered' as const, probability: 0.9 }])),
       },
@@ -1131,7 +1130,7 @@ describe('a long commit message', () => {
     const directory = await history();
     const { long } = await shas(directory);
     const picked = await pickFromSources([gitSource(directory, { maxQuestionText: Infinity, index: false })], { task }, {
-      task, everyRanked: true, everyScored: true, rare: false,
+      task, everyRanked: true, everyScored: true,
       decide: async (batch) => Object.fromEntries(
         batch.questions.map((question) => [question.key, { status: 'answered' as const, probability: 0.9 }])),
     });

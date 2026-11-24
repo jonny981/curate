@@ -11,8 +11,9 @@ import {
   type PickCascade,
   type PickDecide,
 } from '../src/index.js';
+import { modesOf } from './fixtures/modes.js';
 
-const uncutPick = { everyRanked: true, everyScored: true, rare: false } as const;
+const uncutPick = { everyRanked: true, everyScored: true } as const;
 
 function candidate(overrides: Partial<MemoryCandidate> & Pick<MemoryCandidate, 'sourceId' | 'id'>): MemoryCandidate {
   return {
@@ -64,7 +65,7 @@ describe('pick', () => {
     expect(picked.selected.map((item) => item.id)).toEqual(['applies', 'does-not-apply', 'strong', 'weak', 'zero']);
     expect(picked.record.thresholds).toEqual({ linkedPathBar: 0.4 });
     expect(picked.record.levers.sources).toEqual({
-      notes: { labels: false, rare: false, bar: 0 }, rules: { labels: false, rare: false, bar: 0, ruleBar: 0 } });
+      notes: { labels: false, bar: 0 }, rules: { labels: false, bar: 0, ruleBar: 0 } });
     const result = await curate('Recall evidence', picked);
     expect(result.log).toContain('text of notes/weak');
     expect(result.log).toContain('text of notes/zero');
@@ -265,7 +266,8 @@ describe('pick', () => {
     );
 
     expect(failure).toBeInstanceOf(PickError);
-    expect(failure.message).toBe('The decide call failed for candidates alpha, beta: engine down');
+    expect(failure.message).toBe('The decide call failed. engine down\n'
+      + '2 parts of the refused request were not decided; record.decideError lists the ids.');
     expect(failure.record.decideError).toEqual({ candidates: ['alpha', 'beta'], message: 'engine down' });
     expect(failure.record.candidates.map((entry) => entry.status)).toEqual([
       'unanswered', 'unanswered', 'unanswered',
@@ -323,7 +325,7 @@ describe('pick', () => {
     const failure = await pick([
       candidate({ sourceId: 'notes', id: 'a', signals: { score: 2 } }),
       candidate({ sourceId: 'notes', id: 'b', signals: { score: 1 } }),
-    ], { ...uncutPick, task: 't', decide, questionsBySource: { notes: fitted } }).then(
+    ], { ...uncutPick, task: 't', decide, modesBySource: modesOf({ notes: fitted }) }).then(
       () => { throw new Error('the pick resolved'); },
       (reason: unknown) => reason as PickError,
     );
@@ -480,7 +482,7 @@ describe('pick', () => {
     // date; the task's 6 characters leave room for a + b (92) inside the
     // bound of 110, but even c's first question (115) would pass it.
     const result = await pick(candidates, { ...uncutPick,
-      task: 'fix it', decide, questionsBySource: { notes: countingCascade }, limits: { maxBatchChars: 110 },
+      task: 'fix it', decide, modesBySource: modesOf({ notes: countingCascade }), limits: { maxBatchChars: 110 },
     });
 
     expect(calls.map((batch) => batch.questions.map((question) => `${question.id}:${question.questionKey}`)))
@@ -502,7 +504,7 @@ describe('pick', () => {
     // 1 + 22 + 33 = 56 reaches the bound exactly. Counting the item per
     // question (1 + 66 = 67) would split its questions across batches.
     await pick([candidate({ sourceId: 'notes', id: 'a', title: 'a', text: 'x'.repeat(20) })], { ...uncutPick,
-      task: 't', decide, questionsBySource: { notes: fitted }, limits: { maxBatchChars: 56 },
+      task: 't', decide, modesBySource: modesOf({ notes: fitted }), limits: { maxBatchChars: 56 },
     });
 
     expect(calls.map((batch) => batch.questions.map((question) => question.questionKey)))
@@ -521,7 +523,7 @@ describe('pick', () => {
     // itself; the small items count 14 + 11 = 25 each and share a batch.
     const result = await pick(candidates, { ...uncutPick,
       task: 't', decide,
-      questionsBySource: { notes: { bias: 0, questions: [countingCascade.questions[0]!] } },
+      modesBySource: modesOf({ notes: { bias: 0, questions: [countingCascade.questions[0]!] } }),
       limits: { maxBatchChars: 51 },
     });
 
@@ -544,7 +546,7 @@ describe('pick', () => {
     const counted = stubDecide((batch) => allAnswered(batch, 0.9));
     await pick(candidates, { ...uncutPick,
       task: 't', decide: counted.decide,
-      questionsBySource: { notes: { bias: 0, questions: [countingCascade.questions[0]!] } },
+      modesBySource: modesOf({ notes: { bias: 0, questions: [countingCascade.questions[0]!] } }),
       limits: { maxPerBatch: 3, maxBatchChars: 1000 },
     });
     expect(counted.calls.map((batch) => batch.questions.map((question) => question.id)))
@@ -555,7 +557,7 @@ describe('pick', () => {
     const sized = stubDecide((batch) => allAnswered(batch, 0.9));
     await pick(candidates, { ...uncutPick,
       task: 't', decide: sized.decide,
-      questionsBySource: { notes: { bias: 0, questions: [countingCascade.questions[0]!] } },
+      modesBySource: modesOf({ notes: { bias: 0, questions: [countingCascade.questions[0]!] } }),
       limits: { maxPerBatch: 150, maxBatchChars: 71 },
     });
     expect(sized.calls.map((batch) => batch.questions.map((question) => question.id)))

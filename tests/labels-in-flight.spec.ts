@@ -8,7 +8,7 @@ import { historySource, pickFromSources, type PickBatch, type PickDecide } from 
 import { decide, fixtureSource, parts, task } from './fixtures/source-settings.js';
 
 const pool = parts('chat', 'chatword');
-const source = () => historySource({ reader: fixtureSource('chat', pool, { rare: false }), ...chatSettings });
+const source = () => historySource({ reader: fixtureSource('chat', pool), ...chatSettings });
 
 let folder: string;
 beforeEach(() => { folder = mkdtempSync(join(tmpdir(), 'curate-labels-in-flight-')); });

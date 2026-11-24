@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   LABEL_KINDS, laneBend, memory, pick, pickFromSources,
-  type CandidateSource, type MemoryCandidate, type PickAnswer, type PickBatch, type PickCache, type PickDecide,
+  type CandidateSource, type MemoryCandidate, type PickAnswer, type PickBatch, type PickDecide,
 } from '../src/index.js';
 
 function candidate(overrides: Partial<MemoryCandidate> & Pick<MemoryCandidate, 'sourceId' | 'id'>): MemoryCandidate {
@@ -116,18 +116,14 @@ describe('the fused order', () => {
     expect(crowded.record.unheld).toEqual({ notes: depth });
   });
 
-  it('never sends past the feed size, however the rare-word round or the label lane reaches', async () => {
+  it('never sends past the feed size, however the label lane reaches', async () => {
     const depth = 40;
     const parts = ranked('notes', depth + 20);
-    // A word only the top part and one below the depth share: the rare
-    // round pulls it, but the depth is already spent, so it is not asked.
     const below = `p${depth + 10}`;
-    parts[0] = { ...parts[0]!, text: `${parts[0]!.text} zebra` };
-    parts[depth + 10] = { ...parts[depth + 10]!, text: `${parts[depth + 10]!.text} zebra` };
     const { decide, calls } = stubDecide((batch) => allAnswered(batch, 0.9));
 
     const picked = await pick(parts, {
-      task: 'recall the plan', decide, feed: size(depth), rare: { share: 0.05 },
+      task: 'recall the plan', decide, feed: size(depth),
       labels: { directory: store(), deciderId: 'test-decider' },
       labelKindsBySource: { notes: LABEL_KINDS },
     });
@@ -135,95 +131,8 @@ describe('the fused order', () => {
     expect(askedPartIds(calls)).toEqual(inside);
     expect(picked.record.pick!.sent).toBe(depth);
     expect(picked.record.pick!.questions).toBe(depth);
-    // The round pulled the part on the shared rare word; the size's room was spent.
-    const rare = picked.record.pick!.rare!;
-    expect(rare.pulled.map((entry) => entry.id)).toContain(below);
-    expect(rare.asked).toBe(0);
-    expect(rare.added).toBe(0);
     expect(picked.record.candidates.find((entry) => entry.id === below))
       .toMatchObject({ status: 'unassessed', reason: 'feed' });
-  });
-
-  it('the rare-word round finds no free room when shared texts answered the feed size', async () => {
-    const depth = 40;
-    const parts = ranked('notes', depth + 20);
-    // Every part past the first shares one text, so two port sends
-    // answer the whole short list; counting sends alone would leave
-    // the size looking nearly empty.
-    for (let i = 1; i < depth; i += 1) {
-      parts[i] = { ...parts[i]!, text: 'one shared text' };
-    }
-    // A word only the top part and one below the size share: the
-    // round pulls it, but the size is already spent.
-    const below = `p${depth + 10}`;
-    parts[0] = { ...parts[0]!, text: `${parts[0]!.text} zebra` };
-    parts[depth + 10] = { ...parts[depth + 10]!, text: `${parts[depth + 10]!.text} zebra` };
-    const { decide, calls } = stubDecide((batch) => allAnswered(batch, 0.9));
-
-    const picked = await pick(parts, {
-      task: 'recall the plan', decide, feed: size(depth), rare: { share: 0.05 } });
-    expect(picked.record.pick!.sent).toBe(2);
-    expect(askedPartIds(calls)).toEqual(new Set(['p0', 'p1']));
-    const rare = picked.record.pick!.rare!;
-    expect(rare.pulled.map((entry) => entry.id)).toContain(below);
-    expect(rare.asked).toBe(0);
-    expect(rare.added).toBe(0);
-    expect(picked.record.candidates.find((entry) => entry.id === below))
-      .toMatchObject({ status: 'unassessed', reason: 'feed' });
-  });
-
-  it('the rare-word round finds no free room when the cache answered the feed size', async () => {
-    const depth = 40;
-    const parts = ranked('notes', depth + 20);
-    const below = `p${depth + 10}`;
-    parts[0] = { ...parts[0]!, text: `${parts[0]!.text} zebra` };
-    parts[depth + 10] = { ...parts[depth + 10]!, text: `${parts[depth + 10]!.text} zebra` };
-    const backing = new Map<string, unknown>();
-    const cache: PickCache = {
-      store: {
-        get: async (key) => backing.get(key),
-        set: async (key, value) => { backing.set(key, value); },
-      },
-      deciderId: 'test-decider',
-    };
-
-    // The first call fills the store with the size already spent, so
-    // the round asked nothing.
-    const first = stubDecide((batch) => allAnswered(batch, 0.9));
-    const filled = await pick(parts, {
-      task: 'recall the plan', decide: first.decide, feed: size(depth), rare: { share: 0.05 }, cache });
-    expect(filled.record.pick!.sent).toBe(depth);
-
-    // The repeat call's first pass answers wholly from the store:
-    // counting port sends alone would leave the size looking empty.
-    const second = stubDecide((batch) => allAnswered(batch, 0.9));
-    const picked = await pick(parts, {
-      task: 'recall the plan', decide: second.decide, feed: size(depth), rare: { share: 0.05 }, cache });
-    expect(second.calls).toHaveLength(0);
-    expect(picked.record.pick!.sent).toBe(0);
-    const rare = picked.record.pick!.rare!;
-    expect(rare.pulled.map((entry) => entry.id)).toContain(below);
-    expect(rare.asked).toBe(0);
-    expect(rare.added).toBe(0);
-    expect(picked.record.candidates.find((entry) => entry.id === below))
-      .toMatchObject({ status: 'unassessed', reason: 'feed' });
-  });
-
-  it('the rare-word round asks a pool member no lane ranked', async () => {
-    const parts = ranked('notes', 100);
-    parts[0] = { ...parts[0]!, text: `${parts[0]!.text} zephyr` };
-    // A pool member no lane ranked, sharing a rare word with the
-    // selected top part: the round pulls it and asks it.
-    const pooled = candidate({ sourceId: 'notes', id: 'pool', poolOnly: true, text: 'a zephyr note' });
-    const { decide, calls } = stubDecide((batch) => allAnswered(batch, 0.9));
-
-    const picked = await pick([...parts, pooled], {
-      task: 'recall the plan', decide, rare: { share: 0.5 } });
-    expect(picked.record.pick!.sent).toBe(101);
-    expect(askedPartIds(calls)).toContain('pool');
-    expect(picked.record.pick!.rare).toMatchObject({ asked: 1, added: 1 });
-    expect(picked.record.candidates.find((entry) => entry.id === 'pool'))
-      .toMatchObject({ status: 'selected', asked: true });
   });
 
   it('the fused order decides who is in, not a part from each source in turn', async () => {

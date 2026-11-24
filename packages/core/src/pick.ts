@@ -11,8 +11,12 @@ import {
 } from './decisions.js';
 import { judgmentFacts, judgmentPopulation, modelScore, type JudgmentPopulation } from './judgments.js';
 import {
-  ANSWER_TYPES, classifyTask, ROUTE_QUESTIONS, routeOptions, type AnswerType, type RouteKey, type RouteOption,
+  ANSWER_TYPES, classifyTask, ROUTE_QUESTIONS, routeOptions, type AnswerType, type PickWanted, type RouteKey, type RouteOption,
 } from './task.js';
+import { conversationRead, rankedRead, type Mode, type ModeRead, type ModeReadResult } from './mode.js';
+import { keepKind, messageKey, messageKind, messagePieces, messageText, transcriptMessages } from './chat-read.js';
+import { CHOICE_CANDIDATES, choosePerFact, ROLE_QUESTION } from './choice.js';
+import type { EmbeddingFunction } from './meaning.js';
 import type { LeverStates } from './levers.js';
 import type { StoredIndexReport } from './stored-index.js';
 import { WRITTEN_QUESTION_KEYS, checkCascade, checkPickOptions, checkWriteQuestions, findTaskNames } from './options.js';
@@ -42,12 +46,11 @@ export interface MemoryCandidate {
   readonly searchRanks?: readonly (number | null)[];
   /** True when the source supplies this part from its uncut pool only:
    *  it is not a member of any keyword lane, so lane eligibility skips
-   *  it and only the label lane or the rare-word round can admit it to
-   *  the decide step. With the gate off and a decide-feed dial on —
-   *  `everyRanked: { c }` or `rare` — it only counts toward the
-   *  history size and stays out of the feed and the record, unless the
-   *  rare-word round pulls it in; with no dial it records 'unassessed'
-   *  like any part no lane held. pickFromSources sets it for parts the
+   *  it and only the label lane can admit it to the decide step. With
+   *  the gate off and `everyRanked: { c }` it only counts toward the
+   *  history size and stays out of the feed and the record; without a
+   *  c it records 'unassessed' like any part no lane held. Under the
+   *  fused order the order positions it. pickFromSources sets it for parts the
    *  lanes or the read limit dropped; a direct pick caller may set it
    *  the same way. A part that also carries `dateWindow` is admitted to
    *  the decide step as a lane member is. */
@@ -57,15 +60,45 @@ export interface MemoryCandidate {
    *  members, with `poolOnly`, and the pick admits it to the decide step
    *  as it admits a lane member, unless `taskPeriod` is false. */
   readonly dateWindow?: 'task-period';
+  /** Who wrote the part, where its reader knows: 'person' for the
+   *  person's own words; 'unmarked' where the history does not say. */
+  readonly author?: 'person' | 'agent' | 'tool' | 'system' | 'unmarked';
+  /** Where the part sits: its container (a session, thread, note or
+   *  commit) and its position in it, compared number by number. The
+   *  conversation read reads a source's parts with one container as one
+   *  sequence; a part with no place is a container of its own. */
+  readonly place?: { readonly container: string; readonly at: readonly number[] };
+  /** The names that open a line of this part's text as `<name>: ` to say
+   *  who said it, as a messaging reader writes its turns; the layout
+   *  keeps the name on a speaker's first kept sentence. */
+  readonly speakers?: readonly string[];
+  /** The turn this part is a piece of, where its reader read a note
+   *  written as a conversation (its `place` is then the section and
+   *  `[position, 1, piece]`): who speaks the turn, the note it is in, its
+   *  number there, how many pieces it was cut into, its whole text, and
+   *  the whole turns before and after it with their first pieces' ids.
+   *  A mode that judges whole messages judges the whole turn; one that
+   *  writes hard facts writes these. */
+  readonly turn?: {
+    readonly speaker: string;
+    readonly session: string;
+    readonly position: number;
+    readonly pieces: number;
+    readonly text: string;
+    readonly before?: { readonly id: string; readonly text: string };
+    readonly after?: { readonly id: string; readonly text: string };
+  };
   /** Transcript metadata; separate from the candidate's reference role. */
   readonly chat?: {
     readonly provider: 'claude-code' | 'codex';
     readonly sessionId: string;
     readonly role: 'user' | 'assistant' | 'tool-call' | 'tool-result';
-    /** Who wrote the part, where the transcript says; 'unmarked' where it does not. */
-    readonly author?: 'person' | 'agent' | 'tool' | 'system' | 'unmarked';
     /** The agent's name or id, when the transcript gives one. */
     readonly authorName?: string;
+    /** What part of an agent's work it is, when the reader marks one: a
+     *  subagent's brief (`prompt`), its last message (`report`) or a
+     *  compaction summary (`summary`). */
+    readonly unit?: 'prompt' | 'report' | 'summary';
   };
   /** Repository paths this candidate changed. For a commit: the files in
    *  its diff, not paths the text mentions. */
@@ -120,9 +153,18 @@ export interface PickQuestion {
   readonly falseCriterion?: string;
   /** A levelled question's ordered levels, lowest first. */
   readonly levels?: readonly string[];
+  /** A Choice's options, each a key and what it means, in the order
+   *  sent; its answer's probabilities follow this order. */
+  readonly options?: readonly (readonly [string, string])[];
   /** Render the item as a date and its text only, keeping its id,
    *  title and other identifying fields out of the model request. */
   readonly anonymous?: boolean;
+  /** Who wrote the part, where its reader marked it: the part's `author`. */
+  readonly author?: MemoryCandidate['author'];
+  /** Fields code knows for certain about the item, written into its
+   *  record in the decision state after its own fields, such as the
+   *  request a subagent's report answered (`asked`). Absent: none. */
+  readonly facts?: Readonly<Record<string, unknown>>;
   readonly sourceId: string;
   readonly id: string;
   readonly title: string;
@@ -132,6 +174,25 @@ export interface PickQuestion {
 export interface PickBatch {
   readonly task: string;
   readonly questions: readonly PickQuestion[];
+  /** The facts the answer needs (`PickOptions.needed`), present on a
+   *  request whose parts' mode lists them. */
+  readonly needed?: readonly string[];
+  /** The person's name as tasks word it (`PickOptions.person`), present
+   *  on a request whose parts' mode writes hard facts. */
+  readonly person?: string;
+  /** How many answers the task wants (`PickOptions.wanted`), present on
+   *  a request whose parts' mode writes hard facts. */
+  readonly wanted?: PickWanted;
+  /** `'keep'` on a request of a mode's second stage (`Mode.keep`),
+   *  asked after the read over the parts it kept. */
+  readonly stage?: 'keep';
+  /** `'text'` on a request of a mode that asks in the plain-text form
+   *  (`Mode.request: 'text'`) and carries no field the JSON state is
+   *  for: the task and each item as text. */
+  readonly form?: 'text';
+  /** True on a request of a mode that sends each item alone
+   *  (`itemsPerRequest: 1`): its one item is judged on its own. */
+  readonly alone?: true;
 }
 
 export type PickAnswer =
@@ -155,6 +216,42 @@ export type PickDecide = ((
 ) => Promise<Record<string, PickAnswer>>) & {
   /** Stable model and prompt identity for stored labels. */
   readonly deciderId?: string;
+  /** Answers a request about a list of items at once, for the steps that
+   *  compare parts (`choicePerFact`). `jev()` supplies one. */
+  readonly list?: PickListDecide;
+};
+
+/** An item as a decision request shows it: a part's fields, without a
+ *  question. */
+export type PickItem = Pick<PickQuestion, 'sourceId' | 'id' | 'title' | 'text' | 'role' | 'date' | 'kind' | 'author' | 'anonymous' | 'facts'>;
+
+/** A question about a list request's items as a whole: a Choice among
+ *  them, its options the item keys in the order given, or a yes/no. A
+ *  `described` Choice writes each item into its own option, and its
+ *  items are not put in the state for it. */
+export type PickListQuestion =
+  | { readonly type: 'choice'; readonly question: string; readonly options: readonly string[]; readonly described?: boolean }
+  | { readonly type: 'noul'; readonly question: string; readonly trueCriterion: string; readonly falseCriterion: string };
+
+/** One request about a list of items at once: the task, the fields its
+ *  state carries beside it, and each item under its own key, in order. */
+export interface PickListRequest extends Pick<PickBatch, 'task' | 'needed' | 'person' | 'wanted'> {
+  readonly items: readonly (readonly [string, PickItem])[];
+  readonly questions: Readonly<Record<string, PickListQuestion>>;
+}
+
+/** A list question's answer: a Choice's probability for each option,
+ *  adding to one, or a yes/no's probability. */
+export type PickListAnswer =
+  | { readonly status: 'answered'; readonly probabilities: Readonly<Record<string, number>> }
+  | { readonly status: 'answered'; readonly probability: number }
+  | { readonly status: 'refused' | 'missing' | 'error'; readonly detail?: string };
+
+/** Answers a list request, each answer under its question's name.
+ *  `maxChars` is the most characters its state plus its longest question
+ *  may hold, when the service has such a limit. */
+export type PickListDecide = ((request: PickListRequest, signal: AbortSignal) => Promise<Record<string, PickListAnswer>>) & {
+  readonly maxChars?: number;
 };
 
 /** Label storage settings. Each source supplies its own kind questions;
@@ -179,7 +276,9 @@ export interface PickLabels {
 }
 
 /** The decision cache's settings, off by default. It stores each
- *  answered decide response once per part question and reuses it on a
+ *  answered decide response once per part question, and the answer an
+ *  identical text with the same question and author shared, and reuses
+ *  it on a
  *  later pick whose key matches: the key covers the task text, the
  *  question-set version, the rendered question's wording and criteria
  *  and its `questionKey` and `tagSet` when it carries them, the
@@ -226,10 +325,11 @@ export interface PickLimits {
   readonly maxCandidates?: number;
   readonly maxElapsedMs?: number;
   readonly maxQuestionText?: number;
-  /** The most decision requests of one round in flight at once: the
-   *  independent batches of a round dispatch together up to this many
-   *  and the rest go out in dispatch order as earlier replies land.
-   *  Omitted means every batch of a round goes out at once. */
+  /** The most decision requests of the call in flight at once, across
+   *  every read running at the same time: the independent batches of a
+   *  round dispatch together up to this many and the rest go out in
+   *  dispatch order as earlier replies land. Omitted means every batch
+   *  of a round goes out at once. */
   readonly maxInFlight?: number;
 }
 
@@ -258,10 +358,22 @@ export type PickEntryStatus =
       /** Present when a typed question's `keepAt`, not the bar, kept
        *  the part: that typed question's key. */
       readonly keptBy?: string;
+      /** The read's own score, when a second stage (`Mode.keep`) judged
+       *  the part again and `probability` is that stage's. */
+      readonly readProbability?: number;
+      /** Why a second stage kept the part: its own rating at its bar, or
+       *  as part of an exchange (`Mode.keep.exchange`). */
+      readonly keptAs?: 'rating' | 'exchange';
+      /** The messages (each by its first piece) whose exchange this part
+       *  belongs to, when the second stage keeps exchanges. */
+      readonly exchange?: readonly { readonly sourceId: string; readonly id: string }[];
     }
   | {
       readonly status: 'rejected';
       readonly probability: number;
+      /** The read's own score, when a second stage judged the part and
+       *  left it out under its bar. */
+      readonly readProbability?: number;
       /** True when every answer behind the verdict came from the
        *  decision cache. */
       readonly reused?: boolean;
@@ -281,10 +393,13 @@ export type PickEntryStatus =
        *  label gate on, a reference part the
        *  keyword lanes never held whose stored or answered labels
        *  cleared no needed kind. A part a lane limit cut or a stop
-       *  left unlabelled keeps that reason instead. */
-      readonly reason: 'limits' | 'time' | 'cancelled' | 'document' | 'error' | 'gate' | 'pick' | 'stopWhenCold' | 'feed';
-      /** For a part the rating stop left unread: its place in the fused
-       *  order the decide step read, counted from 0. */
+       *  left unlabelled keeps that reason instead. 'chatRead': a chat
+       *  part of the order that the chat read stopped before reaching
+       *  (see `pick.chatRead`). */
+      readonly reason: 'limits' | 'time' | 'cancelled' | 'document' | 'error' | 'gate' | 'pick' | 'stopWhenCold' | 'feed'
+        | 'chatRead';
+      /** For a part the rating stop or a chat read left unread: its place
+       *  in the order the decide step read, counted from 0. */
       readonly place?: number };
 
 export type PickRecordEntry = {
@@ -297,7 +412,7 @@ export type PickRecordEntry = {
   readonly searchRanks?: readonly (number | null)[];
   /** Echoed from the input: the part came from the uncut pool and holds
    *  no lane membership, so only the label lane, the task's period or
-   *  the rare-word round could admit it. */
+   *  the fused order could admit it. */
   readonly poolOnly?: boolean;
   /** Echoed from the input: the part reached the pick through the
    *  task's period, not a lane. */
@@ -336,6 +451,16 @@ export type PickRecordEntry = {
     readonly value?: string;
     readonly answers: readonly ({ readonly key: string; readonly reused?: boolean } & PickAnswer)[];
   }>>;
+  /** Present on a kept part a Choice per needed fact picked: for each
+   *  fact that picked it, the fact's place in `needed`, the round that
+   *  picked it from 1, and the Choice's probability for it. */
+  readonly chosen?: readonly { readonly fact: number; readonly round: number; readonly probability: number }[];
+  /** Present on a kept part when its mode asked what each kept part is
+   *  doing: the option chosen and every option's probability. */
+  readonly doing?: { readonly choice: string; readonly probabilities: Readonly<Record<string, number>> };
+  /** Present on an agent's proposal the person's next message approved:
+   *  that message's part id, marked by code from the two roles. */
+  readonly approvedBy?: string;
 } & PickEntryStatus;
 
 export interface PickCriterion {
@@ -421,20 +546,37 @@ export interface PickCascade {
     /** Added when the task has at least one name. */
     readonly hasNames: number;
   };
+  /** A question asked once per fact the call gives in `needed`, of
+   *  each reference part, in the same request as the set's other
+   *  questions: `{fact}` in its wording and criteria is replaced, and its
+   *  key, followed by the fact's place in the list from 1, keys each
+   *  answer. `highest` × logit(the highest answer across the facts),
+   *  clamped to 0.0001 to 0.9999 first, joins the score. A call with no
+   *  needed facts asks it of no part and adds nothing. */
+  readonly facts?: {
+    readonly question: PickCriterion;
+    readonly highest: number;
+  };
   /** A fitted combining model: the answers and the code facts Curate
    *  computes per part score through its weights instead of the
    *  per-question weights. A set carrying one selects no first, band,
-   *  firstOnly, typed, written or named machinery, and only its set
-   *  may hold levelled questions. */
+   *  firstOnly, typed, written, named or person machinery, and only its
+   *  set may hold levelled questions. */
   readonly model?: PickCascadeModel;
   /** Render each item as a date and its text only: the model never
    *  sees the part's id, title or other identifying fields. */
   readonly anonymousItems?: boolean;
+  /** How the answers make the score. Unset, the weighted logits above.
+   *  `'highest'`: the highest probability among the answers to the
+   *  set's questions and its needed-fact question, so a part is kept
+   *  when it states the answer or any one fact the answer needs; the
+   *  weights are not read. */
+  readonly combine?: 'highest';
 }
 
 /** What one setting did in one pick, for one source. */
 export interface PickSettingEffect {
-  /** The setting's name as a caller writes it: 'labels', 'rare', 'bar', 'ruleBar', 'searchLines',
+  /** The setting's name as a caller writes it: 'labels', 'bar', 'ruleBar', 'searchLines',
    *  'searchPhrases', 'meaning', 'names', 'wholeLanes', 'linkedPathBar', 'everyScored', 'everyRanked', 'typed',
    *  'taskPeriod', 'written', 'named', 'decay', 'feed' or 'stopWhenCold'.
    *  'alwaysOnSkipped' is no setting: it reports the always-on files a rule read skipped. */
@@ -607,12 +749,7 @@ export interface PickRecord {
    *  `c` is the supplied top-k coefficient, present only when the cut
    *  ran; candidates the cut dropped record 'unassessed' with reason
    *  'pick'. Rules never count toward N or the keep count and are
-   *  never cut.
-   *  `rare` is present when the rare-word round ran: the share and bar
-   *  it used, the rare words the parts that cleared the selection bar
-   *  contributed, the parts those words pulled in, and how many of them
-   *  the decide step was asked about and how many joined the
-   *  selection. */
+   *  never cut. */
   readonly pick?: {
     readonly n: number;
     /** The parts the decide port was asked at least one task question
@@ -629,48 +766,68 @@ export interface PickRecord {
      *  was cut in, the size given (absent when none was), and how many
      *  ranked reference parts the size left unjudged. */
     readonly feed?: { readonly order: 'combsum'; readonly size?: number; readonly unjudged: number };
-    /** Present when the rating stop read the fused order: the floor
-     *  and share it tested with, the waves of decision requests the
-     *  read sent, the batches of the order it rated, the parts of the
+    /** Present when the rating stop read the fused order: the floor,
+     *  share and window size it tested with, the waves of decision
+     *  requests the read sent, the windows of rated parts it judged, the parts of the
      *  order it rated, the parts of the order it never rated, the rated
      *  parts at or above their keep bar, the rated parts at or above the
      *  floor, and what ended the read: 'order' when it reached the order's end, 'cold'
      *  when the ratings went cold, or the stopping dial that ended it
      *  first ('limits', 'time', 'cancelled', 'error'). `cold` is
-     *  present when the ratings went cold: the batch, counted from 1
+     *  present when the ratings went cold: the window, counted from 1
      *  down the order, whose best rating failed a test, that best
-     *  rating, the best rating of every batch before it, and the test
-     *  it failed. The rest of that batch's wave was already sent, so
-     *  `batches` can pass `cold.batch` by the rest of one wave. */
+     *  rating, the best rating of every window before it, and the test
+     *  it failed. The rest of that window's wave was already sent and
+     *  rated, and is kept as usual. */
     readonly stopWhenCold?: {
       readonly floor: number;
       readonly share: number;
+      /** Rated parts judged at a time, or 'request': each request's alone. */
+      readonly parts: number | 'request';
       readonly waves: number;
-      readonly batches: number;
+      readonly windows: number;
       readonly rated: number;
       readonly unread: number;
       readonly kept: number;
       readonly atFloor: number;
       readonly ended: 'order' | 'cold' | 'limits' | 'time' | 'cancelled' | 'error';
       readonly cold?: {
-        readonly batch: number;
+        readonly window: number;
         readonly best: number;
         readonly bestBefore: number;
         readonly under: 'floor' | 'share';
       };
     };
     readonly ranking: 'keyword' | 'fusion';
-    readonly rare?: {
-      readonly share: number;
-      readonly bar: number;
-      /** Each source the round ran on, by source id: its reference
-       *  count N, which sets its bound, and the rare words its selected
-       *  parts contributed. */
-      readonly sources: Readonly<Record<string, { readonly n: number; readonly words: readonly string[] }>>;
-      readonly pulled: readonly { readonly sourceId: string; readonly id: string }[];
-      readonly asked: number;
-      readonly added: number;
-    };
+    /** Present when the chat read ran: on the fused order, when it held
+     *  parts of a source whose mode reads with a `conversationRead()`
+     *  (coding-agent transcripts). The read rates the person's own parts in the
+     *  keyword lanes' ranking, 112 a request, with rings of neighbours
+     *  around each warm one, then the rest of the order the same way. It stops after a request that adds at most
+     *  0.3 times the most new warm parts an earlier request added, then
+     *  opens the topic segments that hold a warm person part or one of
+     *  each search lane's top 10 parts and walks out from their warm
+     *  parts, the walks of every segment advancing a ring a round
+     *  together. Warm means rated at least 0.1 times the best rating the
+     *  read has seen. `requests` counts the requests read before the
+     *  stop, `segments` the segments opened, `units` the units of agent
+     *  work (a subagent's prompt or report) with a part answered, opened
+     *  after them, `rated` the parts a request of this pick answered for
+     *  it, `reused` those whose decision came from the decision store,
+     *  `unread` the chat parts of the order it never reached,
+     *  and `ended` what ended it: 'fall', 'order' when the order ran out
+     *  first, or the stopping dial. Each conversation read of the call
+     *  has its own entry, under the name of the mode it read, or the
+     *  names joined by ' + ' when modes of several names share it. */
+    readonly chatRead?: Readonly<Record<string, {
+      readonly requests: number;
+      readonly segments: number;
+      readonly units: number;
+      readonly rated: number;
+      readonly reused: number;
+      readonly unread: number;
+      readonly ended: 'fall' | 'order' | 'limits' | 'time' | 'cancelled' | 'error';
+    }>>;
   };
   /** The tag sets every kept reference answered, when supplied. */
   readonly tags?: readonly PickTagSet[];
@@ -680,6 +837,42 @@ export interface PickRecord {
    *  applied to, counted from this pick alone. A setting that was off
    *  has no entry. */
   readonly effects: readonly PickSettingEffect[];
+  /** A mode's second stage (`Mode.keep`), when one ran: the items it
+   *  asked (whole messages or parts), the requests it sent, and per
+   *  source the parts it kept and left out and the bar it kept at;
+   *  `requests` counts this stage's requests alone. */
+  readonly keep?: {
+    readonly asked: number;
+    readonly requests: number;
+    readonly unanswered: number;
+    readonly sources: Readonly<Record<string, { readonly kept: number; readonly dropped: number; readonly bar: number;
+      /** Parts kept as part of an exchange, not on their own rating. */
+      readonly byExchange?: number }>>;
+  };
+  /** Present when a mode compared its kept parts for each needed fact:
+   *  the candidates a fact, each fact's picks in order (the item's id,
+   *  the round, the Choice's probability), every candidate ranked (the
+   *  picks, then the rest by the probability the last Choice they were in
+   *  gave them) and why its loop ended, the rounds and the list requests
+   *  sent. `skipped` says why no Choice was asked (no needed facts, or a
+   *  stop); `error` holds a failed request's message, and the text then
+   *  keeps its order. */
+  readonly choicePerFact?: {
+    readonly candidates: number;
+    readonly facts: readonly {
+      readonly fact: string;
+      readonly ended: 'empty' | 'enough';
+      readonly picks: readonly { readonly id: string; readonly round: number; readonly probability: number }[];
+      readonly ranked: readonly { readonly id: string; readonly probability: number }[];
+    }[];
+    readonly rounds: number;
+    readonly requests: number;
+    /** Present when the sufficiency question was on: its bar, and its
+     *  answer after each round. */
+    readonly enough?: { readonly bar: number; readonly answers: readonly number[] };
+    readonly skipped?: string;
+    readonly error?: string;
+  };
 }
 
 export interface PickResult {
@@ -711,11 +904,38 @@ export interface PickOptions {
   readonly ranking?: Partial<Record<MemoryKind, Readonly<Record<string, number>>>>;
   readonly task: string;
   readonly decide: PickDecide;
-  /** The decision questions asked of each source's reference parts, by
-   *  source ID. A source without a set asks the built-in question for
-   *  the part's kind; rule parts keep their applicability question.
-   *  pickFromSources fills these from each source's `questions`. */
-  readonly questionsBySource?: Readonly<Record<string, PickCascade>>;
+  /** Each source's mode, by source ID: the decision questions asked
+   *  of its reference parts, the bar they are kept at, and how the
+   *  decide step reads them on the fused order. A source without a mode
+   *  asks the built-in question for the part's kind, keeps at 0.0146
+   *  and takes the ranked read; rule parts keep their applicability
+   *  question and the ranked read. pickFromSources fills these from
+   *  each source's `mode`. */
+  readonly modesBySource?: Readonly<Record<string, Mode>>;
+  /** The search texts each source reads, by source ID, the task first:
+   *  a conversation read ranks the units of agent work against them.
+   *  pickFromSources fills a source left out with the call's task and
+   *  search lines. */
+  readonly queriesBySource?: Readonly<Record<string, readonly string[]>>;
+  /** The call's local embedder, for the units' meaning ranking.
+   *  pickFromSources fills it from the request's meaning lanes. */
+  readonly embed?: EmbeddingFunction;
+  /** The facts a complete answer needs, as the caller's writer split the
+   *  task. A request of parts whose mode sets `needed` carries them in
+   *  its decision state beside the task; parts of every other mode go in
+   *  requests of their own, without them. Empty or absent: no request
+   *  carries them. */
+  readonly needed?: readonly string[];
+  /** The person's name as tasks word it, such as 'Ana': the person whose
+   *  own words a transcript marks `author: 'person'`. A request of parts
+   *  whose mode writes hard facts carries it in its state as `person`.
+   *  Absent: no request carries it. */
+  readonly person?: string;
+  /** How many answers the task wants, as the caller's writer judged
+   *  from its wording: 'one decision' or 'everything said'. A request of
+   *  parts whose mode writes hard facts carries it in its state as
+   *  `wanted`. Absent: no request carries it. */
+  readonly wanted?: PickWanted;
   /** Source identities mapped to kinds; pickFromSources fills these from source.kind. */
   readonly sourceKinds?: Readonly<Record<string, CandidateSourceKind>>;
   /** Put these top ranked hits first if they pass the threshold. */
@@ -811,9 +1031,8 @@ export interface PickOptions {
    *  received, the history. Through pickFromSources the read carries
    *  the source's full uncut pool, so lane cuts and read limits do not
    *  shrink it; a pool member counts toward N but reaches the feed only
-   *  through the label gate or the rare-word round, and with the gate
-   *  off it stays out of the record unless the rare-word round pulls it
-   *  in. Rules pass through uncounted and uncut. Off caps how many
+   *  through the label gate, and with the gate off it stays out of the
+   *  record. Rules pass through uncounted and uncut. Off caps how many
    *  parts are decided, so decision work grows sublinearly with the
    *  history's size instead of with the whole ranking. `c` must be a
    *  positive finite number, checked before any decide call. The
@@ -829,12 +1048,18 @@ export interface PickOptions {
    *  lane is one `searchRanks` index across every source) and its
    *  position in the history's own best-similarity ranking; the task's
    *  period and the label lane are members of the order too. With the
-   *  stop set (`{}` takes both defaults), the decide step reads the
+   *  stop set (`{}` takes every default), the decide step reads the
    *  order in the request-sized batches the limits form, two batches a
-   *  wave, and after each wave checks the wave's batches in order: the
-   *  read stops at the first batch whose best decision score is under
-   *  `floor` (default 0.1), or under `share` (default 0.2) times the
-   *  best score of every batch before it. It never stops before the
+   *  wave, and judges the rated parts in windows of `parts` (default
+   *  150), in order: the read stops at the first window whose best
+   *  decision score is under `floor` (default 0.1), or under `share`
+   *  (default 0.2) times the best score of every window before it. A
+   *  window is a count of parts, not a request: a request holds fewer
+   *  parts when they are long (about ten of a coding agent's), and a
+   *  stop judged per request then ended reads after a few dozen parts.
+   *  150 is the most parts one request carried when the floor and share
+   *  were measured, so a window passes wherever every request inside it
+   *  would have passed. It never stops before the
    *  read has kept a reference part on the bar the selection keeps it
    *  at, whatever sets that bar, and rated one at or above `floor`, so
    *  a question the history holds nothing for, and a history whose
@@ -844,7 +1069,7 @@ export interface PickOptions {
    *  the stop is never asked by the read and records 'unassessed' with
    *  reason 'stopWhenCold'. A higher share stops sooner and spends
    *  less; a lower one reads further and finds more. The floor is both
-   *  the level a batch's best score must reach to keep the read going
+   *  the level a window's best score must reach to keep the read going
    *  and the level some part must reach before the stop may fire, so a
    *  higher floor can also make a read longer: it reads on until some
    *  part scores at or above it, to the end of the order if none does.
@@ -856,12 +1081,17 @@ export interface PickOptions {
    *  kept 98.5%, 95.2% and 100% of the evidence they found. On the
    *  published LoCoMo and LongMemEval runs they cost about 5 to 12 of
    *  LoCoMo's 1,540 right answers and stayed inside the noise on
-   *  LongMemEval, for $0.0012 and $0.0067 saved a question. */
+   *  LongMemEval, for $0.0012 and $0.0067 saved a question. A chat
+   *  source scored with the agent question set is not read this way:
+   *  the chat read reads it (see `pick.chatRead`), and that read's own
+   *  stop decides, with the same wait for a kept part. */
   readonly stopWhenCold?: false | {
-    /** Stop when a batch's best decision score is under this. */
+    /** Stop when a window's best decision score is under this. */
     readonly floor?: number;
-    /** Or under this share of the best score of every batch before it. */
+    /** Or under this share of the best score of every window before it. */
     readonly share?: number;
+    /** How many rated parts one window holds: a whole number, 1 or more. */
+    readonly parts?: number;
   };
   /** Off unless set. Which reference parts of the fused order the
    *  decide step is asked about, and how many.
@@ -882,8 +1112,7 @@ export interface PickOptions {
    *  `feed` with `everyRanked` throws a TypeError before any read. */
   readonly feed?: { readonly order: 'combsum'; readonly size?: number };
   /** The decision-score bars for every source at once, in place of
-   *  each source's own `bar` (`barBySource`). Unset, each source's bar
-   *  applies. Keep every scored part with true. `{ bar }` cuts references
+   *  each mode's own `bar`. Unset, each source's mode's bar applies. Keep every scored part with true. `{ bar }` cuts references
    *  the decision model scored below that flat decision bar;
    *  `{ bySize }` cuts below a bar that rises with the
    *  answered-reference count, as [count, bar] points in size order —
@@ -897,37 +1126,6 @@ export interface PickOptions {
     readonly bar?: number;
     readonly bySize?: readonly (readonly [number, number])[];
   };
-  /** The rare-word round: a second, narrow pass after
-   *  the selection pass, run within each enabled source on its own. The
-   *  words of a source's parts that cleared the selection bar are kept
-   *  to the rare ones, rare meaning a document frequency over that
-   *  source's reference parts of at most `share` × N, N that source's
-   *  reference count (default 5/850, the count of 5 fitted on an
-   *  850-part history). On a source under 340 parts the default share
-   *  can pull nothing: a word a part shares appears in at least 2
-   *  parts, and 5/850 × N stays below 2. Every unselected part of that
-   *  source sharing one of its rare words is
-   *  pulled in, pool members included: one never asked goes through
-   *  the decide step, one already decided reuses its score, and a part
-   *  scoring at or above `bar` joins the selection. Under the rating
-   *  stop the round reads the parts it asks in fused order, two batches
-   *  at a time, with a best score of its own, and ends when they go
-   *  cold. `bar` is a second,
-   *  lower bar than the selection bar (default 0.0146); the seeds keep
-   *  their source's own bar. `true` runs the defaults on every source,
-   *  an object supplies them. Omit it to use rareBySource, or false to
-   *  disable every source. The record's `pick.rare` lists each source's
-   *  N and rare words, the parts pulled in, and how many were asked and
-   *  added. */
-  readonly rare?: boolean | { readonly share?: number; readonly bar?: number };
-  /** Reader defaults keyed by source ID; omitted sources are off.
-   *  pickFromSources supplies these. An explicit rare option overrides them. */
-  readonly rareBySource?: Readonly<Record<string, boolean>>;
-  /** Each source's decision-score bar for its reference parts, by
-   *  source ID: a part scored at or above it is kept. Omitted sources
-   *  use 0.0146. pickFromSources supplies these from each source's
-   *  `bar`; `everyScored` overrides them. */
-  readonly barBySource?: Readonly<Record<string, number>>;
   /** Each source's bar for its rule parts, by source ID; omitted
    *  sources keep every scored rule. pickFromSources supplies these
    *  from each source's `ruleBar`. */
@@ -977,6 +1175,13 @@ export interface PickOptions {
  *  of 0.8 points of LoCoMo evidence. */
 const STOP_FLOOR = 0.1;
 const STOP_SHARE = 0.2;
+/** The rated parts the rating stop judges at a time when a call sets it
+ *  without `parts`: 150, `DEFAULT_MAX_PER_BATCH`, the most parts one
+ *  request carried when the floor and share were measured. On the saved
+ *  ratings of 23 coding-agent tasks, judging each request of about ten
+ *  long parts found 36 of the 103 known answer parts the ratings kept;
+ *  windows of 150 found 100. */
+const STOP_PARTS = 150;
 /** The batches the rating stop sends at once before it checks them.
  *  On the same saved ratings, two a wave read 3, 1 and 1 points more of
  *  LoCoMo's, DolphinBench's and BEAM's parts than one batch at a time,
@@ -1009,12 +1214,17 @@ const DEFAULT_BAR = 0.0146;
  *  pick itself shows full candidate text unless a caller supplies a cut. */
 export const DEFAULT_MAX_QUESTION_TEXT = 700;
 const DEFAULT_LINKED_PATH_BAR = 0.4;
-/** The rare-word round's defaults, fitted on the saved tuning half of a
- *  LongMemEval history: a word is rare when at most `share` × N parts
- *  contain it — the count of 5 measured on an 850-part history — and a
- *  pulled part joins the selection at or above `bar`. */
-const RARE_SHARE = 5 / 850;
-const RARE_BAR = 0.0146;
+/** How much of another message an item's record carries: the start of
+ *  the message it replies to and of the person's reply to it, of a
+ *  report's request, and a long message's opening, 1,000 characters. On
+ *  one person's coding-agent history, whole messages judged one a
+ *  request with these fields put 19 labelled answers in each fact's top
+ *  five on held tasks, against 14 without the replied-to and reply text
+ *  and 12 for the pieces' ranking. */
+const OPENING_CHARS = 1_000;
+/** The sufficiency question's bar by default: 0.7, the decision model's
+ *  maker's starting point for a clear yes. */
+const ENOUGH_BAR = 0.7;
 /** The bar `answerTypes: true` asks the answer types at. */
 const ANSWER_TYPE_BAR = 0.5;
 const TIMED_OUT = Symbol('timed out');
@@ -1094,7 +1304,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  *  date and text; an anonymous item's id and title never reach the
  *  model, so they count nothing. */
 function itemChars(question: PickQuestion): number {
-  return (question.anonymous === true ? 0 : question.id.length + question.title.length)
+  return (question.anonymous === true ? 0 : question.id.length + question.title.length
+    + (question.facts === undefined ? 0 : JSON.stringify(question.facts).length))
     + question.text.length
     + (question.date === undefined ? 0 : question.date.value.length + question.date.meaning.length);
 }
@@ -1103,7 +1314,7 @@ function itemChars(question: PickQuestion): number {
  *  wording and its true and false criteria or its levels. */
 function questionChars(question: PickQuestion): number {
   return question.question.length
-    + (question.levels ?? [question.trueCriterion ?? '', question.falseCriterion ?? '']).join('').length;
+    + (question.options?.flat() ?? question.levels ?? [question.trueCriterion ?? '', question.falseCriterion ?? '']).join('').length;
 }
 
 function takeCharacters(
@@ -1257,13 +1468,6 @@ interface EffectInput {
   readonly labelBar: (id: string) => number;
   readonly labels: ReadonlyMap<MemoryCandidate, PartLabels>;
   readonly labelKindsBySource: Readonly<Record<string, readonly LabelKind[]>>;
-  /** The rare words each source the round ran on contributed. */
-  readonly rareSeeds: ReadonlyMap<string, ReadonlySet<string>>;
-  readonly rareTaken: readonly MemoryCandidate[];
-  readonly rareAdded: ReadonlySet<MemoryCandidate>;
-  /** The pulled parts the round never asked, and why: past a feed
-   *  size's room, or below the round's own stop. */
-  readonly rareHeld: ReadonlyMap<MemoryCandidate, 'size' | 'cold'>;
   /** The parts the selection pass scored, and those it scored below their bar. */
   readonly scored: ReadonlySet<MemoryCandidate>;
   readonly belowBar: ReadonlySet<MemoryCandidate>;
@@ -1287,6 +1491,8 @@ interface EffectInput {
     readonly atFloor: number;
     readonly orderBySource: ReadonlyMap<string, number>;
     readonly ratedBySource: ReadonlyMap<string, number>;
+    /** The sources the chat read read, whose own stop decided. */
+    readonly chatSources: ReadonlySet<string>;
   } | undefined;
   readonly reads: Readonly<Record<string, PickSourceRead>>;
   /** `taskPeriod` was on, the period the task named, and which parts it brought in. */
@@ -1297,7 +1503,6 @@ interface EffectInput {
   readonly ruleBar: (id: string) => number;
   readonly everyScored: boolean;
   readonly linkedPathBar: number;
-  readonly rareBar: number;
   readonly topK: number | undefined;
   /** What ended the feed early: a feed cut, a stop, or both. */
   readonly ended: readonly string[];
@@ -1338,8 +1543,7 @@ const keptOf = (n: number) => `${n} of them ${n === 1 ? 'was' : 'were'} kept`;
  *  read when every lane held it past the cut, the label lane, and the
  *  task's period. A
  *  setting that opens a way in is credited with a kept part only when
- *  that was the part's only way in and neither the link nor the
- *  rare-word round kept it. */
+ *  that was the part's only way in and the link did not keep it. */
 function settingEffects(input: EffectInput): PickSettingEffect[] {
   const { statuses, reads } = input;
   const feed = new Set(input.feed);
@@ -1370,7 +1574,7 @@ function settingEffects(input: EffectInput): PickSettingEffect[] {
   };
   const credited = (candidate: MemoryCandidate) => {
     const status = statuses.get(candidate);
-    return status?.status === 'selected' && status.link === undefined && !input.rareAdded.has(candidate);
+    return status?.status === 'selected' && status.link === undefined;
   };
   // A setting's order changes the feed, so with the feed ended early it
   // may also have swapped which parts were decided.
@@ -1467,28 +1671,6 @@ function settingEffects(input: EffectInput): PickSettingEffect[] {
           : added > 0 ? `${head}; ${reached} ${through}, and ${keptOf(added)}.`
             : reason === undefined ? `${head}; ${reached} ${through}, but none of them were kept. It added no part.`
               : `${head}, but ${reason}, so labels added none. It added no part.` });
-    }
-
-    const seeds = input.rareSeeds.get(id);
-    if (seeds !== undefined) {
-      const pulled = input.rareTaken.filter((candidate) => candidate.sourceId === id);
-      const added = pulled.filter((candidate) => input.rareAdded.has(candidate)).length;
-      // A pulled part the round held out was never asked, however rare
-      // its words: a feed size's room ran out, or the round's own
-      // answers went cold first.
-      const held = (why: 'size' | 'cold') => pulled.filter((candidate) => input.rareHeld.get(candidate) === why
-        && input.statuses.get(candidate)?.status === 'unassessed').length;
-      const depthNote = [
-        ...(held('size') === 0 ? [] : [`; the feed size held ${count(held('size'))} of them out`]),
-        ...(held('cold') === 0 ? [] : [`; its ratings went cold with ${held('cold')} of them unasked`]),
-      ].join('');
-      effects.push({ setting: 'rare', source: id, actedOn: pulled.length, added, dropped: 0,
-        summary: added > 0
-          ? `rare on ${id}: pulled in ${count(pulled.length)} that share a rare word with a kept part, and ${keptOf(added)}${depthNote}.`
-          : `rare on ${id}: ${seeds.size === 0 ? 'no kept part had a word that is rare in this source'
-            : pulled.length === 0 ? 'no other part shared a rare word with a kept part'
-              : `pulled in ${count(pulled.length)}, but none answered at or above the rare bar ${input.rareBar}${depthNote}`
-          }, so the round added none. It added no part.` });
     }
 
     const references = own.filter((candidate) => candidate.role === 'reference');
@@ -1617,13 +1799,16 @@ function settingEffects(input: EffectInput): PickSettingEffect[] {
           : `feed on ${id}: ${cut} kept every one of ${count(ranked, 'ranked part')}, so it left 0 undecided.` });
     }
 
-    if (input.stopWhenCold !== undefined) {
+    if (input.stopWhenCold?.chatSources.has(id) === true) {
+      effects.push({ setting: 'stopWhenCold', source: id, actedOn: 0, added: 0, dropped: null,
+        summary: `stopWhenCold on ${id}: the chat read read this source's parts, and its own stop decided how far.` });
+    } else if (input.stopWhenCold !== undefined) {
       const { floor, share, cold, ended, kept, atFloor } = input.stopWhenCold;
       const order = input.stopWhenCold.orderBySource.get(id) ?? 0;
       const read = input.stopWhenCold.ratedBySource.get(id) ?? 0;
       const unread = order - read;
       const rating = (value: number) => Number(value.toFixed(3));
-      const went = cold === undefined ? '' : `the ratings went cold at batch ${cold.batch}, whose best rating ${rating(cold.best)} was under ${
+      const went = cold === undefined ? '' : `the ratings went cold at window ${cold.window}, whose best rating ${rating(cold.best)} was under ${
         cold.under === 'floor' ? `the floor ${floor}` : `${share} of the best before it, ${rating(cold.bestBefore)}`}`;
       const left = `${read} of ${count(order, 'part')} in the order and left ${unread} unread`;
       effects.push({ setting: 'stopWhenCold', source: id, actedOn: order, added: 0, dropped: null,
@@ -1713,7 +1898,47 @@ export async function pick(
       throw new TypeError('searchRanks needs nonnegative safe integers or null and at least one rank.');
     }
   }
-  for (const set of Object.values(options.questionsBySource ?? {})) checkCascade(set);
+  // Each mode's questions and bar, by source ID.
+  const modes: Readonly<Record<string, Mode>> = options.modesBySource ?? {};
+  const questionsBySource: Readonly<Record<string, PickCascade>> = Object.assign(Object.create(null), Object.fromEntries(
+    Object.entries(modes).flatMap(([id, mode]) => mode.questions === undefined ? [] : [[id, mode.questions]])));
+  // A bar per kind of task is read for the pick's `wanted`, and the
+  // lower of the two when it gives none.
+  const barBySource: Readonly<Record<string, number>> = Object.fromEntries(
+    Object.entries(modes).flatMap(([id, mode]) => mode.bar === undefined ? [] : [[id, typeof mode.bar === 'number' ? mode.bar
+      : options.wanted !== undefined ? mode.bar[options.wanted] : Math.min(mode.bar['one decision'], mode.bar['everything said'])]]));
+  for (const set of Object.values(questionsBySource)) checkCascade(set);
+  const modeFor = (sourceId: string) => Object.hasOwn(modes, sourceId) ? modes[sourceId] : undefined;
+  // A mode's second stage, and whether its requests are being built: the
+  // predicates below read the stage's own settings while it asks.
+  const keepOf = (sourceId: string) => modeFor(sourceId)?.keep;
+  let keeping = false;
+  const keepingFor = (candidate: MemoryCandidate) => keeping && candidate.role === 'reference' && keepOf(candidate.sourceId) !== undefined;
+  // A bar, or one per kind of task read for the pick's `wanted` and the lower of the two when it gives none.
+  const barValue = (bar: NonNullable<Mode['bar']>) => typeof bar === 'number' ? bar
+    : options.wanted !== undefined ? bar[options.wanted] : Math.min(bar['one decision'], bar['everything said']);
+  // The facts the answer needs, for the requests of parts whose mode lists them.
+  const needed = options.needed !== undefined && options.needed.length > 0 ? options.needed : undefined;
+  const carriesNeeded = (candidate: MemoryCandidate) => needed !== undefined
+    && (keepingFor(candidate) || modeFor(candidate.sourceId)?.needed === true);
+  if (Object.values(modes).some((mode) => mode.choicePerFact !== undefined && mode.choicePerFact !== false)
+    && typeof options.decide.list !== 'function') {
+    throw new TypeError('choicePerFact needs a decider that answers list requests, such as jev().');
+  }
+  // Hard facts: a part of a mode that writes them gets fields code knows,
+  // and its requests carry the call's person and wanted.
+  const factsFor = (candidate: MemoryCandidate) => candidate.role === 'reference'
+    && (keepingFor(candidate) ? keepOf(candidate.sourceId)!.hardFacts : modeFor(candidate.sourceId)?.hardFacts) === true;
+  // Whether either stage writes hard facts for this part.
+  const factsEither = (candidate: MemoryCandidate) => candidate.role === 'reference'
+    && (modeFor(candidate.sourceId)?.hardFacts === true || keepOf(candidate.sourceId)?.hardFacts === true);
+  // The fields a request of this part's carries in its state beside the
+  // task and its items.
+  const headerOf = (candidate: MemoryCandidate): Pick<PickBatch, 'needed' | 'person' | 'wanted'> => ({
+    ...(carriesNeeded(candidate) ? { needed: needed! } : {}),
+    ...(factsFor(candidate) && options.person !== undefined ? { person: options.person } : {}),
+    ...(factsFor(candidate) && options.wanted !== undefined ? { wanted: options.wanted } : {}),
+  });
   checkWriteQuestions(options);
   if (options.route !== undefined && options.route !== 'jev') {
     throw new TypeError(`route must be 'jev'.`);
@@ -1729,9 +1954,10 @@ export async function pick(
   for (const sets of Object.values(options.tagsByKind ?? {})) for (const set of sets ?? []) checkTagSet(set);
   const kindFor = (candidate: MemoryCandidate) => options.sourceKinds && Object.hasOwn(options.sourceKinds, candidate.sourceId)
     ? options.sourceKinds[candidate.sourceId] : undefined;
-  const questionsFor = (sourceId: string) => options.questionsBySource && Object.hasOwn(options.questionsBySource, sourceId)
-    ? options.questionsBySource[sourceId] : undefined;
-  const cascadeFor = (candidate: MemoryCandidate) => questionsFor(candidate.sourceId);
+  const questionsFor = (sourceId: string) => questionsBySource && Object.hasOwn(questionsBySource, sourceId)
+    ? questionsBySource[sourceId] : undefined;
+  const cascadeFor = (candidate: MemoryCandidate) => keepingFor(candidate) ? keepOf(candidate.sourceId)!.questions
+    : questionsFor(candidate.sourceId);
   const tagSetsFor = (candidate: MemoryCandidate) => {
     const kind = kindFor(candidate);
     const sets = [...options.tags ?? [], ...(kind === undefined ? [] : options.tagsByKind?.[kind] ?? [])];
@@ -1762,16 +1988,6 @@ export async function pick(
     }
     checkSizeCurve(scored.bySize as readonly (readonly [number, number])[] | undefined);
   }
-  if (options.rare !== undefined && options.rare !== false && options.rare !== true) {
-    const rare: unknown = options.rare;
-    if (!isRecord(rare)
-      || (rare.share !== undefined
-        && (typeof rare.share !== 'number' || !Number.isFinite(rare.share) || rare.share <= 0))
-      || (rare.bar !== undefined
-        && (typeof rare.bar !== 'number' || !Number.isFinite(rare.bar) || rare.bar < 0 || rare.bar > 1))) {
-      throw new TypeError('rare needs a positive finite share and a bar between 0 and 1.');
-    }
-  }
   const input = options.limits ?? {};
   const limits: ResolvedLimits = {
     maxPerBatch: positiveLimit(input.maxPerBatch, 'maxPerBatch', DEFAULT_MAX_PER_BATCH),
@@ -1796,26 +2012,26 @@ export async function pick(
   // fitted bar is the source's own bar; without either the default
   // stands.
   const barFor = (id: string) => everyScored === true ? 0
-    : scored.bar ?? options.barBySource?.[id] ?? options.questionsBySource?.[id]?.model?.bar ?? DEFAULT_BAR;
+    : scored.bar ?? barBySource?.[id] ?? questionsBySource?.[id]?.model?.bar ?? DEFAULT_BAR;
   const ruleBarFor = (id: string) => options.ruleBarBySource?.[id] ?? 0;
   const thresholds: PickRecord['thresholds'] = {
     linkedPathBar: probabilityLimit(options.thresholds?.linkedPathBar, 'thresholds.linkedPathBar', DEFAULT_LINKED_PATH_BAR),
     ...(scored.bySize === undefined ? {}
       : { referenceBySize: [...scored.bySize].sort((left, right) => left[0] - right[0]) }),
   };
-  const rareForSource = (id: string) => options.rare === undefined
-    ? options.rareBySource?.[id] === true : options.rare !== false;
-  const rareSourceIds = [...new Set([...Object.keys(options.rareBySource ?? {}), ...candidates.map((c) => c.sourceId)])];
-  const rareSources = rareSourceIds.filter(rareForSource);
-  const rareOn = options.rare === undefined ? rareSources.length > 0 : options.rare !== false;
-  const rareShare = (isRecord(options.rare) ? options.rare.share : undefined) ?? RARE_SHARE;
-  const rareBar = (isRecord(options.rare) ? options.rare.bar : undefined) ?? RARE_BAR;
   // The decide step reads the fused order whenever `everyRanked` is
   // not given: all of it, or under the rating stop when the call sets one.
   const fused = options.everyRanked === undefined;
+  // The ranked read is shared: it judges each request alone when every
+  // source it reads is in a mode that asks so (`stopWindow`) and the
+  // call names no window of parts.
+  const rankedSources = new Set(candidates.flatMap((candidate) => candidate.role === 'reference'
+    && (modeFor(candidate.sourceId)?.read ?? rankedRead) === rankedRead ? [candidate.sourceId] : []));
+  const perRequest = rankedSources.size > 0 && [...rankedSources].every((id) => modeFor(id)?.stopWindow === 'request');
   const stopRule = !fused || options.stopWhenCold === undefined || options.stopWhenCold === false ? undefined : {
     floor: options.stopWhenCold?.floor ?? STOP_FLOOR,
     share: options.stopWhenCold?.share ?? STOP_SHARE,
+    parts: options.stopWhenCold?.parts ?? (perRequest ? 'request' as const : STOP_PARTS),
   };
   // The levers as resolved, for the record. `pick`
   // never sees `wholeLanes`: the read request carries it, and only a
@@ -1826,17 +2042,11 @@ export async function pick(
       : { everyRanked: options.everyRanked! }),
     ...(everyScored === undefined ? {} : { everyScored }),
     route: options.route === 'jev',
-    rare: rareOn ? { share: rareShare, bar: rareBar } : false,
   };
   const topK = isRecord(options.everyRanked) ? options.everyRanked.c : undefined;
   // A `feed` size bounds the fused order; unset, the read can reach
   // every part of it.
   const depth = fused ? options.feed?.size : undefined;
-  // A decide-feed dial is on when `everyRanked` supplies a c or the
-  // rare-word round is on: pool-only parts then count toward the
-  // history's size without joining the feed or the record, the
-  // rare-word round aside.
-  const dial = topK !== undefined || rareOn;
   const signal = options.signal ?? new AbortController().signal;
   const started = Date.now();
   // One signal for every decide call of the pick, with the pick's own
@@ -1890,7 +2100,7 @@ export async function pick(
   }
   // The task's names, once per pick and before any decide request, when
   // a source opened name lanes or a source's set asks about names.
-  const names = Object.values(options.questionsBySource ?? {}).some((set) => set.named !== undefined)
+  const names = Object.values(questionsBySource ?? {}).some((set) => set.named !== undefined)
     || Object.values(options.readsBySource ?? {}).some((read) => read.given?.includes('names') === true)
     ? await findTaskNames(options) : undefined;
   let cacheAsked = 0;
@@ -1914,6 +2124,76 @@ export async function pick(
   const unheld: Record<string, number> = Object.fromEntries(Object.entries(options.historySizeBySource ?? {})
     .map(([id, size]) => [id, Math.max(0, size - (givenBySource.get(id) ?? 0))]));
   const historySize = references.length + Object.values(unheld).reduce((total, count) => total + count, 0);
+  // Whole messages: the reference parts of a mode that judges whole
+  // messages, each with every other piece of its message the pick holds.
+  const asMessage = (candidate: MemoryCandidate) => candidate.turn !== undefined
+    || (candidate.chat !== undefined && (candidate.place?.at.length ?? 0) >= 3);
+  const wholeFor = (candidate: MemoryCandidate) => candidate.role === 'reference' && asMessage(candidate)
+    && (keepingFor(candidate) ? keepOf(candidate.sourceId)!.wholeMessages : modeFor(candidate.sourceId)?.wholeMessages) === true;
+  // Every message either stage judges whole.
+  const messages = messagePieces(references.filter((candidate) => candidate.role === 'reference' && asMessage(candidate)
+    && (modeFor(candidate.sourceId)?.wholeMessages === true || keepOf(candidate.sourceId)?.wholeMessages === true)));
+  // Each transcript's subagent request, the message its report answers.
+  // A message's start, as an item's record carries another message.
+  const opening = (pieces: readonly MemoryCandidate[]) => Array.from(pieces[0]?.turn?.text ?? messageText(pieces)).slice(0, OPENING_CHARS).join('');
+  const openingOf = (text: string) => Array.from(text).slice(0, OPENING_CHARS).join('');
+  const requests = new Map<string, string>();
+  for (const pieces of messages.values()) {
+    if (pieces[0]!.chat?.unit === 'prompt') requests.set(JSON.stringify([pieces[0]!.sourceId, pieces[0]!.place!.container]), opening(pieces));
+  }
+  // Hard facts: what code knows about each message of a mode that writes
+  // them. Where a part replies, what answered it and its position need
+  // the whole transcript, so they come only from a read that walks it.
+  const messageFacts = new Map<string, Record<string, unknown>>();
+  const placed = (candidate: MemoryCandidate) => candidate.chat !== undefined && (candidate.place?.at.length ?? 0) >= 3;
+  const rolesFor = (candidate: MemoryCandidate) => candidate.role === 'reference' && modeFor(candidate.sourceId)?.roles === true;
+  for (const list of transcriptMessages(references.filter((candidate) => (factsEither(candidate) || rolesFor(candidate))
+    && placed(candidate))).values()) {
+    const walks = modeFor(list[0]!.pieces[0]!.sourceId)?.read.walks === true;
+    const own = list.map(({ pieces }) => pieces[0]!.author === 'person');
+    const said = (pieces: readonly MemoryCandidate[]) => ({ id: pieces[0]!.id, text: opening(pieces) });
+    // The message each replies to: the nearest earlier one by the other
+    // side, the person or anyone else.
+    let person: number | undefined;
+    let other: number | undefined;
+    const facts = list.map(({ pieces }, index): Record<string, unknown> => {
+      const kind = messageKind(pieces[0]!, options.person);
+      const repliesTo = !walks ? undefined : own[index] ? other : person;
+      if (own[index]) person = index; else other = index;
+      return { ...(own[index] && options.person !== undefined ? { author: options.person } : {}),
+        ...(kind === undefined ? {} : { kind }), session: pieces[0]!.chat!.sessionId,
+        ...(walks ? { position: index + 1 } : {}), pieces: pieces.length,
+        ...(repliesTo === undefined ? {} : { replies_to: said(list[repliesTo]!.pieces) }) };
+    });
+    // The person's next message after each message that is not the person's.
+    let next: number | undefined;
+    for (let index = list.length - 1; walks && index >= 0; index -= 1) {
+      if (!own[index] && next !== undefined) facts[index]!.answered_by = said(list[next]!.pieces);
+      if (own[index]) next = index;
+    }
+    list.forEach(({ key }, index) => messageFacts.set(key, facts[index]!));
+  }
+  // An item's hard facts: its message's, with its own piece number when it
+  // is one piece of several; a commit's or a note's kind.
+  const hardFactsOf = (candidate: MemoryCandidate, whole: boolean): Record<string, unknown> | undefined => {
+    if (!factsFor(candidate)) return undefined;
+    // A turn of a note written as a conversation: what its reader read
+    // from the whole note, the turns either side as the exchange.
+    const turn = candidate.turn;
+    if (turn !== undefined) {
+      return { author: turn.speaker, session: turn.session, position: turn.position, pieces: turn.pieces,
+        ...(whole || turn.pieces === 1 ? {} : { piece: candidate.place?.at[2] }),
+        ...(turn.before === undefined ? {} : { replies_to: { id: turn.before.id, text: openingOf(turn.before.text) } }),
+        ...(turn.after === undefined ? {} : { answered_by: { id: turn.after.id, text: openingOf(turn.after.text) } }) };
+    }
+    if (!placed(candidate)) {
+      const kind = kindFor(candidate);
+      return kind === 'git-history' ? { kind: 'commit' } : kind === 'markdown' ? { kind: 'note' } : undefined;
+    }
+    const facts = messageFacts.get(messageKey(candidate));
+    if (facts === undefined) return undefined;
+    return whole || facts.pieces === 1 ? facts : { ...facts, piece: candidate.place!.at[2] };
+  };
 
   const selected: MemoryCandidate[] = [];
   const statuses = new Map<MemoryCandidate, PickEntryStatus>();
@@ -1927,13 +2207,12 @@ export async function pick(
       queue.push(rule);
     }
   }
-  // With a decide-feed dial on and the label gate off a pool-only part
+  // With `everyRanked: { c }` and the label gate off a pool-only part
   // can never be admitted to the feed: it still counts toward the
-  // history size the dial reads from `references`, but it stays out of
+  // history size the cut reads from `references`, but it stays out of
   // the queue and the record rather than record a reason that is not
-  // true — the rare-word round can still pull one in, and only then
-  // does it join the record. With no dial it keeps the record it
-  // always had: unasked, 'unassessed' with reason 'limits'.
+  // true. With no c it keeps the record it always had: unasked,
+  // 'unassessed' with reason 'limits'.
   // A part the task's period brought in is admitted like a lane member.
   const windowed = (candidate: MemoryCandidate) => candidate.dateWindow !== undefined && options.taskPeriod !== false;
   // Under the fused order every reference part joins the queue, and a
@@ -1941,7 +2220,7 @@ export async function pick(
   // outside the record.
   const admitted = (candidate: MemoryCandidate) =>
     fused
-      || kindsFor(candidate).length > 0 || (topK === undefined && !rareForSource(candidate.sourceId))
+      || kindsFor(candidate).length > 0 || topK === undefined
       || candidate.poolOnly !== true || windowed(candidate);
   for (const candidate of references) {
     if (admitted(candidate)) queue.push(candidate);
@@ -1962,6 +2241,10 @@ export async function pick(
   // order: the decide feed follows it.
   const insideDepth = new Set<MemoryCandidate>();
   const insideOrder: MemoryCandidate[] = [];
+  // With a caller's candidate limit, the parts some lane's slice
+  // admitted: a mode's own read reaches no other part, so the limit
+  // holds for it as it holds for the ranked read.
+  let limitAdmits: ((candidate: MemoryCandidate) => boolean) | undefined;
   // Each fused-order member's place score, for the label lane's reorder.
   const fusedScore = new Map<MemoryCandidate, number>();
   if (fused) {
@@ -2015,6 +2298,7 @@ export async function pick(
     });
     const permitted = (candidate: MemoryCandidate) =>
       heldByLane.some((held) => held.has(candidate)) || windowed(candidate);
+    if (Number.isFinite(limits.maxCandidates)) limitAdmits = permitted;
     for (const candidate of queue) {
       if (candidate.role !== 'reference' || !permitted(candidate)) continue;
       let score = meaningPlace.get(candidate) ?? 0;
@@ -2108,6 +2392,8 @@ export async function pick(
   // ranking the record's pick field then names as 'fusion'.
   let feedFused = false;
   const answered = new Map<MemoryCandidate, Map<string, CheckedAnswer>>();
+  // The second stage's answers, kept apart from the read's.
+  const keepAnswers = new Map<MemoryCandidate, Map<string, CheckedAnswer>>();
   // Label asks keep their own store: the decision cache never sees
   // them. Declared beside `answered` so `ask` can tell the two sinks
   // apart.
@@ -2132,13 +2418,23 @@ export async function pick(
     readonly key: string;
     readonly question: string;
     readonly levels?: readonly string[];
+    readonly options?: readonly (readonly [string, string])[];
     readonly trueCriterion?: string;
     readonly falseCriterion?: string;
   }
+  // The set's needed-fact question, once per fact the call gives.
+  const factQuestionsFor = (candidate: MemoryCandidate): PickCriterion[] => {
+    const facts = candidate.role === 'reference' ? cascadeFor(candidate)?.facts : undefined;
+    const fill = (text: string, fact: string) => text.replaceAll('{fact}', () => fact);
+    return facts === undefined ? [] : (needed ?? []).map((fact, index) => ({
+      key: `${facts.question.key}${index + 1}`, instructions: fill(facts.question.instructions, fact),
+      true: fill(facts.question.true, fact), false: fill(facts.question.false, fact),
+    }));
+  };
   const specsFor = (candidate: MemoryCandidate): QuestionSpec[] => {
     const cascade = cascadeFor(candidate);
     return candidate.role === 'reference' && cascade
-      ? [...cascade.questions, ...typedFor(candidate), ...writtenFor(candidate), ...namedFor(candidate)].map((q) => ({ key: q.key, question: q.instructions,
+      ? [...cascade.questions, ...typedFor(candidate), ...writtenFor(candidate), ...namedFor(candidate), ...factQuestionsFor(candidate)].map((q) => ({ key: q.key, question: q.instructions,
         ...('levels' in q
           ? { levels: q.levels }
           : { trueCriterion: q.true, falseCriterion: q.false }) }))
@@ -2151,7 +2447,28 @@ export async function pick(
     question: PickQuestion;
     cacheKey?: string;
   };
+  // Whether a part is asked in the plain-text form: its mode asks so, and
+  // its request would carry nothing the JSON state is for (needed facts,
+  // the person, the kind of task, which messages count, hard facts, a
+  // Choice, one item alone or a second stage).
+  const textFor = (item: Pending, header: object) => {
+    const mode = modeFor(item.candidate.sourceId);
+    // Any lever of the mode's asks for the JSON state's fields.
+    const levers = mode !== undefined && (mode.wholeMessages === true || mode.hardFacts === true || mode.roles === true
+      || (mode.choicePerFact ?? false) !== false || mode.itemsPerRequest !== undefined || mode.keep !== undefined);
+    return !keepingFor(item.candidate) && mode?.request === 'text' && !levers && Object.keys(header).length === 0
+      && item.question.facts === undefined && item.question.options === undefined;
+  };
+  // The fields code wrote for an item the decision model reads: a whole
+  // message's request or part.
+  const itemFacts = new Map<MemoryCandidate, Readonly<Record<string, unknown>>>();
+  // Whole messages: each message's items, and the message of each item.
+  const messageItems = new Map<string, MemoryCandidate[]>();
+  const messageOfItem = new Map<MemoryCandidate, string>();
   const pending = (candidate: MemoryCandidate, spec: ReturnType<typeof specsFor>[number], tagSet?: string): Pending => {
+    const own = itemFacts.get(candidate);
+    const hard = hardFactsOf(candidate, messageOfItem.has(candidate));
+    const facts = hard === undefined ? own : { ...hard, ...own };
     const shown = Number.isFinite(limits.maxQuestionText)
       ? takeCharacters(candidate.text, limits.maxQuestionText)
       : { text: candidate.text, truncated: false };
@@ -2163,8 +2480,10 @@ export async function pick(
       ...(tagSet === undefined ? {} : { tagSet }),
       ...(candidate.date === undefined ? {} : { date: candidate.date }),
       ...(candidate.kind === undefined ? {} : { kind: candidate.kind }),
+      ...(candidate.author === undefined ? {} : { author: candidate.author }),
+      ...(facts === undefined ? {} : { facts }),
       role: candidate.role, question: spec.question,
-      ...(spec.levels === undefined
+      ...(spec.options !== undefined ? { options: spec.options } : spec.levels === undefined
         ? { trueCriterion: spec.trueCriterion, falseCriterion: spec.falseCriterion }
         : { levels: spec.levels }),
       // The set's anonymousItems renders every ask about its part
@@ -2183,17 +2502,35 @@ export async function pick(
    *  trusted even when an earlier batch answered some questions. */
   const decideFailed = new Set<MemoryCandidate>();
   const decisionsByText = new Map<string, Pending>();
+  // When each first ask's answer has applied: a copy of a text another
+  // read has in flight waits for it.
+  const settling = new Map<Pending, Promise<void>>();
+  // Requests open, and batches packed whose answers have not applied:
+  // reads that run at once share the caller's `maxInFlight` and
+  // `maxBatches`.
+  let openRequests = 0;
+  const slotWaits: (() => void)[] = [];
+  let packedBatches = 0;
+  // Set by the first request that failed, timed out or was cancelled: no
+  // read of the call starts another, while requests already sent settle.
+  let halted = false;
   // A part with no text is judged by its title, as a title-only
   // commit's subject is, so the title stands in for the text in the
   // sharing key. With text present the title is a byline or locator,
-  // and identical texts keep sharing one answer.
+  // and identical texts keep sharing one answer. The decider sees the
+  // author, so two authors' identical texts are asked apart, and the
+  // facts the answer needs, so a text asked with them is asked apart from
+  // the same text asked without them.
   const sharingKey = ({ candidate, question }: Pending) => JSON.stringify([candidate.text,
     candidate.text === '' ? candidate.title : null,
     question.role, question.kind, question.questionKey, question.question,
     question.trueCriterion ?? null, question.falseCriterion ?? null,
-    question.levels ?? null, question.anonymous ?? null]);
-  // Asks packed into request-sized batches, at most `most` of them.
-  const pack = (fresh: readonly Pending[], task: string, whole: boolean, most: number): Pending[][] => {
+    question.levels ?? null, question.anonymous ?? null, question.author ?? null, JSON.stringify(headerOf(candidate)),
+    question.facts ?? null, question.options ?? null]);
+  // Asks packed into request-sized batches, at most `most` of them, and
+  // at most `perRequest` items in one.
+  const pack = (fresh: readonly Pending[], task: string, whole: boolean, most: number,
+    perRequest = Number.POSITIVE_INFINITY): Pending[][] => {
     const slices: Pending[][] = [];
     for (let index = 0; index < fresh.length && slices.length < most;) {
       // A batch packs whole items until the character bound; the first
@@ -2218,7 +2555,8 @@ export async function pick(
           + (counted.has(item.candidate) ? 0 : itemChars(item.question));
         if (slice.length > 0 && !whole
           && (batchChars + size > limits.maxBatchChars
-            || slice.length + group.length > limits.maxPerBatch)) break;
+            || slice.length + group.length > limits.maxPerBatch
+            || (!counted.has(item.candidate) && counted.size >= perRequest))) break;
         batchChars += size;
         counted.add(item.candidate);
         slice.push(...group);
@@ -2231,12 +2569,15 @@ export async function pick(
   };
   const ask = async (asks: Pending[], sink = answered, task = options.task, whole = false) => {
     const copies: { item: Pending; first: Pending }[] = [];
+    let settle!: () => void;
+    const settled = new Promise<void>((resolve) => { settle = resolve; });
     if (sink === answered) {
       asks = asks.filter((item) => {
         const key = sharingKey(item);
         const first = decisionsByText.get(key);
         if (first !== undefined) { copies.push({ item, first }); return false; }
         decisionsByText.set(key, item);
+        settling.set(item, settled);
         return true;
       });
     }
@@ -2246,6 +2587,34 @@ export async function pick(
     // names the part's question, not the batch around it. Reads run in
     // bounded groups, as the label store's reads do.
     const cacheable = cache !== undefined && sink !== labelAnswers;
+    // A part's question's store key. A request that carries the needed
+    // facts asks with them, so its answers are stored under them.
+    const cacheKeyOf = (item: Pending) => {
+      const header = sink === answered || sink === keepAnswers ? headerOf(item.candidate) : {};
+      // An answer asked in the plain-text form is stored apart: the form moves the model's scale.
+      return decisionKey(textFor(item, header) ? JSON.stringify(['text', task])
+        : header.person === undefined && header.wanted === undefined
+          ? (header.needed === undefined ? task : JSON.stringify([task, needed]))
+          : JSON.stringify([task, header]),
+      cacheVersion, cache!.deciderId, limits.maxQuestionText, item.question, item.candidate.text);
+    };
+    // Only a fully answered result is stored: a refusal, a missing
+    // answer, an error or a cancelled call is never written, so the store
+    // can never hold one. A failed write keeps the answer and the record
+    // warns once.
+    const storeAnswer = async (key: string, answer: CheckedAnswer) => {
+      if (answer.status !== 'answered') return;
+      try {
+        await cache!.store.set(key,
+          { answer: { status: 'answered',
+            ...('probability' in answer ? { probability: answer.probability }
+              : { probabilities: answer.probabilities }),
+            ...(answer.truncated === true ? { truncated: true } : {}) } });
+      } catch (error) {
+        cacheFailedWrites += 1;
+        cacheWriteError ??= error;
+      }
+    };
     let fresh = asks;
     if (cacheable) {
       fresh = [];
@@ -2260,8 +2629,7 @@ export async function pick(
         if (limits.maxElapsedMs - (Date.now() - started) <= 0) { stop = 'time'; break; }
         const group = await Promise.all(asks.slice(index, index + LABEL_STORE_READ_GROUP)
           .map(async (item) => {
-            const key = decisionKey(task, cacheVersion, cache.deciderId,
-              limits.maxQuestionText, item.question, item.candidate.text);
+            const key = cacheKeyOf(item);
             let stored: ReturnType<typeof storedDecision>;
             try {
               stored = storedDecision(await cache.store.get(key));
@@ -2293,7 +2661,34 @@ export async function pick(
     // still waits for this round's answers. Results apply in dispatch
     // order whatever order the replies land in, so answer order never
     // depends on completion order.
-    const slices = pack(fresh, task, whole, limits.maxBatches - batches);
+    // Parts whose requests carry different fields beside the task (the
+    // facts the answer needs, the person, how many answers are wanted) go
+    // in requests apart, so no other part's request carries them; the
+    // requests carrying the facts the answer needs go first.
+    // A mode's items per request, for its parts' own questions; labels
+    // keep their batching.
+    const perRequestOf = (item: Pending) => sink === labelAnswers || item.candidate.role !== 'reference' ? undefined
+      : keepingFor(item.candidate) ? keepOf(item.candidate.sourceId)!.itemsPerRequest : modeFor(item.candidate.sourceId)?.itemsPerRequest;
+    const groups = new Map<string, Pending[]>();
+    for (const item of fresh) {
+      const header = sink === answered || sink === keepAnswers ? headerOf(item.candidate) : {};
+      const key = JSON.stringify([header, perRequestOf(item) ?? null, textFor(item, header) ? 'text' : null]);
+      const group = groups.get(key);
+      if (group === undefined) groups.set(key, [item]);
+      else group.push(item);
+    }
+    const room = limits.maxBatches - batches - packedBatches;
+    const slices: Pending[][] = [];
+    const headers = new Map<Pending[], Pick<PickBatch, 'needed' | 'person' | 'wanted' | 'alone' | 'form'>>();
+    for (const [key, items] of [...groups].sort(([left], [right]) =>
+      Number(JSON.parse(right)[0].needed !== undefined) - Number(JSON.parse(left)[0].needed !== undefined))) {
+      const [header, perRequest, form] = JSON.parse(key) as [Pick<PickBatch, 'needed' | 'person' | 'wanted'>, number | null, 'text' | null];
+      for (const slice of pack(items, task, whole, room - slices.length, perRequest ?? undefined)) {
+        slices.push(slice);
+        headers.set(slice, { ...header, ...(perRequest === 1 ? { alone: true } : {}), ...(form === null ? {} : { form }) });
+      }
+    }
+    packedBatches += slices.length;
     interface BatchOutcome {
       readonly slice: Pending[];
       readonly sent: boolean;
@@ -2316,7 +2711,8 @@ export async function pick(
         for (const item of slice) sentParts.add(item.candidate);
       }
       try {
-        const sent: Promise<Record<string, PickAnswer>> = options.decide({ task, questions }, decideSignal);
+        const sent: Promise<Record<string, PickAnswer>> = options.decide({ task, questions, ...headers.get(slice),
+          ...(sink === keepAnswers ? { stage: 'keep' as const } : {}) }, decideSignal);
         const returned: unknown = await Promise.race([
           sent,
           new Promise<typeof TIMED_OUT>((resolve) => {
@@ -2337,27 +2733,38 @@ export async function pick(
         return { slice, sent: true, timedOut: decideDeadline?.aborted === true, decideError };
       }
     };
-    // At most `maxInFlight` requests of the round are open at once;
-    // unbounded, every slice goes out together. A queued slice starts
+    // At most `maxInFlight` requests of the call are open at once, across
+    // every read; unbounded, every slice goes out together. A queued slice starts
     // only when an earlier one settles, in dispatch order — and only
-    // while no settled outcome would have stopped a sequential round:
-    // a rejection, a deadline or a cancellation keeps later queued
-    // batches from starting, while batches already running still
-    // settle and apply.
+    // while no settled outcome, of this read or another, would have
+    // stopped a sequential run: a rejection, a deadline or a
+    // cancellation keeps every later queued batch from starting, while
+    // batches already running still settle and apply.
     const outcomes: (BatchOutcome | undefined)[] = new Array(slices.length);
     let next = 0;
-    let halted = false;
     await Promise.all(Array.from({ length: Math.min(slices.length, limits.maxInFlight) },
       async () => {
         while (!halted && next < slices.length) {
+          // Every request the call allows is open, some of them another
+          // read's: wait for one to settle.
+          if (openRequests >= limits.maxInFlight) {
+            await new Promise<void>((resolve) => slotWaits.push(resolve));
+            continue;
+          }
           const at = next;
           next += 1;
+          openRequests += 1;
           const outcome = await dispatch(slices[at]!);
           outcomes[at] = outcome;
+          // The halt is set before any queued sender wakes, so no read
+          // starts a request after another read's failed.
           if (!outcome.sent || outcome.timedOut || outcome.decideError !== undefined) halted = true;
+          openRequests -= 1;
+          for (const wake of slotWaits.splice(0)) wake();
         }
       }));
     for (const outcome of outcomes) {
+      packedBatches -= 1;
       // A batch the halt left queued stays unasked like the tail of a
       // stopped sequential run.
       if (outcome === undefined) continue;
@@ -2383,26 +2790,11 @@ export async function pick(
           : answers === undefined
             ? { status: 'error', detail: decideError instanceof Error ? decideError.message
                 : decideError === undefined ? 'The decide call failed.' : String(decideError) }
-            : checkAnswer(answers[question.key], question.levels?.length);
+            : checkAnswer(answers[question.key], question.levels?.length ?? question.options?.length);
         let got = sink.get(candidate);
         if (!got) { got = new Map(); sink.set(candidate, got); }
         got.set(spec.key, answer);
-        // Only a fully answered result is stored: a refusal, a missing
-        // answer, an error or a cancelled call is never written, so the
-        // store can never hold one. A failed write keeps the answer and
-        // the record warns once.
-        if (cacheKey !== undefined && answer.status === 'answered') {
-          try {
-            await cache!.store.set(cacheKey,
-              { answer: { status: 'answered',
-                ...('probability' in answer ? { probability: answer.probability }
-                  : { probabilities: answer.probabilities }),
-                ...(answer.truncated === true ? { truncated: true } : {}) } });
-          } catch (error) {
-            cacheFailedWrites += 1;
-            cacheWriteError ??= error;
-          }
-        }
+        if (cacheKey !== undefined) await storeAnswer(cacheKey, answer);
         // `truncated` marks a decision item the text cut shortened; a
         // label ask never sends one, so the flag belongs to the decide
         // sink only.
@@ -2421,16 +2813,24 @@ export async function pick(
       if (signal.aborted) stop = 'cancelled';
       else if (slices.reduce((sum, slice) => sum + slice.length, 0) < fresh.length) stop = 'limits';
     }
+    settle();
     // Copies keep their source identity and score with their own question set.
     // Only the answer to the identical text and question is shared.
     for (const { item, first } of copies) {
-      const answer = sink.get(first.candidate)?.get(first.spec.key);
+      let answer = sink.get(first.candidate)?.get(first.spec.key);
+      if (answer === undefined && settling.get(first) !== settled) {
+        await settling.get(first);
+        answer = sink.get(first.candidate)?.get(first.spec.key);
+      }
       if (answer === undefined) continue;
       let got = sink.get(item.candidate);
       if (got === undefined) { got = new Map(); sink.set(item.candidate, got); }
       got.set(item.spec.key, answer);
       if (truncated.has(first.candidate)) truncated.set(item.candidate, truncated.get(first.candidate)!);
       if (decideFailed.has(first.candidate)) decideFailed.add(item.candidate);
+      // A copy's answer is stored under its own key too, so a later pick
+      // that reaches the copy first reuses it rather than asking again.
+      if (cacheable && !decideFailed.has(item.candidate)) await storeAnswer(cacheKeyOf(item), answer);
     }
   };
 
@@ -2768,7 +3168,7 @@ export async function pick(
   // below the keep count is never asked and records 'unassessed' with
   // reason 'pick'.
   let pickRecord: PickRecord['pick'];
-  if (dial && topK !== undefined) {
+  if (topK !== undefined) {
     const bound = Math.min(references.length, Math.round(topK * Math.pow(references.length, 0.8)));
     let rank = 0;
     feed = feed.filter((candidate) => {
@@ -2803,12 +3203,84 @@ export async function pick(
   };
   // Candidates a stop left half-assessed inside a cascade.
   const curtailed = new Map<MemoryCandidate, 'limits' | 'time' | 'cancelled' | 'error'>();
-  // A part's first-round asks: every question, or a cascade's first.
-  const firstAsks = (candidate: MemoryCandidate) => specsFor(candidate)
-    .filter((spec) => candidate.role === 'rule' || !cascadeFor(candidate)?.first || spec.key === cascadeFor(candidate)!.first)
-    .map((spec) => pending(candidate, spec));
-  const evaluate = async (phase: readonly MemoryCandidate[]) => {
-    await ask(phase.flatMap(firstAsks));
+  // The items the decision model judges for a part: the part itself,
+  // or, when its mode judges whole messages, its message, sent in
+  // consecutive parts when one request cannot hold it.
+  const itemsFor = (candidate: MemoryCandidate): MemoryCandidate[] => {
+    if (!wholeFor(candidate)) return [candidate];
+    const key = messageKey(candidate);
+    const known = messageItems.get(key);
+    if (known !== undefined) return known;
+    const pieces = messages.get(key) ?? [candidate];
+    const first = pieces[0]!;
+    const asked = first.chat?.unit === 'report'
+      ? requests.get(JSON.stringify([first.sourceId, first.place!.container])) : undefined;
+    const own = asked === undefined ? {} : { asked };
+    // What a request holds beside the message's text: the task, the
+    // facts the answer needs, the item's other fields and its questions.
+    const specs = specsFor(first);
+    const beside = options.task.length + (carriesNeeded(first) ? JSON.stringify(needed).length : 0)
+      + first.id.length + first.title.length + (first.date === undefined ? 0 : first.date.value.length + first.date.meaning.length)
+      + JSON.stringify({ ...own, part: `${pieces.length} of ${pieces.length}`, opening: opening(pieces) }).length
+      + specs.reduce((sum, spec) => sum + spec.question.length
+        + (spec.levels ?? [spec.trueCriterion ?? '', spec.falseCriterion ?? '']).join('').length, 0);
+    // A turn whose whole text fits goes whole, its pieces the pick does not
+    // hold included.
+    if (first.turn !== undefined && JSON.stringify(first.turn.text).length <= limits.maxBatchChars - beside) {
+      const item = { ...first, text: first.turn.text };
+      messageOfItem.set(item, key);
+      messageItems.set(key, [item]);
+      return [item];
+    }
+    // Consecutive pieces, as many as fit, measured as the request sends them.
+    const ranges: MemoryCandidate[][] = [];
+    for (const piece of pieces) {
+      const last = ranges.at(-1);
+      if (last !== undefined && JSON.stringify(messageText([...last, piece])).length <= limits.maxBatchChars - beside) last.push(piece);
+      else ranges.push([piece]);
+    }
+    const items = ranges.length === 1 && pieces.length === 1 && asked === undefined ? [first]
+      : ranges.map((range) => ({ ...range[0]!, text: messageText(range) }));
+    items.forEach((item, index) => {
+      const facts = { ...own, ...(ranges.length === 1 ? {} : { part: `${index + 1} of ${ranges.length}` }),
+        ...(index === 0 ? {} : { opening: opening(pieces) }) };
+      if (Object.keys(facts).length > 0) itemFacts.set(item, facts);
+      messageOfItem.set(item, key);
+    });
+    messageItems.set(key, items);
+    return items;
+  };
+  // An item's first-round asks: every question, or a cascade's first.
+  const asksOf = (item: MemoryCandidate) => specsFor(item)
+    .filter((spec) => item.role === 'rule' || !cascadeFor(item)?.first || spec.key === cascadeFor(item)!.first)
+    .map((spec) => pending(item, spec));
+  // A part's first-round asks: its items'.
+  const firstAsks = (candidate: MemoryCandidate) => itemsFor(candidate).flatMap(asksOf);
+  // A message's rating is its best item's, and each piece of it carries
+  // that rating and the answers behind it.
+  const spread = (phase: readonly MemoryCandidate[]) => {
+    const probability = (item: MemoryCandidate) => {
+      const answer = combined.get(item);
+      return answer?.status === 'answered' && 'probability' in answer ? answer.probability : -1;
+    };
+    for (const key of new Set(phase.flatMap((item) => messageOfItem.get(item) ?? []))) {
+      const items = messageItems.get(key)!;
+      const best = items.reduce((top, item) => probability(item) > probability(top) ? item : top);
+      for (const piece of messages.get(key) ?? []) {
+        if (piece === best) continue;
+        for (const map of [combined, answered, keptBy, untyped, unwritten, unnamed] as Map<MemoryCandidate, unknown>[]) {
+          if (map.has(best)) map.set(piece, map.get(best)); else map.delete(piece);
+        }
+        if (curtailed.has(best)) curtailed.set(piece, curtailed.get(best)!); else curtailed.delete(piece);
+        if (items.some((item) => truncated.get(item) === true)) truncated.set(piece, true);
+        else if (truncated.has(best)) truncated.set(piece, false);
+        if (items.some((item) => decideFailed.has(item))) decideFailed.add(piece);
+      }
+    }
+  };
+  const evaluate = async (given: readonly MemoryCandidate[]) => {
+    const phase = messages.size === 0 ? given : [...new Set(given.flatMap(itemsFor))];
+    await ask(phase.flatMap(asksOf));
     if (!stop) {
       await ask(phase.flatMap((candidate) => {
         const cascade = cascadeFor(candidate);
@@ -2836,7 +3308,8 @@ export async function pick(
           const typed = typedFor(candidate);
           const written = writtenFor(candidate);
           const named = namedFor(candidate);
-          const asked = [...cascade.questions, ...typed, ...written, ...named];
+          const factAsks = factQuestionsFor(candidate);
+          const asked = [...cascade.questions, ...typed, ...written, ...named, ...factAsks];
           if (stop && asked.some((q) => !got.has(q.key))
             && (!cascade.first || first?.status === 'answered')) {
             curtailed.set(candidate, stop);
@@ -2867,6 +3340,13 @@ export async function pick(
               answer = { status: 'answered', probability: modelScore(cascade.model, features),
                 ...(probabilities.every((a) => a === undefined || (a.status === 'answered' && a.reused === true))
                   ? { reused: true } : {}) };
+            } else if (cascade.combine === 'highest') {
+              // The highest of the set's answers and its fact answers.
+              const all = [...probabilities.slice(0, cascade.questions.length), ...factAsks.map((q) => got.get(q.key))]
+                .flatMap((a) => a?.status === 'answered' && 'probability' in a ? [a.probability] : []);
+              answer = { status: 'answered', probability: Math.max(0, ...all),
+                ...(probabilities.every((a) => a === undefined || (a.status === 'answered' && a.reused === true))
+                  ? { reused: true } : {}) };
             } else {
             const term = (q: { readonly weight?: number }, a: CheckedAnswer | undefined) =>
               a?.status === 'answered' && 'probability' in a ? (q.weight ?? 0) * logit(a.probability) : 0;
@@ -2887,16 +3367,22 @@ export async function pick(
             }).reduce<number | undefined>((top, p) => top === undefined || p > top ? p : top, undefined);
             const namedZ = named.length === 0 ? 0
               : cascade.named!.hasNames + (best === undefined ? 0 : cascade.named!.highest * writtenLogit(best));
-            if (typed.length > 0) untyped.set(candidate, 1 / (1 + Math.exp(-(z + writtenZ + namedZ))));
-            if (written.length > 0) unwritten.set(candidate, 1 / (1 + Math.exp(-(z + typedZ + namedZ))));
-            if (named.length > 0) unnamed.set(candidate, 1 / (1 + Math.exp(-(z + typedZ + writtenZ))));
+            // The highest needed-fact answer; with none answered it adds nothing.
+            const bestFact = factAsks.flatMap((q) => {
+              const reply = got.get(q.key);
+              return reply?.status === 'answered' && 'probability' in reply ? [reply.probability] : [];
+            }).reduce<number | undefined>((top, p) => top === undefined || p > top ? p : top, undefined);
+            const factZ = bestFact === undefined ? 0 : cascade.facts!.highest * writtenLogit(bestFact);
+            if (typed.length > 0) untyped.set(candidate, 1 / (1 + Math.exp(-(z + writtenZ + namedZ + factZ))));
+            if (written.length > 0) unwritten.set(candidate, 1 / (1 + Math.exp(-(z + typedZ + namedZ + factZ))));
+            if (named.length > 0) unnamed.set(candidate, 1 / (1 + Math.exp(-(z + typedZ + writtenZ + factZ))));
             const keeper = typed.find((q) => {
               const reply = got.get(q.key);
               return q.keepAt !== undefined && reply?.status === 'answered'
                 && 'probability' in reply && reply.probability >= q.keepAt;
             });
             if (keeper !== undefined) keptBy.set(candidate, keeper.key);
-            answer = { status: 'answered', probability: 1 / (1 + Math.exp(-(z + typedZ + writtenZ + namedZ))),
+            answer = { status: 'answered', probability: 1 / (1 + Math.exp(-(z + typedZ + writtenZ + namedZ + factZ))),
               // The verdict reused the store only when every answer
               // behind it did: a question this pick asked — even one
               // that came back unanswered — keeps it fresh.
@@ -2908,6 +3394,7 @@ export async function pick(
       } else answer = got.values().next().value!;
       combined.set(candidate, answer);
     }
+    if (messages.size > 0) spread(phase);
   };
 
   // The reference parts of `parts` the decide step answered: the count
@@ -2928,37 +3415,11 @@ export async function pick(
     return answer?.status === 'answered' && 'probability' in answer
       && (answer.probability >= keepBar(candidate, decided) || (candidate.role !== 'rule' && keptBy.has(candidate)));
   };
-  // The rating stop's reads, when it is on: the main read of the fused
-  // order, and the rare-word round's own read of the parts it pulls.
-  // Each counts the waves it sent, the batches it rated, the reference
-  // parts it rated, the best decision score so far, where it went cold,
-  // and the parts below its stop.
-  interface Reading {
-    waves: number;
-    batches: number;
-    readonly rated: Set<MemoryCandidate>;
-    /** The main read holds the stop until it has kept a part and rated
-     *  one at or above the floor, so a history whose evidence sits below
-     *  a cold stretch never comes back empty, and a read whose first
-     *  ratings all sit under the floor goes on until one reaches it. The
-     *  rare-word round runs only once the main read kept
-     *  parts, so its own read does not wait. */
-    readonly waitForKept: boolean;
-    best: number;
-    cold?: NonNullable<NonNullable<PickRecord['pick']>['stopWhenCold']>['cold'];
-    readonly unread: Set<MemoryCandidate>;
-  }
-  const reading = (waitForKept: boolean): Reading => ({ waves: 0, batches: 0, rated: new Set(),
-    waitForKept, best: 0, unread: new Set() });
   // A part is rated once it holds a decision score.
   const scoreOf = (candidate: MemoryCandidate) => {
     const answer = combined.get(candidate);
     return answer?.status === 'answered' && 'probability' in answer ? answer.probability : undefined;
   };
-  // A rated part at or above the stop's floor: the main read's stop
-  // waits for one, and the record counts them.
-  const atFloor = (candidate: MemoryCandidate) => (scoreOf(candidate) ?? 0) >= stopRule!.floor;
-  const main = reading(true);
   // Parts an identical earlier text answers: they ride free and do not
   // count toward a batch's best score, so a copy of a warm part cannot
   // keep a cold stretch reading.
@@ -2995,51 +3456,36 @@ export async function pick(
     }
     return batches.filter((batch) => batch.length > 0);
   };
-  // Read the order in waves. After each wave its batches are checked
-  // in order, as a read of one batch at a time would check them: the
-  // read stops at the first batch whose best decision score is under
-  // the floor, or under the share of the best score before it, once the
-  // read has kept a part and rated one at or above the floor. The rest
-  // of that wave is already rated. A batch holding no reference
-  // part it asked about is not checked. A stopping dial that ends a
-  // wave early leaves its batches unchecked: the dial, not the ratings,
-  // ended the read. Without the stop the order goes out at once.
-  const read = async (order: readonly MemoryCandidate[], state = main) => {
-    if (stopRule === undefined) { await evaluate(order); return; }
-    let at = 0;
-    while (at < order.length && !stop && state.cold === undefined) {
-      const wave = nextWave(order, at);
-      const parts = wave.flat();
-      await evaluate(parts);
-      state.waves += 1;
-      at += parts.length;
-      for (const candidate of parts) {
-        if (candidate.role === 'reference' && scoreOf(candidate) !== undefined) state.rated.add(candidate);
-      }
-      // Whether the read has kept a reference part yet, on the bar the
-      // selection pass will apply: with the feed's answered count so
-      // far, which is its final count should the stop fire here.
-      let kept: boolean | undefined;
-      const keptAny = () => kept ??= [...state.rated].some(keepsAt(answeredReferences(feed)));
-      for (const batch of wave) {
-        const own = batch.filter((candidate) => candidate.role === 'reference' && !copied.has(candidate));
-        if (!own.some((candidate) => scoreOf(candidate) !== undefined)) continue;
-        state.batches += 1;
-        if (stop || state.cold !== undefined) continue;
-        const best = Math.max(0, ...own.map((candidate) => scoreOf(candidate) ?? 0));
-        // Until the read has kept a part and rated one at or above the
-        // floor, a cold batch does not stop it.
-        if ((best < stopRule.floor || best < stopRule.share * state.best)
-          && (!state.waitForKept || ([...state.rated].some(atFloor) && keptAny()))) {
-          state.cold = { batch: state.batches, best, bestBefore: state.best,
-            under: best < stopRule.floor ? 'floor' : 'share' };
-        } else state.best = Math.max(state.best, best);
-      }
-    }
-    if (state.cold !== undefined) for (const candidate of order.slice(at)) state.unread.add(candidate);
-  };
-
   const representatives = new Map<MemoryCandidate, MemoryCandidate>();
+  // Under the fused order (`everyRanked` unset) each reference part is
+  // read the way its source's mode reads: parts of modes that share a
+  // read are read together. Rule parts, and parts of a source with no
+  // mode, take the ranked read. `everyRanked` decides every ranked part,
+  // so under it every part takes the ranked read.
+  const readOf = (candidate: MemoryCandidate): ModeRead => !fused || candidate.role !== 'reference'
+    ? rankedRead : modeFor(candidate.sourceId)?.read ?? rankedRead;
+  const ownRead = (candidate: MemoryCandidate) => readOf(candidate) !== rankedRead;
+  const chatOrder = feed.filter(ownRead);
+  if (chatOrder.length > 0) feed = feed.filter((candidate) => !ownRead(candidate));
+  // A part whose every answer came from the decision store.
+  const reusedOf = (candidate: MemoryCandidate) => {
+    const answer = combined.get(candidate);
+    return answer?.status === 'answered' && 'reused' in answer && answer.reused === true;
+  };
+  const shared = { rate: evaluate, waves: nextWave, copied: (candidate: MemoryCandidate) => copied.has(candidate),
+    score: scoreOf, stopped: () => stop !== undefined,
+    ...(stopRule === undefined ? {} : { stop: stopRule }) };
+  // The ranked read of the rest of the feed. It holds its stop until
+  // selection keeps a part it rated, on the bar the selection pass will
+  // apply with the feed's answered count so far.
+  const readRanked = (order: readonly MemoryCandidate[], then?: readonly MemoryCandidate[], between?: () => boolean) =>
+    rankedRead({ ...shared, parts: [], order, byKeyword: [], lanes: [],
+      ...(then === undefined ? {} : { then }), ...(between === undefined ? {} : { between }),
+      kept: (some) => some.some(keepsAt(answeredReferences(feed))) });
+  // Every read runs at once, all through the one rating function, so
+  // their waits overlap instead of adding up: the ranked read of the
+  // rest of the feed, and each mode read of its own.
+  let rankedRun: Promise<ModeReadResult | undefined> = Promise.resolve(undefined);
   if (!stop && options.bestPartFirst) {
     const terms = [...new Set(options.task.toLowerCase().split(/[^a-z0-9]+/).filter((word) => word.length > 2))];
     const matches = (candidate: MemoryCandidate) => {
@@ -3062,26 +3508,115 @@ export async function pick(
       const first = group.reduce((best, candidate) => matches(candidate) > matches(best) ? candidate : best);
       for (const candidate of group) representatives.set(candidate, first);
     }
-    await read(feed.filter((c) => c.role === 'rule' || representatives.get(c) === c));
-    if (signal.aborted) stop = 'cancelled';
-    else if (Date.now() - started >= limits.maxElapsedMs) stop = 'time';
-    if (!stop) {
-      await read(feed.filter((candidate) => {
+    rankedRun = readRanked(feed.filter((c) => c.role === 'rule' || representatives.get(c) === c),
+      feed.filter((candidate) => {
         const representative = representatives.get(candidate);
         return representative !== undefined && representative !== candidate;
-      }));
+      }),
+      () => {
+        if (signal.aborted) stop = 'cancelled';
+        else if (Date.now() - started >= limits.maxElapsedMs) stop = 'time';
+        return !stop;
+      });
+  } else if (!stop) rankedRun = readRanked(feed);
+
+  // Each mode read of its own starts from its parts of the feed's order
+  // and can reach any of its parts the pick holds; its own stop decides
+  // how far it reads. The parts it rated join the feed, and a part of
+  // the order it never reached records why.
+  const ownReads = [...new Set(chatOrder.map(readOf))];
+  let ownRuns: Promise<ModeReadResult>[] = [];
+  if (ownReads.length > 0) {
+    // The ranked read's feed while every read runs: the count of
+    // answered parts a keep bar on the decided size reads.
+    const rankedFeed = feed;
+    // The keyword lanes' ranking: a part's best share of a keyword lane
+    // it holds, as the fused order places it without its meaning place.
+    const keyword = (candidate: MemoryCandidate, index: number) =>
+      options.readsBySource?.[candidate.sourceId]?.lanes[index] !== 'meaning';
+    const laneLength = new Map<number, number>();
+    for (const candidate of queue) {
+      candidate.searchRanks?.forEach((rank, index) => {
+        if (rank !== null && keyword(candidate, index)) laneLength.set(index, (laneLength.get(index) ?? 0) + 1);
+      });
     }
-  } else if (!stop) await read(feed);
-  // The parts below the stop leave the feed: the decide step never
-  // reached them.
-  if (main.unread.size > 0) {
+    // Each search lane's parts in lane order across the sources; each
+    // read is given only its own sources' parts of it.
+    const laneParts = Array.from({ length: lanes }, (_, lane) => rankAndInterleave(references.filter((candidate) =>
+      candidate.poolOnly !== true && (candidate.searchRanks === undefined || candidate.searchRanks[lane] != null)),
+    new Map(), lane, options.ranking));
+    ownRuns = ownReads.map((read) => {
+      const parts = queue.filter((candidate) => candidate.role === 'reference' && readOf(candidate) === read
+        && (limitAdmits === undefined || limitAdmits(candidate)));
+      const share = new Map(parts.map((candidate) => [candidate, (candidate.searchRanks ?? [])
+        .reduce<number>((best, rank, index) => rank === null || !keyword(candidate, index) ? best
+          : Math.max(best, (laneLength.get(index)! - rank) / laneLength.get(index)!), 0)] as const));
+      const queries = [...new Set(parts.flatMap((candidate) => options.queriesBySource?.[candidate.sourceId] ?? []))];
+      return read({
+        ...shared, parts, order: chatOrder.filter((candidate) => readOf(candidate) === read),
+        ...(queries.length === 0 ? {} : { queries }), ...(options.embed === undefined ? {} : { embed: options.embed }),
+        byKeyword: [...share.keys()].filter((candidate) => share.get(candidate)! > 0)
+          .sort((left, right) => share.get(right)! - share.get(left)!),
+        // Each lane's parts of this read's own sources: another source's
+        // parts, read their own way, never take its lane heads.
+        lanes: laneParts.map((lane) => lane.filter((candidate) => readOf(candidate) === read)),
+        // Kept on the bar the selection pass keeps a part at, with the
+        // feed's answered count so far, as the rating stop waits for one.
+        kept: (some) => some.some(keepsAt(answeredReferences([...rankedFeed, ...some]))),
+      });
+    });
+  }
+  const [ranked, ...results] = await Promise.all([rankedRun, ...ownRuns]);
+  // The parts below the ranked read's stop leave the feed: the decide
+  // step never reached them.
+  const rankedUnread = new Set(ranked?.unread ?? []);
+  if (rankedUnread.size > 0) {
     const places = new Map(feed.map((candidate, place) => [candidate, place]));
-    feed = feed.filter((candidate) => !main.unread.has(candidate));
-    for (const candidate of main.unread) {
+    feed = feed.filter((candidate) => !rankedUnread.has(candidate));
+    for (const candidate of rankedUnread) {
       statuses.set(candidate, { status: 'unassessed', reason: 'stopWhenCold', place: places.get(candidate)! });
     }
   }
+  const rankedRated = ranked?.read ?? [];
+  let chatRecord: Record<string, NonNullable<NonNullable<PickRecord['pick']>['chatRead']>[string]> | undefined;
+  for (const [index, result] of results.entries()) {
+    feed = feed.concat(result.read);
+    const places = new Map(chatOrder.filter((candidate) => readOf(candidate) === ownReads[index])
+      .map((candidate, place) => [candidate, place]));
+    for (const candidate of result.unread) {
+      statuses.set(candidate, { status: 'unassessed',
+        reason: result.reason === 'chatRead' ? stop ?? 'chatRead' : result.reason,
+        ...(places.has(candidate) ? { place: places.get(candidate)! } : {}) });
+    }
+    if (result.requests !== undefined) {
+      // A part counts as rated when a request of this pick answered it,
+      // and as reused when its decision came from the store.
+      // Each read under its mode's name, so a second read never
+      // overwrites the first's numbers.
+      const name = [...new Set(chatOrder.filter((candidate) => readOf(candidate) === ownReads[index])
+        .map((candidate) => modeFor(candidate.sourceId)?.name))].sort().join(' + ');
+      (chatRecord ??= {})[name] = { requests: result.requests, segments: result.segments ?? 0, units: result.units ?? 0,
+        rated: result.read.filter((part) => scoreOf(part) !== undefined && !reusedOf(part)).length,
+        reused: result.read.filter(reusedOf).length,
+        unread: result.unread.length, ended: result.ended === 'stopped' ? stop! : result.ended as 'fall' | 'order' };
+    }
+  }
 
+  // Under whole messages a message's rating is each of its pieces': the
+  // other pieces of every message the reads judged join the feed, so a
+  // message is kept or rejected whole.
+  if (messages.size > 0) {
+    const held = new Set(feed);
+    const queued = new Set(queue);
+    for (const candidate of [...feed]) {
+      if (!wholeFor(candidate) || !messageItems.has(messageKey(candidate))) continue;
+      for (const piece of messages.get(messageKey(candidate)) ?? []) {
+        if (held.has(piece) || !queued.has(piece)) continue;
+        held.add(piece);
+        feed.push(piece);
+      }
+    }
+  }
   // The reference bar may rise with the decided set's size, so the
   // selection pass runs once the whole feed has answered. Without that
   // curve each reference is cut at its own source's bar.
@@ -3132,11 +3667,12 @@ export async function pick(
   // What ended the main read: its ratings went cold, a stopping dial
   // ended it, or it reached the end of the order.
   const readEnded = stopRule === undefined ? undefined
-    : main.cold !== undefined ? 'cold' as const : feedStop ?? 'order' as const;
+    : ranked?.cold !== undefined ? 'cold' as const : feedStop ?? 'order' as const;
   // The reference parts the read rated that the selection pass kept on
   // its own bar, and those it rated at or above the stop's floor.
-  const readKept = [...main.rated].filter(keepsAt(decided)).length;
-  const readAtFloor = [...main.rated].filter(atFloor).length;
+  const readKept = rankedRated.filter(keepsAt(decided)).length;
+  const readAtFloor = stopRule === undefined ? 0
+    : rankedRated.filter((candidate) => (scoreOf(candidate) ?? 0) >= stopRule.floor).length;
   // A queued part the feed never held was never asked a question. The
   // 'gate' reason names only the gate's own call: a reference part the
   // keyword lanes never held — not one a lane's candidate limit cut —
@@ -3187,142 +3723,264 @@ export async function pick(
     });
   }
 
-  // The rare-word round: the parts that cleared the
-  // selection bar can share rare words with parts the first pass
-  // missed, so those words reach for more. It runs within each enabled
-  // source on its own, so a setting on one source never moves another's
-  // pick. A word is rare in a source when at most share × N of its
-  // reference parts contain it, N that source's reference count. Every
-  // unselected part of that source sharing one of its rare words is
-  // pulled in, pool members included: one never asked is sent through the decide
-  // step, one already decided reuses its score, and a part scoring at
-  // or above a second, lower bar joins the selection. It runs after
-  // the link pass so a link-carried part stays out of the seeds — it
-  // cleared the link bar, not the selection bar — and a pulled-in part
-  // can never carry a link.
-  const rarePulled = new Set<MemoryCandidate>();
-  // The round's rare words and pulled parts by source, and the parts it
-  // added, for the record's `effects`.
-  const rareSeeds = new Map<string, ReadonlySet<string>>();
-  let rareTaken: readonly MemoryCandidate[] = [];
-  const rareAdded = new Set<MemoryCandidate>();
-  // The pulled parts the round never asked: past a feed size's room,
-  // or below the round's own stop.
-  const rareHeld = new Map<MemoryCandidate, 'size' | 'cold'>();
-  let rareResult: NonNullable<PickRecord['pick']>['rare'];
-  if (rareOn && !stop) {
-    const wordSets = new Map<MemoryCandidate, ReadonlySet<string>>();
-    const wordSet = (candidate: MemoryCandidate): ReadonlySet<string> => {
-      let set = wordSets.get(candidate);
-      if (set === undefined) {
-        set = new Set(candidate.text.toLowerCase().match(/[a-z][a-z0-9-]{3,}/g) ?? []);
-        wordSets.set(candidate, set);
-      }
-      return set;
-    };
-    const seedsBySource = new Map<string, Set<string>>();
-    const rareRecord: Record<string, { n: number; words: string[] }> = {};
-    for (const id of rareSources) {
-      const own = references.filter((candidate) => candidate.sourceId === id);
-      if (!own.length) continue;
-      const frequency = new Map<string, number>();
-      for (const candidate of own) {
-        for (const word of wordSet(candidate)) frequency.set(word, (frequency.get(word) ?? 0) + 1);
-      }
-      const bound = rareShare * own.length;
-      const seeds = new Set<string>();
-      for (const candidate of selected) {
-        const status = statuses.get(candidate)!;
-        if (candidate.role !== 'reference' || candidate.sourceId !== id
-          || status.status !== 'selected' || status.link !== undefined) {
-          continue;
-        }
-        for (const word of wordSet(candidate)) {
-          if ((frequency.get(word) ?? 0) <= bound) seeds.add(word);
-        }
-      }
-      seedsBySource.set(id, seeds);
-      rareSeeds.set(id, seeds);
-      rareRecord[id] = { n: own.length, words: [...seeds].sort() };
-    }
-    const pulled = references.filter((candidate) => {
-      const seeds = seedsBySource.get(candidate.sourceId);
-      return seeds !== undefined && statuses.get(candidate)?.status !== 'selected'
-        && [...wordSet(candidate)].some((word) => seeds.has(word));
-    });
-    rareTaken = pulled;
-    // A pool member the queue never held carries no status; pulling one
-    // in gives it the never-asked state a queued part starts from, and
-    // `rarePulled` keeps it for the record the queue's members keep.
-    for (const candidate of pulled) {
-      if (!statuses.has(candidate)) {
-        statuses.set(candidate, { status: 'unassessed', reason: 'pick' });
-        rarePulled.add(candidate);
-      }
-    }
-    // The round reaches past the rating stop: the pulled parts never
-    // asked, in fused order and then the parts outside it, are read as
-    // the order is, in waves under the same stop with a best score of
-    // their own, so a round whose answers go cold ends. With a feed size
-    // it asks pulled parts only while the size still has room: the size
-    // bounds how many reference parts the decide step is asked about
-    // across the whole pick, so a pulled part is asked only into a free
-    // slot, never past it. Each part the read reached fills a slot
-    // whether the decide port, the decision cache or an identical text
-    // answered it, so the free room is the size less the parts read,
-    // not what the port was sent. On a pick whose read filled the size,
-    // the round asks nothing.
-    const room = depth === undefined
-      ? pulled.length : Math.max(0, depth - (insideOrder.length - main.unread.size));
-    const place = new Map(insideOrder.map((candidate, index) => [candidate, index]));
-    const unasked = pulled.filter((candidate) => statuses.get(candidate)!.status === 'unassessed')
-      .sort((left, right) => (place.get(left) ?? Infinity) - (place.get(right) ?? Infinity));
-    const round = reading(false);
-    await read(unasked.slice(0, room), round);
-    for (const candidate of unasked.slice(room)) rareHeld.set(candidate, 'size');
-    for (const candidate of round.unread) rareHeld.set(candidate, 'cold');
-    let asked = 0;
-    let added = 0;
-    for (const candidate of pulled) {
-      const status = statuses.get(candidate)!;
-      if (status.status === 'unassessed' && answered.has(candidate)) asked += 1;
-      if (decideFailed.has(candidate)) {
-        statuses.set(candidate, {
-          status: 'unanswered', answer: 'error', detail: decideFailure!.message,
+  // A mode's second stage: the parts the read kept at the mode's own bar,
+  // judged again with the stage's questions (whole messages and hard
+  // facts when the stage asks for them, batched unless it sets items per
+  // request) and kept at or above the stage's bar. A message is kept or
+  // left out whole, every piece the pick holds at its message's score;
+  // a part the stage got no answer for keeps the read's verdict.
+  let keepRecord: PickRecord['keep'];
+  const keepStage = selected.filter((candidate) => candidate.role === 'reference' && keepOf(candidate.sourceId) !== undefined);
+  if (keepStage.length > 0 && !stop) {
+    const before = batches;
+    const scoreOf = new Map<MemoryCandidate, number>();
+    keeping = true;
+    let items: MemoryCandidate[];
+    try {
+      items = [...new Set(keepStage.flatMap(itemsFor))];
+      await ask(items.flatMap((item) => specsFor(item).map((spec) => pending(item, spec))), keepAnswers);
+      const probabilityOf = (answer: CheckedAnswer | undefined) =>
+        answer?.status === 'answered' && 'probability' in answer ? answer.probability : undefined;
+      for (const item of items) {
+        const set = cascadeFor(item)!;
+        const got = keepAnswers.get(item);
+        const own = set.questions.map((question) => probabilityOf(got?.get(question.key)));
+        const facts = factQuestionsFor(item).flatMap((question) => {
+          const p = probabilityOf(got?.get(question.key));
+          return p === undefined ? [] : [p];
         });
-        continue;
+        if (own.every((p) => p === undefined) && facts.length === 0) continue;
+        scoreOf.set(item, set.combine === 'highest'
+          ? Math.max(0, ...own.flatMap((p) => p === undefined ? [] : [p]), ...facts)
+          : 1 / (1 + Math.exp(-((set.bias ?? 0)
+            + set.questions.reduce((sum, question, index) => sum + (own[index] === undefined ? 0 : (question.weight ?? 0) * logit(own[index]!)), 0)
+            + (set.facts === undefined || facts.length === 0 ? 0 : set.facts.highest * writtenLogit(Math.max(...facts)))))));
       }
-      const answer = combined.get(candidate);
-      if (answer === undefined) {
-        const held = curtailed.get(candidate) ?? stop;
-        if (held !== undefined) statuses.set(candidate, { status: 'unassessed', reason: held });
-        continue;
-      }
-      if (answer.status !== 'answered' || !('probability' in answer)) {
-        if (status.status === 'unassessed') {
-          statuses.set(candidate, { status: 'unanswered',
-            answer: answer.status === 'answered' ? 'error' : answer.status,
-            detail: answer.status === 'answered' ? 'The verdict is a level distribution, not a probability.' : answer.detail });
+    } finally {
+      keeping = false;
+    }
+    // Each kept part's message (or the part), and its best item's score.
+    const sources: Record<string, { kept: number; dropped: number; bar: number; byExchange?: number }> = {};
+    const done = new Set<MemoryCandidate>();
+    let unanswered = 0;
+    // The messages kept on their own rating, by message, with their
+    // score, for the exchange.
+    const keptOwn = new Map<string, number>();
+    for (const candidate of keepStage) {
+      if (done.has(candidate)) continue;
+      const key = messageKey(candidate);
+      const whole = keepOf(candidate.sourceId)!.wholeMessages === true && messageItems.has(key);
+      const pieces = whole ? messages.get(key) ?? [candidate] : [candidate];
+      const scores = (whole ? messageItems.get(key)! : [candidate]).flatMap((item) => scoreOf.has(item) ? [scoreOf.get(item)!] : []);
+      for (const piece of pieces) done.add(piece);
+      if (scores.length === 0) { unanswered += 1; continue; }
+      const score = Math.max(...scores);
+      const stage = keepOf(candidate.sourceId)!;
+      const stageBar = barValue(stage.bar ?? DEFAULT_BAR);
+      // A kind with a bar of its own keeps at it; any other at the stage's.
+      const kindBar = stage.barByKind?.[keepKind(candidate) ?? ''];
+      const bar = kindBar === undefined ? stageBar : barValue(kindBar);
+      const tally = sources[candidate.sourceId] ??= { kept: 0, dropped: 0, bar: stageBar };
+      if (score >= bar) keptOwn.set(key, score);
+      for (const piece of pieces) {
+        const read = statuses.get(piece);
+        const readProbability = read !== undefined && 'probability' in read && read.probability !== undefined ? { readProbability: read.probability } : {};
+        if (score >= bar) {
+          if (!selected.includes(piece)) selected.push(piece);
+          statuses.set(piece, { status: 'selected', asked: true, probability: score, ...readProbability, keptAs: 'rating' });
+          tally.kept += 1;
+        } else {
+          const at = selected.indexOf(piece);
+          if (at >= 0) selected.splice(at, 1);
+          statuses.set(piece, { status: 'rejected', probability: score, ...readProbability });
+          tally.dropped += 1;
         }
-        continue;
-      }
-      const reused = answer.reused === true ? { reused: true } : {};
-      const kept = answer.probability >= rareBar ? undefined : keptBy.get(candidate);
-      if (answer.probability >= rareBar || kept !== undefined) {
-        selected.push(candidate);
-        statuses.set(candidate, { status: 'selected', asked: true, probability: answer.probability, ...reused,
-          ...(kept === undefined ? {} : { keptBy: kept }) });
-        rareAdded.add(candidate);
-        added += 1;
-      } else if (status.status === 'unassessed') {
-        statuses.set(candidate, { status: 'rejected', probability: answer.probability, ...reused });
       }
     }
-    rareResult = {
-      share: rareShare, bar: rareBar, sources: rareRecord,
-      pulled: pulled.map((candidate) => ({ sourceId: candidate.sourceId, id: candidate.id })),
-      asked, added,
+    // The exchange around what the person said: for each message of the
+    // person kept on its rating, the agent message it replies to and the
+    // agent's last message before the person's next; for each kept final
+    // report, the request that asked for it. They are kept whatever they
+    // rate, at their own score where the stage gave one, and each names
+    // the messages whose exchange it belongs to.
+    const exchangeOf = new Map<MemoryCandidate, { sourceId: string; id: string }[]>();
+    const lists = transcriptMessages(references.filter((candidate) => candidate.role === 'reference' && asMessage(candidate)
+      && (keepOf(candidate.sourceId)?.exchange ?? false) !== false));
+    for (const list of lists.values()) {
+      const first = (index: number) => list[index]!.pieces[0]!;
+      const isAgent = (index: number) => first(index).author === 'agent' && first(index).chat?.unit === undefined;
+      list.forEach(({ key }, index) => {
+        if (!keptOwn.has(key)) return;
+        const anchor = { sourceId: first(index).sourceId, id: first(index).id };
+        const joined: number[] = [];
+        const kind = keepKind(first(index));
+        // A message of the person under the stage's exchange bar is kept alone.
+        const exchangeBar = keepOf(first(index).sourceId)?.exchangeBar;
+        if (kind === 'person message' && (exchangeBar === undefined || keptOwn.get(key)! >= barValue(exchangeBar))) {
+          for (let before = index - 1; before >= 0 && first(before).author !== 'person'; before -= 1) {
+            if (isAgent(before)) { joined.push(before); break; }
+          }
+          let reply: number | undefined;
+          for (let after = index + 1; after < list.length && first(after).author !== 'person'; after += 1) if (isAgent(after)) reply = after;
+          if (reply !== undefined) joined.push(reply);
+        } else if (kind === 'subagent final report') {
+          const request = list.findIndex(({ pieces }) => pieces[0]!.chat?.unit === 'prompt');
+          if (request >= 0) joined.push(request);
+        }
+        for (const at of joined) {
+          for (const piece of list[at]!.pieces) {
+            exchangeOf.set(piece, [...(exchangeOf.get(piece) ?? []), anchor]);
+          }
+        }
+      });
+    }
+    for (const [piece, anchors] of exchangeOf) {
+      const status = statuses.get(piece);
+      const own = status?.status === 'selected' && status.keptAs === 'rating';
+      const tally = sources[piece.sourceId]!;
+      if (!own) {
+        if (!selected.includes(piece)) selected.push(piece);
+        const score = status !== undefined && 'probability' in status && status.probability !== undefined ? status.probability : 0;
+        const readProbability = status !== undefined && 'readProbability' in status && status.readProbability !== undefined
+          ? { readProbability: status.readProbability } : {};
+        statuses.set(piece, { status: 'selected', asked: status !== undefined && status.status !== 'unassessed', probability: score,
+          ...readProbability, keptAs: 'exchange', exchange: anchors });
+        tally.byExchange = (tally.byExchange ?? 0) + 1;
+      } else {
+        statuses.set(piece, { ...status, exchange: anchors });
+      }
+    }
+    keepRecord = { asked: items!.length, requests: batches - before, unanswered, sources };
+  }
+
+  // What each kept part of a mode that asks it is doing: one Choice per
+  // kept message or part, its answer carried by every piece. Then code
+  // marks an agent's proposal the person's next message approves.
+  const roleOf = new Map<MemoryCandidate, { choice: string; probabilities: Record<string, number> }>();
+  const approvedBy = new Map<MemoryCandidate, string>();
+  const roling = selected.filter((candidate) => rolesFor(candidate));
+  if (roling.length > 0 && !stop) {
+    const roleAnswers = new Map<MemoryCandidate, Map<string, CheckedAnswer>>();
+    const items = [...new Set(roling.flatMap(itemsFor))];
+    await ask(items.map((item) => pending(item, { key: 'role', question: ROLE_QUESTION.question, options: ROLE_QUESTION.options })),
+      roleAnswers);
+    for (const item of items) {
+      const answer = roleAnswers.get(item)?.get('role');
+      if (answer?.status !== 'answered' || !('probabilities' in answer)) continue;
+      const probabilities = Object.fromEntries(ROLE_QUESTION.options.map(([key], index) => [key, answer.probabilities[index]!]));
+      const choice = ROLE_QUESTION.options.map(([key]) => key)
+        .reduce((best, key) => probabilities[key]! > probabilities[best]! ? key : best);
+      const key = messageOfItem.get(item);
+      for (const piece of key === undefined ? [item] : messages.get(key) ?? [item]) roleOf.set(piece, { choice, probabilities });
+    }
+    const byId = new Map(references.map((candidate) => [candidate.id, candidate]));
+    for (const candidate of roling) {
+      if (candidate.author !== 'person' || roleOf.get(candidate)?.choice !== 'approval') continue;
+      const reply = messageFacts.get(messageKey(candidate))?.replies_to as { readonly id: string } | undefined;
+      const proposal = reply === undefined ? undefined : byId.get(reply.id);
+      if (proposal === undefined || roleOf.get(proposal)?.choice !== 'proposal') continue;
+      for (const piece of messages.get(messageKey(proposal)) ?? [proposal]) approvedBy.set(piece, candidate.id);
+    }
+  }
+
+  // A Choice per needed fact over the kept parts of the modes that ask
+  // for it: per fact, the candidates the rating already bought ranks
+  // best (the fact's own question when the set asks one, else the part's
+  // score), one per kept message or part; the picks lead the text and
+  // nothing is dropped.
+  const picked = new Map<MemoryCandidate, { fact: number; round: number; probability: number }[]>();
+  let choiceRecord: PickRecord['choicePerFact'];
+  // A mode's Choice settings: candidates a fact, and the sufficiency
+  // question's bar unless the mode turns it off.
+  const choiceOf = (candidate: MemoryCandidate) => {
+    const setting = modeFor(candidate.sourceId)?.choicePerFact;
+    if (setting === undefined || setting === false) return undefined;
+    const own = typeof setting === 'object' ? setting : {};
+    const enough = own.enough === false ? undefined
+      : typeof own.enough === 'object' && own.enough.bar !== undefined ? own.enough.bar : ENOUGH_BAR;
+    return { candidates: own.candidates ?? CHOICE_CANDIDATES, enough };
+  };
+  const choosing = selected.filter((candidate) => candidate.role === 'reference' && choiceOf(candidate) !== undefined);
+  if (choosing.length > 0) {
+    const { candidates, enough } = choiceOf(choosing[0]!)!;
+    const said = (candidate: MemoryCandidate) => {
+      const ms = Date.parse(candidate.date?.value ?? '');
+      return Number.isFinite(ms) ? ms : 0;
     };
+    // Identical and near-identical texts (the same words in the same
+    // order, whatever their case, punctuation, Markdown and spacing) are
+    // one option, at their first place: a Choice splits its probability
+    // among options that say the same, and each would cost a round.
+    const sameWords = (item: MemoryCandidate) =>
+      (item.text.trim() || item.title).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+    const copies = new Map<string, MemoryCandidate[]>();
+    const items = [...new Set(choosing.flatMap(itemsFor))]
+      .sort((left, right) => said(left) - said(right) || left.id.localeCompare(right.id))
+      .filter((item) => {
+        const text = sameWords(item);
+        const group = copies.get(text);
+        if (group === undefined) { copies.set(text, [item]); return true; }
+        group.push(item);
+        return false;
+      });
+    // An item's rating for one fact: its answer to the set's question for
+    // that fact when it was asked one, else its score; equal ratings keep
+    // the search's order, never the list's.
+    const byId = new Map(references.map((candidate) => [candidate.id, candidate]));
+    const searchPlace = (item: MemoryCandidate) => priority.get(byId.get(item.id) ?? item) ?? Number.POSITIVE_INFINITY;
+    const ownRating = (item: MemoryCandidate, fact: number) => {
+      const key = cascadeFor(item)?.facts?.question.key;
+      const answer = key === undefined ? undefined : answered.get(item)?.get(`${key}${fact + 1}`);
+      return answer?.status === 'answered' && 'probability' in answer ? answer.probability : scoreOf(item) ?? 0;
+    };
+    // An option stands for its copies, at the best of their ratings.
+    const ratingFor = (item: MemoryCandidate, fact: number) =>
+      Math.max(...(copies.get(sameWords(item)) ?? [item]).map((copy) => ownRating(copy, fact)));
+    if (needed === undefined || stop !== undefined) {
+      choiceRecord = { candidates, facts: [], rounds: 0, requests: 0, skipped: stop ?? 'the call gave no needed facts' };
+    } else {
+      const screens = needed.map((_, fact) => [...items].sort((left, right) =>
+        ratingFor(right, fact) - ratingFor(left, fact) || searchPlace(left) - searchPlace(right) || left.id.localeCompare(right.id))
+        .slice(0, candidates));
+      const keyOf = new Map<MemoryCandidate, string>();
+      for (const item of screens.flat()) if (!keyOf.has(item)) keyOf.set(item, `P${keyOf.size + 1}`);
+      const itemOf = new Map([...keyOf].map(([item, key]) => [key, item]));
+      try {
+        const list = options.decide.list!;
+        const result = await choosePerFact({ task: options.task, facts: needed, header: headerOf(screens.flat()[0]!), list,
+          signal: decideSignal, ...(enough === undefined ? {} : { enough }),
+          maxChars: Math.min(limits.maxBatchChars, list.maxChars ?? Number.POSITIVE_INFINITY),
+          candidates: screens.map((screen) => screen.map((item) => keyOf.get(item)!)),
+          items: [...keyOf].map(([item, key]) => {
+            const { sourceId, id, title, text, role, date, kind, author, anonymous, facts } = pending(item, specsFor(item)[0]!).question;
+            // What a part is doing, when its mode asked, rides in its record.
+            const doing = roleOf.get(item);
+            const later = doing === undefined && !approvedBy.has(item) ? facts : { ...facts,
+              ...(doing === undefined ? {} : { doing: doing.choice }),
+              ...(approvedBy.has(item) ? { approved_by: approvedBy.get(item)! } : {}) };
+            return [key, { sourceId, id, title, text, role, date, kind, author, anonymous,
+              ...(later === undefined ? {} : { facts: later }) }] as const;
+          }) });
+        result.facts.forEach(({ picks }, fact) => {
+          for (const pick of picks) {
+            const item = itemOf.get(pick.key)!;
+            for (const copy of copies.get(sameWords(item)) ?? [item]) {
+              const key = messageOfItem.get(copy);
+              for (const piece of key === undefined ? [copy] : messages.get(key) ?? [copy]) {
+                picked.set(piece, [...picked.get(piece) ?? [], { fact, round: pick.round, probability: pick.probability }]);
+              }
+            }
+          }
+        });
+        choiceRecord = { candidates, rounds: result.rounds, requests: result.requests,
+          ...(result.enough === undefined ? {} : { enough: { bar: enough!, answers: result.enough } }),
+          facts: result.facts.map(({ fact, picks, ended, ranked }) => ({ fact, ended,
+            picks: picks.map(({ key, round, probability }) => ({ id: itemOf.get(key)!.id, round, probability })),
+            ranked: ranked.map(({ key, probability }) => ({ id: itemOf.get(key)!.id, probability })) })) };
+      } catch (error) {
+        choiceRecord = { candidates, facts: [], rounds: 0, requests: 0, error: error instanceof Error ? error.message : String(error) };
+      }
+    }
   }
 
   // The pick numbers on every pick: the history's size, the ranked
@@ -3341,12 +3999,12 @@ export async function pick(
       unjudged: [...cutBySource.values()].reduce((total, left) => total + left, 0),
     } }),
     ...(stopRule === undefined ? {} : { stopWhenCold: {
-      ...stopRule, waves: main.waves, batches: main.batches, rated: main.rated.size,
-      unread: insideOrder.length - main.rated.size, kept: readKept, atFloor: readAtFloor, ended: readEnded!,
-      ...(main.cold === undefined ? {} : { cold: main.cold }),
+      ...stopRule, waves: ranked?.waves ?? 0, windows: ranked?.windows ?? 0, rated: rankedRated.length,
+      unread: insideOrder.length - chatOrder.length - rankedRated.length, kept: readKept, atFloor: readAtFloor, ended: readEnded!,
+      ...(ranked?.cold === undefined ? {} : { cold: ranked.cold }),
     } }),
     ranking: feedFused || fused ? 'fusion' : 'keyword',
-    ...(rareResult === undefined ? {} : { rare: rareResult }),
+    ...(chatRecord === undefined ? {} : { chatRead: chatRecord }),
   };
 
   const bySource = (parts: Iterable<MemoryCandidate>) => {
@@ -3355,38 +4013,40 @@ export async function pick(
     return counts;
   };
   const effects = settingEffects({
-    candidates: candidates.filter((candidate) => admitted(candidate) || rarePulled.has(candidate)),
+    candidates: candidates.filter(admitted),
     queue, feed, statuses, laneHeld, labelLane, labelNeeds, labelBar: labelBarFor, labels, labelKindsBySource,
-    rareSeeds, rareTaken, rareAdded, scored: scoredParts, belowBar, linkActed, rankedBySource, cutBySource,
+    scored: scoredParts, belowBar, linkActed, rankedBySource, cutBySource,
     reads: options.readsBySource ?? {},
     taskPeriod: options.taskPeriod !== false, period, windowed,
     bar: referenceBar, ruleBar: ruleBarFor, everyScored: options.everyScored !== undefined,
-    linkedPathBar: thresholds.linkedPathBar, rareBar, topK,
+    linkedPathBar: thresholds.linkedPathBar, topK,
     ended: [
       ...(cutBySource.size > 0
         ? [!fused ? `a feed cut (everyRanked c ${topK})` : `a feed cut (feed size ${options.feed?.size})`]
         : []),
-      ...(main.unread.size > 0 ? ['a stop when the ratings went cold (stopWhenCold)'] : []),
+      ...(rankedUnread.size > 0 ? ['a stop when the ratings went cold (stopWhenCold)'] : []),
       ...(feedStop === undefined ? [] : [`a stop (${feedStop})`]),
+      ...(Object.values(chatRecord ?? {}).some((read) => read.ended === 'fall' && read.unread > 0)
+        ? ["a stop when the chat read's new warm parts fell (chatRead)"] : []),
     ],
     fused,
     feedOption: options.feed,
     stopWhenCold: stopRule === undefined ? undefined : {
-      ...stopRule, cold: main.cold, ended: readEnded!, kept: readKept, atFloor: readAtFloor, orderBySource: bySource(insideOrder),
-      ratedBySource: bySource(main.rated) },
-    rareHeld,
-    typedSources: new Map(Object.entries(options.questionsBySource ?? {}).flatMap(([id, set]) =>
+      ...stopRule, cold: ranked?.cold, ended: readEnded!, kept: readKept, atFloor: readAtFloor,
+      orderBySource: bySource(insideOrder.filter((candidate) => !ownRead(candidate))),
+      ratedBySource: bySource(rankedRated), chatSources: new Set(chatOrder.map((candidate) => candidate.sourceId)) },
+    typedSources: new Map(Object.entries(questionsBySource ?? {}).flatMap(([id, set]) =>
       (set.typed?.length ?? 0) > 0 ? [[id, set.typed!.some((q) => neededTypes.has(q.answerType))] as const] : [])),
     typedAsked: new Set(candidates.filter((candidate) =>
       typedFor(candidate).some((q) => answered.get(candidate)?.has(q.key) === true))),
     untyped,
-    writtenSources: new Set(Object.entries(options.questionsBySource ?? {})
+    writtenSources: new Set(Object.entries(questionsBySource ?? {})
       .flatMap(([id, set]) => set.written === undefined ? [] : [id])),
     writtenAsked: new Set(candidates.filter((candidate) =>
       writtenFor(candidate).some((q) => answered.get(candidate)?.has(q.key) === true))),
     unwritten,
     keepReached: new Set(keptBy.keys()),
-    namedSources: new Set(Object.entries(options.questionsBySource ?? {})
+    namedSources: new Set(Object.entries(questionsBySource ?? {})
       .flatMap(([id, set]) => set.named === undefined ? [] : [id])),
     named: (names?.found.length ?? 0) > 0,
     unheld,
@@ -3452,7 +4112,7 @@ export async function pick(
     || (feedOrder.get(a) ?? feedOrder.size) - (feedOrder.get(b) ?? feedOrder.size));
 
   const entries: PickRecordEntry[] = candidates
-    .filter((candidate) => admitted(candidate) || rarePulled.has(candidate)).map((candidate) => {
+    .filter(admitted).map((candidate) => {
     const cascade = cascadeFor(candidate);
     const status = statuses.get(candidate)!;
     const wasTruncated = truncated.get(candidate);
@@ -3481,10 +4141,14 @@ export async function pick(
       ...(cascade && candidate.role === 'reference' && answered.has(candidate) ? {
         questions: [...cascade.questions, ...typedFor(candidate),
           ...writtenFor(candidate).filter((q) => answered.get(candidate)!.has(q.key)),
-          ...namedFor(candidate).filter((q) => answered.get(candidate)!.has(q.key))]
+          ...namedFor(candidate).filter((q) => answered.get(candidate)!.has(q.key)),
+          ...factQuestionsFor(candidate).filter((q) => answered.get(candidate)!.has(q.key))]
           .map((q) => ({ key: q.key, ...(answered.get(candidate)!.get(q.key) ?? { status: 'missing' as const }) })),
       } : {}),
       ...(tags === undefined ? {} : { tags }),
+      ...(picked.has(candidate) ? { chosen: picked.get(candidate)! } : {}),
+      ...(roleOf.has(candidate) ? { doing: roleOf.get(candidate)! } : {}),
+      ...(approvedBy.has(candidate) ? { approvedBy: approvedBy.get(candidate)! } : {}),
     };
     return status.status === 'unanswered'
       ? { ...base, status: 'unanswered', answer: status.answer, detail: status.detail }
@@ -3537,23 +4201,42 @@ export async function pick(
     ...(options.writeQuestions === undefined ? {} : { writtenQuestions: { questions: writtenQuestions } }),
     ...(names === undefined ? {} : { names }),
     ...(pickRecord === undefined ? {} : { pick: pickRecord }),
+    ...(keepRecord === undefined ? {} : { keep: keepRecord }),
+    ...(choiceRecord === undefined ? {} : { choicePerFact: choiceRecord }),
     levers: { ...levers, sources: Object.fromEntries([...new Set([
-      ...Object.keys(labelKindsBySource), ...rareSourceIds,
-      ...Object.keys(options.barBySource ?? {}), ...Object.keys(options.ruleBarBySource ?? {}),
-      ...Object.keys(options.questionsBySource ?? {}),
+      ...Object.keys(labelKindsBySource), ...candidates.map((candidate) => candidate.sourceId),
+      ...Object.keys(modes), ...Object.keys(options.ruleBarBySource ?? {}),
     ])].map((id) => [id, {
       ...(options.sourceKinds?.[id] === undefined ? {} : { kind: options.sourceKinds[id] }),
+      ...(modeFor(id) === undefined ? {} : { mode: modeFor(id)!.name }),
       labels: (labelKindsBySource[id]?.length ?? 0) > 0,
       ...((labelKindsBySource[id]?.length ?? 0) > 0 ? { labelBar: labelBarFor(id) } : {}),
-      rare: rareForSource(id), bar: referenceBar(id),
+      bar: referenceBar(id),
       ...(candidates.some((c) => c.sourceId === id && c.role === 'rule') ? { ruleBar: ruleBarFor(id) } : {}),
       ...(questionsFor(id) === undefined ? {} : { questions: questionsFor(id) }),
+      ...(modeFor(id)?.textShare === undefined ? {} : { textShare: modeFor(id)!.textShare }),
+      ...(modeFor(id)?.wholeMessages === true ? { wholeMessages: true as const } : {}),
+      ...(modeFor(id)?.hardFacts === true ? { hardFacts: true as const } : {}),
+      ...(modeFor(id)?.roles === true ? { roles: true as const } : {}),
+      ...(modeFor(id)?.itemsPerRequest === undefined ? {} : { itemsPerRequest: modeFor(id)!.itemsPerRequest! }),
+      ...(modeFor(id)?.request === 'text' ? { request: 'text' as const } : {}),
+      ...(keepOf(id) === undefined ? {} : { keep: { questions: keepOf(id)!.questions, bar: barValue(keepOf(id)!.bar ?? DEFAULT_BAR),
+        ...(keepOf(id)!.wholeMessages === undefined ? {} : { wholeMessages: keepOf(id)!.wholeMessages! }),
+        ...(keepOf(id)!.hardFacts === undefined ? {} : { hardFacts: keepOf(id)!.hardFacts! }),
+        ...(keepOf(id)!.itemsPerRequest === undefined ? {} : { itemsPerRequest: keepOf(id)!.itemsPerRequest! }),
+        ...((keepOf(id)!.exchange ?? false) === false ? {} : { exchange: keepOf(id)!.exchange as true | { readonly nearest?: 'paragraph' } }) } }),
+      ...(modeFor(id) === undefined || choiceOf({ sourceId: id } as MemoryCandidate) === undefined ? {} : { choicePerFact: {
+        candidates: choiceOf({ sourceId: id } as MemoryCandidate)!.candidates,
+        ...(choiceOf({ sourceId: id } as MemoryCandidate)!.enough === undefined ? {}
+          : { enough: choiceOf({ sourceId: id } as MemoryCandidate)!.enough! }) } }),
     }])) },
     effects,
   };
   if (decideFailure !== undefined) {
-    throw new PickError(
-      `The decide call failed for candidates ${decideFailure.ids.join(', ')}: ${decideFailure.message}`,
+    // The cause leads; the refused request's ids are in the record.
+    const count = decideFailure.ids.length;
+    throw new PickError(`The decide call failed. ${decideFailure.message}\n${count === 1 ? 'One part' : `${count} parts`}`
+      + ` of the refused request ${count === 1 ? 'was' : 'were'} not decided; record.decideError lists the ids.`,
       record, { cause: decideFailure.error });
   }
   return { selected, record };

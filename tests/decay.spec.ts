@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { chat, chatSettings } from '@curatejs/chat';
 import { knowledgeBase, markdownSettings } from '@curatejs/markdown';
 import { historySource, pickFromSources, type CandidateReadResult, type MemoryCandidate, type PickDecide } from '@curatejs/core';
+import { poolSizing } from '@curatejs/core/internal';
 
 const directories: string[] = [];
 async function folder(): Promise<string> {
@@ -15,6 +16,7 @@ async function folder(): Promise<string> {
 }
 beforeEach(async () => { vi.stubEnv('XDG_CACHE_HOME', await folder()); });
 afterEach(async () => {
+  poolSizing.on = true;
   vi.unstubAllEnvs();
   await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
 });
@@ -33,7 +35,7 @@ function candidates(read: CandidateReadResult | undefined): readonly MemoryCandi
   if (read?.status !== 'read') throw new Error('Expected a read.');
   return read.candidates;
 }
-/** The parts the read's lane kept, without the uncut pool the rare-word round counts. */
+/** The parts the read's lane kept, without the uncut pool the fused order counts. */
 const laneKept = (read: CandidateReadResult | undefined) => candidates(read).filter((c) => c.poolOnly !== true).map((c) => c.id);
 
 const same = 'The deploy freeze holds for the billing service.';
@@ -47,6 +49,9 @@ describe('decay ranks a note lower by its age at the task date', () => {
       '2025.md': { date: 'date: 2025-06-01', body: same },
     });
     const source = historySource({ reader: knowledgeBase(directory), ...markdownSettings, decay: { halfLife: '365 days' } });
+    // No lane keeps the older note, so the read lists it only when the
+    // history is merged into the pick rather than sized.
+    poolSizing.on = false;
     const { reads, record } = await pickFromSources([source], { task }, options);
     const read = candidates(reads[0]);
     expect(read.map((c) => c.id)).toEqual(['2025.md#1', '2020.md#1']);
