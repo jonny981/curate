@@ -1129,6 +1129,7 @@ export async function pickFromSources(
   // The task's names, found once for every source with name lanes on.
   const found = sources.some((source) => source.names === true) ? await findTaskNames(options) : undefined;
   const namesFor = (source: CandidateSource) => source.names === true ? found!.found : [];
+  const failures: SourceReadError[] = [];
   const reads = await Promise.all(sources.map(async (source) => {
     const sourceRequest: CandidateReadRequest = {
       ...request, ...(taskDate === undefined ? { asOf } : { taskDate }), timeZone, taskPeriod: undefined,
@@ -1152,9 +1153,20 @@ export async function pickFromSources(
       // meaning lanes keep every part's similarity for it.
       ...(options.everyRanked === undefined ? { meaningPositions: true } : {}),
     };
-    const read = await readSearches(source, sourceRequest, context, namesFor(source));
+    let read: CandidateReadResult;
+    try {
+      read = await readSearches(source, sourceRequest, context, namesFor(source));
+    } catch (error) {
+      if (!(error instanceof SourceReadError) || error.code !== 'failed') throw error;
+      failures.push(error);
+      return { status: 'absent' as const, reason: `the read failed: ${error.message}` };
+    }
     return period === undefined ? read : addTaskPeriod(source, sourceRequest, period, read, context);
   }));
+  // One source whose read fails does not end the pick: it is reported
+  // as absent, with the failure, and the other sources are read. When
+  // every source failed, the first failure is raised, as before.
+  if (failures.length > 0 && failures.length === sources.length) throw failures[0];
   const candidates: MemoryCandidate[] = [];
   const sourceKinds: Record<string, CandidateSourceKind> = Object.assign(Object.create(null), options.sourceKinds);
   let rulesEnumerationComplete = options.rulesEnumerationComplete !== false;

@@ -462,8 +462,12 @@ export function citable(candidate, project) {
 
 // What standard error says about a source a read could not cover. Each of a
 // source's reads can report the same gap, so each reason is said once.
+const READ_FAILED = 'the read failed: ';
 function readWarning(read) {
-  if (read.status === 'absent') return `Source missing: ${read.source}: ${read.reason}`;
+  if (read.status === 'absent') {
+    return read.reason.startsWith(READ_FAILED) ? `Source failed: ${read.source}: ${read.reason.slice(READ_FAILED.length)}`
+      : `Source missing: ${read.source}: ${read.reason}`;
+  }
   if (read.complete !== false) return undefined;
   return `Source only partly read: ${read.source}: ${read.partial === undefined ? 'no reason given' : [...new Set(read.partial.split('; '))].join('; ')}`;
 }
@@ -1700,16 +1704,27 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
     if (options.prepareOnly) {
       local = await loaded();
       const prepareStart = Date.now();
+      // A source that fails to prepare is reported and the others finish;
+      // when every source fails, the first failure is raised.
+      const failures = [];
       const reads = await Promise.all(callSources.map(async (entry, index) => {
-        const { source } = await build(entry, join(copies, `codex-${index + 1}`));
-        readIds.add(source.id);
-        return { source: source.id, ...noteIndex(source.id, await warmSource(source, { task: options.task || 'prepare' }, embedFor(local, source.id), context)) };
+        try {
+          const { source } = await build(entry, join(copies, `codex-${index + 1}`));
+          readIds.add(source.id);
+          return { source: source.id, ...noteIndex(source.id, await warmSource(source, { task: options.task || 'prepare' }, embedFor(local, source.id), context)) };
+        } catch (error) {
+          if (error?.name === 'SourceReadError' && error.code === 'cancelled') throw error;
+          failures.push(error);
+          return { source: `${entry.type} ${entry.path}`, status: 'absent', reason: `${READ_FAILED}${String(error?.message ?? error).split('\n')[0]}` };
+        }
       }));
       record.timings.prepareMs = Date.now() - prepareStart;
+      if (failures.length > 0 && failures.length === reads.length) throw failures[0];
       for (const read of reads) if (readWarning(read) !== undefined) console.error(readWarning(read));
       const removed = [...context.removed, ...await local.embed.removeEarlierFiles?.() ?? []];
       record.status = 'prepared';
-      console.log(`Prepared ${reads.length} ${reads.length === 1 ? 'source' : 'sources'}${project === undefined ? '' : ` for ${project}`}.`);
+      const prepared = reads.length - failures.length;
+      console.log(`Prepared ${prepared} ${prepared === 1 ? 'source' : 'sources'}${failures.length === 0 ? '' : ` of ${reads.length}`}${project === undefined ? '' : ` for ${project}`}.`);
       if (removed.length > 0) {
         console.log(`Removed ${removed.length} ${removed.length === 1 ? 'file' : 'files'} an earlier version of Curate kept:\n${
           removed.map((path) => `  ${path}`).join('\n')}`);

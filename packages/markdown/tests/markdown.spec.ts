@@ -883,6 +883,22 @@ describe('knowledgeBase git dates', () => {
     return repo;
   }
 
+  it('skips and names a folder git cannot check, such as a bare repository inside the corpus, and reads the rest', async () => {
+    const repo = await committedRepo({ 'docs/ops.md': 'the ops body' });
+    // A backup kept as a bare repository inside the work tree: git refuses
+    // to check ignored files in it.
+    await git(repo, ['init', '--bare', '-b', 'main', join('backups', 'old.git')]);
+    await writeFile(join(repo, 'backups', 'old.git', 'notes.md'), 'a note inside the bare repository');
+
+    const result = await read(markdown({ paths: [repo], kind: 'docs' }), { task: 'ops work' });
+
+    expect(result.status).toBe('read');
+    if (result.status !== 'read') return;
+    expect(result.candidates.map((candidate) => candidate.text)).toEqual(['the ops body']);
+    expect(result.complete).toBe(false);
+    expect(result.partial).toMatch(/^skipped 1 folder git could not check for ignored files: \S*backups\/old\.git$/);
+  });
+
   it('labels an undated note with its last committed change', async () => {
     const repo = await committedRepo({ 'docs/ops.md': 'the ops body' });
     const toplevel = (await git(repo, ['rev-parse', '--show-toplevel'])).trim();

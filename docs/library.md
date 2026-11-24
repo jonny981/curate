@@ -36,7 +36,8 @@ To set the date the question is asked on, see [Time](#time).
 The error says `Context collection did not finish; inspect the source and decision records.`, and its `cause` holds `picked`, where each unfinished item stays visible.
 Parts left out on purpose don't count: those the label gate left out, those past [the rating stop](#the-rating-stop) or [a chat read's](#the-chat-read) own stop, and those past a `feed` size.
 
-Read errors and model errors reach you as they are. To accept a partial selection, [call the steps yourself](#separate-selection-and-curation).
+A source whose read fails counts as absent, and the other sources are still read; when every source fails, the first failure reaches you.
+Model errors reach you as they are. To accept a partial selection, [call the steps yourself](#separate-selection-and-curation).
 
 ## Settings for each source
 

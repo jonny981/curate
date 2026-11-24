@@ -43,7 +43,7 @@ It never asks for or prints the key. It then checks again, prints the line that 
 
 It builds every source a question from this folder would read, brings its index and embeddings up to date, prints one line saying how many sources it prepared, and exits. It writes no search lines and asks for no decisions, so it needs no `TYPESAFE_API_KEY` or login and makes no paid call. It checks only what it uses (Node.js, the engine, the model and history to read) and applies no [search scope](#search-scope).
 
-Like a question, it names on standard error any source it couldn't read fully, and prints the same warning line when the embedding step runs on the processor.
+Like a question, it names on standard error any source it couldn't read fully, and prints the same warning line when the embedding step runs on the processor. A source whose read fails is named on standard error as failed, with the reason, and the others are still prepared; the closing line then says how many of how many sources it prepared. A question reads past a failing source the same way, and names it.
 
 It also deletes the index and vector files an earlier version of Curate kept for those sources, and lists each path. A question never deletes them, since an older process may still have them open. So run `prepare` when no older version of Curate is mid-run: it can't tell whether one is still reading those files.
 

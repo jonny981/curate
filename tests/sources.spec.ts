@@ -324,7 +324,25 @@ describe('pickFromSources', () => {
     }
   });
 
-  it('propagates a source read failure', async () => {
+  it('reads the other sources and reports the one whose read failed', async () => {
+    const result = await pickFromSources(
+      [
+        source('notes', 'reference', async () => ({
+          status: 'read', complete: true,
+          candidates: [candidate({ sourceId: 'notes', id: 'n1' })],
+        })),
+        source('broken', 'reference', async () => {
+          throw new SourceReadError('failed', 'permission denied');
+        }),
+      ],
+      { task: 'the task' },
+      { ...uncutPick, task: 'the task', decide: sayYes },
+    );
+    expect(result.selected.map((part) => part.id)).toEqual(['n1']);
+    expect(result.reads[1]).toEqual({ status: 'absent', reason: 'the read failed: permission denied' });
+  });
+
+  it('propagates a source read failure when every source failed', async () => {
     await expect(
       pickFromSources(
         [source('broken', 'reference', async () => {

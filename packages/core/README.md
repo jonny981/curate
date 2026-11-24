@@ -333,6 +333,9 @@ A read ends in one of three ways:
 | `status: 'absent'` | It expected nothing, such as no folder or no store. Not an error; give the reason |
 | Throws `SourceReadError` | A real failure, such as an unreadable file or a corrupt store, or `code: 'cancelled'` when the read was cancelled |
 
+`pickFromSources()` reports a source whose read fails (`code: 'failed'`) as `absent`, with the reason `the read failed: <message>`, and reads the others.
+When every source failed, it throws the first failure.
+
 Refuse the request's `exclude` paths before you open anything, so excluded text never reaches a signal or a model.
 Resolve a `revision` pin once and use it for everything the read does; if you can't honour a pin, answer `absent` rather than guess.
 A part's `text` is a snapshot of exactly the text you scored.
