@@ -1090,8 +1090,8 @@ export async function searchAgain(task, first, agentIds, pickAgain) {
 
 // No model writes the memory: curate lays out the kept parts in their own
 // words, and `decide`, when given, rates each sentence of them. The whole
-// text goes to `log.md` and every kept part, strongest first with its
-// rating, to `kept.json`, in `textFolder`, on every call.
+// text goes to `log.md` and the parts it lays out, strongest first with
+// their ratings, to `kept.json`, in `textFolder`, on every call.
 export async function writeLog(task, picked, folder, record, options = {}, textFolder = folder) {
   const started = Date.now();
   const result = await curate(task, picked, options);

@@ -350,7 +350,7 @@ The decision model reads the fused order from the top until its ratings go cold,
 
 #### How it stops
 
-With the stop on, the decision model reads the order two batches at a time. As the replies land, Curate judges the rated parts in windows of 150 (`parts` sets another count). It stops at the first window whose best rating is under `floor`, or under `share` times the best rating of every window before it. A window is counted in parts, not requests, because a request holds only about ten of a coding agent's long parts. A part's rating is its decision score after every question of its set. The rest of the wave is still rated and kept, and every rated part at or above the keep bar is kept.
+With the stop on, the decision model reads the order two batches at a time. As the replies land, Curate judges them in windows: runs of whole requests that together hold at least 150 rated parts (`parts` sets another count), never a request cut in two. It stops at the first window whose best rating is under `floor`, or under `share` times the best rating of every window before it. A window's best is its best rated part wherever it sits, so a window is cold only when every request in it would be, and the read never stops earlier than judging each request alone would. A window is counted in parts because a request holds only about ten of a coding agent's long parts. A part's rating is its decision score after every question of its set. The rest of the wave is still rated and kept, and every rated part at or above the keep bar is kept.
 
 When the only sources read this way are Markdown notes, Curate judges each request's rated parts alone, the rule their questions and bar were measured with. On 149 LongMemEval questions, judged per request it rated 110 parts a question and answered 145.33 right, where windows of 150 rated 290 for no more right. A `parts` you set still sets a window.
 
@@ -522,7 +522,7 @@ If the request fails, the whole text comes back as if `sentenceCutoff` were `fal
 
 Curate prints the laid-out parts. Dates come from the evidence; a part with no date shows `(said unknown)`.
 
-Every question that lays out a text also writes it whole to `log.md`, and every kept part, strongest first, to `kept.json`: its rank, rating, id, source, path, date and whole text. Both are mode 0600, in the question's own folder under `~/.curate/runs/<timestamp>/`, with `records` on or off, so you can go back to them afterwards. An id the text names where it left paragraphs out is in `kept.json`, with the whole message.
+Every question that lays out a text also writes it whole to `log.md`, and the parts that text lays out, strongest first, to `kept.json`: each one's rank, rating, id, source, path, date and whole text. A part a set dial (`answerTokens`, a text share) left out, or one shown once as an exact copy of another, isn't listed. Both are mode 0600, in the question's own folder under `~/.curate/runs/<timestamp>/`, with `records` on or off, so you can go back to them afterwards. An id the text names where it left paragraphs out is in `kept.json`, with the whole message.
 
 Standard error names each missing source and each source only partly read, once per source with each reason once, and each listed source skipped as outside the project. It says how many ranked parts the rating stop left unread, when it ended the read before the end of the order.
 

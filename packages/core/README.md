@@ -556,7 +556,7 @@ With the stop on, `pick.stopWhenCold` adds:
 
 | Field | What it holds |
 | --- | --- |
-| `floor`, `share`, `parts` | The two levels used, and the window: a count of rated parts, or `'request'` |
+| `floor`, `share`, `parts` | The two levels used, and the window: the fewest rated parts a run of whole requests holds, or `'request'` |
 | `waves` | The rounds of requests sent |
 | `windows`, `rated` | The windows it judged, and the parts of the order it rated |
 | `unread` | The parts of the order it never rated |

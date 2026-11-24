@@ -410,16 +410,16 @@ It's off by default, so the decision model rates every part, at about $0.00002 a
 The `curate` command turns it on at the default levels.
 
 1. `pick.stopWhenCold: {}` reads the order two batches at a time, in the request-sized batches `limits` forms.
-2. As the replies land, it judges the rated parts in windows of `parts` (150), in order.
+2. As the replies land, it judges them in windows: runs of whole requests that together hold at least `parts` rated parts (150), never a request cut in two.
 3. It stops at the first window whose best rating is under `floor` (0.1), or under `share` (0.2) times the best rating of every window before it.
 4. It never stops before the read has kept a part at its keep bar and rated one at or above `floor`.
 
 So a question the history holds nothing for, and a history whose every part rates under `floor`, reads the whole order, at the cost of the stop being off.
 The rating is the part's full score after all its questions. A part that repeats an earlier part's text takes that answer and doesn't count toward a window, and a rule kept at its own bar doesn't count as a kept part.
 
-A window is a count of parts, not a request: a request holds fewer parts when they're long, about ten of a coding agent's.
-150 is the most parts one request carried when the floor and share were measured, so a window passes wherever every request inside it would have passed.
-Parts left over at the end of the order, too few to fill a window, aren't judged.
+A window's best is its best rated part wherever it sits, so a window is cold only when every request in it would be, and the read never stops earlier than judging each request alone would.
+A window is counted in parts because a request holds fewer parts when they're long, about ten of a coding agent's. 150 is the most parts one request carried when the floor and share were measured.
+Requests left at the end of the order, too few to fill a window, aren't judged.
 
 A mode whose requests hold many short parts can judge each request alone instead, with `stopWindow: 'request'`: the read then checks each request's rated parts in the order the wave sent them.
 It does so only when every source of the ranked read is in such a mode and the call names no `parts`, and the record's `parts` then says `'request'`.

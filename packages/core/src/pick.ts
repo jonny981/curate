@@ -1050,16 +1050,18 @@ export interface PickOptions {
    *  period and the label lane are members of the order too. With the
    *  stop set (`{}` takes every default), the decide step reads the
    *  order in the request-sized batches the limits form, two batches a
-   *  wave, and judges the rated parts in windows of `parts` (default
-   *  150), in order: the read stops at the first window whose best
+   *  wave, and judges them in windows: runs of whole requests that
+   *  together hold at least `parts` rated parts (default 150), never a
+   *  request cut in two. The read stops at the first window whose best
    *  decision score is under `floor` (default 0.1), or under `share`
    *  (default 0.2) times the best score of every window before it. A
-   *  window is a count of parts, not a request: a request holds fewer
-   *  parts when they are long (about ten of a coding agent's), and a
-   *  stop judged per request then ended reads after a few dozen parts.
-   *  150 is the most parts one request carried when the floor and share
-   *  were measured, so a window passes wherever every request inside it
-   *  would have passed. It never stops before the
+   *  window's best is its best rated part wherever it sits, so a window
+   *  is cold only when every request in it would be: the read never
+   *  stops earlier than judging each request alone would. A request
+   *  holds fewer parts when they are long (about ten of a coding
+   *  agent's), and a stop judged per request then ended reads after a
+   *  few dozen parts; 150 is the most parts one request carried when the
+   *  floor and share were measured. It never stops before the
    *  read has kept a reference part on the bar the selection keeps it
    *  at, whatever sets that bar, and rated one at or above `floor`, so
    *  a question the history holds nothing for, and a history whose
@@ -1090,7 +1092,8 @@ export interface PickOptions {
     readonly floor?: number;
     /** Or under this share of the best score of every window before it. */
     readonly share?: number;
-    /** How many rated parts one window holds: a whole number, 1 or more. */
+    /** The fewest rated parts a window of whole requests holds: a whole
+     *  number, 1 or more. */
     readonly parts?: number;
   };
   /** Off unless set. Which reference parts of the fused order the
@@ -1175,12 +1178,13 @@ export interface PickOptions {
  *  of 0.8 points of LoCoMo evidence. */
 const STOP_FLOOR = 0.1;
 const STOP_SHARE = 0.2;
-/** The rated parts the rating stop judges at a time when a call sets it
- *  without `parts`: 150, `DEFAULT_MAX_PER_BATCH`, the most parts one
- *  request carried when the floor and share were measured. On the saved
- *  ratings of 23 coding-agent tasks, judging each request of about ten
- *  long parts found 36 of the 103 known answer parts the ratings kept;
- *  windows of 150 found 100. */
+/** The fewest rated parts a window of whole requests holds before the
+ *  rating stop judges it, when a call sets the stop without `parts`:
+ *  150, `DEFAULT_MAX_PER_BATCH`, the most parts one request carried when
+ *  the floor and share were measured. On the saved ratings of 23
+ *  coding-agent tasks, judging each request of about ten long parts
+ *  found 36 of the 103 known answer parts the ratings kept; judging 150
+ *  rated parts at a time found 100. */
 const STOP_PARTS = 150;
 /** The batches the rating stop sends at once before it checks them.
  *  On the same saved ratings, two a wave read 3, 1 and 1 points more of

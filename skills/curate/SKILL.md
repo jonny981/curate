@@ -188,7 +188,7 @@ The source types are `claude-code`, `codex`, `git`, `markdown` and `whatsapp`. A
 
 | Setting | Default | What it does |
 | --- | --- | --- |
-| `stopWhenCold` | On: a `floor` of 0.1 and a `share` of 0.2, judged over windows of 150 rated parts, or each request alone when only Markdown notes are read that way | Stops rating once the ratings go cold, and only after a part has rated at or above the floor. `{ floor, share, parts }` sets the levels and the window, and `false` rates everything. A `claude-code` or `codex` source on its default questions stops on its own read's rule |
+| `stopWhenCold` | On: a `floor` of 0.1 and a `share` of 0.2, judged over windows of whole requests holding at least 150 rated parts, or each request alone when only Markdown notes are read that way | Stops rating once the ratings go cold, and only after a part has rated at or above the floor. `{ floor, share, parts }` sets the levels and the window, and `false` rates everything. A `claude-code` or `codex` source on its default questions stops on its own read's rule |
 | `answerTokens` | No budget | A budget for the output, in estimated tokens |
 | `sentenceCutoff` | Off | Rates each sentence and keeps those at or above this number |
 | `searchModel` | Haiku if the Claude login works, else Luna | `haiku` or `luna`: which model writes the search lines |

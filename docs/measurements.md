@@ -140,7 +140,9 @@ Three at a time rated 14, 3 and 2 points more for little more speed.
 
 A request holds as many parts as fit the decision service's request limit, so its size follows how long the parts are: up to 150 short parts on the benchmarks where the floor and share were measured, and about ten of a coding agent's long parts.
 Judged per request, one cold request of ten parts near the top of a mixed order ended the read: on one project's coding-agent history it stopped after 20 of 38,758 ranked parts.
-That's why the stop judges windows of rated parts by default.
+That's why the stop judges windows of rated parts by default: runs of whole requests that hold at least 150 rated parts.
+
+A window cut at exactly 150 parts, across request boundaries, could stop before the per-request rule would: with 720 parts in requests of 120 and warm parts at 0, 120, 359, 360, 480 and 600, the per-request rule rated all 720 and kept 6, and a cut 150-part window rated 480 and kept 4. A window of whole requests is cold only when every request in it would be, so it keeps every part the per-request rule keeps.
 
 On the saved ratings of 23 coding-agent tasks (103 known answer parts the ratings keep), with the order restricted to rated parts:
 

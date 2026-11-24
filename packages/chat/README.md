@@ -241,7 +241,7 @@ Its `conversationRead()` means a pick on the fused order reads its parts with [c
 A source in a mode that reads with `rankedRead` keeps the plain read, and so does a pick with `everyRanked`, which decides every ranked part.
 
 The two assistant-chat modes share one set of defaults, each under its own name so each can be tuned on its own.
-`assistantChatRead()` reads the fused order with the person's own messages first, two batches at a time, and stops where the ratings go cold: at the call's `stopWhenCold` levels or, with none set, a floor of 0.1 and a share of 0.2, judged over windows of 150 rated parts.
+`assistantChatRead()` reads the fused order with the person's own messages first, two batches at a time, and stops where the ratings go cold: at the call's `stopWhenCold` levels or, with none set, a floor of 0.1 and a share of 0.2, judged over windows of whole requests holding at least 150 rated parts.
 Replayed on saved ratings, this one set found as much evidence as each mode's own measured rules on both benchmarks: the same 97 of 104 evidence units on BEAM's long chats, and 856 of 886 against 851 on LongMemEval.
 Their text takes every kept part: a text share of 0.2 was measured only under a 2,000-token budget, and with no budget it leaves out kept parts, so `textShare` is a dial you set.
 An author weight, the facts the answer needs and a second search are left out: the weight wasn't fitted for this set, and the other two weren't measured with it.

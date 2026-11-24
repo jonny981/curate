@@ -321,7 +321,7 @@ Building a source's index from scratch, or embedding more than 2,000 passages, p
 
 ### Logs
 
-Every question keeps its result in `log.md`, and the passages it kept, with their ratings and whole text, in `kept.json`, under `~/.curate/runs/<timestamp>/`.
+Every question keeps its result in `log.md`, and the passages that result lays out, with their ratings and whole text, in `kept.json`, under `~/.curate/runs/<timestamp>/`.
 The full record is off by default. Set `"records": true` and each question also saves what it read, model usage and timings there.
 The timings include how long the question waited on indexing and embedding, and `prepared` says per source whether its index was built from scratch and how many passages were embedded.
 A record keeps the text of the passages a question kept, and only ids, ranks and scores for the rest.
