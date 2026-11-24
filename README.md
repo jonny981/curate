@@ -3,8 +3,8 @@
 Curate finds what your agent needs from past chats, notes and commits.
 It picks the evidence for a task and hands it over word for word, with where and when each piece was said.
 
-**95.2% on LongMemEval** (476 of 500 questions), with the agent reading about 3,650 tokens a question (median). Answers and marking by gpt-6.1-sol.
-The compact setting scores 94.2%, or 92.8% under LongMemEval's own grader, on about 65 times less context than the raw history.
+**94.7% on LongMemEval under its own grader, and 96.5% on LoCoMo.**
+On LongMemEval the agent reads about 3,650 tokens a question (median), about 28 times less than the raw history. Marked by gpt-6.1-sol, the same answers score 95.2%.
 See [Results](#results).
 
 **You need a paid key.** Curate uses a decision model, TypeSafe's Jev (`jev-latest`), to rate passages from your history. It costs about $0.00002 a passage.
@@ -163,6 +163,7 @@ LongMemEval S, all 500 questions:
 | System | Answering model | Marker | Score | Tokens read (mean) |
 | --- | --- | --- | --- | --- |
 | **Curate** | **gpt-6.1-sol** | **gpt-6.1-sol** | **95.2** | **3,652 median** |
+| **Curate** | **gpt-6.1-sol** | **LongMemEval's grader (GPT-4o)** | **94.7** | **3,652 median** |
 | **[Curate (compact)](benchmarks/longmemeval/2026-11-11/README.md)** | **gpt-6.1-sol** | **gpt-6.1-sol** | **94.2** | **1,577** |
 | [Mastra observational memory](https://mastra.ai/research/observational-memory)\* | gpt-5-mini | GPT-4o | 93.6† | about 30,000 (estimated) |
 | **[Curate (compact)](benchmarks/longmemeval/2026-11-11/README.md)** | **gpt-6.1-sol** | **LongMemEval's grader (GPT-4o)** | **92.8** | **1,577** |
@@ -180,12 +181,6 @@ LoCoMo, all 1,540 scored questions:
 | [Mem0 platform](https://github.com/mem0ai/memory-benchmarks/blob/edcd6f1d42400837b1fcb6997716f1769dc51a37/results/platform/locomo_results.json) | GPT-5 | GPT-5 | 91.6 | |
 | **[Curate (compact)](benchmarks/locomo/2026-11-12/README.md)** | **gpt-4.1-mini** | **gpt-4o-mini** | **91.4** | **1,248** |
 | [MemOS, in OmniMemEval](https://github.com/MemTensor/OmniMemEval/blob/7c79d46e31dd85f3da2509b430bba9406656dd28/docs/user_memory/results.md#locomo)\* | gpt-4.1-mini | gpt-4o-mini | 88.83 | 5,400 with prompt |
-
-LoCoMo, a sample of 150 scored questions:
-
-| System | Answering model | Marker | Score | Tokens read (mean) |
-| --- | --- | --- | --- | --- |
-| **Curate** | **gpt-6.1-sol** | **gpt-6.1-sol** | **95.3** | **5,320 median** |
 
 \* Score as published; these answers were not marked again here.
 
