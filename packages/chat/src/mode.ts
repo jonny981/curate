@@ -22,12 +22,13 @@ export function assistantChatRead(): ModeRead {
 }
 
 /** The defaults both assistant-chat modes share: the chat question set,
- *  the 0.0146 bar and `assistantChatRead()`. They set no text share: a
+ *  the 0.0146 bar and `assistantChatRead()`, asked in plain text, the
+ *  form the chat set's bar was set in. They set no text share: a
  *  share of 0.2 was measured only under a 2,000-token budget, and with no
  *  budget it leaves out kept parts, so it is a dial a caller sets. One set won or tied on both
  *  measured kinds of history; each mode keeps its own name, so each can
  *  be tuned on its own. */
-const assistantChat = (name: string): Mode => ({ name, questions: CHAT_CASCADE, bar: 0.0146, read: assistantChatRead() });
+const assistantChat = (name: string): Mode => ({ name, questions: CHAT_CASCADE, bar: 0.0146, read: assistantChatRead(), request: 'text' });
 
 /** A person's history of many short chats with an assistant,
  *  `chatSettings`' mode. */

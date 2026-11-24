@@ -145,6 +145,7 @@ The file also keeps each long commit's parts and their word counts. Each part si
 - **No labels.**
 - **Name lanes:** one for each name the task names.
 - **The `commits` mode:** each commit is asked `GIT_HISTORY_CASCADE`, and commits scoring 0.0146 or more are kept, ordered and weighted by decision probability.
+  Its decision requests are plain text, and the [rating stop](https://github.com/jonny981/curate/blob/main/docs/library.md#the-rating-stop) judges each request alone: the form and the rule the bar and the stop's levels were set with.
 
 Set `everyScored: true` on the pick to keep every scored reference candidate from every source.
 Core's `curate()` lays out the kept candidates by their exact scores, strongest first.

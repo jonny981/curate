@@ -40,8 +40,8 @@ const TILE_MIN = 40;
 /** A unit's descriptor: its first `UNIT_HEAD` characters, its Markdown
  *  headings up to `UNIT_HEADINGS` characters, its `UNIT_RARE` rarest
  *  words, and for a report the first `UNIT_HEAD` characters of its
- *  prompt. The form that reached 15 of 16 agent-written answers in
- *  Climb 13, taken as set, not tuned. */
+ *  prompt. The form that reached 15 of 16 agent-written answers on
+ *  saved ratings, taken as set, not tuned. */
 const UNIT_HEAD = 600;
 const UNIT_HEADINGS = 400;
 const UNIT_RARE = 12;

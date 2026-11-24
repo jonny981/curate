@@ -113,11 +113,11 @@ describe('package exports', () => {
     ]);
     expect([agentTranscripts, assistantChatHistory, longAssistantChats, commits, notes, directMessages]).toEqual([
       { name: 'agent-transcripts', questions: AGENT_CHAT_CASCADE, bar: 0.0146, read: expect.any(Function), needed: true },
-      { name: 'assistant-chat-history', questions: CHAT_CASCADE, bar: 0.0146, read: expect.any(Function) },
-      { name: 'long-assistant-chats', questions: CHAT_CASCADE, bar: 0.0146, read: expect.any(Function) },
-      { name: 'commits', questions: GIT_HISTORY_CASCADE, bar: 0.0146, read: rankedRead },
+      { name: 'assistant-chat-history', questions: CHAT_CASCADE, bar: 0.0146, read: expect.any(Function), request: 'text' },
+      { name: 'long-assistant-chats', questions: CHAT_CASCADE, bar: 0.0146, read: expect.any(Function), request: 'text' },
+      { name: 'commits', questions: GIT_HISTORY_CASCADE, bar: 0.0146, read: rankedRead, request: 'text', stopWindow: 'request' },
       { name: 'notes', questions: MARKDOWN_CASCADE, bar: 0.0146, read: rankedRead, request: 'text', stopWindow: 'request' },
-      { name: 'direct-messages', questions: MARKDOWN_CASCADE, bar: 0.0146, read: rankedRead },
+      { name: 'direct-messages', questions: MARKDOWN_CASCADE, bar: 0.0146, read: rankedRead, request: 'text', stopWindow: 'request' },
     ]);
     // Each call makes a conversation read of its own, with any of its rules replaced.
     expect(conversationRead()).not.toBe(conversationRead());

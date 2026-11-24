@@ -40,7 +40,7 @@ describe('sources.json judgment selection', () => {
         ...(type === 'codex' ? { allowedCwd: '/x' } : {}) }] });
       expect(parsed.sources[0]).toMatchObject({ questions: 'judgments', bar: 0.3 });
     }
-    expect(CHAT_MODES.judgments).toMatchObject({ questions: JUDGMENT_CHAT_CASCADE, read: rankedRead });
+    expect(CHAT_MODES.judgments).toMatchObject({ questions: JUDGMENT_CHAT_CASCADE, read: rankedRead, request: 'text' });
     // 'default' names today's mode: the same source an omitted key produces.
     expect(CHAT_MODES.default).toBe(agentTranscripts);
     const named = parseSources({ sources: [{ type: 'claude-code', path: '/x', questions: 'default' }] });

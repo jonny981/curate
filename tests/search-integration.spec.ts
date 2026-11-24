@@ -54,10 +54,9 @@ it('combines search options and source questions across real readers', async () 
         }));
       },
     });
-    // The rule is asked too, in the first round. The notes and the rule ask in plain text and the chat and the
-    // commit in JSON, so each round's questions go in two requests: the rule and a note, then the chat part and the
-    // commit; then a chat part, then a note.
-    expect(calls.map((questions) => questions.length)).toEqual([2, 2, 1, 1]);
+    // The rule is asked too, in the first round. Every source here asks in plain text, so each round's
+    // questions go in one request: the rule, a chat part, the commit and a note; then a chat part and a note.
+    expect(calls.map((questions) => questions.length)).toEqual([4, 2]);
     expect(result.selected).toHaveLength(6);
     expect(result.record.rulesCoverage).toBe('complete');
     expect(result.record.candidates.filter((entry) => entry.role === 'reference').every((entry) =>

@@ -20,7 +20,7 @@
         "chat#37",
         "chat#19"
       ],
-      "sha256": "8738032e4b14d69698e3c035d45e72f459c2448567c85397a987fd315f2f4e07"
+      "sha256": "48efee99bc81359de92ece8af8ca61f7f6dda069640edd53f8afd4b3b8782b64"
     },
     "defaults git": {
       "selected": [
@@ -67,7 +67,7 @@
         "git#5",
         "git#3"
       ],
-      "sha256": "c2b33783f538d1b04e0a6ed86de39431786b1e5a85a3ad7e0648d71a7eb05e41"
+      "sha256": "08f9ac2bab9929d18d558968dce15dc2c8a00c02066ec4ba3797c427c97a5513"
     },
     "defaults markdown": {
       "selected": [
@@ -222,7 +222,7 @@
         "git#3",
         "chat#19"
       ],
-      "sha256": "9ba89beb79ed91b546451f50641584a9fdfff4e6a787514c7cff1e897b54cf53"
+      "sha256": "ce604c8fd47e78336106c2aa85cf218e9943ba0a7e2f7aaf2346672e8c645364"
     },
     "chat labels": {
       "selected": [
@@ -258,7 +258,7 @@
         "chat#137",
         "chat#19"
       ],
-      "sha256": "cd446db672fa5a805aff220abf5960cf46595d85fd858dca5973dd6030e32155"
+      "sha256": "26384806854ad72ea013da4980d423b926d2a0c8cbd642f1e9701e59e7b43bd6"
     },
     "chat labels all": {
       "selected": [
@@ -379,7 +379,7 @@
         "git#3",
         "chat#19"
       ],
-      "sha256": "d3d41589d9ec97fd578747faa0498def0cac6b14fdbf86dae3f6a65ac784e101"
+      "sha256": "38bde90cd3c33aa2cb08ee54c6a28701e154ae5e748f61ab56d15b7314f2b4be"
     }
   }
 }

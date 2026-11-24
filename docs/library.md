@@ -424,7 +424,7 @@ Requests left at the end of the order, too few to fill a window, aren't judged.
 
 A mode whose requests hold many short parts can judge each request alone instead, with `stopWindow: 'request'`: the read then checks each request's rated parts in the order the wave sent them.
 It does so only when every source of the ranked read is in such a mode and the call names no `parts`, and the record's `parts` then says `'request'`.
-The `notes` mode does ([measured](measurements.md#the-rating-stop)).
+The `notes`, `commits` and `directMessages` modes do ([measured](measurements.md#the-rating-stop)), so a call over notes and commits judges each request alone.
 
 The rest of the wave that held a cold window is rated and kept as usual.
 The stop never drops a part it rated: every rated part at or above its keep bar is kept.
@@ -785,10 +785,10 @@ The shipped modes:
 | Mode | Package | Questions | Bar | Read | Request |
 | --- | --- | --- | --- | --- | --- |
 | `agentTranscripts` | `@curatejs/chat` | `AGENT_CHAT_CASCADE`, with the needed facts | 0.0146 | `conversationRead()` | JSON |
-| `assistantChatHistory`, `longAssistantChats` | `@curatejs/chat` | `CHAT_CASCADE` | 0.0146 | `assistantChatRead()`: the ranked read, the person's own messages first | JSON |
-| `commits` | `@curatejs/git` | `GIT_HISTORY_CASCADE` | 0.0146 | `rankedRead` | JSON |
+| `assistantChatHistory`, `longAssistantChats` | `@curatejs/chat` | `CHAT_CASCADE` | 0.0146 | `assistantChatRead()`: the ranked read, the person's own messages first | Plain text |
+| `commits` | `@curatejs/git` | `GIT_HISTORY_CASCADE` | 0.0146 | `rankedRead`, its stop judging each request alone | Plain text |
 | `notes` | `@curatejs/markdown` | `MARKDOWN_CASCADE` | 0.0146 | `rankedRead`, its stop judging each request alone | Plain text |
-| `directMessages` | `@curatejs/markdown` | `MARKDOWN_CASCADE` | 0.0146 | `rankedRead` | JSON |
+| `directMessages` | `@curatejs/markdown` | `MARKDOWN_CASCADE` | 0.0146 | `rankedRead`, its stop judging each request alone | Plain text |
 
 Parts of modes that share a read are read together: every `rankedRead` mode's parts and every rule part in one read of the fused order, and the parts of every mode on one `conversationRead()` in one chat read.
 `pick.levers.sources` names each source's mode and the levers it ran with.
@@ -938,7 +938,7 @@ A mode with `request: 'text'` asks in plain text whenever its request carries no
 A mode with any lever on (whole messages, hard facts, items per request, roles, a Choice, a second stage), or a request with needed facts, the person or the kind of task, sends the JSON state.
 A request is split by form, so parts of a text mode and a JSON mode never share one, and the record names the form under `levers.sources[id].request`.
 
-`notes` asks in plain text, and the other shipped modes in the JSON state.
+`agentTranscripts` asks in the JSON state, where its measured gain was made, and every other shipped mode in plain text, the form its bar was set in.
 A mode's bar is measured for the form it uses: a change to what the decision model is shown moves its scale ([measured](measurements.md#the-requests-form)).
 
 ### A keep bar set by measurement

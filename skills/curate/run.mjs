@@ -159,7 +159,9 @@ export const CHAT_MODES = { default: agentTranscripts,
       'tool output': { 'one decision': 0.81, 'everything said': 0.13 },
       'agent step': 1, 'system message': 1 },
     exchangeBar: { 'one decision': 0.76, 'everything said': 0.04 } } },
-  judgments: { name: 'judgments', questions: JUDGMENT_CHAT_CASCADE, read: rankedRead } };
+  // Asked in plain text: the JSON state moves the decision model's scale,
+  // and no bar of this set was measured in it.
+  judgments: { name: 'judgments', questions: JUDGMENT_CHAT_CASCADE, read: rankedRead, request: 'text' } };
 // The decision levers a chat entry can switch on for its mode, each off by
 // default (core's Mode documents them).
 export const CHAT_LEVERS = ['wholeMessages', 'hardFacts', 'roles', 'choicePerFact', 'itemsPerRequest'];
