@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { conversationRead, pick, type MemoryCandidate, type PickBatch, type PickCascade, type PickDecide } from '../src/index.js';
+import { conversationRead, pick, type HistoryStore, type MemoryCandidate, type PickBatch, type PickCascade, type PickDecide } from '../src/index.js';
 import { agentUnits, chatRead, topicShifts, unitDescriptors, unitStarts } from '../src/chat-read.js';
 import { modesOf } from './fixtures/modes.js';
 
@@ -609,6 +609,38 @@ describe('the units of agent work as one more start', () => {
     const agentIds = new Set(agents.map((part) => part.id));
     expect(new Set(asked.flat().filter((id) => agentIds.has(id)).map((id) => id.replace(/:\d+:1:\d+$/, ''))))
       .toEqual(new Set(['claude-code:/home/me/.claude/projects:app/s/subagents/agent-a7.jsonl']));
+  });
+
+  it('reads the same with the history\'s facts kept between calls, and reads them back where the text did not change', async () => {
+    // A long session with two topics, so it has a topic cut, beside the units of agent work.
+    const long = Array.from({ length: 40 }, (_, k) => part('long', k + 1, k % 2 === 0 ? 'person' : 'agent', {
+      ...(k === 0 ? { ranks: [9] } : {}), text: k < 20 ? 'postgres database migration schema' : 'kubernetes cluster deployment helm' }));
+    const parts = [...personSessions(4), ...long, ...agents];
+    const run = (history?: HistoryStore) => pick(parts, { task, decide: rater(ratings).decide, ...agentRead,
+      queriesBySource: { chat: [task, 'postgres database decision'] }, embed, ...(history === undefined ? {} : { history }) });
+    const plain = await run();
+    const held = new Map<string, unknown>();
+    const sets: string[] = [];
+    const store: HistoryStore = { get: (key) => held.get(key), set: (key, value) => { sets.push(key); held.set(key, value); } };
+    const first = await run(store);
+    // The cut of the long session and every unit's words were worked out and kept.
+    expect(sets.filter((key) => key.startsWith('cuts:'))).toHaveLength(1);
+    expect(held.get(sets.find((key) => key.startsWith('cuts:'))!)).toEqual([20]);
+    expect(sets.filter((key) => key.startsWith('words:')).length).toBeGreaterThanOrEqual(24);
+    sets.length = 0;
+    const second = await run(store);
+    // Read back, nothing worked out again, and the same parts kept with the same scores as with no store.
+    expect(sets).toEqual([]);
+    for (const result of [first, second]) {
+      expect(result.selected.map((item) => item.id)).toEqual(plain.selected.map((item) => item.id));
+      expect(result.record.candidates).toEqual(plain.record.candidates);
+    }
+    // A session that grew is worked out again.
+    const grown = [...parts, part('long', 41, 'agent', { text: 'kubernetes cluster deployment helm' })];
+    sets.length = 0;
+    await pick(grown, { task, decide: rater(ratings).decide, ...agentRead, queriesBySource: { chat: [task, 'postgres database decision'] },
+      embed, history: store });
+    expect(sets.filter((key) => key.startsWith('cuts:'))).toHaveLength(1);
   });
 
   it('judges an opened unit\'s report alone and whole, with the request that produced it', async () => {

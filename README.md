@@ -314,7 +314,7 @@ Claude Code and Codex transcripts are searched a second time, with lines made fr
 
 ### Caches
 
-Curate keeps its index, embeddings and label store under `~/.cache/curate`, or `$XDG_CACHE_HOME/curate` if that's set.
+Curate keeps its index, embeddings, the transcripts' topic cuts and its label store under `~/.cache/curate`, or `$XDG_CACHE_HOME/curate` if that's set.
 Embeddings are reused until the model file or the text changes, including after an update that rebuilds the index.
 Building a source's index from scratch, or embedding more than 2,000 passages, prints its progress on standard error.
 `curate setup` also writes the settings and key files under `~/.curate`, but only the ones you say yes to.

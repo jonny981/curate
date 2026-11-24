@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { closeSync, constants, existsSync, openSync, readSync, realpathSync, rmSync } from 'node:fs';
 import { copyFile, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
@@ -1869,9 +1870,21 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
     // the agent sources ranks their units of work against them.
     const queriesOf = (searches) => Object.fromEntries(sources.map((source) => [source.id,
       [options.task, ...(searches[source.kind]?.keywords ?? []), ...(searches[source.kind]?.answers ?? [])]]));
+    // Facts of the history that do not depend on the task (each
+    // session's topic cuts, each unit of agent work's words), kept
+    // between calls beside the index by a hash of their text, so only a
+    // session that grew is worked out again.
+    const historyFile = join(process.env.XDG_CACHE_HOME ?? join(homedir(), '.cache'), 'curate/history',
+      `${createHash('sha256').update(JSON.stringify(sources.map((source) => source.id).sort())).digest('hex').slice(0, 24)}.json`);
+    // A file that is missing, unreadable or not JSON (a write cut short)
+    // is read as empty, and every fact is worked out again.
+    const heldFacts = new Map(Object.entries(await readFile(historyFile, 'utf8').then((text) => JSON.parse(text)).catch(() => ({})) ?? {}));
+    const usedFacts = new Map();
+    const history = { get: (key) => { const value = heldFacts.get(key); if (value !== undefined) usedFacts.set(key, value); return value; },
+      set: (key, value) => { usedFacts.set(key, value); } };
     // A call stops where the ratings go cold, at the library's own levels,
     // unless the settings turn the stop off with false or set its levels.
-    const pickOptions = { task: options.task, decide, queriesBySource: queriesOf(record.searches),
+    const pickOptions = { task: options.task, decide, queriesBySource: queriesOf(record.searches), history,
       limits: { maxBatchChars,
         ...(settings.maxInFlight === undefined ? {} : { maxInFlight: settings.maxInFlight }) },
       stopWhenCold: settings.stopWhenCold ?? {},
@@ -1931,6 +1944,12 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
           ms: Date.now() - againStart };
         await save();
       }
+    }
+    // The history's facts this call used or worked out, written back when
+    // any was new or any held one went unused (a session that changed).
+    if (usedFacts.size > 0 && (usedFacts.size !== heldFacts.size || [...usedFacts.keys()].some((key) => !heldFacts.has(key)))) {
+      await mkdir(dirname(historyFile), { recursive: true, mode: 0o700 });
+      await writeFile(historyFile, JSON.stringify(Object.fromEntries(usedFacts)), { mode: 0o600 });
     }
     await writeFile(join(folder, 'selection.json'), JSON.stringify({ selected: final.selected, record: { ...final.record, candidates: final.record.candidates.filter((entry) => entry.status === 'selected') } }), { mode: 0o600 });
     const cited = { ...final, selected: final.selected.map((candidate) => citable(candidate, project)) };

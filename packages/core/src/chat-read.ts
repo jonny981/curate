@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { cutScoreCurve } from './lanes.js';
 import type { EmbeddingFunction } from './meaning.js';
 import type { MemoryCandidate } from './pick.js';
@@ -61,6 +62,33 @@ const TILE_STOP = new Set(('about also aren assistant because been being could d
   + 'just like made make more much need only other over should some such than that their them then there these they '
   + 'this those used user using very want wasn were weren what when where which while will with would your').split(' '));
 
+/** Facts of a history that do not depend on the task, kept by the
+ *  caller between calls and read by key: a session's topic cuts and a
+ *  unit of agent work's words. Each key is a hash of the text the fact
+ *  is computed from, so a session that grew is computed again and one
+ *  that did not is read back as it was. */
+export interface HistoryStore {
+  get(key: string): unknown;
+  set(key: string, value: unknown): void;
+}
+
+const textKey = (kind: string, texts: readonly string[]) => {
+  const hash = createHash('sha256');
+  for (const text of texts) hash.update(text).update('\u0000');
+  return `${kind}:${hash.digest('hex')}`;
+};
+
+/** A session's topic cuts, from the store when it holds them. */
+export function storedTopicShifts(texts: readonly string[], store?: HistoryStore): number[] {
+  if (store === undefined) return topicShifts(texts);
+  const key = textKey('cuts', texts);
+  const held = store.get(key);
+  if (Array.isArray(held)) return held as number[];
+  const cuts = topicShifts(texts);
+  store.set(key, cuts);
+  return cuts;
+}
+
 export interface ChatReadInput {
   /** The chat sources' reference parts: every part the read may reach. */
   readonly parts: readonly MemoryCandidate[];
@@ -95,6 +123,9 @@ export interface ChatReadInput {
   /** The read's decisions; each one absent is today's measured rule
    *  (`walksOn`, `opens`, `stops`). */
   readonly rules?: ConversationRules;
+  /** Topic cuts and unit words kept from earlier calls; absent, each is
+   *  computed. The read is the same either way. */
+  readonly history?: HistoryStore;
 }
 
 /** The decisions a conversation read makes from ratings, each given the
@@ -180,12 +211,19 @@ const compareAt = (left: readonly number[], right: readonly number[]) => {
  *  and its role there, as the chat reader marks them (`place.at` is the
  *  line, block and piece). A part with no transcript place is a message
  *  of its own. */
+// Each part's message key, made once: a call groups its parts by message
+// many times over.
+const messageKeys = new WeakMap<MemoryCandidate, string>();
 export function messageKey(part: MemoryCandidate): string {
+  let key = messageKeys.get(part);
+  if (key !== undefined) return key;
   const at = part.place?.at;
-  if (part.turn !== undefined) return JSON.stringify([part.sourceId, part.place?.container ?? part.turn.session, part.turn.position, 'turn']);
-  return part.chat === undefined || at === undefined || at.length < 3
-    ? JSON.stringify([part.sourceId, part.id])
-    : JSON.stringify([part.sourceId, part.place!.container, at[0], part.chat.role]);
+  key = part.turn !== undefined ? JSON.stringify([part.sourceId, part.place?.container ?? part.turn.session, part.turn.position, 'turn'])
+    : part.chat === undefined || at === undefined || at.length < 3
+      ? JSON.stringify([part.sourceId, part.id])
+      : JSON.stringify([part.sourceId, part.place!.container, at[0], part.chat.role]);
+  messageKeys.set(part, key);
+  return key;
 }
 
 /** The pieces of each message among `parts`, in their order in the
@@ -253,9 +291,16 @@ export function messageText(pieces: readonly MemoryCandidate[]): string {
   return text;
 }
 
+// Each part's date, parsed once: the read sorts by it many times.
+const parsedDates = new WeakMap<MemoryCandidate, number>();
 const dateMs = (part: MemoryCandidate) => {
-  const ms = Date.parse(part.date?.value ?? '');
-  return Number.isFinite(ms) ? ms : 0;
+  let ms = parsedDates.get(part);
+  if (ms === undefined) {
+    const parsed = Date.parse(part.date?.value ?? '');
+    ms = Number.isFinite(parsed) ? parsed : 0;
+    parsedDates.set(part, ms);
+  }
+  return ms;
 };
 
 /** A rating at least `WARM` times the best rating the read has seen:
@@ -314,10 +359,19 @@ const head = (text: string, count: number) => Array.from(text).slice(0, count).j
  *  characters, the headings that start a line of any of its parts, its `UNIT_RARE` rarest words (fewest units
  *  holding them, then alphabetical), and for a report the first
  *  `UNIT_HEAD` characters of its transcript's prompt. */
-export function unitDescriptors(units: readonly AgentUnit[]): string[] {
+export function unitDescriptors(units: readonly AgentUnit[], store?: HistoryStore): string[] {
   const texts = units.map((unit) => unit.parts.map((part) => part.text || part.title || '').join(' '));
+  // Each unit's distinct words in their first order, from the store when it holds them.
+  const distinct = texts.map((text) => {
+    const key = store === undefined ? undefined : textKey('words', [text]);
+    const held = key === undefined ? undefined : store!.get(key);
+    if (Array.isArray(held)) return held as string[];
+    const words = [...new Set(unitWords(text))];
+    if (key !== undefined) store!.set(key, words);
+    return words;
+  });
   const holding = new Map<string, number>();
-  for (const text of texts) for (const word of new Set(unitWords(text))) holding.set(word, (holding.get(word) ?? 0) + 1);
+  for (const words of distinct) for (const word of words) holding.set(word, (holding.get(word) ?? 0) + 1);
   const prompts = new Map(units.flatMap((unit, index) => unit.kind === 'prompt' ? [[unit.container, texts[index]!] as const] : []));
   return units.map((unit, index) => {
     const text = texts[index]!;
@@ -325,7 +379,7 @@ export function unitDescriptors(units: readonly AgentUnit[]): string[] {
     // part the reader cut off its message is found too.
     const headings = head(unit.parts.flatMap((part) => (part.text || part.title || '').match(/^#+ .*$/gm) ?? []).join(' '),
       UNIT_HEADINGS);
-    const rare = [...new Set(unitWords(text))]
+    const rare = [...distinct[index]!]
       .sort((left, right) => holding.get(left)! - holding.get(right)! || (left < right ? -1 : left > right ? 1 : 0))
       .slice(0, UNIT_RARE);
     const asked = unit.kind === 'report' ? head(prompts.get(unit.container) ?? '', UNIT_HEAD) : '';
@@ -376,9 +430,9 @@ const unitVector = (vector: ArrayLike<number>) => {
  *  that says nothing opens none: no query word in any descriptor, or one
  *  meaning score for descriptors that differ. */
 export async function unitStarts(units: readonly AgentUnit[], queries: readonly string[],
-  embed: EmbeddingFunction | undefined): Promise<AgentUnit[]> {
+  embed: EmbeddingFunction | undefined, store?: HistoryStore): Promise<AgentUnit[]> {
   if (units.length === 0 || queries.length === 0) return [];
-  const descriptors = unitDescriptors(units);
+  const descriptors = unitDescriptors(units, store);
   const keyword = unitKeywordScores(descriptors, queries);
   const ranked = units.flatMap((unit, index) => (UNIT_KINDS as readonly string[]).includes(unit.kind) ? [index] : []);
   let meaning: number[] | undefined;
@@ -507,7 +561,7 @@ export async function chatRead(input: ChatReadInput): Promise<ChatReadResult> {
     const session = list.sort((left, right) => compareAt(left.at, right.at)).map(({ part }) => part);
     session.forEach((part, at) => where.set(part, { session, at }));
     const cuts = session.length < TILE_MIN ? []
-      : topicShifts(session.map((part) => /\S/.test(part.text) ? part.text : part.title));
+      : storedTopicShifts(session.map((part) => /\S/.test(part.text) ? part.text : part.title), input.history);
     let from = 0;
     for (const to of [...cuts, session.length]) {
       const segment = session.slice(from, to);
@@ -629,7 +683,7 @@ export async function chatRead(input: ChatReadInput): Promise<ChatReadResult> {
   // Then the units of agent work above the bend of either ranking,
   // read as the segments are: each unit's starts, its parts the order
   // ranks first and then in its own order, and walks inside the unit.
-  const found = stopped() ? [] : await unitStarts(agentUnits(input.parts), input.queries ?? [], input.embed);
+  const found = stopped() ? [] : await unitStarts(agentUnits(input.parts), input.queries ?? [], input.embed, input.history);
   // The ranking can take long enough for another read to stop the call.
   const units = stopped() ? [] : found;
   // A part the order does not rank comes after those it does.

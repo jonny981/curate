@@ -181,6 +181,7 @@ Every option below is off or unset unless you set it, except where the default s
 | `needed` | None | The separate facts a complete answer needs, as your writer split the task ([The facts the answer needs](#the-facts-the-answer-needs)) |
 | `person` | None | The person's name as tasks word it, for modes that write [hard facts](#hard-facts) |
 | `wanted` | None | `'one decision'` or `'everything said'`, as your writer judged the task: picks a mode's bar for each kind of task ([Modes](#modes)) |
+| `history` | None | A store that keeps a transcript's topic cuts and each unit's words between calls ([The chat read](#the-chat-read)) |
 | `labels` | The default folder and the model's ID | `{ directory, deciderId }` for stored [labels](#where-labels-are-stored) |
 | `route` | Off | Ask the task what kind of answer it needs, and switch options on to match ([Routing](#routing)) |
 | `answerTypes` | Off | Ask the task what kind of answer it needs, for typed questions ([Answer types](#answer-types)) |
@@ -468,6 +469,10 @@ The call's limits hold: with `maxCandidates` set it reaches only the parts some 
 The stop never fires before the read has kept a part, so a question the history holds nothing for reads on to the end.
 A decision from the decision cache counts toward the stop with its stored rating, so a run whose decisions are stored reads as the run that stored them did.
 The record's `pick.chatRead` holds each read's numbers under its mode's name ([The rating stop's record](../packages/core/README.md#the-rating-stops-record)).
+
+A transcript's topic cuts and each unit's words depend on the history, not the task.
+Pass `pick.history`, a `HistoryStore` with `get(key)` and `set(key, value)`, to keep them between calls: each is stored under a hash of the text it was worked out from, read back while that text is unchanged, and worked out again for a session that grew.
+The read is the same with or without it ([measured](measurements.md#the-chat-read)).
 
 `conversationRead({ walksOn, opens, stops })` takes your own rules in place of the measured ones; `walksOn`, `opens` and `stops` are those rules, exported to start from.
 Each call of `conversationRead()` makes a read of its own, so make it once per mode, and share it between modes that should be read together.

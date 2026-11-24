@@ -297,6 +297,8 @@ A user-role part can be a compacted summary or an agent task, so its role doesn'
 
 `recentFirst` defaults to `true`: among equal scores, newer matching sessions come first, then newer messages. Set it to `false` to break equal scores by item ID.
 
+Each transcript's topic cuts and each unit's words are kept between questions in `$XDG_CACHE_HOME/curate/history`, or `~/.cache/curate/history`, by a hash of their text, and worked out again only for a session that grew. On one history this took a question from 3.1 to 1.8 seconds outside its reads and decisions, with the same text.
+
 ### Second search
 
 A `claude-code` or `codex` source on its default questions is searched a second time once the first pick ends:
@@ -532,7 +534,7 @@ With `records` on, give the person the log's path, and report decision calls, to
 
 ### Caches
 
-With `records` off, a question writes nothing of its own outside its caches, apart from `log.md` and `kept.json` ([Output](#output)): the index, the embedding vectors and the label store under `$XDG_CACHE_HOME/curate`, or `~/.cache/curate`. Library label stores live in `$XDG_CACHE_HOME/curate/labels`, or `~/.cache/curate/labels`.
+With `records` off, a question writes nothing of its own outside its caches, apart from `log.md` and `kept.json` ([Output](#output)): the index, the embedding vectors, the transcripts' topic cuts and the label store under `$XDG_CACHE_HOME/curate`, or `~/.cache/curate`. Library label stores live in `$XDG_CACHE_HOME/curate/labels`, or `~/.cache/curate/labels`.
 
 A question's working files sit in a temporary folder that's removed before it returns: on success, on failure, and when the command is interrupted or terminated. A forced kill (`kill -9`) can leave that folder behind.
 

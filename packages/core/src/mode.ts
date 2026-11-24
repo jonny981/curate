@@ -1,4 +1,4 @@
-import { chatRead, type ConversationRules } from './chat-read.js';
+import { chatRead, type ConversationRules, type HistoryStore } from './chat-read.js';
 import type { EmbeddingFunction } from './meaning.js';
 import type { MemoryCandidate, PickCascade } from './pick.js';
 
@@ -226,6 +226,8 @@ export interface ModeReadInput {
   readonly queries?: readonly string[];
   /** The call's local embedder, when it has one. */
   readonly embed?: EmbeddingFunction;
+  /** Facts of the history kept between calls (`PickOptions.history`). */
+  readonly history?: HistoryStore;
 }
 
 /** What a read did. */
@@ -347,7 +349,8 @@ export function conversationRead(rules: ConversationRules = {}): ModeRead {
     const result = await chatRead({ parts: input.parts, order: input.order, byKeyword: input.byKeyword,
       lanes: input.lanes, rate: input.rate, score: input.score, kept: input.kept, stopped: input.stopped, rules,
       ...(input.queries === undefined ? {} : { queries: input.queries }),
-      ...(input.embed === undefined ? {} : { embed: input.embed }) });
+      ...(input.embed === undefined ? {} : { embed: input.embed }),
+      ...(input.history === undefined ? {} : { history: input.history }) });
     const reached = new Set(result.read);
     return { read: result.read, unread: input.order.filter((part) => !reached.has(part)), reason: 'chatRead',
       ended: result.ended, requests: result.requests, segments: result.segments, units: result.units };

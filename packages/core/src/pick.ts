@@ -14,7 +14,7 @@ import {
   ANSWER_TYPES, classifyTask, ROUTE_QUESTIONS, routeOptions, type AnswerType, type PickWanted, type RouteKey, type RouteOption,
 } from './task.js';
 import { conversationRead, rankedRead, type Mode, type ModeRead, type ModeReadResult } from './mode.js';
-import { keepKind, messageKey, messageKind, messagePieces, messageText, transcriptMessages } from './chat-read.js';
+import { keepKind, messageKey, messageKind, messagePieces, messageText, transcriptMessages, type HistoryStore } from './chat-read.js';
 import { CHOICE_CANDIDATES, choosePerFact, ROLE_QUESTION } from './choice.js';
 import type { EmbeddingFunction } from './meaning.js';
 import type { LeverStates } from './levers.js';
@@ -920,6 +920,12 @@ export interface PickOptions {
   /** The call's local embedder, for the units' meaning ranking.
    *  pickFromSources fills it from the request's meaning lanes. */
   readonly embed?: EmbeddingFunction;
+  /** Facts of the history kept between calls (`HistoryStore`): each
+   *  session's topic cuts and each unit of agent work's words, by a hash
+   *  of their text. A conversation read reads them where the store holds
+   *  them and stores what it computes; the result is the same with or
+   *  without it. */
+  readonly history?: HistoryStore;
   /** The facts a complete answer needs, as the caller's writer split the
    *  task. A request of parts whose mode sets `needed` carries them in
    *  its decision state beside the task; parts of every other mode go in
@@ -3559,6 +3565,7 @@ export async function pick(
       return read({
         ...shared, parts, order: chatOrder.filter((candidate) => readOf(candidate) === read),
         ...(queries.length === 0 ? {} : { queries }), ...(options.embed === undefined ? {} : { embed: options.embed }),
+        ...(options.history === undefined ? {} : { history: options.history }),
         byKeyword: [...share.keys()].filter((candidate) => share.get(candidate)! > 0)
           .sort((left, right) => share.get(right)! - share.get(left)!),
         // Each lane's parts of this read's own sources: another source's

@@ -170,6 +170,8 @@ Without them the read found 39 of the person's 41 answers and 10 of the 16 answe
 Every agent-written answer's unit ranks in the top 13 of its kind by keyword or by meaning, where its best place in the fused order was 547 to 2,768.
 Opening only the units above both cuts found 12 of the 16 for about a fifth of the added parts; opening above either cut reached 15 of 16, against 10 without the units.
 
+On one person's coding-agent history, one task's call spent 3.1 seconds in the pick outside its reads and decisions. With the topic cuts and unit words read back from a `HistoryStore`, it spent 1.8 seconds, and the text was the same byte for byte.
+
 ## The facts the answer needs
 
 Measured on eight tasks of one person's coding-agent history with the JSON state, with lists a separate model call wrote: parts that hold no answer but rate 0.1 or more fell from 10.8% to 3.8%, and the share of the history let through to keep 98% of the answers from 14.3% to 3.8%.

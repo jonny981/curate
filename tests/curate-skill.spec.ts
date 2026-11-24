@@ -1799,6 +1799,48 @@ describe('a run through core decision calls', () => {
       expect(warned.mock.calls.map(([line]) => String(line)).filter((line) => line.includes('stopWhenCold'))).toEqual([]);
     });
 
+  it('keeps a transcript\'s topic cuts beside the index, and lays out the same text when it reads them back', async () => {
+    const directory = await folder();
+    const home = join(directory, 'home');
+    const transcripts = join(directory, 'transcripts');
+    await mkdir(home);
+    await mkdir(transcripts);
+    // One session of 60 messages on two subjects, long enough to be cut by topic.
+    await writeFile(join(transcripts, 'session.jsonl'), Array.from({ length: 60 }, (_, index) => JSON.stringify({
+      type: index % 2 === 0 ? 'user' : 'assistant', sessionId: 's1', timestamp: `2026-01-01T12:${String(index).padStart(2, '0')}:00Z`,
+      ...(index % 2 === 0 ? { origin: { kind: 'human' }, message: { content: index < 30 ? `Orchard row ${index}: should we prune the fruit trees?`
+        : `Garage shelf ${index}: where do the paint tins go?` } }
+        : { message: { content: [{ type: 'text', text: index < 30 ? `Prune orchard row ${index} in winter.` : `Paint tins go on shelf ${index}.` }] } }),
+    })).join('\n') + '\n');
+    const sourcesFile = join(directory, 'sources.json');
+    await writeFile(sourcesFile, JSON.stringify({ sentenceCutoff: false, sources: [{ type: 'claude-code', path: transcripts }] }));
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('XDG_CACHE_HOME', join(directory, 'cache'));
+    vi.stubEnv('TYPESAFE_API_KEY', 'test-key');
+    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as { state: string | { items: Record<string, { text: string }> };
+        questions: Record<string, { type: string; criteria: unknown; instructions: string | { question: string; item: string } }> };
+      return new Response(JSON.stringify({ usage: null, answers: Object.fromEntries(Object.entries(body.questions).map(([key, question]) => {
+        const { text } = itemAsked(body, question.instructions);
+        return [key, { noul: /prune/i.test(text) ? 0.8 : 0.01 }];
+      })) }));
+    }));
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const first = await run(['--sources', sourcesFile, 'When do we prune the orchard?'], subscriptionReply(searches()).call);
+    const files = await readdir(join(directory, 'cache', 'curate', 'history'));
+    expect(files).toHaveLength(1);
+    const held = JSON.parse(await readFile(join(directory, 'cache', 'curate', 'history', files[0]!), 'utf8'));
+    expect(Object.keys(held).some((key) => key.startsWith('cuts:'))).toBe(true);
+    const second = await run(['--sources', sourcesFile, 'When do we prune the orchard?'], subscriptionReply(searches()).call);
+    expect(second.memory).toBe(first.memory);
+    // A file a cut-short write left unreadable is read as empty, and the facts are worked out again.
+    await writeFile(join(directory, 'cache', 'curate', 'history', files[0]!), '{"cuts:');
+    const third = await run(['--sources', sourcesFile, 'When do we prune the orchard?'], subscriptionReply(searches()).call);
+    expect(third.memory).toBe(first.memory);
+    expect(Object.keys(JSON.parse(await readFile(join(directory, 'cache', 'curate', 'history', files[0]!), 'utf8')))
+      .some((key) => key.startsWith('cuts:'))).toBe(true);
+  });
+
   it('stops the ranked read of notes by default, while transcripts keep the chat read\'s own stop', async () => {
     const directory = await folder();
     const home = join(directory, 'home');
