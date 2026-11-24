@@ -54,7 +54,9 @@ export interface Mode {
      *  report, a compaction summary, a system message), each a number or
      *  one per kind of task; a kind with none given, or a message whose
      *  kind its reader did not mark, uses `bar`. A bar of 1 keeps a kind
-     *  only as part of an exchange. */
+     *  only as part of an exchange: the stage does not ask about such a
+     *  message, and an exchange keeps it at its read's score, which then
+     *  places it in the text. */
     readonly barByKind?: { readonly [kind: string]: number | { readonly 'one decision': number; readonly 'everything said': number } };
     /** Keep the exchange around what the person said: for each message
      *  of the person this stage keeps, the agent message it replies to

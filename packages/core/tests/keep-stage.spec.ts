@@ -73,7 +73,7 @@ describe('a second stage over the read\'s kept parts', () => {
     expect(entry(one.result, parts[1]!)).toMatchObject({ status: 'selected', probability: 0.9, readProbability: 0.5 });
     expect(entry(one.result, parts[2]!)).toMatchObject({ status: 'selected', probability: 0.8 });
     expect(entry(one.result, parts[3]!)).toMatchObject({ status: 'rejected', probability: 0.03, readProbability: 0.5 });
-    expect(one.result.record.keep).toEqual({ asked: 3, requests: 1, unanswered: 0, sources: { chat: { kept: 3, dropped: 1, bar: 0.59 } } });
+    expect(one.result.record.keep).toEqual({ asked: 3, requests: 1, unanswered: 0, notAsked: 0, sources: { chat: { kept: 3, dropped: 1, bar: 0.59 } } });
     expect(one.result.record.levers.sources.chat!.keep).toMatchObject({ bar: 0.59, wholeMessages: true, hardFacts: true });
     // Everything said keeps at 0.04, as does a pick that names no kind.
     expect((await kept('everything said')).ids).toHaveLength(3);
@@ -153,6 +153,25 @@ describe('the exchange around what the person said, each kind at its own bar', (
     expect(entry(result, talk[5]!)).toMatchObject({ status: 'rejected' });
     expect(entry(result, talk[6]!)).toMatchObject({ status: 'selected', keptAs: 'exchange', exchange: [{ sourceId: 'chat', id: talk[7]!.id }] });
     expect(result.record.keep!.sources.chat).toMatchObject({ byExchange: 3 });
+  });
+
+  it('does not ask about a kind whose bar is 1, and keeps such a message only in an exchange, at its read\'s score', async () => {
+    const asked: string[] = [];
+    const watching: PickDecide = async (batch, signal) => {
+      if (batch.stage === 'keep') asked.push(...batch.questions.map((question) => question.text));
+      return decide(batch, signal);
+    };
+    const result = await pick(talk, { task, decide: watching, everyRanked: true, modesBySource: { chat: exchangeMode } });
+    // Agent steps and the subagent's prompt sit at a bar of 1: no keep request carries them.
+    expect([...new Set(asked)].sort()).toEqual(['Postgres, for transactions.', 'Thanks.', 'We chose Postgres.', 'build log: all green']);
+    expect(result.record.keep).toMatchObject({ notAsked: 4 });
+    // The agent message his kept message answers is kept for the exchange, at the score its read gave it (0.5 here).
+    expect(entry(result, talk[0]!)).toMatchObject({ status: 'selected', keptAs: 'exchange', probability: 0.5 });
+    // One no exchange takes is left out, at its read's score.
+    expect(entry(result, talk[5]!)).toMatchObject({ status: 'rejected', probability: 0.5 });
+    // The same messages are kept as when every kind was asked.
+    expect(result.selected.map((part) => part.text).sort()).toEqual(['Done: switched to Postgres.', 'Look into which database we use.',
+      'Postgres, for transactions.', 'Should we use Postgres or SQLite?', 'We chose Postgres.']);
   });
 
   it('lays each exchange out as one passage in conversation order, placed by its strongest message', async () => {

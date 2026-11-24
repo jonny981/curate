@@ -416,7 +416,7 @@ The Markdown `answers` set's 0.07 is the highest "answers" probability that kept
 
 #### The exchange set
 
-The `exchange` set keeps each kind of message at the bar measured within its kind: your message, a subagent's report or prompt, a compaction summary and tool output. An agent's own steps are kept only within an exchange.
+The `exchange` set keeps each kind of message at the bar measured within its kind: your message, a subagent's report or prompt, a compaction summary and tool output. An agent's own steps are kept only within an exchange, so they're never sent to the second stage, which saves about a quarter to a half of its cost.
 
 | Kind of message | One decision | Everything said |
 | --- | --- | --- |

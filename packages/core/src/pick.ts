@@ -840,11 +840,15 @@ export interface PickRecord {
   /** A mode's second stage (`Mode.keep`), when one ran: the items it
    *  asked (whole messages or parts), the requests it sent, and per
    *  source the parts it kept and left out and the bar it kept at;
-   *  `requests` counts this stage's requests alone. */
+   *  `requests` counts this stage's requests alone. `notAsked` counts the
+   *  parts of a kind whose bar is 1 for the call: no rating can keep
+   *  them, so the stage does not ask about them; such a part is left
+   *  out, or kept only in an exchange at its read's score. */
   readonly keep?: {
     readonly asked: number;
     readonly requests: number;
     readonly unanswered: number;
+    readonly notAsked: number;
     readonly sources: Readonly<Record<string, { readonly kept: number; readonly dropped: number; readonly bar: number;
       /** Parts kept as part of an exchange, not on their own rating. */
       readonly byExchange?: number }>>;
@@ -3742,13 +3746,20 @@ export async function pick(
   // a part the stage got no answer for keeps the read's verdict.
   let keepRecord: PickRecord['keep'];
   const keepStage = selected.filter((candidate) => candidate.role === 'reference' && keepOf(candidate.sourceId) !== undefined);
+  // The bar a part's own rating must reach in its mode's second stage:
+  // its kind's, or the stage's. At 1 no rating keeps it, so it is not asked.
+  const keepBarOf = (candidate: MemoryCandidate) => {
+    const stage = keepOf(candidate.sourceId)!;
+    const kindBar = stage.barByKind?.[keepKind(candidate) ?? ''];
+    return kindBar === undefined ? barValue(stage.bar ?? DEFAULT_BAR) : barValue(kindBar);
+  };
   if (keepStage.length > 0 && !stop) {
     const before = batches;
     const scoreOf = new Map<MemoryCandidate, number>();
     keeping = true;
     let items: MemoryCandidate[];
     try {
-      items = [...new Set(keepStage.flatMap(itemsFor))];
+      items = [...new Set(keepStage.filter((candidate) => keepBarOf(candidate) < 1).flatMap(itemsFor))];
       await ask(items.flatMap((item) => specsFor(item).map((spec) => pending(item, spec))), keepAnswers);
       const probabilityOf = (answer: CheckedAnswer | undefined) =>
         answer?.status === 'answered' && 'probability' in answer ? answer.probability : undefined;
@@ -3774,6 +3785,7 @@ export async function pick(
     const sources: Record<string, { kept: number; dropped: number; bar: number; byExchange?: number }> = {};
     const done = new Set<MemoryCandidate>();
     let unanswered = 0;
+    let notAsked = 0;
     // The messages kept on their own rating, by message, with their
     // score, for the exchange.
     const keptOwn = new Map<string, number>();
@@ -3784,14 +3796,27 @@ export async function pick(
       const pieces = whole ? messages.get(key) ?? [candidate] : [candidate];
       const scores = (whole ? messageItems.get(key)! : [candidate]).flatMap((item) => scoreOf.has(item) ? [scoreOf.get(item)!] : []);
       for (const piece of pieces) done.add(piece);
-      if (scores.length === 0) { unanswered += 1; continue; }
-      const score = Math.max(...scores);
       const stage = keepOf(candidate.sourceId)!;
       const stageBar = barValue(stage.bar ?? DEFAULT_BAR);
       // A kind with a bar of its own keeps at it; any other at the stage's.
-      const kindBar = stage.barByKind?.[keepKind(candidate) ?? ''];
-      const bar = kindBar === undefined ? stageBar : barValue(kindBar);
+      const bar = keepBarOf(candidate);
       const tally = sources[candidate.sourceId] ??= { kept: 0, dropped: 0, bar: stageBar };
+      // Not asked: left out at its read's score, unless an exchange keeps it.
+      if (bar >= 1) {
+        notAsked += pieces.length;
+        for (const piece of pieces) {
+          const at = selected.indexOf(piece);
+          if (at >= 0) selected.splice(at, 1);
+          const read = statuses.get(piece);
+          const readProbability = read !== undefined && 'probability' in read && read.probability !== undefined ? read.probability : undefined;
+          statuses.set(piece, { status: 'rejected', probability: readProbability ?? 0,
+            ...(readProbability === undefined ? {} : { readProbability }) });
+          tally.dropped += 1;
+        }
+        continue;
+      }
+      if (scores.length === 0) { unanswered += 1; continue; }
+      const score = Math.max(...scores);
       if (score >= bar) keptOwn.set(key, score);
       for (const piece of pieces) {
         const read = statuses.get(piece);
@@ -3861,7 +3886,7 @@ export async function pick(
         statuses.set(piece, { ...status, exchange: anchors });
       }
     }
-    keepRecord = { asked: items!.length, requests: batches - before, unanswered, sources };
+    keepRecord = { asked: items!.length, requests: batches - before, unanswered, notAsked, sources };
   }
 
   // What each kept part of a mode that asks it is doing: one Choice per

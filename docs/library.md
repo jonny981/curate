@@ -913,6 +913,7 @@ After the read ends, the parts it kept are judged again with the stage's questio
 
 `keep.barByKind` keeps each kind of message at a bar of its own: the kinds the hard facts name (`KEEP_KINDS`: the person's message, an agent step, tool output, a subagent's prompt or final report, a compaction summary, a system message), each a number or one per kind of task.
 A kind with none, or a message its reader marked no kind for, keeps at the stage's `bar`, and a bar of 1 keeps a kind only within an exchange.
+No rating can keep a message of a kind at 1, so the stage doesn't ask about it: it's left out at its read's score, unless an exchange keeps it, which places it in the text by that score. `record.keep.notAsked` counts them ([measured](measurements.md#a-second-stage)).
 
 `keep.exchange` keeps the exchange around what the person said:
 

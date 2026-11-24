@@ -271,6 +271,12 @@ The `curate` command's `exchange` set therefore keeps the person's message on on
 It answered 18.2 right against 18.4 at the learned bars, the 0.2 being one task's answer noise (its answer was in every text), with one-decision text a median of 5,213 tokens against 2,087, 99% of the added text the person's own words.
 Moving every one-decision bar down by that fall, the exchange's included, also answered 18.4, at 14,125 tokens.
 
+A kind at a bar of 1 is never asked about. On three timed calls on one person's coding-agent history, those messages were 53% of the stage's request characters on a one-decision task, and 26% to 27% on two everything-said tasks.
+Two cheaper forms of the stage were tried and aren't used:
+
+- **At most three needed-fact questions,** the first three the search-line call wrote: it saved 12.5% of the stage's characters on seven everything-said tasks, and 4 of 30 labelled answer messages fell sharply (0.84 to 0.15 the furthest), each one whose best fact was the fourth. A dropped fact drops the answers only it matches.
+- **Each quoted neighbour cut to 300 characters** (`replies_to`, `answered_by`, `asked`): it saved 2% to 4%, the quoted messages being mostly short already, and the lowest labelled answer fell from 0.06 to 0.03.
+
 Cost, on 22 tasks: judging the read's kept list (13,982 whole messages, 636 a task) one message a request cost USD 0.808, 3.7 cents a task on average (median 3.1), in a median of 4.0 seconds a task at 16 requests at a time.
 On the 11 held tasks, batching about 17 messages a request cost USD 0.280 against 0.379 alone (26% less), in a median of 0.7 seconds a task, and ranked the answers as well; hence batching is the default.
 The read itself rated a median of 961 parts a task (mean 1,160), about 3.0 cents (mean 3.6) at a live run's USD 0.000031 a part, 112 parts a request.
