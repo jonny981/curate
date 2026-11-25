@@ -131,7 +131,7 @@ describe('curate command input', () => {
     { sources: [{ type: 'codex', path: 'sessions', allowedCwd: [' ', 'projects'] }] },
     { sources: [{ type: 'codex', path: 'sessions', allowedCwd: [1] }] },
     { sources: [{ type: 'git' }] },
-    { sources: [{ type: 'markdown' }] },
+    { sources: [{ type: 'markdown', always: true }] },
     { sources: [{ type: 'whatsapp' }] },
     { sources: [{ type: 'whatsapp', path: 'chat.txt', exclude: ['x'] }] },
     { sources: [{ type: 'whatsapp', path: 'chat.txt', dates: 'year-first' }] },
@@ -3223,6 +3223,17 @@ describe('a call reads the project its working folder sits in', () => {
     expect(record.pick.levers.sources[ids.claude]).toMatchObject({ since: '2026-06-01' });
     // The project's only chat was said before that date.
     expect(memory).not.toContain('The project chat chose the orchard.');
+  });
+
+  it('reads the project\'s Markdown once, leaving out what a markdown entry with no path excludes', async () => {
+    const { settings, repo } = await project();
+    const { call } = subscriptionReply(searches());
+    const whole = await run(['What did we plan for the orchard?'], call);
+    expect(whole.memory).toContain('docs/orchard.md (file changed ');
+    const sourcesFile = await settings([{ type: 'markdown', exclude: ['docs'] }]);
+    const { record, memory } = await run(['--sources', sourcesFile, 'What did we plan for the orchard?'], call);
+    expect(sourceIds(record).filter((id) => id.startsWith('markdown:'))).toEqual([`markdown:docs:${JSON.stringify([repo])}`]);
+    expect(memory).not.toContain('docs/orchard.md');
   });
 
   it('admits only the project\'s Codex sessions for a codex entry that has no path', async () => {

@@ -126,7 +126,7 @@ Cite a source only when the finding comes from a git commit or a Markdown docume
 Inside a git repository, Curate reads the project with no settings file at all. A repository at the home folder or the filesystem root doesn't count. It reads:
 
 - **its commits;**
-- **its Markdown,** except what `.gitignore` excludes and any `node_modules` folder;
+- **its Markdown,** except what `.gitignore` excludes, what `.gitattributes` marks `linguist-vendored` or `linguist-generated`, and any `node_modules` folder;
 - **its Claude Code transcripts,** from the matching folder under `~/.claude/projects`;
 - **its Codex sessions,** those whose recorded working folder is inside the project.
 

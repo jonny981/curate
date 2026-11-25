@@ -68,15 +68,17 @@ With no settings at all, a question inside a project reads:
 | History | Where Curate reads it |
 | --- | --- |
 | Commits | The repository's commits |
-| Markdown | The project's Markdown, through the reader that leaves out what git ignores and any `node_modules` folder |
+| Markdown | The project's Markdown, through the reader that leaves out what git ignores, what the repository's `.gitattributes` marks `linguist-vendored` or `linguist-generated`, and any `node_modules` folder |
 | Claude Code transcripts | `~/.claude/projects/<the project's path with every character other than a letter or digit replaced by ->` |
 | Codex sessions | Sessions under `$CODEX_HOME/sessions`, or `~/.codex/sessions`, whose recorded working folder is the project or inside it |
 
 A transcript folder that doesn't exist is skipped without a warning.
 
-### Chat entries with no path
+### Entries with no path
 
 A `claude-code` or `codex` entry can leave out `path`. It then means this project's transcripts for that tool: the same Claude Code folder, or the same Codex sessions folder limited to sessions whose working folder is the project or inside it. It replaces the project's own source for that tool rather than adding a second one, and applies its own `since`, `exclude`, `questions` and `bar`. It takes no `always` and no `allowedCwd`.
+
+A `markdown` entry can leave out `path` too. It then holds the settings of the project's own Markdown, so `"exclude": ["fixtures"]` leaves out a folder of test data the repository doesn't mark, relative to the project's top folder. A repository can mark such a folder for every reader instead, with a line such as `fixtures/** linguist-generated` in its `.gitattributes`, as GitHub reads it.
 
 It works in `curate.json`, in `~/.curate/sources.json` and in a file `--sources` names. Outside a project it reads nothing, and one line on standard error says so. Without such an entry for a tool, Curate still reads that tool's transcripts for the project by itself.
 
@@ -136,7 +138,7 @@ The source types are `claude-code`, `codex`, `git`, `markdown` and `whatsapp`. A
 
 | Setting | Sources that take it | What it does |
 | --- | --- | --- |
-| `path` | All; optional for `claude-code` and `codex` | Where the source is ([Chat entries with no path](#chat-entries-with-no-path)) |
+| `path` | All; optional for `claude-code`, `codex` and `markdown` | Where the source is ([Entries with no path](#entries-with-no-path)) |
 | `since` | All | How far back to read: an ISO date or a duration such as `"14 days"`, counted back from the task date. Only that source drops older parts |
 | `exclude` | All but `whatsapp` | Paths to skip in that source, relative to its `path`; absolute entries are used as they are. For Codex, these are folders inside `path`, since sessions are read through a fixed snapshot of `path`'s layout |
 | `always` | All with a `path` | `true` or `false`: whether the source is read from inside any project ([Sources you list](#sources-you-list)) |

@@ -54,6 +54,16 @@ describe('Markdown paths and shared reads', () => {
     expect(fileReads.some((file) => file.includes('/ignored/') || file.includes('/node_modules/'))).toBe(false);
   });
 
+  it('leaves out files the repository marks linguist-vendored or linguist-generated, before opening them', async () => {
+    const directory = await tree({ 'guide.md': 'Battery facts.', 'benchmarks/set/curated-log.md': 'Fixture battery log.',
+      'docs/made.md': 'Generated battery page.', 'docs/own.md': 'Battery notes.',
+      '.gitattributes': 'benchmarks/** linguist-vendored\ndocs/made.md linguist-generated=true\ndocs/own.md -linguist-generated\n' });
+    git(directory, 'init', '-b', 'main');
+    const result = await read([directory], 'docs');
+    expect([...new Set(result.candidates.map((c) => c.path))].sort()).toEqual(['docs/own.md', 'guide.md']);
+    expect(fileReads.some((file) => file.includes('/benchmarks/') || file.endsWith('made.md'))).toBe(false);
+  });
+
   it('reads overlapping sources and repeated search lines once while keeping both kinds', async () => {
     const directory = await tree({ 'guide.md': 'Battery facts.' });
     const result = await pickFromSources([

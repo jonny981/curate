@@ -55,7 +55,7 @@ The pick's levers record `since` and `exclude`.
 ## What it reads
 
 `markdown()` reads `.md`, `.markdown`, `.mdc` and `.cursorrules` files.
-It skips git-ignored paths, `.git` and `node_modules` before it opens anything.
+It skips git-ignored paths, `.git` and `node_modules` before it opens anything, and, inside a git repository, the files its `.gitattributes` marks `linguist-vendored` or `linguist-generated`, as GitHub reads those marks.
 A folder git can't check for ignored files, such as a bare repository kept inside the folder, is skipped whole and named in the read's `partial`; the rest is read.
 
 ### Kinds

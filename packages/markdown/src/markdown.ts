@@ -205,7 +205,29 @@ async function walkMarkdown(
     }
   }
   await walk(root);
-  return { files, skipped, unchecked };
+  return { files: legacy === undefined ? await ownFiles(files, toplevel, signal) : files, skipped, unchecked };
+}
+
+/** The files a repository counts as its own work: it leaves out those its
+ *  .gitattributes marks `linguist-vendored` or `linguist-generated`, as
+ *  GitHub reads the same marks, such as test data copied in from elsewhere. */
+async function ownFiles(files: readonly string[], toplevel: string | undefined, signal: AbortSignal | undefined): Promise<string[]> {
+  if (toplevel === undefined || files.length === 0) return [...files];
+  let output: string;
+  try {
+    output = await runGit(toplevel, ['check-attr', '-z', '--stdin', 'linguist-vendored', 'linguist-generated'], {
+      input: `${files.join('\0')}\0`, signal,
+    });
+  } catch (error) {
+    throw asSourceReadError(error);
+  }
+  // Each answer is a path, an attribute and its value, each ended by NUL.
+  const fields = output.split('\0');
+  const marked = new Set<string>();
+  for (let at = 0; at + 2 < fields.length; at += 3) {
+    if (fields[at + 2] === 'set' || fields[at + 2] === 'true') marked.add(fields[at]!);
+  }
+  return files.filter((file) => !marked.has(file));
 }
 
 /** Files an agent harness loads every session on its own. */

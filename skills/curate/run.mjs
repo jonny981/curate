@@ -232,14 +232,15 @@ export function parseSources(value, base = process.cwd()) {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new Error('The settings file must hold a JSON object.');
   if (value.sources !== undefined && !Array.isArray(value.sources)) throw new Error('sources must be an array.');
   const sources = (value.sources ?? []).map((source) => {
-    // A chat entry with no path reads the project's own transcripts for its tool.
-    const pathless = source?.path === undefined && ['claude-code', 'codex'].includes(source?.type);
+    // A chat entry with no path reads the project's own transcripts for its
+    // tool, and a markdown entry with none the project's own Markdown.
+    const pathless = source?.path === undefined && ['claude-code', 'codex', 'markdown'].includes(source?.type);
     if (!source || !['claude-code', 'codex', 'git', 'markdown', 'whatsapp'].includes(source.type)
       || (!pathless && (typeof source.path !== 'string' || !source.path.trim()))) {
-      throw new Error('Each source needs a type, and a path unless it is a claude-code or codex source.');
+      throw new Error('Each source needs a type, and a path unless it is a claude-code, codex or markdown source.');
     }
     if (pathless && (source.always !== undefined || source.allowedCwd !== undefined)) {
-      throw new Error(`A ${source.type} source with no path reads the project's own transcripts, so it takes no always or allowedCwd.`);
+      throw new Error(`A ${source.type} source with no path reads the project's own ${source.type === 'markdown' ? 'Markdown' : 'transcripts'}, so it takes no always or allowedCwd.`);
     }
     const keys = SOURCE_ENTRY_KEYS[source.type];
     for (const key of Object.keys(source)) {
@@ -1523,7 +1524,7 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
   if (related.length) console.error(`Reading the chats of related projects too: ${related.join(', ')}.`);
   const pathless = settings.sources.filter((entry) => entry.path === undefined).map((entry) => entry.type);
   if (project === undefined && pathless.length) {
-    console.error(`Read nothing for the ${pathless.join(' and ')} ${pathless.length === 1 ? 'entry with no path: it reads' : 'entries with no path: they read'} the transcripts of the project the call runs in, and ${process.cwd()} is in no project.`);
+    console.error(`Read nothing for the ${pathless.join(' and ')} ${pathless.length === 1 ? 'entry with no path: it reads' : 'entries with no path: they read'} the ${pathless.includes('markdown') ? 'history' : 'transcripts'} of the project the call runs in, and ${process.cwd()} is in no project.`);
   }
   if (skipped.length) {
     console.error(`Skipped ${skipped.length} configured ${skipped.length === 1 ? 'source' : 'sources'} outside this project; set "always": true on one to read it everywhere: ${skipped.map((entry) => `${entry.type} ${entry.path}`).join(', ')}.`);
