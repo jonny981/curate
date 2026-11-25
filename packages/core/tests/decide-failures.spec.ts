@@ -36,10 +36,54 @@ describe('a decide call the decision service refuses', () => {
     expect(error.cause).toMatchObject({ status: 401, reason: 'key' });
   });
 
-  it('says it could not reach the service when the request gets no reply', async () => {
-    const error = await failure(() => { throw new TypeError('fetch failed', { cause: new Error('getaddrinfo ENOTFOUND api.typesafe.ai') }); });
-    expect(error.message.split('\n')[0]).toBe('The decide call failed. The decision service could not be reached: fetch failed (getaddrinfo ENOTFOUND api.typesafe.ai)');
-    expect(error.cause).toMatchObject({ status: 0, reason: 'unreachable' });
+  it('sends a request that got no reply again, and says it could not reach the service after a minute of tries', async () => {
+    vi.useFakeTimers();
+    try {
+      let tries = 0;
+      const pending = failure(() => { tries += 1; throw new TypeError('fetch failed', { cause: new Error('getaddrinfo ENOTFOUND api.typesafe.ai') }); });
+      await vi.advanceTimersByTimeAsync(61_000);
+      const error = await pending;
+      expect(error.message.split('\n')[0]).toBe('The decide call failed. The decision service could not be reached after 60 s of tries: '
+        + 'fetch failed (getaddrinfo ENOTFOUND api.typesafe.ai)');
+      expect(error.cause).toMatchObject({ status: 0, reason: 'unreachable' });
+      expect(tries).toBeGreaterThan(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('answers every part when a request that got no reply gets one when sent again', async () => {
+    vi.useFakeTimers();
+    try {
+      let tries = 0;
+      vi.stubGlobal('fetch', vi.fn<typeof globalThis.fetch>().mockImplementation(async (_url, init) => {
+        tries += 1;
+        if (tries === 1) throw new TypeError('fetch failed', { cause: new Error('Connect Timeout Error') });
+        const body = JSON.parse(String(init!.body)) as { questions: Record<string, unknown> };
+        return Response.json({ answers: Object.fromEntries(Object.keys(body.questions).map((name) => [name, { noul: 0.7 }])) });
+      }));
+      const pending = pick(parts, { task: 'Which database?', decide: jev({ apiKey: 'test-key' }), everyRanked: true, everyScored: true });
+      await vi.advanceTimersByTimeAsync(5_000);
+      const picked = await pending;
+      expect(picked.selected).toHaveLength(parts.length);
+      expect(tries).toBeGreaterThan(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('stops at once on a cancelled request, with no try after it', async () => {
+    let tries = 0;
+    const controller = new AbortController();
+    vi.stubGlobal('fetch', vi.fn<typeof globalThis.fetch>().mockImplementation(async () => {
+      tries += 1;
+      controller.abort(new Error('the caller stopped'));
+      throw new DOMException('aborted', 'AbortError');
+    }));
+    const picked = await pick(parts, { task: 'Which database?', decide: jev({ apiKey: 'test-key' }), everyRanked: true, everyScored: true,
+      signal: controller.signal });
+    expect(picked.selected).toEqual([]);
+    expect(tries).toBe(1);
   });
 
   it('names any other refusal with its status and body', async () => {

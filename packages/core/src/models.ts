@@ -59,11 +59,12 @@ export class DecisionServiceError extends Error {
   readonly reply: string;
   readonly said: string;
   /** `waited`, for a 429, says how long the request waited and what the
-   *  last reply asked for. */
+   *  last reply asked for; for a request that got no reply, how long it
+   *  was tried. */
   constructor(status: number, reply: string, said: string, options?: ErrorOptions & { readonly waited?: string }) {
     const reason: DecisionServiceFailure = status === 0 ? 'unreachable' : status === 402 ? 'credit'
       : status === 401 || status === 403 ? 'key' : status === 429 || status === 529 ? 'busy' : 'refused';
-    super(reason === 'unreachable' ? `The decision service could not be reached: ${said}`
+    super(reason === 'unreachable' ? `The decision service could not be reached${options?.waited === undefined ? '' : ` after ${options.waited}`}: ${said}`
       : reason === 'busy' ? `The decision service is still ${status === 529 ? 'overloaded' : 'rate-limiting requests'} (HTTP ${status}) after ${options?.waited ?? 'its retries'}: ${said}`
         : `The decision service ${reason === 'credit' ? 'has no credit' : reason === 'key' ? 'refused the API key'
           : 'refused the request'} (HTTP ${status}): ${said}`, options);
@@ -75,14 +76,14 @@ export class DecisionServiceError extends Error {
   }
 }
 
-/** The message a reply's body gives: a JSON body's `detail` text or its
- *  `detail.message` or `message`, otherwise the body as sent. */
 /** Whether a refusal's body says the request was over the service's
  *  size limit, as TypeSafe's `max_tokens_exceeded` does. */
 function saysTooLarge(body: string): boolean {
   try { return record(record(JSON.parse(body)).detail).error_type === 'max_tokens_exceeded'; } catch { return false; }
 }
 
+/** The message a reply's body gives: a JSON body's `detail` text or its
+ *  `detail.message` or `message`, otherwise the body as sent. */
 function saidIn(body: string): string {
   try {
     const parsed = record(JSON.parse(body));
@@ -549,8 +550,10 @@ export function jev({ apiKey, model = 'jev-latest', url = JEV_URL, onCall,
   const exchange = async (text: string, questions: number, signal: AbortSignal, stage?: 'keep') => {
     const staged = stage === undefined ? {} : { stage };
     const domain = domainFor(signal);
-    // When the service first answered this request 429.
+    // When the service first answered this request 429, and when it
+    // first got no reply.
     let limitedSince: number | undefined;
+    let unreachedSince: number | undefined;
     for (;;) {
       try {
         await allow.wait(text.length, domain, signal);
@@ -560,20 +563,31 @@ export function jev({ apiKey, model = 'jev-latest', url = JEV_URL, onCall,
           reply = await jevPost(url, apiKey, text, signal);
         } catch (error) {
           // A request that never got a reply — a network failure or a
-          // cancelled signal — is still a call. The sends still queued
-          // stop before the record write below can let one through:
-          // report the call with its timing and the error it raised,
-          // then let that error fail the pick.
-          allow.stop(domain, error);
-          await onCall?.({
+          // cancelled signal — is still a call, reported with its timing
+          // and the error it raised. One that got no reply for any other
+          // reason than a cancellation is sent again a second later, as
+          // a rate-limited one is, until JEV_RATE_LIMITED_MS from its
+          // first try; then, and on a cancellation, the sends still
+          // queued stop before the record write below can let one
+          // through, and the error fails the pick.
+          const call = {
             started: new Date(then).toISOString(), questions,
             size: text.length, status: 0, ms: Date.now() - then,
             error: error instanceof Error ? error.message : String(error),
             splits: 0, ...staged,
-          });
-          // A cancellation stays as it is; a request that got no reply
-          // for any other reason could not reach the service.
-          throw signal.aborted ? error : new DecisionServiceError(0, '', networkSaid(error), { cause: error });
+          };
+          const now = Date.now();
+          unreachedSince ??= now;
+          const pause = retryAfterMs(null);
+          if (!signal.aborted && now - unreachedSince + pause <= JEV_RATE_LIMITED_MS) {
+            await onCall?.(call);
+            await wait(pause, signal);
+            continue;
+          }
+          allow.stop(domain, error);
+          await onCall?.(call);
+          throw signal.aborted ? error : new DecisionServiceError(0, '', networkSaid(error),
+            { cause: error, waited: `${Math.round(JEV_RATE_LIMITED_MS / 1000)} s of tries` });
         }
         const raw = (() => { try { return record(JSON.parse(reply.text)); } catch { return {}; } })();
         const call = {

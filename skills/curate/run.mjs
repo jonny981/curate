@@ -2049,7 +2049,7 @@ function decisionFailure(error, recordFile) {
     : cause?.reason === 'key'
       ? `The decision service refused the key in \`TYPESAFE_API_KEY\` (HTTP ${cause.status}), ${stopped} Set a current key from TypeSafe (https://typesafe.ai), then ask again.${said}`
       : cause?.reason === 'unreachable'
-        ? `Curate could not reach the decision service (${masked(cause.said)}), ${stopped.replace('Curate ', 'it ')} Check the network connection, then ask again.`
+        ? `Curate could not reach the decision service after a minute of tries (${masked(cause.said)}), ${stopped.replace('Curate ', 'it ')} Check the network connection, then ask again.`
         : cause?.reason === 'busy'
           ? `The decision service is still asking Curate to wait (HTTP 429), ${stopped} Ask again in a few minutes.${said}`
           : cause?.reason === 'refused'

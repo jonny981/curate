@@ -173,7 +173,7 @@ An export's dates don't always show whether the day or the month comes first. Cu
 | `threshold` | Each source's own bar | One keep bar for every source, from 0 to 1 ([Keep bar](#keep-bar)) |
 | `feed` | Off | `{ "order": "combsum" }`, with an optional `size`: changes the order and length of what's rated ([Feed](#feed)) |
 | `recentFirst` | `true` | `false` breaks equal scores by item ID instead ([Chat order](#chat-order)) |
-| `maxInFlight` | No cap | A positive integer that caps how many decision requests of the question are open at once ([Rating](#rating)) |
+| `maxInFlight` | 16 | A positive integer that caps how many decision requests of the question are open at once ([Rating](#rating)) |
 | `requestsPerSecond`, `tokensPerSecond` | 320 and 400,000 | Your organization's decision rates ([Decision rates](#decision-rates)) |
 | `person` | None | Your name as your questions word it ([Decision levers](#decision-levers)) |
 | `records` | Off | `true` saves a run record ([Records](#records)) |
@@ -327,15 +327,15 @@ If the service rejects a request as too large, Curate sends it again in halves, 
 
 Every request goes in the run record's `jev` list, and `splits` counts the extra requests a rejection needed. A second stage's requests are marked `stage: 'keep'`, and `pick.keep` counts what that stage asked, sent, kept and left out.
 
-By default every independent batch of a round goes out together. Set `maxInFlight` to a positive integer to cap how many decision requests of the question are open at once, across every read running at the same time; the rest go out in order as earlier replies land.
+At most 16 decision requests of the question are open at once, across every read running at the same time; the rest go out in order as earlier replies land. Set `maxInFlight` to another positive integer to change that.
 
 #### Refusals
 
-A request answered 429 (over a rate limit) or 529 (the service overloaded) is sent again after the wait the reply asks for, for at most 60 seconds. The question fails, and the command exits with code 4, when:
+A request answered 429 (over a rate limit) or 529 (the service overloaded) is sent again after the wait the reply asks for, for at most 60 seconds. A request that gets no reply, such as one whose connection timed out, is sent again a second later, for at most 60 seconds too. The question fails, and the command exits with code 4, when:
 
 - the service has no credit (HTTP 402) or refuses the key (401 or 403);
 - a request is still answered 429 or 529 after 60 seconds of waiting;
-- a request gets no reply;
+- a request still gets no reply after 60 seconds of tries;
 - a rejection that isn't for size (no larger than an accepted body, with a reply that doesn't say it was too large), or a single item's text cut to nothing.
 
 The message's first line says why in plain words, with the service's own message and what to do. The next line says how many parts went undecided, and the run record's `pick.decideError` lists their ids. The key and anything shaped like a credential are masked in what the command prints and records.
@@ -453,7 +453,7 @@ A `claude-code`, `codex` or `markdown` source's `levers` switches levers of its 
 | --- | --- | --- |
 | `wholeMessages` | Asks the decision questions about each ranked part's whole message, and a subagent's report with the request that produced it ([whole messages](https://github.com/jonny981/curate/blob/main/docs/library.md#whole-messages)) | 2.47 times the dollars on one coding-agent history |
 | `hardFacts` | Writes into each part's record what code knows for certain: its kind, session and place, the message it answers and your reply to it ([hard facts](https://github.com/jonny981/curate/blob/main/docs/library.md#hard-facts)). The search-line call then also gives [the kind of task](#the-kind-of-task), and the requests carry it and `person` | 1.48 times the dollars |
-| `itemsPerRequest` | `1` sends each part (each message under `wholeMessages`) in a decision request of its own, with all its questions; the requests go out at once ([items per request](https://github.com/jonny981/curate/blob/main/docs/library.md#items-per-request)) | On LongMemEval's notes, 333 requests a question in place of 8, 1.09 times the dollars and at least 4.2 seconds |
+| `itemsPerRequest` | `1` sends each part (each message under `wholeMessages`) in a decision request of its own, with all its questions; the requests go out 16 at a time unless `maxInFlight` says otherwise ([items per request](https://github.com/jonny981/curate/blob/main/docs/library.md#items-per-request)) | On LongMemEval's notes, 333 requests a question in place of 8, 1.09 times the dollars and at least 4.2 seconds |
 | `roles` | Asks what each kept part is doing: states a settled decision, proposes, reports a work step, asks, approves, repeats, is tool output, or only mentions the subject. It's recorded on each part and given to `choicePerFact`'s requests, and an agent's proposal that your next message approves is marked. It changes no selection ([what each kept part is doing](https://github.com/jonny981/curate/blob/main/docs/library.md#what-each-kept-part-is-doing)) | About one request and USD 0.0005 more a LongMemEval question |
 | `choicePerFact` | After the kept parts are chosen, asks one Choice per needed fact over the 20 kept parts rated best for it, each written into its own option. It removes each pick and asks again until a question over the picks so far says they state everything the task asks, or no candidate is left. The picks lead the text, and every other kept part follows ([a Choice per needed fact](https://github.com/jonny981/curate/blob/main/docs/library.md#a-choice-per-needed-fact)) | Its rounds run one after another, each about 3 requests, USD 0.0002 and 0.3 seconds a LongMemEval question with two needed facts; at most 44 requests and USD 0.0035 |
 

@@ -207,6 +207,7 @@ A lone item is resent with its text halved, and its answers are marked `truncate
 
 On HTTP 429 (over a rate limit) or 529 (the service overloaded), `jev()` waits as the reply asks and sends the same request again, for at most 60 seconds from the first such reply.
 It reads `retry-after-ms` first, as TypeSafe's own client does, then `Retry-After`, and waits one second when neither is there.
+A request that gets no reply, such as one whose connection timed out, is sent again a second later, for at most 60 seconds from its first try; a cancelled one is never sent again.
 
 Any failure throws a `DecisionServiceError`, whose message leads with the reason and then gives the service's own message:
 
@@ -233,7 +234,7 @@ A pace that slows itself when the service's replies slow down isn't tried.
 
 `onCall` is called once per request, planned, split and resent alike, with a `JevCall`: when it was sent, the number of questions, the body's size, the reply's status, the milliseconds it took, and the usage and answers the reply held.
 Its `splits` counts the extra requests a rejection caused: 2 for a split, 1 for a resent item, 0 otherwise.
-A request that got no reply, from a network failure or a cancellation, is reported with status 0 and the failure's message in `error`, and the error still fails the pick.
+A request that got no reply, from a network failure or a cancellation, is reported with status 0 and the failure's message in `error`, each try on its own. A cancellation, or no reply after 60 seconds of tries, fails the pick.
 
 ### OpenAI
 

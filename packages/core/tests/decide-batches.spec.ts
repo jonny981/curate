@@ -89,6 +89,23 @@ describe('independent decision batches of one round', () => {
       .toEqual(pickedDefault.selected.map((candidate) => candidate.id));
   });
 
+  it('holds at most 16 requests open when the call sets no maxInFlight', async () => {
+    let open = 0;
+    let peak = 0;
+    const decide = vi.fn(async (batch: PickBatch) => {
+      open += 1;
+      peak = Math.max(peak, open);
+      await new Promise((resolve) => { setTimeout(resolve, 10); });
+      open -= 1;
+      return answerAll(batch);
+    });
+    const picked = await pick(Array.from({ length: 40 }, (_, index) => part(index, `text ${index}`)), {
+      ...uncutPick, task: 'notes?', decide, limits: { maxPerBatch: 1 } });
+    expect(decide).toHaveBeenCalledTimes(40);
+    expect(peak).toBe(16);
+    expect(picked.selected).toHaveLength(40);
+  });
+
   it('keeps a later batch\'s real answers when an earlier batch is rejected', async () => {
     let count = 0;
     const decide = vi.fn(async (batch: PickBatch) => {

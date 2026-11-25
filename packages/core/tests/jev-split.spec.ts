@@ -178,18 +178,28 @@ describe('a Jev request the service rejects as too large', () => {
     }
   });
 
-  it('reports a request that never got a reply once, with its error, then fails the pick', async () => {
-    const calls: JevCall[] = [];
-    vi.stubGlobal('fetch', vi.fn<typeof globalThis.fetch>().mockRejectedValue(new TypeError('socket hangup')));
-    const decide = jev({ apiKey: 'test-key', onCall: (call) => { calls.push(call); } });
-    await expect(pick([part(0, 'short text')], { ...uncutPick, task: 'notes?', decide }))
-      .rejects.toThrow('socket hangup');
-    expect(calls).toHaveLength(1);
-    expect(calls[0]).toMatchObject({ questions: 1, status: 0, splits: 0 });
-    expect(calls[0]!.error).toContain('socket hangup');
-    expect(typeof calls[0]!.ms).toBe('number');
-    expect(typeof calls[0]!.size).toBe('number');
-    expect(typeof calls[0]!.started).toBe('string');
+  it('reports each try of a request that never got a reply, with its error, then fails the pick after a minute', async () => {
+    vi.useFakeTimers();
+    try {
+      const calls: JevCall[] = [];
+      vi.stubGlobal('fetch', vi.fn<typeof globalThis.fetch>().mockRejectedValue(new TypeError('socket hangup')));
+      const decide = jev({ apiKey: 'test-key', onCall: (call) => { calls.push(call); } });
+      const pending = expect(pick([part(0, 'short text')], { ...uncutPick, task: 'notes?', decide }))
+        .rejects.toThrow('socket hangup');
+      await vi.advanceTimersByTimeAsync(61_000);
+      await pending;
+      // A try a second, for the minute.
+      expect(calls.length).toBeGreaterThan(50);
+      for (const call of calls) {
+        expect(call).toMatchObject({ questions: 1, status: 0, splits: 0 });
+        expect(call.error).toContain('socket hangup');
+        expect(typeof call.ms).toBe('number');
+        expect(typeof call.size).toBe('number');
+        expect(typeof call.started).toBe('string');
+      }
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('records a truncated resend through the onCall hook as one split', async () => {

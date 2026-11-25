@@ -559,7 +559,7 @@ If a stopping limit leaves parts unrated, `recall()` throws; to accept that, [ca
 | --- | --- | --- |
 | `maxPerBatch` | 150 questions | The most questions in one request. Every request still runs |
 | `maxBatchChars` | Off | Sizes each request by characters: as many whole parts as fit in N, counting the task, each part's id, title, date and text once, and each question's wording and criteria. A larger part goes alone; nothing is cut. With `maxPerBatch` set too, a request closes at whichever it reaches first |
-| `maxInFlight` | Off: every request of a round goes out together | The most requests of the call open at once, across every read running at the same time; the rest go out in order as replies land |
+| `maxInFlight` | 16 | The most requests of the call open at once, across every read running at the same time; the rest go out in order as replies land |
 | `maxCandidates` | Off | Stops each search lane at N parts ([measured](measurements.md#evidence-limits)) |
 | `maxBatches` | Off | Stops after N requests. With 151 one-question parts and one 150-question request, one part stays unrated. A question set can take several requests a part |
 | `maxElapsedMs` | Off | Stops asking at this many milliseconds. What it loses depends on response time |
@@ -843,7 +843,7 @@ Unset, a decision request holds as many items as the request limits allow, each 
 A mode with `itemsPerRequest: 1` sends each item in a request of its own, with all of its questions; `itemsPerRequest: n` holds at most n.
 The task and the fields beside it (the needed facts, the person, the kind of task) repeat in every request.
 
-The requests of a round go out at once, inside `limits.maxInFlight` and the decider's own rate. `jev()` queues every request inside your organization's request and token rates ([Decision models](../packages/core/README.md#rate-limits)).
+The requests of a round go out at once, inside `limits.maxInFlight` (16 unless set) and the decider's own rate. `jev()` queues every request inside your organization's request and token rates ([Decision models](../packages/core/README.md#rate-limits)).
 A rating stop still plans its waves in parts.
 
 ### The narrow question in two

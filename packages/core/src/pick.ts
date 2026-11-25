@@ -328,8 +328,7 @@ export interface PickLimits {
   /** The most decision requests of the call in flight at once, across
    *  every read running at the same time: the independent batches of a
    *  round dispatch together up to this many and the rest go out in
-   *  dispatch order as earlier replies land. Omitted means every batch
-   *  of a round goes out at once. */
+   *  dispatch order as earlier replies land. Omitted, 16. */
   readonly maxInFlight?: number;
 }
 
@@ -1220,6 +1219,11 @@ const LABEL_STORE_READ_GROUP = 64;
  *  settled. */
 const labelsInFlight = new Map<string, Promise<PartLabels | undefined>>();
 const DEFAULT_MAX_PER_BATCH = 150;
+// The decision requests open at once when the call sets no
+// `maxInFlight`: the count the second stage's cost was measured at. With
+// every request of a round open together, 71 to 92 one-item requests
+// timed out connecting.
+const DEFAULT_MAX_IN_FLIGHT = 16;
 /** The bar for a source that declares none cuts scored references below
  *  0.0146: the highest cut that lost no answer message in the
  *  measurement on the tuning questions. */
@@ -2016,7 +2020,7 @@ export async function pick(
     maxCandidates: positiveLimit(input.maxCandidates, 'maxCandidates', Number.POSITIVE_INFINITY),
     maxElapsedMs: positiveLimit(input.maxElapsedMs, 'maxElapsedMs', Number.POSITIVE_INFINITY),
     maxQuestionText: positiveLimit(input.maxQuestionText, 'maxQuestionText', Number.POSITIVE_INFINITY),
-    maxInFlight: positiveLimit(input.maxInFlight, 'maxInFlight', Number.POSITIVE_INFINITY),
+    maxInFlight: positiveLimit(input.maxInFlight, 'maxInFlight', DEFAULT_MAX_IN_FLIGHT),
   };
   const recordedLimits: PickLimits = {
     maxPerBatch: limits.maxPerBatch,

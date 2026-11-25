@@ -1153,10 +1153,22 @@ async function decisionCall(reply: (payload: { questions: Record<string, unknown
     return reply(payload);
   }));
   const { call } = subscriptionReply(searches());
-  const outcome = await run(['--sources', sourcesFile, 'orchard'], call).then(
+  // A request that gets no reply is tried again for a minute: the clock
+  // runs on a fake timer, a second a turn, so the call ends at once.
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+  let settled = false;
+  const running = run(['--sources', sourcesFile, 'orchard'], call).then(
     (value: Awaited<ReturnType<typeof run>>) => ({ value, error: undefined }),
-    (error: Error & { exitCode?: number }) => ({ value: undefined, error }));
-  return { ...outcome, home };
+    (error: Error & { exitCode?: number }) => ({ value: undefined, error })).finally(() => { settled = true; });
+  try {
+    while (!settled) {
+      await vi.advanceTimersByTimeAsync(1_000);
+      await new Promise((resolve) => { setImmediate(resolve); });
+    }
+  } finally {
+    vi.useRealTimers();
+  }
+  return { ...(await running), home };
 }
 const answered = (payload: { questions: Record<string, unknown> }) =>
   Response.json({ answers: Object.fromEntries(Object.keys(payload.questions).map((key) => [key, { noul: 0.8 }])) });
@@ -1201,7 +1213,7 @@ describe('a call the decision service refuses', () => {
   it('says the service could not be reached when a request gets no reply', async () => {
     const { error } = await decisionCall(() => { throw new TypeError('fetch failed', { cause: new Error('getaddrinfo ENOTFOUND api.typesafe.ai') }); });
     expect(error?.exitCode).toBe(DECISION_EXIT);
-    expect(error!.message.split('\n')[0]).toBe('Curate could not reach the decision service (fetch failed (getaddrinfo ENOTFOUND api.typesafe.ai)), '
+    expect(error!.message.split('\n')[0]).toBe('Curate could not reach the decision service after a minute of tries (fetch failed (getaddrinfo ENOTFOUND api.typesafe.ai)), '
       + 'so it stopped before deciding which parts answer the question. Check the network connection, then ask again.');
   });
 
