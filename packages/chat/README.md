@@ -111,6 +111,7 @@ For a Claude Code user record or queued message, the first row that matches deci
 | `origin.kind: "peer"` | `agent`, named by `origin.name` |
 | `origin.kind: "auto-continuation"` | `system` |
 | No `origin`, text starting "Another Claude session sent a message" | `agent`, named by `<agent-message from="…">` |
+| `entrypoint` starting `sdk-` (`sdk-cli`, `sdk-ts`, `sdk-py`): a program started the session, with `claude -p` or the Agent SDK | `agent` |
 | Anything else | `unmarked` |
 
 For a Codex user message:
@@ -185,6 +186,9 @@ By default the reader keeps one local file for this source, made on its first re
 Each call reads only what changed: what was added to a transcript that grew, a changed transcript in full, and any new transcript.
 The file goes in `~/.cache/curate/index`, or `$XDG_CACHE_HOME/curate/index` if that's set.
 Set `index: { directory }` to choose the folder, or `index: false` to read the transcripts directly every time.
+When a release changes what a part's row holds, such as who wrote it, the file is built again on the next call, and the progress lines say so with the time left.
+Vectors are stored by their text, so building it again embeds nothing.
+The old file stays on disk until a run between calls removes it, such as the `curate` skill's `--prepare`; an ordinary read never removes it, since another reader may still have it open.
 
 Core's [Stored index](https://github.com/jonny981/curate/blob/main/packages/core/README.md#stored-index) has the detail.
 

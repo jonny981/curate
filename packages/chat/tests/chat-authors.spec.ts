@@ -89,6 +89,23 @@ describe('who wrote each part', () => {
     });
   });
 
+  it('marks the user text of a Claude Code session a program started as the agent\'s', async () => {
+    const program = (entrypoint: string) => ({ entrypoint });
+    expect(marks(await readAll('claude-code', { session: [
+      user(1, 'a prompt from claude -p', program('sdk-cli')),
+      user(2, 'a prompt from the Agent SDK', program('sdk-ts')),
+      user(5, 'a prompt from the Python Agent SDK', program('sdk-py')),
+      user(3, 'a monitor event in that session', { ...program('sdk-cli'), origin: { kind: 'task-notification' } }),
+      user(4, 'typed in the terminal', program('cli')),
+    ] }))).toEqual({
+      'a prompt from claude -p': ['user', 'agent', undefined],
+      'a prompt from the Agent SDK': ['user', 'agent', undefined],
+      'a prompt from the Python Agent SDK': ['user', 'agent', undefined],
+      'a monitor event in that session': ['user', 'tool', undefined],
+      'typed in the terminal': ['user', 'unmarked', undefined],
+    });
+  });
+
   it('marks every part of a Claude Code agent transcript', async () => {
     const side = { isSidechain: true };
     expect(marks(await readAll('claude-code', { 'agent-a1': [

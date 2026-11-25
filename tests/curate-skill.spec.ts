@@ -3426,23 +3426,27 @@ describe('a call reads the project its working folder sits in', () => {
     const embed = Object.assign(async (texts: readonly string[]) => texts.map(() => [1, 0]), { removeEarlierFiles });
     const model = (async () => ({ embed, dispose: vi.fn(async () => {}) })) as never;
     vi.mocked(createLocalEmbedder).mockImplementationOnce(model).mockImplementationOnce(model);
-    // The project chat's index file under an earlier format.
+    // The project chat's index file under an earlier format, and under this format before the layout number named it.
     const index = at('cache', 'curate', 'index');
-    const key = { includeTools: false, size: DEFAULT_MAX_QUESTION_TEXT, exclude: [], stem: true };
-    const earlier = indexFilePath(index, ids.claude, key, STORED_INDEX_FORMAT - 1);
+    const before = { includeTools: false, size: DEFAULT_MAX_QUESTION_TEXT, exclude: [], stem: true };
+    const earlier = indexFilePath(index, ids.claude, before, STORED_INDEX_FORMAT - 1);
+    const unnumbered = indexFilePath(index, ids.claude, before);
     await mkdir(index, { recursive: true });
     await writeFile(earlier, 'x');
+    await writeFile(unnumbered, 'x');
     const { call } = subscriptionReply(searches());
     await run(['What did we plan for the orchard?'], call);
-    expect(realFs.existsSync(indexFilePath(index, ids.claude, key))).toBe(true);
+    expect(realFs.existsSync(indexFilePath(index, ids.claude, { ...before, layout: 2 }))).toBe(true);
     expect(realFs.existsSync(earlier)).toBe(true);
+    expect(realFs.existsSync(unnumbered)).toBe(true);
     expect(removeEarlierFiles).not.toHaveBeenCalled();
     const printed = vi.mocked(console.log);
     printed.mockClear();
     await run(['--prepare']);
     expect(realFs.existsSync(earlier)).toBe(false);
+    expect(realFs.existsSync(unnumbered)).toBe(false);
     expect(printed.mock.calls.map(([line]) => String(line)).slice(1))
-      .toEqual([`Removed 2 files an earlier version of Curate kept:\n  ${earlier}\n  ${vectors}`]);
+      .toEqual([`Removed 3 files an earlier version of Curate kept:\n  ${earlier}\n  ${unnumbered}\n  ${vectors}`]);
   });
 
   it('heads each commit with its hash and each document with its file', async () => {

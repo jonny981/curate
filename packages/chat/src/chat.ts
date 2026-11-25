@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { createReadStream, type Dirent } from 'node:fs';
-import { type FileHandle, lstat, open, readdir, readFile, realpath, stat } from 'node:fs/promises';
+import { createReadStream, existsSync, type Dirent } from 'node:fs';
+import { type FileHandle, lstat, open, readdir, readFile, realpath, rm, stat } from 'node:fs/promises';
 import type { Transform } from 'node:stream';
 import * as zlib from 'node:zlib';
 import { homedir } from 'node:os';
@@ -380,6 +380,9 @@ function claudeAuthor(record: Json, origin: Json, text: string): Written {
   if (origin.kind === 'human') return { author: 'person' };
   if (origin.kind === 'peer' || crossSession) return named('agent', sender);
   if (origin.kind === 'auto-continuation') return { author: 'system' };
+  // A session a program started (`claude -p`, the Agent SDK) has no
+  // human turns: its user text is the program's.
+  if (typeof record.entrypoint === 'string' && record.entrypoint.startsWith('sdk-')) return { author: 'agent' };
   return { author: 'unmarked' };
 }
 
@@ -881,6 +884,10 @@ async function readRange(file: string, position: number, length: number): Promis
   }
 }
 
+/** The layout of a part's stored row. 2 marks the user text of a session
+ *  a program started as the agent's. */
+const CHAT_INDEX_LAYOUT = 2;
+
 const CHAT_TABLES = `CREATE TABLE IF NOT EXISTS transcripts (id INTEGER PRIMARY KEY, provider TEXT NOT NULL,
     root INTEGER NOT NULL, root_path TEXT NOT NULL, path TEXT NOT NULL, size INTEGER NOT NULL, mtime TEXT NOT NULL,
     lines INTEGER NOT NULL, head TEXT NOT NULL, tail TEXT NOT NULL, newline INTEGER NOT NULL, state TEXT NOT NULL, undated INTEGER NOT NULL,
@@ -1248,7 +1255,11 @@ export function chat(options: ChatOptions = {}): CandidateSource {
     }
     // The settings that decide which parts exist, or how their words are
     // stored, name the file.
-    const key = { includeTools, size, exclude: exclude ?? [], stem: { ...CHAT_KEYWORD_SETTINGS, ...options.keyword }.stem };
+    const before = { includeTools, size, exclude: exclude ?? [], stem: { ...CHAT_KEYWORD_SETTINGS, ...options.keyword }.stem };
+    // The layout number names the file too, so a change to what a part's
+    // row holds, such as its author, indexes this source again. Vectors
+    // are stored by their text, so nothing is embedded again.
+    const key = { ...before, layout: CHAT_INDEX_LAYOUT };
     const path = indexFilePath(directory, id, key);
     const walk = (root: string, exclusions: readonly string[]) => {
       if (context === undefined) return walkTranscripts(root, exclusions, signal);
@@ -1261,7 +1272,17 @@ export function chat(options: ChatOptions = {}): CandidateSource {
     };
     const index = await syncChatIndex(path, directory, found, own, requested, includeTools, size, options.keyword, signal, walk,
       context?.onFirstIndex === undefined ? undefined : (done, total) => context.onFirstIndex!(id, done, total, 'transcripts'));
-    if (context?.removed !== undefined) context.removed.push(...await removeEarlierFormats(directory, id, key));
+    if (context?.removed !== undefined) {
+      context.removed.push(...await removeEarlierFormats(directory, id, key));
+      // The files named before the layout number was part of the name.
+      context.removed.push(...await removeEarlierFormats(directory, id, before));
+      const unnumbered = indexFilePath(directory, id, before);
+      for (const file of ['', '-wal', '-shm', '-journal'].map((end) => `${unnumbered}${end}`)) {
+        if (!existsSync(file)) continue;
+        await rm(file, { force: true });
+        context.removed.push(file);
+      }
+    }
     return index;
   };
   const storedIndex = async (

@@ -1285,7 +1285,7 @@ describe('stored index', () => {
   it('removes the files earlier formats wrote for this source and its settings only when a run between calls asks, and no other', async () => {
     const directory = await history();
     const cache = await folder();
-    const key = { includeTools: false, size: 700, exclude: [], stem: true };
+    const key = { includeTools: false, size: 700, exclude: [], stem: true, layout: 2 };
     const earlier = Array.from({ length: STORED_INDEX_FORMAT - 1 }, (_, at) => indexFilePath(cache, 'chat:test', key, at + 1));
     const others = [indexFilePath(cache, 'chat:other', key, 1), indexFilePath(cache, 'chat:test', { ...key, size: 300 }, 1)];
     for (const path of [...earlier, ...others]) await writeFile(path, 'x');
@@ -1305,7 +1305,7 @@ describe('stored index', () => {
   it('leaves an older reader its file of an earlier format across a newer reader\'s reads', async () => {
     const directory = await history();
     const cache = await folder();
-    const key = { includeTools: false, size: 700, exclude: [], stem: true };
+    const key = { includeTools: false, size: 700, exclude: [], stem: true, layout: 2 };
     const source = () => chat({ id: 'chat:test', paths: [directory], index: { directory: cache } });
     // An older reader in the middle of a call: its file, of an earlier
     // format, is open, and its next lane opens it again by name.
@@ -1389,6 +1389,37 @@ describe('stored index', () => {
     expect(rebuilt.texts).toEqual([]);
     expect(rebuilt.result).toEqual(first.result);
     expect((await readdir(cache)).filter((name) => name.endsWith(`${now}sqlite`))).toHaveLength(1);
+  });
+
+  it('indexes again under a new layout without embedding any part, and removes the file named before it only between calls', { timeout: 60_000 }, async () => {
+    const directory = await history();
+    const cache = await folder();
+    const vectors = await folder();
+    const read = async (removed?: string[]) => {
+      const texts: string[] = [];
+      const embed = cachedEmbeddings(async (list) => { texts.push(...list); return list.map((text) => [text.length % 7, 1]); },
+        { directory: vectors, modelId: 'test' });
+      const context = { files: new Map<string, Promise<string>>(), shared: new Map<object, unknown>(), ...(removed === undefined ? {} : { removed }) };
+      const result = await chat({ id: 'chat:test', paths: [directory], index: { directory: cache } })
+        .read({ task, wholeLanes: true, meaningLane: { embed }, meaningQueries: [task, 'battery storage'] }, context);
+      return { texts, result: withoutReport(result) };
+    };
+    const first = await read();
+    expect(first.texts.length).toBeGreaterThan(5);
+    // What a reader before the layout number left: the same rows, in a file its settings alone named.
+    const before = { includeTools: false, size: 700, exclude: [], stem: true };
+    const numbered = indexFilePath(cache, 'chat:test', { ...before, layout: 2 });
+    const unnumbered = indexFilePath(cache, 'chat:test', before);
+    await rename(numbered, unnumbered);
+    const again = await read();
+    expect(again.texts).toEqual([]);
+    expect(again.result).toEqual(first.result);
+    const names = async () => (await readdir(cache)).filter((name) => name.endsWith('.sqlite')).sort();
+    expect(await names()).toEqual([numbered, unnumbered].map((path) => path.slice(cache.length + 1)).sort());
+    const removed: string[] = [];
+    await read(removed);
+    expect(removed).toEqual([unnumbered]);
+    expect(await names()).toEqual([numbered.slice(cache.length + 1)]);
   });
 
   it('drops a removed transcript and reads a new one', async () => {
