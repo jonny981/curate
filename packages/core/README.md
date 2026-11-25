@@ -203,7 +203,7 @@ An item's questions always go in its item's request, and an item larger than tho
 
 If the service rejects a request as too large (HTTP 400 or 413), `jev()` splits it in two, each item keeping all its questions, and splits a rejected half again.
 A lone item is resent with its text halved, and its answers are marked `truncated`.
-`jev()` remembers the largest body the service accepted and plans later batches inside it after a rejection. A request rejected at or under that size, or a lone item cut to nothing, didn't fail for size, so the reply is thrown as sent and the error carries its whole body.
+`jev()` remembers the largest body the service accepted and plans later batches inside it after a rejection. The service counts tokens, not characters, so a request at or under that size can still be over its limit: one whose reply says so (`max_tokens_exceeded`) is split like any other. A request rejected at or under that size for any other reason, or a lone item cut to nothing, didn't fail for size, so the reply is thrown as sent and the error carries its whole body.
 
 On HTTP 429 (over a rate limit) or 529 (the service overloaded), `jev()` waits as the reply asks and sends the same request again, for at most 60 seconds from the first such reply.
 It reads `retry-after-ms` first, as TypeSafe's own client does, then `Retry-After`, and waits one second when neither is there.

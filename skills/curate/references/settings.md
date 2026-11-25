@@ -323,7 +323,7 @@ Identical text is rated once: copies share each answer when the question and cri
 
 Batches change request size without dropping parts. They're sized to Jev's documented request limit: 32,000 tokens for the state plus the longest question, at an estimate of three characters per token. Each item's evidence goes into the request's state once, however many of its questions the batch holds. Each decision sees the part's full text. A commit body over 2,800 characters is first cut into parts of at most 700 characters, the way a long note is, so a squash merge's long message never goes whole into one decision. The result shows only the kept parts of such a commit, together under its subject, with `…` where parts were left out and a last line such as `11 of 12 parts of commit 3ad5901 were not kept.`
 
-If the service rejects a request as too large, Curate sends it again in halves, each item keeping its questions, and splits a rejected half again. A single item too large on its own is resent with its evidence halved and its answers marked `truncated`. After a rejection, later batches are sized inside the largest request the service accepted.
+If the service rejects a request as too large, Curate sends it again in halves, each item keeping its questions, and splits a rejected half again. That holds when the request is smaller than one the service accepted: the service counts tokens, and a shorter request of dense text can hold more. A single item too large on its own is resent with its evidence halved and its answers marked `truncated`. After a rejection, later batches are sized inside the largest request the service accepted.
 
 Every request goes in the run record's `jev` list, and `splits` counts the extra requests a rejection needed. A second stage's requests are marked `stage: 'keep'`, and `pick.keep` counts what that stage asked, sent, kept and left out.
 
@@ -336,7 +336,7 @@ A request answered 429 (over a rate limit) or 529 (the service overloaded) is se
 - the service has no credit (HTTP 402) or refuses the key (401 or 403);
 - a request is still answered 429 or 529 after 60 seconds of waiting;
 - a request gets no reply;
-- a rejection that size can't explain (no larger than an accepted body, or a single item's text cut to nothing).
+- a rejection that isn't for size (no larger than an accepted body, with a reply that doesn't say it was too large), or a single item's text cut to nothing.
 
 The message's first line says why in plain words, with the service's own message and what to do. The next line says how many parts went undecided, and the run record's `pick.decideError` lists their ids. The key and anything shaped like a credential are masked in what the command prints and records.
 

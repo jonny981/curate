@@ -113,6 +113,31 @@ describe('a Jev request the service rejects as too large', () => {
     expect(bodies).toHaveLength(2);
   });
 
+  it('halves a request the service refuses as too large even when it is no larger than a body already accepted', async () => {
+    // The service counts tokens, not characters: a shorter body of dense
+    // text can be over its limit when a longer one was not.
+    const tooLarge = JSON.stringify({ detail: { error_type: 'max_tokens_exceeded' } });
+    const bodies: { size: number; items: number }[] = [];
+    vi.stubGlobal('fetch', vi.fn<typeof globalThis.fetch>().mockImplementation(async (_url, init) => {
+      const raw = String(init!.body);
+      const body = JSON.parse(raw) as JevBody;
+      const items = Object.values(body.state.items);
+      bodies.push({ size: raw.length, items: items.length });
+      if (items.length > 1 && items.every((item) => item.text.startsWith('dense'))) return new Response(tooLarge, { status: 400 });
+      return Response.json({ answers: Object.fromEntries(Object.keys(body.questions).map((name) => [name, { noul: 0.7 }])) });
+    }));
+    const calls: JevCall[] = [];
+    const decide = jev({ apiKey: 'test-key', onCall: (call) => { calls.push(call); } });
+    const parts = [part(0, `plain ${'x'.repeat(3_000)}`), part(1, `plain ${'y'.repeat(3_000)}`),
+      part(2, `dense ${'z'.repeat(1_000)}`), part(3, `dense ${'w'.repeat(1_000)}`)];
+    const picked = await pick(parts, { ...uncutPick, task: 'notes?', limits: { maxPerBatch: 2, maxInFlight: 1 }, decide });
+
+    expect(picked.selected).toHaveLength(4);
+    expect(calls.map((call) => [call.status, call.splits])).toEqual([[200, 0], [400, 2], [200, 0], [200, 0]]);
+    expect(calls[1]!.size).toBeLessThan(calls[0]!.size);
+    expect(bodies.map((body) => body.items)).toEqual([2, 2, 1, 1]);
+  });
+
   it('splits a batch that shares its state with an accepted request but asks more questions', async () => {
     const bodies: { raw: string; body: JevBody }[] = [];
     vi.stubGlobal('fetch', vi.fn<typeof globalThis.fetch>().mockImplementation(async (_url, init) => {

@@ -77,6 +77,12 @@ export class DecisionServiceError extends Error {
 
 /** The message a reply's body gives: a JSON body's `detail` text or its
  *  `detail.message` or `message`, otherwise the body as sent. */
+/** Whether a refusal's body says the request was over the service's
+ *  size limit, as TypeSafe's `max_tokens_exceeded` does. */
+function saysTooLarge(body: string): boolean {
+  try { return record(record(JSON.parse(body)).detail).error_type === 'max_tokens_exceeded'; } catch { return false; }
+}
+
 function saidIn(body: string): string {
   try {
     const parsed = record(JSON.parse(body));
@@ -515,8 +521,9 @@ export function jev({ apiKey, model = 'jev-latest', url = JEV_URL, onCall,
   const deciderId = url === JEV_URL ? `typesafe:${model}:item-records` : `jev:${hostAndPath(url)}:${model}:item-records`;
   // The largest whole body Jev has accepted in this pick. Once a
   // rejection has landed, later batches are planned inside it, and a
-  // request rejected at no more than it did not fail for size: its
-  // reply is thrown as sent.
+  // request rejected at no more than it did not fail for size, unless
+  // the reply says it did: the service counts tokens, and a body of
+  // fewer characters can hold more of them.
   let accepted = 0;
   let rejected = false;
   // The two published rates bound every request this adapter sends:
@@ -683,9 +690,10 @@ export function jev({ apiKey, model = 'jev-latest', url = JEV_URL, onCall,
     usage?: unknown; answers?: unknown; splits: number;
   }, replyText: string, domain: AllowanceDomain): Promise<[string, PickAnswer][]> => {
     rejected = true;
-    // Only a rejection size can explain is retried: a too-large status
-    // on a body bigger than every body Jev has accepted so far.
-    if ((call.status === 400 || call.status === 413) && call.size > accepted) {
+    // Only a rejection for size is retried: a too-large status on a body
+    // bigger than every body Jev has accepted so far, or one whose reply
+    // says it was over the limit.
+    if ((call.status === 400 || call.status === 413) && (call.size > accepted || saysTooLarge(replyText))) {
       const items = new Map<string, PickQuestion[]>();
       for (const q of part.questions) {
         const key = `${q.sourceId}\n${q.id}`;
