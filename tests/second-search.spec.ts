@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { conversationRead, type CandidateReadRequest, type CandidateSource, type MemoryCandidate, type PickCascade, type PickDecide } from '@curatejs/core';
 import { scrubChat } from '@curatejs/chat';
 // @ts-expect-error The standalone JavaScript command has no type declarations.
-import { CHAT_MODES, pickFullSources, rareLines, searchAgain, searchSource, secondSearchIds } from '../skills/curate/run.mjs';
+import { CHAT_DEFAULTS, CHAT_MODES, pickFullSources, rareLines, searchAgain, searchSource, secondSearchIds } from '../skills/curate/run.mjs';
 
 describe('the second search\'s lines', () => {
   const part = (text: string) => ({ text });
@@ -183,8 +183,15 @@ describe('the second search reuses every rating of the first', () => {
 describe('which sources the second search reads', () => {
   it('reads the sources the agent mode reads, unless their mode turns it off', () => {
     const sources = [{ id: 'answers', mode: CHAT_MODES.answers }, { id: 'exchange', mode: CHAT_MODES.exchange },
-      { id: 'default', mode: CHAT_MODES.default }, { id: 'judgments', mode: CHAT_MODES.judgments }, { id: 'notes' }];
-    expect(secondSearchIds(sources)).toEqual(new Set(['answers', 'default']));
+      { id: 'plain', mode: CHAT_MODES.plain }, { id: 'judgments', mode: CHAT_MODES.judgments }, { id: 'notes' }];
+    // Before round one, the exchange form is one the second search may read: its stage is off on a source that marks no
+    // message as the person's, and the source is then read as the plain set reads.
+    expect(secondSearchIds(sources)).toEqual(new Set(['answers', 'exchange', 'plain']));
+    const first = (stageOff: boolean) => ({ levers: { sources: { exchange: { mode: 'exchange', ...(stageOff ? { stageOff: true } : {}) } } } });
+    expect(secondSearchIds(sources, first(false))).toEqual(new Set(['answers', 'plain']));
+    expect(secondSearchIds(sources, first(true))).toEqual(new Set(['answers', 'exchange', 'plain']));
+    // Claude Code's default set, the exchange form, reads no second search where its stage ran; Codex's, the read alone, does.
+    expect(CHAT_DEFAULTS).toEqual({ 'claude-code': 'exchange', codex: 'plain' });
     expect(CHAT_MODES.exchange.searchAgain).toBe(false);
   });
 });

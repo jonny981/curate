@@ -37,9 +37,10 @@ afterEach(async () => {
 });
 
 const daysAgo = (days: number) => new Date(Date.now() - days * 86_400_000).toISOString();
-const lines = () => Object.fromEntries(['chat', 'git-history', 'markdown'].map((kind) => [
+// The transcripts' default set asks the kind of task in the same call.
+const lines = () => ({ ...Object.fromEntries(['chat', 'git-history', 'markdown'].map((kind) => [
   kind, { keywords: ['orchard', 'orchard trees'], answers: ['The orchard has trees.', 'Fruit trees grow here.'] },
-]));
+])), wanted: 'one decision' });
 
 type Call = (prompt: string, folder: string, label: string,
   record: { subscription: { label: string; attempt: number; code: number }[] }, save: () => Promise<void>) => Promise<string>;

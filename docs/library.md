@@ -912,7 +912,12 @@ After the read ends, the parts it kept are judged again with the stage's questio
 - **The record.** `record.keep` holds the items asked, the stage's requests, and per source the parts kept and left out and the bar. `record.levers.sources` names the stage's settings.
 
 `keep.barByKind` keeps each kind of message at a bar of its own: the kinds the hard facts name (`KEEP_KINDS`: the person's message, an agent step, tool output, a subagent's prompt or final report, a compaction summary, a system message), each a number or one per kind of task.
-A kind with none, or a message its reader marked no kind for, keeps at the stage's `bar`, and a bar of 1 keeps a kind only within an exchange.
+A message's kind is what its reader marked, and the bars are learned on marked messages, so a stage with `barByKind` judges only those:
+
+- **A message its reader marked no kind for** (`author: 'unmarked'`) keeps the read's verdict: the stage neither asks about it nor drops it, and it starts no exchange.
+- **A source whose reader marked no message as the person's,** such as a file of bare user lines, is read as its mode reads without the stage. Its record says `stageOff: true`.
+
+A kind with no bar keeps at the stage's `bar`, and a bar of 1 keeps a kind only within an exchange.
 No rating can keep a message of a kind at 1, so the stage doesn't ask about it: it's left out at its read's score, unless an exchange keeps it, which places it in the text by that score. `record.keep.notAsked` counts them ([measured](measurements.md#a-second-stage)).
 
 `keep.exchange` keeps the exchange around what the person said:

@@ -292,6 +292,7 @@ An example `~/.curate/sources.json`:
 | `exclude` (each source) | Paths to skip in that source, relative to its `path` |
 | `include` (`git` only) | Only commits that changed one of the paths |
 | `always` (each source) | `true` reads the source from inside any project ([What it reads](#what-it-reads)) |
+| `questions` (`claude-code`, `codex`, `markdown`) | The question set the decision model asks. Claude Code transcripts default to `exchange`: each kind of message kept at its own measured bar, with the exchange around each of your messages. Codex transcripts default to `plain`, which keeps every part the read keeps ([Question sets](skills/curate/references/settings.md#question-sets)) |
 | `related` | Groups of related projects ([What it reads](#what-it-reads)) |
 | `embeddingModel` | Where the embedding model file is ([Requirements](#requirements), item 3) |
 | `envFile` | A private file that holds `TYPESAFE_API_KEY` (item 4) |
@@ -305,7 +306,7 @@ An example `~/.curate/sources.json`:
 The command searches by keyword and by meaning.
 Label admission, an extra search step the library offers, is off.
 Identical text is only rated once.
-Claude Code and Codex transcripts are searched a second time, with lines made from the rarest words of the first search's best-rated passages ([Second search](skills/curate/references/settings.md#second-search)).
+Transcripts on the `plain` or `answers` question set are searched a second time, with lines made from the rarest words of the first search's best-rated passages ([Second search](skills/curate/references/settings.md#second-search)).
 
 ### Caches
 

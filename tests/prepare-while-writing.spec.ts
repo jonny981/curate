@@ -40,9 +40,10 @@ afterEach(async () => {
   await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
 });
 
-const lines = () => Object.fromEntries(['chat', 'git-history', 'markdown'].map((kind) => [
+// The transcripts' default set asks the kind of task in the same call.
+const lines = () => ({ ...Object.fromEntries(['chat', 'git-history', 'markdown'].map((kind) => [
   kind, { keywords: ['orchard', 'orchard trees'], answers: ['The orchard has trees.', 'Fruit trees grow here.'] },
-]));
+])), wanted: 'one decision' });
 const daysAgo = (days: number) => new Date(Date.now() - days * 86_400_000).toISOString();
 
 /** A chat folder, a notes folder and a small repository, each about an orchard. */

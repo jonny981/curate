@@ -114,51 +114,63 @@ const atLeast = (version, floor) => {
 const engineFound = () => (createRequire(import.meta.url).resolve.paths('node-llama-cpp') ?? [])
   .some((folder) => existsSync(join(folder, 'node-llama-cpp', 'package.json')));
 
-// The modes a chat source can select by its question set's name.
-// 'default' is the mode an omitted questions key produces; 'judgments'
-// asks the only measured model-scored set, read down the ranked list,
-// and it fails closed inside chat() while its weights file is unfitted.
-export const CHAT_MODES = { default: agentTranscripts,
-  // Read as the default mode reads, on its own questions and bar; then
-  // a second stage judges each kept message whole, with its hard facts,
-  // batched, in the measured wording, and keeps it by the highest of its
-  // answers (it states the answer, or one fact the answer needs) at a bar
-  // for the kind of task. The bars are measured on labelled answers (22
-  // tasks of one person's coding-agent history): the highest that loses
-  // none, 0.59 on one-decision tasks and 0.04 on everything-said tasks.
-  // A message's rating moves between calls of the same task (other search
-  // Each still awaits answers marked right.
+// The modes a chat source can select by its question set's name. An
+// omitted questions key, or 'default', takes the source type's own set
+// (CHAT_DEFAULTS). 'judgments' asks the only measured model-scored set,
+// read down the ranked list, and it fails closed inside chat() while its
+// weights file is unfitted.
+//
+// 'exchange' reads as `agentTranscripts` reads, on its own questions and
+// bar; then a second stage judges each kept message whole, with its hard
+// facts, batched, in the measured wording, and keeps each kind of message
+// at the bar its labelled answers earned within its kind (tool output at
+// the bar its widened answers earned; 1, kept only in an exchange, where
+// no labelled answer was of that kind), with the exchange around each
+// kept message of the person and each kept report's request, each agent
+// message kept only for an exchange laid out as its paragraph nearest the
+// person's. The bars were learned on messages their reader marked: a
+// message it marked no kind for keeps the read's verdict, and a source
+// that marks no message as the person's is read as 'plain' reads, second
+// search included (core's `Mode.keep.barByKind`).
+// Measured on 20 tasks of one person's coding-agent history, five answer
+// sets: 18.4 right against 13.8 for 'plain', and 17.0 with each task's
+// bars learned on the other tasks. A message's rating moves between
+// calls of the same task (other search lines, other needed facts): of
+// 537 messages rated 0.5 or more in one run, a tenth fell more than 2.07
+// in logit in another. So on one-decision tasks the person's message is
+// kept at its learned 0.76 moved down by that fall, 0.28, and its
+// exchange is attached only from 0.76 (`exchangeBar`): under it the
+// message is kept alone. With the report bar at 0.95: 18.2 right against
+// 18.4 at the learned bars (the 0.2 one task's answer noise, its answer
+// in every text), one-decision text a median of 5,213 tokens against
+// 2,087, 99% of the added text the person's own words; moving the
+// exchange's bar down too gave 14,125. The best text had no second
+// search, and on one history it added 11 to 21 seconds and most of the
+// size, so this set has none.
+const exchange = { ...agentTranscripts, name: 'exchange', searchAgain: false, keep: { questions: MESSAGE_ANSWER_CASCADE, bar: 1, exchange: { nearest: 'paragraph' },
+  wholeMessages: true, hardFacts: true, barByKind: {
+    'person message': { 'one decision': 0.28, 'everything said': 0.04 },
+    'subagent final report': { 'one decision': 0.59, 'everything said': 0.95 },
+    'subagent prompt': { 'one decision': 1, 'everything said': 0.05 },
+    'compaction summary': { 'one decision': 1, 'everything said': 0.37 },
+    'tool output': { 'one decision': 0.81, 'everything said': 0.13 },
+    'agent step': 1, 'system message': 1 },
+  exchangeBar: { 'one decision': 0.76, 'everything said': 0.04 } } };
+export const CHAT_MODES = { exchange,
+  // `agentTranscripts` as the chat reader ships it: the read alone, on
+  // its own questions and bar, with no second stage, and the second
+  // search after it.
+  plain: agentTranscripts,
+  // Read as 'plain' reads, on its own questions and bar; then a second
+  // stage judges each kept message whole, with its hard facts, batched,
+  // in the measured wording, and keeps it by the highest of its answers
+  // (it states the answer, or one fact the answer needs) at a bar for the
+  // kind of task. The bars are measured on labelled answers (22 tasks of
+  // one person's coding-agent history): the highest that loses none, 0.59
+  // on one-decision tasks and 0.04 on everything-said tasks. Each still
+  // awaits answers marked right.
   answers: { ...agentTranscripts, name: 'answers', keep: { questions: MESSAGE_ANSWER_CASCADE,
     bar: { 'one decision': 0.59, 'everything said': 0.04 }, wholeMessages: true, hardFacts: true } },
-  // The same two stages, each kind of message kept at the bar its
-  // labelled answers earned within its kind (tool output at the bar its
-  // widened answers earned; 1, kept only in an exchange, where a kind
-  // earned none), and the exchange around each kept message of the
-  // person, and each kept report's request, each agent message kept only
-  // for an exchange laid out as its paragraph nearest the person's.
-  // Measured on 20 tasks of one person's coding-agent history. A
-  // message's rating moves between calls of the same task (other search
-  // lines, other needed facts): of 537 messages rated 0.5 or more in one
-  // run, a tenth fell more than 2.07 in logit in another. So on
-  // one-decision tasks the person's message is kept at its learned 0.76
-  // moved down by that fall, 0.28, and its exchange is attached only
-  // from 0.76 (`exchangeBar`): under it the message is kept alone. On
-  // the 20 tasks, five answer sets, with the report bar at 0.95: 18.2
-  // right against 18.4 at the learned bars (the 0.2 one task's answer
-  // noise, its answer in every text), one-decision text a median of
-  // 5,213 tokens against 2,087, 99% of the added text the person's own
-  // words; moving the exchange's bar down too gave 14,125.
-  // Climb 27's best text had no second search, and on the owner's history
-  // it added 11 to 21 seconds and most of the size, so this set has none.
-  exchange: { ...agentTranscripts, name: 'exchange', searchAgain: false, keep: { questions: MESSAGE_ANSWER_CASCADE, bar: 1, exchange: { nearest: 'paragraph' },
-    wholeMessages: true, hardFacts: true, barByKind: {
-      'person message': { 'one decision': 0.28, 'everything said': 0.04 },
-      'subagent final report': { 'one decision': 0.59, 'everything said': 0.95 },
-      'subagent prompt': { 'one decision': 1, 'everything said': 0.05 },
-      'compaction summary': { 'one decision': 1, 'everything said': 0.37 },
-      'tool output': { 'one decision': 0.81, 'everything said': 0.13 },
-      'agent step': 1, 'system message': 1 },
-    exchangeBar: { 'one decision': 0.76, 'everything said': 0.04 } } },
   // Asked in plain text: the JSON state moves the decision model's scale,
   // and no bar of this set was measured in it.
   judgments: { name: 'judgments', questions: JUDGMENT_CHAT_CASCADE, read: rankedRead, request: 'text' } };
@@ -172,8 +184,15 @@ const leverValue = (key, value) => key === 'itemsPerRequest' ? wholeNumber(value
   : typeof value === 'boolean' || (key === 'choicePerFact' && value !== null && typeof value === 'object' && !Array.isArray(value)
     && Object.entries(value).every(([name, own]) => (name === 'candidates' && wholeNumber(own)) || (name === 'enough' && typeof own === 'boolean')));
 // A chat entry's mode, with its own bar and levers when it sets them.
+// The set a chat source reads with when its entry names none, or names
+// 'default'. Claude Code transcripts take the exchange set, measured on
+// them. Codex transcripts keep the read alone: the set was never measured
+// on them, and an interactive Codex session marks no user message, so the
+// set would count text another program typed into the terminal as the
+// person's.
+export const CHAT_DEFAULTS = { 'claude-code': 'exchange', codex: 'plain' };
 const chatMode = (entry) => {
-  const mode = CHAT_MODES[entry.questions ?? 'default'];
+  const mode = CHAT_MODES[entry.questions === undefined || entry.questions === 'default' ? CHAT_DEFAULTS[entry.type] : entry.questions];
   return entry.bar === undefined && entry.levers === undefined ? mode
     : { ...mode, ...(entry.bar === undefined ? {} : { bar: entry.bar }), ...entry.levers };
 };
@@ -237,9 +256,10 @@ export function parseSources(value, base = process.cwd()) {
         throw new Error(`${key} must be an array of paths.`);
       }
     }
-    const modes = source.type === 'markdown' ? NOTE_MODES : CHAT_MODES;
-    if (source.questions !== undefined && !Object.hasOwn(modes, source.questions)) {
-      throw new Error(`Unknown questions "${source.questions}"; allowed names are ${Object.keys(modes).join(', ')}.`);
+    // 'default' names the source type's own set.
+    const names = source.type === 'markdown' ? Object.keys(NOTE_MODES) : ['default', ...Object.keys(CHAT_MODES)];
+    if (source.questions !== undefined && !names.includes(source.questions)) {
+      throw new Error(`Unknown questions "${source.questions}"; allowed names are ${names.join(', ')}.`);
     }
     if (source.bar !== undefined
       && (typeof source.bar !== 'number' || !Number.isFinite(source.bar) || source.bar < 0 || source.bar > 1)) {
@@ -1049,9 +1069,16 @@ export function rareLines(task, seeds, parts) {
 
 /** The sources the second search reads: those read as the agent mode
  *  reads, unless their mode turns the second search off
- *  (`searchAgain: false`). */
-export const secondSearchIds = (sources) => new Set(sources
-  .filter((source) => source.mode?.read === agentTranscripts.read && source.mode?.searchAgain !== false).map((source) => source.id));
+ *  (`searchAgain: false`). A mode whose second stage keeps each kind at
+ *  its own bar does not run that stage on a source whose reader marked no
+ *  message as the person's, and the source is then read as the plain set
+ *  reads, second search included: with round one's record `first`, such a
+ *  source is read again when its stage was off, and before round one it
+ *  is one the second search may read. */
+export const secondSearchIds = (sources, first) => new Set(sources
+  .filter((source) => source.mode?.read === agentTranscripts.read && (source.mode?.searchAgain !== false
+    || (source.mode?.keep?.barByKind !== undefined && (first === undefined || first.levers.sources?.[source.id]?.stageOff === true))))
+  .map((source) => source.id));
 
 /** Search the coding-agent sources `agentIds` again from round one's
  *  pick `first`. `pickAgain(lines)` runs the second pick over those
@@ -1863,8 +1890,8 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
     const pickStart = Date.now();
     const lineNames = (length) => Array.from({ length }, (_, i) => `curate-search:${i}`);
     const request = { task: options.task, searchLines: lineNames(count), meaning: { embed: local.embed } };
-    // The coding-agent transcripts: the sources read as the agent mode reads.
-    const agentIds = secondSearchIds(sources);
+    // The coding-agent transcripts the second search may read.
+    const mayAgain = secondSearchIds(sources);
     // Their second search reuses round one's decisions, from a store
     // that lasts this call only.
     const decisions = new Map();
@@ -1895,7 +1922,7 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
       ...(needed?.facts === undefined ? {} : { needed: needed.facts }),
       ...(settings.person === undefined ? {} : { person: settings.person }),
       ...(wanted?.value === undefined ? {} : { wanted: wanted.value }),
-      ...(agentIds.size === 0 ? {} : { cache: { deciderId: decide.deciderId, store: {
+      ...(mayAgain.size === 0 ? {} : { cache: { deciderId: decide.deciderId, store: {
         get: async (key) => decisions.get(key), set: async (key, value) => { decisions.set(key, value); } } } }) };
     const searched = (source, searches) => {
       // A read's full result can be very large, so with records off it is
@@ -1934,6 +1961,7 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
     }
     await save();
     let final = picked;
+    const agentIds = secondSearchIds(sources, picked.record);
     if (agentIds.size > 0) {
       const againStart = Date.now();
       const again = await searchAgain(options.task, picked, agentIds, (lines) => pickFullSources(

@@ -115,7 +115,7 @@ describe('a second stage over the read\'s kept parts', () => {
 });
 
 describe('the exchange around what the person said, each kind at its own bar', () => {
-  const said = (container: string, line: number, text: string, author: 'person' | 'agent' | 'tool', unit?: 'prompt' | 'report'): MemoryCandidate => ({
+  const said = (container: string, line: number, text: string, author: 'person' | 'agent' | 'tool' | 'unmarked', unit?: 'prompt' | 'report'): MemoryCandidate => ({
     sourceId: 'chat', role: 'reference', id: `${container}:${line}:1:1`, title: `claude-code s1 ${author}`, text, signals: {},
     date: { value: `2026-10-01T09:${String(line).padStart(2, '0')}:00Z`, meaning: 'recorded' }, author,
     place: { container, at: [line, 1, 1] },
@@ -238,6 +238,55 @@ describe('the exchange around what the person said, each kind at its own bar', (
     // Everything said: the exchange comes with every kept message of the person.
     expect(entry(await at(0.3, 'everything said'), talk[0]!)).toMatchObject({ status: 'selected', keptAs: 'exchange' });
     await expect(pick(talk, { task, decide, modesBySource: { chat: mode({ exchangeBar: 2 }) } })).rejects.toThrow('keep.exchangeBar');
+  });
+
+  // Each kind at its own bar, and a stage bar of 1, so only a kind decides what is asked.
+  const byKind = mode({ bar: 1, exchange: true, barByKind: exchangeMode.keep!.barByKind });
+  const answering = (rate: (text: string) => number, seen?: PickBatch[]): PickDecide => async (batch) => {
+    if (batch.stage === 'keep') seen?.push(batch);
+    return Object.fromEntries(batch.questions.map((question) => [question.key, { status: 'answered',
+      probability: batch.stage !== 'keep' ? 0.5 : question.questionKey === 'answers' ? rate(question.text) : 0.02 }]));
+  };
+  const asked = (seen: PickBatch[]) => seen.flatMap((batch) => batch.questions.filter((question) => question.questionKey === 'answers'));
+
+  it('reads a source that marks no message as the person\'s as its mode reads, without the stage', async () => {
+    const bare = [said(main, 1, 'We moved the shop to Postgres.', 'unmarked'), said(main, 2, 'The cat is asleep.', 'unmarked')];
+    const seen: PickBatch[] = [];
+    const result = await pick(bare, { task, decide: answering((text) => text.includes('Postgres') ? 0.9 : 0.1, seen), everyRanked: true,
+      modesBySource: { chat: byKind } });
+    // No request of the stage, every part at its read's verdict, and the record says the stage was off.
+    expect(seen).toEqual([]);
+    expect(result.selected.map((part) => part.text).sort()).toEqual(['The cat is asleep.', 'We moved the shop to Postgres.']);
+    expect(entry(result, bare[1]!)).toMatchObject({ status: 'selected', probability: 0.5 });
+    expect(result.record.keep).toBeUndefined();
+    expect(result.record.levers.sources.chat).toMatchObject({ stageOff: true });
+    expect(result.record.levers.sources.chat!.keep).toBeUndefined();
+    // The same text as the mode reads without its stage.
+    const { keep: _keep, ...readAlone } = byKind;
+    const alone = await pick(bare, { task, decide: answering(() => 0.1), everyRanked: true, modesBySource: { chat: readAlone } });
+    expect((await curate(task, result)).log).toBe((await curate(task, alone)).log);
+  });
+
+  it('keeps the read\'s verdict on an unmarked message where the source marks the person\'s, asks nothing of it, and starts no exchange from it', async () => {
+    const marked = [
+      said(main, 1, 'Should we use Postgres or SQLite?', 'agent'),
+      said(main, 2, 'Postgres, for transactions.', 'person'),
+      said(main, 3, '<bash-stdout>Postgres 16 is installed.</bash-stdout>', 'unmarked'),
+      said(main, 4, 'keep SQLite for tests', 'unmarked'),
+      said(main, 5, 'Done: switched to Postgres.', 'agent'),
+      said(main, 6, 'Noted.', 'agent'),
+    ];
+    const seen: PickBatch[] = [];
+    const result = await pick(marked, { task, decide: answering((text) => text.startsWith('Postgres,') ? 0.9 : 0.1, seen), everyRanked: true,
+      modesBySource: { chat: byKind } });
+    expect(asked(seen).map((question) => question.text)).toEqual(['Postgres, for transactions.']);
+    for (const part of [marked[2]!, marked[3]!]) expect(entry(result, part)).toMatchObject({ status: 'selected', probability: 0.5 });
+    for (const part of [marked[2]!, marked[3]!]) expect(entry(result, part)).not.toHaveProperty('keptAs');
+    // The person's exchange runs past them: the agent's reply is the last agent message before the person's next.
+    expect(entry(result, marked[0]!)).toMatchObject({ status: 'selected', keptAs: 'exchange' });
+    expect(entry(result, marked[5]!)).toMatchObject({ status: 'selected', keptAs: 'exchange' });
+    expect(entry(result, marked[4]!)).toMatchObject({ status: 'rejected' });
+    expect(result.record.levers.sources.chat!.stageOff).toBeUndefined();
   });
 
   it('refuses a bar for a kind it does not know', async () => {

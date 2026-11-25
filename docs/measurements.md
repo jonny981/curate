@@ -271,6 +271,22 @@ The `curate` command's `exchange` set therefore keeps the person's message on on
 It answered 18.2 right against 18.4 at the learned bars, the 0.2 being one task's answer noise (its answer was in every text), with one-decision text a median of 5,213 tokens against 2,087, 99% of the added text the person's own words.
 Moving every one-decision bar down by that fall, the exchange's included, also answered 18.4, at 14,125 tokens.
 
+An agent's step and a system message, and on one-decision tasks a subagent's prompt and a compaction summary, are kept only within an exchange.
+No labelled answer was of those kinds, so no labelled bar exists for them; keeping agent steps on their own rating as well was measured, and it lowered right answers.
+Each arm keeps agent messages on their own rating at the bars their widened answers earned, five answer sets:
+
+| Text | Right of 20 | Against its base (95% range) | One decision: tokens median | Everything said: tokens median |
+| --- | --- | --- | --- | --- |
+| The exchange form, nearest paragraph | 18.4 | | 2,087 | 65,860 |
+| The same, agent messages beside one of the person's at 0.62 and 0.08, others at 0.32 and 0.11 | 17.8 | −0.6 (−1.2 to 0.0) | 8,961 | 74,753 |
+| The same, and compaction summaries at 0.58 on one-decision tasks | 18.0 | −0.4 (−1.0 to 0.0) | 11,369 | 74,753 |
+| The same form, every agent step at 0.32 and 0.08 | 17.8 | −0.6 (−2.0 to +0.4) | 13,763 | 75,014 |
+| The exchange form as the `curate` command sets it | 18.2 | | 5,213 | 65,860 |
+| The same, every agent step at 0.32 and 0.08 | 17.0 | −1.2 (−2.6 to 0.0) | 15,707 | 75,014 |
+
+The added text held more restatements of an answer and no labelled answer the exchange form lacked, and agent messages came to as much as 81% of the one-decision text.
+A subagent's prompt and a system message hold no widened answer on one-decision tasks, so no bar can be learned for them.
+
 A kind at a bar of 1 is never asked about. On three timed calls on one person's coding-agent history, those messages were 53% of the stage's request characters on a one-decision task, and 26% to 27% on two everything-said tasks.
 Two cheaper forms of the stage were tried and aren't used:
 

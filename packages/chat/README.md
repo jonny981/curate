@@ -126,6 +126,7 @@ In a `cli` session, a user message can be the person's or text another tool type
 The transcript can't tell them apart, so it stays `unmarked`.
 
 The author mark doesn't change the search ranking: keyword scores and phrase matches read the title without it.
+A second stage that keeps each kind at its own bar judges only marked messages: an `unmarked` one keeps the read's verdict, and a source that marks no message as the person's is read without the stage ([library](https://github.com/jonny981/curate/blob/main/docs/library.md#a-second-stage)).
 The chat read starts from the person's own parts, and the decision model can read the author in a part's record.
 
 ### The parts of an agent's work

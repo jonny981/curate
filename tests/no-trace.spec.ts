@@ -61,7 +61,8 @@ const SENTENCE = 'Fruit trees grow here.';
 const OLD = new Date('2026-01-02T10:00:00Z');
 
 const searchLines = { keywords: ['orchard', 'orchard trees'], answers: ['The orchard has trees.', SENTENCE, 'Trees grow in the orchard.', 'The orchard grows fruit.'] };
-const allSearches = { chat: searchLines, 'git-history': searchLines, markdown: searchLines };
+// The transcripts' default set asks the kind of task in the same call.
+const allSearches = { chat: searchLines, 'git-history': searchLines, markdown: searchLines, wanted: 'one decision' };
 
 type Settings = { records?: boolean; readAudit?: boolean };
 type Fixture = Awaited<ReturnType<typeof makeFixture>>;
@@ -98,7 +99,8 @@ async function makeFixture() {
   gitIn(at('repo'), 'commit', '-q', '-m', `plant the orchard. ${SENTENCE}`);
 
   await writeFile(at('transcripts', 'session.jsonl'), [
-    JSON.stringify({ type: 'user', sessionId: 's1', timestamp: '2026-01-01T12:00:00Z', message: { content: `What grows in the orchard? ${SENTENCE}` } }),
+    JSON.stringify({ type: 'user', sessionId: 's1', timestamp: '2026-01-01T12:00:00Z', origin: { kind: 'human' },
+      message: { content: `What grows in the orchard? ${SENTENCE}` } }),
     JSON.stringify({ type: 'assistant', sessionId: 's1', timestamp: '2026-01-01T12:01:00Z', message: { content: [{ type: 'text', text: `Orchard answer. ${SENTENCE}` }] } }),
   ].join('\n'));
   await writeFile(at('sessions', 'open.jsonl'), [

@@ -6,7 +6,7 @@ import { AGENT_CHAT_CASCADE, agentTranscripts, chat, JUDGMENT_CHAT_CASCADE } fro
 import { GIT_HISTORY_CASCADE } from '@curatejs/git';
 import { MARKDOWN_CASCADE } from '@curatejs/markdown';
 // @ts-expect-error The standalone JavaScript command has no type declarations.
-import { CHAT_MODES, maxDecisionBatchChars, parseSources } from '../skills/curate/run.mjs';
+import { CHAT_DEFAULTS, CHAT_MODES, maxDecisionBatchChars, parseSources } from '../skills/curate/run.mjs';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -41,8 +41,9 @@ describe('sources.json judgment selection', () => {
       expect(parsed.sources[0]).toMatchObject({ questions: 'judgments', bar: 0.3 });
     }
     expect(CHAT_MODES.judgments).toMatchObject({ questions: JUDGMENT_CHAT_CASCADE, read: rankedRead, request: 'text' });
-    // 'default' names today's mode: the same source an omitted key produces.
-    expect(CHAT_MODES.default).toBe(agentTranscripts);
+    // 'default' names the source type's own set: the exchange form for Claude Code, the chat reader's own for Codex.
+    expect(CHAT_DEFAULTS).toEqual({ 'claude-code': 'exchange', codex: 'plain' });
+    expect(CHAT_MODES.plain).toBe(agentTranscripts);
     const named = parseSources({ sources: [{ type: 'claude-code', path: '/x', questions: 'default' }] });
     expect(named.sources[0]).toMatchObject({ questions: 'default' });
     expect(() => parseSources({ sources: [{ type: 'claude-code', path: '/x', questions: 'other' }] }))

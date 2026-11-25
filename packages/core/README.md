@@ -455,6 +455,7 @@ They say which settings were on (`levers`), what each one did (`effects`), and w
 | `itemsPerRequest` | How many items one decision request held, when its mode sets it |
 | `request` | `'text'` when its mode asks in plain text |
 | `keep` | Its mode's second stage: its questions, the bar it kept at for this pick, and its own settings |
+| `stageOff` | `true` when its mode's second stage keeps each kind at its own bar and the source marked no message as the person's: the stage didn't run, and `keep` is absent |
 | `choicePerFact` | When its mode compares its kept parts for each needed fact: the candidates a fact, and the sufficiency bar |
 | `decay` | The half-life its parts ranked with, when `decay` is on. Only a `pickFromSources()` record has it |
 

@@ -86,6 +86,10 @@ export interface SourceSettings {
   readonly itemsPerRequest?: number;
   /** Present when its mode asks in the plain-text form. */
   readonly request?: 'text';
+  /** Present and true when its mode's second stage keeps each kind at its
+   *  own bar and the source's reader marked no message as the person's:
+   *  the stage did not run, and the source was read as its mode reads. */
+  readonly stageOff?: true;
   /** The mode's second stage, when it has one: its questions, the bar it
    *  kept at for this pick, and its own settings. */
   readonly keep?: {

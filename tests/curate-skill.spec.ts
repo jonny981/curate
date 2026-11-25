@@ -1358,7 +1358,7 @@ describe('a run through core decision calls', () => {
     await mkdir(transcripts);
     await writeFile(join(transcripts, 'session.jsonl'), [
       JSON.stringify({
-        type: 'user', sessionId: 's1', timestamp: '2026-01-01T12:00:00Z',
+        type: 'user', sessionId: 's1', timestamp: '2026-01-01T12:00:00Z', origin: { kind: 'human' },
         message: { content: 'What did Ada decide about the cache?' },
       }),
       JSON.stringify({
@@ -1733,7 +1733,7 @@ describe('a run through core decision calls', () => {
     const { folder: runFolder } = await run(['--sources', sourcesFile, 'What happened?'], call);
     const record = JSON.parse(await readFile(join(runFolder, 'record.json'), 'utf8'));
     expect(record.status).toBe('complete');
-    expect(record.pick?.pick?.chatRead?.['agent-transcripts']?.units).toBe(2);
+    expect(record.pick?.pick?.chatRead?.['exchange']?.units).toBe(2);
   });
 
   it('runs the pick with the rating stop the sources file names', async () => {
@@ -1896,7 +1896,7 @@ describe('a run through core decision calls', () => {
     expect(record.pick.pick.stopWhenCold).toMatchObject({ ended: 'cold' });
     expect(unread((id) => id.startsWith('knowledge-base:'))).toBeGreaterThan(0);
     expect(unread((id) => id.startsWith('chat:'))).toBe(0);
-    expect(['fall', 'order']).toContain(record.pick.pick.chatRead['agent-transcripts'].ended);
+    expect(['fall', 'order']).toContain(record.pick.pick.chatRead['exchange'].ended);
   });
 
   it('says on standard error how many ranked parts the stop left unread, and which file turns it off', async () => {
@@ -2682,7 +2682,9 @@ process.stdin.on('data', (chunk) => { input += chunk; }).on('end', () => {
 
   it('sends a reply with no kind key back once when two kinds were asked, naming the keys it needs', async () => {
     const group = { keywords: ['keyword 0', 'keyword 1'], answers: ['answer 0', 'answer 1', 'answer 2', 'answer 3'] };
-    const { directory, captured } = await standIn([{ stdout: reply(JSON.stringify(group)) }, { stdout: reply(JSON.stringify({ chat: group, markdown: group })) }]);
+    // A Claude Code source's default set asks the kind of task too, which the repair gives.
+    const { directory, captured } = await standIn([{ stdout: reply(JSON.stringify(group)) },
+      { stdout: reply(JSON.stringify({ chat: group, markdown: group, wanted: 'one decision' })) }]);
     await mkdir(join(directory, 'chats'));
     const { home, sourcesFile } = await markdownRun(directory, { scope: false,
       sources: [{ type: 'markdown', path: join(directory, 'notes') }, { type: 'claude-code', path: join(directory, 'chats') }] });
@@ -3044,7 +3046,8 @@ describe('the feed setting', () => {
 describe('a call reads the project its working folder sits in', () => {
   type Read = { source: string };
   const encoded = (path: string) => path.replace(/[^a-zA-Z0-9]/g, '-');
-  const said = (text: string) => JSON.stringify({ type: 'user', sessionId: 's1', timestamp: '2026-01-01T12:00:00Z', message: { content: text } });
+  // The person's own message, as Claude Code marks it.
+  const said = (text: string) => JSON.stringify({ type: 'user', sessionId: 's1', timestamp: '2026-01-01T12:00:00Z', origin: { kind: 'human' }, message: { content: text } });
   const codexSession = (cwd: string, text: string) => [JSON.stringify(metadata(cwd)),
     JSON.stringify({ ...message, payload: { ...message.payload, content: [{ type: 'input_text', text }] } })].join('\n');
   const sourceIds = (record: { sourcesRead: Read[] }) => record.sourcesRead.map((read) => read.source).sort();

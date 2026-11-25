@@ -83,17 +83,17 @@ describe('values on a chat source\'s levers, and the narrow question in two as i
   it('name the two-question set "answers", read as the default mode reads', () => {
     expect(parseSources({ sources: [{ type: 'claude-code', questions: 'answers' }] }).sources[0].questions).toBe('answers');
     // The read stays the default mode's; a second stage judges each kept message in the measured wording.
-    expect(CHAT_MODES.answers).toMatchObject({ name: 'answers', questions: CHAT_MODES.default.questions, bar: CHAT_MODES.default.bar, needed: true,
+    expect(CHAT_MODES.answers).toMatchObject({ name: 'answers', questions: CHAT_MODES.plain.questions, bar: CHAT_MODES.plain.bar, needed: true,
       keep: { questions: MESSAGE_ANSWER_CASCADE, bar: { 'one decision': 0.59, 'everything said': 0.04 }, wholeMessages: true, hardFacts: true } });
     expect(MESSAGE_ANSWER_CASCADE.questions[0]!.instructions).toBe('Does this message state the answer to the task?');
     // The exchange form: the same two stages, each kind at its own bar, and the exchange around what the person said.
-    expect(CHAT_MODES.exchange).toMatchObject({ name: 'exchange', questions: CHAT_MODES.default.questions,
+    expect(CHAT_MODES.exchange).toMatchObject({ name: 'exchange', questions: CHAT_MODES.plain.questions,
       keep: { questions: MESSAGE_ANSWER_CASCADE, bar: 1, exchange: { nearest: 'paragraph' }, wholeMessages: true, hardFacts: true,
         barByKind: { 'person message': { 'one decision': 0.28, 'everything said': 0.04 }, 'agent step': 1,
           'tool output': { 'one decision': 0.81, 'everything said': 0.13 } }, exchangeBar: { 'one decision': 0.76, 'everything said': 0.04 } } });
     expect(parseSources({ sources: [{ type: 'claude-code', questions: 'exchange' }] }).sources[0].questions).toBe('exchange');
     expect(MESSAGE_ANSWER_CASCADE.facts!.question.instructions).toBe('Does this message state this: {fact}?');
-    expect(CHAT_MODES.answers.read).toBe(CHAT_MODES.default.read);
+    expect(CHAT_MODES.answers.read).toBe(CHAT_MODES.plain.read);
   });
 });
 

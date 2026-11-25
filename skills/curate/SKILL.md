@@ -63,6 +63,9 @@ The output is the evidence the decision model kept, word for word.
   - A heading that starts with `chat:` is a chat transcript.
 - **`(said <date>)` dates the part; `(file changed <date>)` is only the file's last change.** `(said unknown)` means no date was recorded.
 - **`…` marks text that was left out** because it didn't bear on the question.
+- **When every part is a chat message, each sits under its own heading, strongest first,** naming its session, its time and who said it: `#### session 1a2b3c4d (said 2026-03-02 10:14), the person`. The rest follow under `### More messages, strongest first`.
+- **A heading with `an exchange` holds one passage:** the person's message, the agent message it answered and the agent's reply, in conversation order, each line naming who said it and when.
+- **A line like `[earlier paragraphs left out; the whole message is <id>]` means only the paragraph nearest the person's message is shown.** The whole message is in `kept.json` in the question's folder under `~/.curate/runs/`, found by that id. Read it if the rest might matter.
 - **Empty output means nothing relevant was found.** Say so.
 
 ## Write the summary

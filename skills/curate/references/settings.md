@@ -301,17 +301,17 @@ Each transcript's topic cuts and each unit's words are kept between questions in
 
 ### Second search
 
-A `claude-code` or `codex` source on its default questions is searched a second time once the first pick ends:
+A `claude-code` or `codex` source on the `plain` or `answers` set is searched a second time once the first pick ends:
 
 1. The rarest names, numbers and words of the first pick's three best-rated parts of those sources become the second search's two keyword and four answer lines, eight words a part. The task fills any line left over.
 2. A word counts when at least 2, and at most 0.5%, of those sources' parts hold it and the task doesn't use it. A word shaped like a credential never counts, and neither does the `[redacted]` mark the scrubber leaves where it masked one.
 3. A second pick reads that search's order the same way ([Chat order](#chat-order)), reusing the first pick's decisions, so only parts the first never rated are rated. The parts it keeps join the first pick's.
 
-The second pick's chat read starts again on its own order, so the first read's stop doesn't end it. It walks over parts the first pick rated at no cost, and a reused decision counts toward its stop with its stored rating, as it did in the first pick. Its record's `pick.chatRead['agent-transcripts']` counts the parts it rated anew (`rated`) apart from those whose decision the first pick made (`reused`). The run record's `secondSearch` holds the seeds, the lines, the parts it added and the second pick's record.
+The second pick's chat read starts again on its own order, so the first read's stop doesn't end it. It walks over parts the first pick rated at no cost, and a reused decision counts toward its stop with its stored rating, as it did in the first pick. Its record's `pick.chatRead`, under the mode's name, counts the parts it rated anew (`rated`) apart from those whose decision the first pick made (`reused`). The run record's `secondSearch` holds the seeds, the lines, the parts it added and the second pick's record.
 
 It was measured with the plain read of the ranked list, never with the chat read. On long chats with an assistant read as Markdown (BEAM, 40 questions), its new parts held 99 evidence units where reading on through the first search by as many parts held 96. On coding-agent transcripts (one DolphinBench test) it reached all 4 messages no line of the first search held.
 
-The `exchange` question set turns the second search off ([Question sets](#question-sets)).
+The `exchange` set, Claude Code's default, runs no second search ([Question sets](#question-sets)).
 
 ### Rating
 
@@ -401,12 +401,13 @@ Reference parts (every part that isn't a rule) rated at least 0.0146, or the sel
 
 Agent-session sources use the `AGENT_CHAT_CASCADE` set, which leaves out the `own` question. Personal sources a host provides keep their own set.
 
-A source's `questions` picks another set by name:
+A source's `questions` picks a set by name. With no `questions`, or `"default"`, a `claude-code` source reads with `exchange`, the measured best on Claude Code transcripts, and a `codex` source with `plain`. The exchange set's bars were measured on Claude Code transcripts only, and an interactive Codex session marks none of your messages, so the set would read it as `plain` does anyway ([below](#the-exchange-set)).
 
 | Name | Sources | What it does |
 | --- | --- | --- |
+| `exchange`, the default for `claude-code` | `claude-code`, `codex` | Reads and judges as `answers` does, keeps each kind of message at its own bar, and keeps the exchange around each of your messages it keeps ([below](#the-exchange-set)). It runs no [second search](#second-search) |
+| `plain`, the default for `codex` | `claude-code`, `codex` | The read alone, on `AGENT_CHAT_CASCADE` and the 0.0146 bar, with no second stage, and the [second search](#second-search) after it |
 | `answers` | `claude-code`, `codex` | Reads as the default set does, on its own questions and bar. Then a [second stage](https://github.com/jonny981/curate/blob/main/docs/library.md#a-second-stage) judges each kept message again, whole, with its [hard facts](https://github.com/jonny981/curate/blob/main/docs/library.md#hard-facts), batched, and keeps it by the highest of its answers: it states the answer, or one needed fact. It keeps at 0.59 when the task wants one decision and 0.04 when it wants everything said, and at the lower when the search-line call names neither. The kept messages are laid out whole, strongest first, each with its session, its time and who said it |
-| `exchange` | `claude-code`, `codex` | Reads and judges as `answers` does, keeps each kind of message at its own bar, and keeps the exchange around each of your messages it keeps ([below](#the-exchange-set)). It runs no [second search](#second-search) |
 | `answers` | `markdown` | Keeps each note by [the narrow question in two](https://github.com/jonny981/curate/blob/main/docs/library.md#the-narrow-question-in-two): "Does this item answer the task?", and once per needed fact whether it states it. A note's score is the highest of its answers, kept at 0.07 |
 | `judgments` | `claude-code`, `codex` | Two narrow questions per part, a yes/no subject match and a five-level score of how well the part answers, combined with facts the code works out, through fitted constants, asked in plain text. Its items show only a date and text, with no id, title or session. The set ships unfitted, and refuses the run until its weights file holds real constants |
 
@@ -416,7 +417,7 @@ The Markdown `answers` set's 0.07 is the highest "answers" probability that kept
 
 #### The exchange set
 
-The `exchange` set keeps each kind of message at the bar measured within its kind: your message, a subagent's report or prompt, a compaction summary and tool output. An agent's own steps are kept only within an exchange, so they're never sent to the second stage, which saves about a quarter to a half of its cost.
+The `exchange` set, the default for `claude-code` sources, keeps each kind of message at the bar measured within its kind: your message, a subagent's report or prompt, a compaction summary and tool output. An agent's own steps are kept only within an exchange, so they're never sent to the second stage, which saves about a quarter to a half of its cost. Keeping them on their own rating as well was measured, and it lowered right answers: 17.0 to 18.0 of 20 against 18.2 to 18.4, with three to seven times the one-decision text ([measured](https://github.com/jonny981/curate/blob/main/docs/measurements.md#a-second-stage)).
 
 | Kind of message | One decision | Everything said |
 | --- | --- | --- |
@@ -427,6 +428,8 @@ The `exchange` set keeps each kind of message at the bar measured within its kin
 | Tool output | 0.81 | 0.13 |
 | An agent's step, a system message | Only in an exchange | Only in an exchange |
 
+These bars were learned on messages the transcript marks. A message it doesn't mark as anyone's keeps the read's verdict, as under `plain`, and brings no exchange. A source that marks none of your messages, such as a file of bare user lines, is read exactly as `plain` reads it, second search included.
+
 For each of your messages it keeps, it keeps the exchange around it: the agent message it replies to and the agent's reply. For each kept report it keeps the request that asked for it. The messages of an exchange are laid out together as one passage. An agent message kept only for an exchange is cut to its paragraph nearest yours, and a line names the message's id in place of the rest; `kept.json` holds the whole message ([Output](#output)).
 
 On one-decision tasks your message is kept from 0.28, below the 0.76 its labelled answers earned. A message's rating moves between two questions of one task, mostly with the needed facts the search-line call writes: of 537 messages rated 0.5 or more in one run, a tenth fell by more than 2.07 in logit in another. 0.28 is 0.76 moved down by that fall. The exchange around it is kept only from 0.76 (`exchangeBar`); under it, your message is kept alone.
@@ -435,7 +438,7 @@ Measured on 20 coding-agent tasks of one history, five answer sets each:
 
 | Text | Right answers, of 20 |
 | --- | --- |
-| The default set, every part the read kept | 13.8 |
+| `plain`, every part the read kept | 13.8 |
 | The exchange set, bars learned on all 20 tasks | 18.4 |
 | The exchange set, each task's bars learned without it | 17.0 |
 | The exchange set as shipped, your message kept from 0.28 | 18.2 |

@@ -1923,9 +1923,15 @@ export async function pick(
       : options.wanted !== undefined ? mode.bar[options.wanted] : Math.min(mode.bar['one decision'], mode.bar['everything said'])]]));
   for (const set of Object.values(questionsBySource)) checkCascade(set);
   const modeFor = (sourceId: string) => Object.hasOwn(modes, sourceId) ? modes[sourceId] : undefined;
+  // A second stage that keeps each kind at its own bar runs only on a
+  // source whose reader marked the person's messages, the messages its
+  // bars were learned on. A source that marks none is read as its mode
+  // reads without the stage.
+  const stageOff = new Set(Object.entries(modes).filter(([id, mode]) => mode.keep?.barByKind !== undefined
+    && !candidates.some((candidate) => candidate.sourceId === id && candidate.author === 'person')).map(([id]) => id));
   // A mode's second stage, and whether its requests are being built: the
   // predicates below read the stage's own settings while it asks.
-  const keepOf = (sourceId: string) => modeFor(sourceId)?.keep;
+  const keepOf = (sourceId: string) => stageOff.has(sourceId) ? undefined : modeFor(sourceId)?.keep;
   let keeping = false;
   const keepingFor = (candidate: MemoryCandidate) => keeping && candidate.role === 'reference' && keepOf(candidate.sourceId) !== undefined;
   // A bar, or one per kind of task read for the pick's `wanted` and the lower of the two when it gives none.
@@ -3745,7 +3751,10 @@ export async function pick(
   // left out whole, every piece the pick holds at its message's score;
   // a part the stage got no answer for keeps the read's verdict.
   let keepRecord: PickRecord['keep'];
-  const keepStage = selected.filter((candidate) => candidate.role === 'reference' && keepOf(candidate.sourceId) !== undefined);
+  // A message its reader marked no kind for keeps the read's verdict in a
+  // stage that keeps each kind at its own bar: no bar was learned for it.
+  const keepStage = selected.filter((candidate) => candidate.role === 'reference' && keepOf(candidate.sourceId) !== undefined
+    && (keepOf(candidate.sourceId)!.barByKind === undefined || keepKind(candidate) !== undefined));
   // The bar a part's own rating must reach in its mode's second stage:
   // its kind's, or the stage's. At 1 no rating keeps it, so it is not asked.
   const keepBarOf = (candidate: MemoryCandidate) => {
@@ -4256,6 +4265,7 @@ export async function pick(
       ...(modeFor(id)?.roles === true ? { roles: true as const } : {}),
       ...(modeFor(id)?.itemsPerRequest === undefined ? {} : { itemsPerRequest: modeFor(id)!.itemsPerRequest! }),
       ...(modeFor(id)?.request === 'text' ? { request: 'text' as const } : {}),
+      ...(stageOff.has(id) ? { stageOff: true as const } : {}),
       ...(keepOf(id) === undefined ? {} : { keep: { questions: keepOf(id)!.questions, bar: barValue(keepOf(id)!.bar ?? DEFAULT_BAR),
         ...(keepOf(id)!.wholeMessages === undefined ? {} : { wholeMessages: keepOf(id)!.wholeMessages! }),
         ...(keepOf(id)!.hardFacts === undefined ? {} : { hardFacts: keepOf(id)!.hardFacts! }),
