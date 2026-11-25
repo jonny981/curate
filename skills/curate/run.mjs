@@ -1295,8 +1295,9 @@ Write exactly two keyword lines and exactly four answer lines for each source ki
 }
 
 // Haiku sometimes names a group after the task's words ("chat" for "our
-// conversations") when a different kind was asked for, or puts the scope
-// inside a group. The lines are still good, so they are kept under the kind
+// conversations") when a different kind was asked for, or puts the scope,
+// the needed facts or the kind of task inside a group. The lines are still
+// good, so they are kept under the kind
 // asked for, and the record counts the renamed groups. Asked for one kind, it
 // can also leave out the kind's key; those lines go under that kind.
 function asAsked(value, required, record) {
@@ -1316,10 +1317,12 @@ function asAsked(value, required, record) {
   }
   if (renamed) for (const key of spare) delete out[key];
   for (const kind of required) {
-    if (!isGroup(out[kind]) || out[kind].scope === undefined) continue;
-    const { scope, ...group } = out[kind];
-    out[kind] = group;
-    out.scope ??= scope;
+    for (const key of ['scope', 'needed', 'wanted']) {
+      if (!isGroup(out[kind]) || out[kind][key] === undefined) continue;
+      const { [key]: value, ...group } = out[kind];
+      out[kind] = group;
+      out[key] ??= value;
+    }
   }
   if (renamed) record.renamedSearchKinds = renamed;
   return out;
@@ -1804,7 +1807,9 @@ export async function run(args = process.argv.slice(2), callSubscription = undef
       }, () => ({}));
       wanted = { ...wantedFrom(reply?.wanted), askedAgain: true };
     }
-    if (needed !== undefined) record.needed = needed;
+    // A reply with no facts is kept beside the reason, so the next such reply can be read.
+    if (needed !== undefined) record.needed = needed.missing === undefined ? needed : { ...needed, reply: await readFile(join(folder,
+      `searches-${record.subscription.filter((call) => call.label === 'searches').at(-1)?.attempt}.txt`), 'utf8').catch(() => undefined) };
     if (wanted !== undefined) record.wanted = wanted;
     // What a field still missing changes, said where the person sees it.
     if (wanted?.missing !== undefined && callSources.some((entry) => sourceKind(entry.type) === 'chat'

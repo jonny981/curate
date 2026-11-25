@@ -2681,6 +2681,31 @@ process.stdin.on('data', (chunk) => { input += chunk; }).on('end', () => {
     expect(record.scope.proposed).toEqual({ kinds: ['all'], since: 'none' });
   });
 
+  it('takes the needed facts and the kind of task the reply nests inside a group, with no second call', async () => {
+    const group = { keywords: ['keyword 0', 'keyword 1'], answers: ['answer 0', 'answer 1', 'answer 2', 'answer 3'] };
+    const { directory, captured } = await standIn([{ stdout: reply(JSON.stringify({ chat: { ...group,
+      needed: ['Whether the cache stays layered'], wanted: 'one decision' } })) }]);
+    await mkdir(join(directory, 'chats'));
+    const { home, sourcesFile } = await markdownRun(directory, { scope: false, sources: [{ type: 'claude-code', path: join(directory, 'chats') }] });
+    await run(['--sources', sourcesFile, 'Which cache layout did we choose?']).catch(() => undefined);
+    expect(await captured()).toHaveLength(1);
+    const { record } = await savedRecord(home);
+    expect(record.searches).toEqual({ chat: group });
+    expect(record.needed).toEqual({ facts: ['Whether the cache stays layered'] });
+    expect(record.wanted).toEqual({ value: 'one decision' });
+  });
+
+  it('keeps the reply in the record when it gives no needed facts', async () => {
+    const group = { keywords: ['keyword 0', 'keyword 1'], answers: ['answer 0', 'answer 1', 'answer 2', 'answer 3'] };
+    const sent = JSON.stringify({ chat: group, wanted: 'one decision' });
+    const { directory } = await standIn([{ stdout: reply(sent) }]);
+    await mkdir(join(directory, 'chats'));
+    const { home, sourcesFile } = await markdownRun(directory, { scope: false, sources: [{ type: 'claude-code', path: join(directory, 'chats') }] });
+    await run(['--sources', sourcesFile, 'Which cache layout did we choose?']).catch(() => undefined);
+    const { record } = await savedRecord(home);
+    expect(record.needed).toEqual({ missing: 'the reply gave no facts', reply: sent });
+  });
+
   it('files a reply with no kind key under the one kind asked, with no repair', async () => {
     const group = { keywords: ['keyword 0', 'keyword 1'], answers: ['answer 0', 'answer 1', 'answer 2', 'answer 3'] };
     const { directory, captured } = await standIn([{ stdout: reply(JSON.stringify(group)) }]);

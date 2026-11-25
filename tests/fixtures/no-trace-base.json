@@ -217,6 +217,7 @@
    ".jev[].status",
    ".jev[].usage",
    ".needed.missing",
+   ".needed.reply",
    ".pick.asOf",
    ".pick.cache.asked",
    ".pick.cache.deciderId",
